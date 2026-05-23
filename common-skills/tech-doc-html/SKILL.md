@@ -55,6 +55,17 @@ If output includes Mermaid, **read** `references/mermaid_security.md` **first**,
 - `htmlLabels: false` (including `flowchart.htmlLabels`)
 - No `click` callbacks, `javascript:` URLs, or weak `%%{init}%%` in diagrams
 
+### Mermaid layout: default to vertical
+
+Use `flowchart TB` (top-to-bottom) by default for any `flowchart` / `graph` diagram. The page is capped at 1100px and many readers view on laptops or split-screen, so `LR` / `RL` diagrams quickly overflow into horizontal scroll or shrink to unreadable size.
+
+Pick `LR` only when **both** are true:
+
+- The flow is genuinely left-to-right (e.g. pipeline stage 1 → 2 → 3, request/response timeline), AND
+- It stays compact — typically ≤4 nodes in a single chain with short labels and no fan-out branches.
+
+If a vertical diagram gets too tall, prefer `subgraph` grouping or splitting into multiple diagrams over flipping to `LR`. `sequenceDiagram`, `stateDiagram-v2`, `erDiagram`, `gantt`, and similar types have their own natural orientation — this rule applies to flowcharts only.
+
 ### Step 4: Load design system
 
 Read `references/design_system.md` for:
