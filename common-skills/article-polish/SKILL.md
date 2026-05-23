@@ -1,6 +1,6 @@
 ---
 name: article-polish
-description: Polishes and improves article writing with three modes - quick (direct polish), normal (analyze then polish), and refined (analyze, polish, review, finalize). Supports custom style preferences, target audience tuning, and writing goals via EXTEND.md. Use when user asks to "polish", "润色", "优化文章", "改进表达", "改写", "调整语气", "精简文章", "扩写", or needs any writing improvement.
+description: Polishes and improves article writing with three modes - quick (direct polish), normal (analyze then polish), and refined (analyze, polish, review, finalize). Supports custom style preferences, target audience tuning, and writing goals via EXTEND.md. Use when the user asks to polish, rewrite, improve, condense, expand, or refine articles and writing.
 version: 1.1.0
 metadata:
   openclaw:
@@ -12,8 +12,6 @@ metadata:
 ---
 
 # Article Polish
-
-> **Derivative work:** Based on [baoyu-translate](https://github.com/JimLiu/baoyu-skills/tree/main/skills/baoyu-translate) (MIT). Same workflow architecture, repurposed for writing improvement instead of translation. Not affiliated with baoyu-skills. See [README.md](README.md) and [NOTICE](../../NOTICE).
 
 Three-mode writing improvement skill: **quick** for direct polishing, **normal** for analysis-informed improvement, **refined** for full publication-quality workflow with review and finalization.
 
@@ -102,12 +100,12 @@ All configurable values in one place. EXTEND.md overrides these; CLI flags overr
 Custom style descriptions are also accepted, e.g., `--style "poetic and contemplative"`.
 
 **Auto-detection**:
-- "快润", "quick", "快速优化" → quick mode
-- "精修", "refined", "精细打磨", "publication quality" → refined mode
+- "quick polish", "quick", "fast polish" → quick mode
+- "refined", "refine", "publication quality", "full polish" → refined mode
 - Otherwise → default mode (normal)
 
 **Upgrade prompt**: After normal mode completes, display:
-> Polish complete. To further review and refine, reply "继续精修" or "refine".
+> Polish complete. To further review and refine, reply "refine" or "continue refining".
 
 If user responds, continue with review → finalize steps (same as refined mode Steps 4-6 in refined-workflow.md) on the existing output.
 
@@ -224,7 +222,7 @@ Polish directly → save to `polished.md`. Apply all polishing principles above.
 2. **Assemble prompt** → `02-prompt.md` (polish instructions with context)
 3. **Polish** (following `02-prompt.md`) → `polished.md`
 
-After completion, prompt user: "Polish complete. To further review and refine, reply **继续精修** or **refine**."
+After completion, prompt user: "Polish complete. To further review and refine, reply **refine** or **continue refining**."
 
 If user continues, proceed with critical review → revision → finalize (same as refined mode Steps 4-6 below), saving `03-draft.md` (rename current `polished.md`), `04-critique.md`, `05-revision.md`, and updated `polished.md`.
 

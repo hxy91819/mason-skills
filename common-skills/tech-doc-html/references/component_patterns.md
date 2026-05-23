@@ -1,19 +1,19 @@
-# 组件模板库
+# Component Template Library
 
-每个组件提供完整的 HTML + CSS + JS 代码，可直接复制组合使用。
+Each component provides complete HTML + CSS + JS code that can be copied and combined directly.
 
 ---
 
-## 1. Summary 指标条
+## 1. Summary metrics bar
 
-展示 3-5 个关键数字，让读者一眼掌握方案概况。
+Display 3–5 key numbers so readers grasp the proposal at a glance.
 
 ```html
 <div class="summary">
-  <div class="cell"><div class="k">预计工时</div><div class="v accent">~2 周</div></div>
-  <div class="cell"><div class="k">涉及服务</div><div class="v">3 个</div></div>
-  <div class="cell"><div class="k">新增表</div><div class="v">2</div></div>
-  <div class="cell"><div class="k">目标命中率</div><div class="v accent">≥95%</div></div>
+  <div class="cell"><div class="k">Est. effort</div><div class="v accent">~2 weeks</div></div>
+  <div class="cell"><div class="k">Services involved</div><div class="v">3</div></div>
+  <div class="cell"><div class="k">New tables</div><div class="v">2</div></div>
+  <div class="cell"><div class="k">Target hit rate</div><div class="v accent">≥95%</div></div>
 </div>
 ```
 
@@ -48,17 +48,17 @@
 
 ---
 
-## 2. 对比表格
+## 2. Comparison table
 
-用于方案对比、技术选型，good/bad 着色让优劣一目了然。
+For comparing proposals or technology choices; good/bad coloring makes trade-offs obvious at a glance.
 
 ```html
 <table class="compare">
-  <thead><tr><th></th><th>方案 A</th><th>方案 B</th><th>方案 C</th></tr></thead>
+  <thead><tr><th></th><th>Option A</th><th>Option B</th><th>Option C</th></tr></thead>
   <tbody>
-    <tr><td>延迟</td><td class="good">&lt;1ms</td><td>~5ms</td><td class="bad">~50ms</td></tr>
-    <tr><td>容量</td><td class="bad">有限</td><td class="good">弹性扩展</td><td class="good">无限</td></tr>
-    <tr><td>一致性</td><td class="good">强一致</td><td>最终一致</td><td class="bad">弱一致</td></tr>
+    <tr><td>Latency</td><td class="good">&lt;1ms</td><td>~5ms</td><td class="bad">~50ms</td></tr>
+    <tr><td>Capacity</td><td class="bad">Limited</td><td class="good">Elastic scaling</td><td class="good">Unlimited</td></tr>
+    <tr><td>Consistency</td><td class="good">Strong</td><td>Eventual</td><td class="bad">Weak</td></tr>
   </tbody>
 </table>
 ```
@@ -91,31 +91,31 @@
 
 ---
 
-## 3. 风险矩阵
+## 3. Risk matrix
 
-展示风险等级、描述和缓解措施。
+Display risk level, description, and mitigation measures.
 
 ```html
 <div class="risks">
   <div class="risk-row risk-head">
-    <div class="risk-cell">风险</div>
-    <div class="risk-cell">等级</div>
-    <div class="risk-cell">缓解方案</div>
+    <div class="risk-cell">Risk</div>
+    <div class="risk-cell">Level</div>
+    <div class="risk-cell">Mitigation</div>
   </div>
   <div class="risk-row">
-    <div class="risk-cell">缓存雪崩：大量 key 同时过期</div>
+    <div class="risk-cell">Cache avalanche: many keys expire at once</div>
     <div class="risk-cell"><span class="sev high">HIGH</span></div>
-    <div class="risk-cell">TTL 加随机抖动，热点 key 永不过期</div>
+    <div class="risk-cell">Add random jitter to TTL; hot keys never expire</div>
   </div>
   <div class="risk-row">
-    <div class="risk-cell">缓存穿透：查询不存在的 key</div>
+    <div class="risk-cell">Cache penetration: queries for non-existent keys</div>
     <div class="risk-cell"><span class="sev med">MED</span></div>
-    <div class="risk-cell">布隆过滤器前置 + 空值缓存 60s</div>
+    <div class="risk-cell">Bloom filter upfront + cache null values for 60s</div>
   </div>
   <div class="risk-row">
-    <div class="risk-cell">数据不一致窗口</div>
+    <div class="risk-cell">Data inconsistency window</div>
     <div class="risk-cell"><span class="sev low">LOW</span></div>
-    <div class="risk-cell">写后删缓存 + 延迟双删兜底</div>
+    <div class="risk-cell">Delete cache after write + delayed double-delete fallback</div>
   </div>
 </div>
 ```
@@ -151,9 +151,9 @@
 
 ---
 
-## 4. 时间线 / 里程碑
+## 4. Timeline / milestones
 
-展示实现阶段，支持"已完成"和"进行中"状态。
+Show implementation phases with support for "completed" and "in progress" states.
 
 ```html
 <div class="milestones">
@@ -161,8 +161,8 @@
     <div class="when">Week 1</div>
     <div class="dot-col"><span class="dot done"></span><span class="line"></span></div>
     <div class="body">
-      <h3>数据库 Schema 设计</h3>
-      <p>完成表结构设计、索引规划和 migration 文件</p>
+      <h3>Database schema design</h3>
+      <p>Complete table structure, index planning, and migration files</p>
       <div class="tags"><span class="tag">packages/db</span><span class="tag">migration</span></div>
     </div>
   </div>
@@ -170,12 +170,12 @@
     <div class="when">Week 2</div>
     <div class="dot-col"><span class="dot"></span><span class="line"></span></div>
     <div class="body">
-      <h3>缓存层实现</h3>
-      <p>Redis 客户端封装、缓存策略实现、失效机制</p>
+      <h3>Cache layer implementation</h3>
+      <p>Redis client wrapper, cache strategy, and invalidation mechanism</p>
       <div class="tags"><span class="tag">packages/cache</span></div>
     </div>
   </div>
-  <!-- 最后一个 milestone 的 .line 隐藏 -->
+  <!-- Hide .line on the last milestone -->
 </div>
 ```
 
@@ -237,9 +237,9 @@
 
 ---
 
-## 5. 代码面板
+## 5. Code panel
 
-暗底 + 语法高亮，展示关键实现代码。
+Dark background with syntax highlighting for key implementation code.
 
 ```html
 <div class="code-block">
@@ -281,13 +281,13 @@
 
 ---
 
-## 6. 折叠代码段
+## 6. Collapsible code block
 
-用 details/summary 实现渐进式披露，默认隐藏细节代码。
+Use details/summary for progressive disclosure; detail code is hidden by default.
 
 ```html
 <details class="snippet">
-  <summary>查看实现代码</summary>
+  <summary>View implementation code</summary>
   <div class="code"><pre>...</pre></div>
 </details>
 ```
@@ -315,7 +315,7 @@ details.snippet summary::before {
 details.snippet[open] summary::before { transform: rotate(90deg); }
 ```
 
-JS（可选，同时只展开一个）：
+JS (optional — only one open at a time):
 ```javascript
 document.querySelectorAll('details.snippet').forEach(d => {
   d.addEventListener('toggle', () => {
@@ -329,9 +329,9 @@ document.querySelectorAll('details.snippet').forEach(d => {
 
 ---
 
-## 7. Mermaid 架构/流程图（默认首选）
+## 7. Mermaid architecture / flowchart (default first choice)
 
-复杂系统架构、部署拓扑、时序、状态机、多分支数据流——**优先用 Mermaid**，不要手写坐标 SVG。
+For complex system architecture, deployment topology, sequence diagrams, state machines, and multi-branch data flows — **prefer Mermaid**; do not hand-write coordinate SVG.
 
 ```html
 <div class="diagram">
@@ -344,7 +344,7 @@ flowchart LR
 </div>
 ```
 
-时序图将 `flowchart` 换成 `sequenceDiagram` 语法即可。
+For sequence diagrams, replace `flowchart` with `sequenceDiagram` syntax.
 
 ```html
 <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
@@ -369,13 +369,13 @@ flowchart LR
 </script>
 ```
 
-安全配置与 gate 规则见 `references/mermaid_security.md`。节点说明放在图下方列表或侧栏文字即可；**不要**在 diagram 里用 `click` 绑页面回调。
+See `references/mermaid_security.md` for security configuration and gate rules. Put node descriptions in a list below the diagram or in sidebar text; **do not** bind page callbacks with `click` inside the diagram.
 
 ---
 
-## 8. 可点击流程图（交互式 SVG）
+## 8. Clickable flowchart (interactive SVG)
 
-节点 ≤5 且需要「点击图中节点 → 侧栏详情」时用 SVG。复杂图请用上一节 Mermaid。
+Use SVG when there are ≤5 nodes and you need "click node in diagram → sidebar details". For complex diagrams, use Mermaid from the previous section.
 
 ```html
 <div class="flow-layout">
@@ -387,12 +387,12 @@ flowchart LR
           <path d="M0,0 L10,5 L0,10 z" fill="#87867F"/>
         </marker>
       </defs>
-      <!-- 节点 -->
+      <!-- Nodes -->
       <g class="node" data-k="client">
         <rect x="20" y="60" width="160" height="54" rx="10"
               fill="#fff" stroke="#D1CFC5" stroke-width="1.5"/>
         <text x="100" y="83" text-anchor="middle" font-size="12">Client</text>
-        <text x="100" y="100" text-anchor="middle" font-size="10" fill="#87867F">浏览器/App</text>
+        <text x="100" y="100" text-anchor="middle" font-size="10" fill="#87867F">Browser / App</text>
       </g>
       <g class="node" data-k="cache">
         <rect x="240" y="60" width="160" height="54" rx="10"
@@ -400,16 +400,16 @@ flowchart LR
         <text x="320" y="83" text-anchor="middle" font-size="12">Cache</text>
         <text x="320" y="100" text-anchor="middle" font-size="10" fill="#87867F">Redis Cluster</text>
       </g>
-      <!-- 箭头 -->
+      <!-- Arrows -->
       <line x1="180" y1="87" x2="240" y2="87"
             stroke="#87867F" stroke-width="1.5" marker-end="url(#arrow)"/>
     </svg>
   </div>
   <aside class="flow-panel" id="flowPanel">
-    <div class="hint">点击图中节点查看详情</div>
+    <div class="hint">Click a node in the diagram to view details</div>
     <h3 id="fp-title">Client</h3>
-    <div class="fp-meta" id="fp-meta">前端应用</div>
-    <p id="fp-body">发起数据请求，优先查询缓存...</p>
+    <div class="fp-meta" id="fp-meta">Frontend app</div>
+    <p id="fp-body">Issues data requests; checks cache first...</p>
   </aside>
 </div>
 ```
@@ -455,15 +455,15 @@ flowchart LR
 const FLOW_DETAIL = {
   client: {
     title: "Client",
-    meta: "前端应用 · 浏览器/App",
-    body: "发起数据请求。首先检查本地缓存（如有），然后请求 API 层。"
+    meta: "Frontend app · Browser / App",
+    body: "Issues data requests. Checks local cache first (if any), then calls the API layer."
   },
   cache: {
     title: "Cache Layer",
-    meta: "Redis Cluster · 3 主 3 从",
-    body: "接收查询请求，命中则直接返回；未命中则穿透到数据库，回写缓存后返回。"
+    meta: "Redis Cluster · 3 primary, 3 replica",
+    body: "Receives query requests; returns on hit. On miss, falls through to the database, backfills cache, then returns."
   }
-  // ... 更多节点
+  // ... more nodes
 };
 
 const nodes = document.querySelectorAll('.node');
@@ -482,29 +482,29 @@ nodes.forEach(n => {
 
 ---
 
-## 9. 交互式参数图（滑块调参）
+## 9. Interactive parameter chart (slider tuning)
 
-用滑块改变参数，SVG 图表实时更新。适合演示算法原理或性能变化。
+Use sliders to change parameters and update the SVG chart in real time. Good for demonstrating algorithm behavior or performance changes.
 
 ```html
 <div class="demo">
   <div class="demo-grid">
     <svg class="chart" id="chart" viewBox="0 0 300 200">
-      <!-- 动态生成的柱状图/曲线 -->
+      <!-- Dynamically generated bar chart / curve -->
     </svg>
     <div class="controls">
       <div class="ctrl-row">
-        <label>缓存大小</label>
+        <label>Cache size</label>
         <input id="sizeSlider" type="range" min="100" max="10000" value="1000" step="100">
         <span class="val" id="sizeVal">1000</span>
       </div>
       <div class="ctrl-row">
-        <label>TTL (秒)</label>
+        <label>TTL (sec)</label>
         <input id="ttlSlider" type="range" min="10" max="3600" value="300" step="10">
         <span class="val" id="ttlVal">300</span>
       </div>
       <div class="readout" id="readout">
-        命中率: <b>92%</b> · 平均延迟: <b>2.3ms</b>
+        Hit rate: <b>92%</b> · Avg latency: <b>2.3ms</b>
       </div>
     </div>
   </div>
@@ -562,20 +562,20 @@ function updateChart() {
   sizeVal.textContent = size;
   ttlVal.textContent = ttl;
 
-  // 模拟命中率计算（示例公式）
+  // Simulated hit-rate calculation (example formula)
   const hitRate = Math.min(99, 50 + 30 * Math.log10(size / 100) + 10 * Math.log10(ttl / 10));
   const latency = (1 - hitRate / 100) * 20 + 0.5;
 
-  readout.innerHTML = `命中率: <b>${hitRate.toFixed(1)}%</b> · 平均延迟: <b>${latency.toFixed(1)}ms</b>`;
+  readout.innerHTML = `Hit rate: <b>${hitRate.toFixed(1)}%</b> · Avg latency: <b>${latency.toFixed(1)}ms</b>`;
 
-  // 更新 SVG 柱状图
+  // Update SVG bar chart
   const barH = hitRate / 100 * 160;
   chart.innerHTML = `
     <rect x="0" y="0" width="300" height="200" fill="var(--gray-100)" rx="8"/>
     <rect x="50" y="${180 - barH}" width="60" height="${barH}" fill="var(--olive)" rx="4"/>
-    <text x="80" y="195" text-anchor="middle" font-size="10" fill="var(--gray-500)">命中率</text>
+    <text x="80" y="195" text-anchor="middle" font-size="10" fill="var(--gray-500)">Hit rate</text>
     <rect x="180" y="${180 - latency * 8}" width="60" height="${latency * 8}" fill="var(--clay)" rx="4"/>
-    <text x="210" y="195" text-anchor="middle" font-size="10" fill="var(--gray-500)">延迟</text>
+    <text x="210" y="195" text-anchor="middle" font-size="10" fill="var(--gray-500)">Latency</text>
   `;
 }
 
@@ -586,23 +586,23 @@ updateChart();
 
 ---
 
-## 10. 术语表联动（Hover 高亮）
+## 10. Glossary linking (hover highlight)
 
-正文中的术语 hover 时高亮侧栏对应定义。适合概念密集的方案。
+Hovering terms in the body highlights the matching definition in the sidebar. Good for concept-heavy proposals.
 
 ```html
 <div class="page-with-glossary">
   <main>
-    <p>当 <span class="term" data-term="cache-miss">缓存未命中</span> 时，请求会
-    <span class="term" data-term="penetration">穿透</span> 到数据库...</p>
+    <p>When a <span class="term" data-term="cache-miss">cache miss</span> occurs, the request
+    <span class="term" data-term="penetration">penetrates</span> to the database...</p>
   </main>
   <aside class="glossary">
-    <div class="label">术语表</div>
+    <div class="label">Glossary</div>
     <dl id="gloss">
-      <dt data-g="cache-miss">缓存未命中 (Cache Miss)</dt>
-      <dd>查询的 key 不在缓存中，需要回源到数据库获取</dd>
-      <dt data-g="penetration">穿透 (Penetration)</dt>
-      <dd>请求绕过缓存直接到达数据库，可能造成数据库压力</dd>
+      <dt data-g="cache-miss">Cache miss</dt>
+      <dd>The queried key is not in cache; data must be fetched from the database</dd>
+      <dt data-g="penetration">Penetration</dt>
+      <dd>Request bypasses cache and hits the database directly, which can overload the database</dd>
     </dl>
   </aside>
 </div>
@@ -673,9 +673,9 @@ document.querySelectorAll('.term').forEach(el => {
 
 ---
 
-## 11. 数据流动画
+## 11. Data flow animation
 
-SVG 路径上的虚线流动效果，表示数据或请求在组件间传递。
+Animated dashed lines on SVG paths to show data or requests moving between components.
 
 ```html
 <svg viewBox="0 0 600 100">
@@ -693,7 +693,7 @@ SVG 路径上的虚线流动效果，表示数据或请求在组件间传递。
 }
 ```
 
-可用于区分同步（实线 + 箭头）和异步（虚线 + 流动动画）路径：
+Use to distinguish synchronous (solid line + arrow) and asynchronous (dashed line + flow animation) paths:
 ```css
 .edge-sync  { stroke: var(--gray-500); stroke-width: 1.5; fill: none; }
 .edge-async { stroke: var(--clay); stroke-width: 1.5; stroke-dasharray: 6 4; fill: none;
@@ -702,25 +702,25 @@ SVG 路径上的虚线流动效果，表示数据或请求在组件间传递。
 
 ---
 
-## 12. Tab 切换面板
+## 12. Tab panel
 
-多方案/多视角切换，同一空间展示不同内容。
+Switch between multiple options or perspectives in the same space.
 
 ```html
 <div class="tabs">
   <div class="tab-bar">
     <button class="tab active" data-tab="redis">Redis</button>
     <button class="tab" data-tab="memcached">Memcached</button>
-    <button class="tab" data-tab="local">本地缓存</button>
+    <button class="tab" data-tab="local">Local cache</button>
   </div>
   <div class="tab-content active" id="tab-redis">
-    <p>Redis 集群模式，支持丰富数据结构...</p>
+    <p>Redis cluster mode with rich data structures...</p>
   </div>
   <div class="tab-content" id="tab-memcached">
-    <p>Memcached 纯 KV 模式，极致简单...</p>
+    <p>Memcached pure KV mode, maximally simple...</p>
   </div>
   <div class="tab-content" id="tab-local">
-    <p>进程内 LRU 缓存，零网络开销...</p>
+    <p>In-process LRU cache with zero network overhead...</p>
   </div>
 </div>
 ```
@@ -768,9 +768,9 @@ document.querySelectorAll('.tab').forEach(btn => {
 
 ---
 
-## 13. 步骤高亮动画
+## 13. Step highlight animation
 
-点击"下一步"按钮，逐步高亮流程图中的节点，模拟请求路径。
+Click "Next" to highlight flowchart nodes step by step, simulating the request path.
 
 ```html
 <div class="step-through">
@@ -791,17 +791,17 @@ document.querySelectorAll('.tab').forEach(btn => {
       <rect x="460" y="15" width="100" height="50" rx="8" fill="#fff" stroke="#D1CFC5" stroke-width="1.5"/>
       <text x="510" y="45" text-anchor="middle" font-size="11">Response</text>
     </g>
-    <!-- 箭头 -->
+    <!-- Arrows -->
     <line x1="110" y1="40" x2="160" y2="40" stroke="#D1CFC5" stroke-width="1.5" marker-end="url(#arrow)"/>
     <line x1="260" y1="40" x2="310" y2="40" stroke="#D1CFC5" stroke-width="1.5" marker-end="url(#arrow)"/>
     <line x1="410" y1="40" x2="460" y2="40" stroke="#D1CFC5" stroke-width="1.5" marker-end="url(#arrow)"/>
   </svg>
   <div class="step-controls">
-    <button id="stepPrev">← 上一步</button>
-    <span class="step-info" id="stepInfo">步骤 1/4</span>
-    <button id="stepNext">下一步 →</button>
+    <button id="stepPrev">← Previous</button>
+    <span class="step-info" id="stepInfo">Step 1/4</span>
+    <button id="stepNext">Next →</button>
   </div>
-  <p class="step-desc" id="stepDesc">客户端发起请求...</p>
+  <p class="step-desc" id="stepDesc">Client sends request...</p>
 </div>
 ```
 
@@ -841,10 +841,10 @@ document.querySelectorAll('.tab').forEach(btn => {
 
 ```javascript
 const STEP_DESCS = [
-  "客户端发起数据请求",
-  "先查询缓存（Redis）",
-  "缓存未命中时穿透到数据库",
-  "数据返回并回写缓存"
+  "Client sends data request",
+  "Query cache first (Redis)",
+  "On cache miss, fall through to database",
+  "Return data and backfill cache"
 ];
 let currentStep = 0;
 const stepNodes = document.querySelectorAll('.step-node');
@@ -853,7 +853,7 @@ function updateStep() {
   stepNodes.forEach((n, i) => {
     n.classList.toggle('active', i <= currentStep);
   });
-  document.getElementById('stepInfo').textContent = `步骤 ${currentStep + 1}/${STEP_DESCS.length}`;
+  document.getElementById('stepInfo').textContent = `Step ${currentStep + 1}/${STEP_DESCS.length}`;
   document.getElementById('stepDesc').textContent = STEP_DESCS[currentStep];
 }
 

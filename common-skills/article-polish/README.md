@@ -14,16 +14,8 @@ Improves writing with three modes:
 
 It also supports style presets, audience tuning, polish goals, long-document chunking, and persistent preferences via `EXTEND.md`.
 
-## Upstream
-
-This is a **derivative work** based on [baoyu-translate](https://github.com/JimLiu/baoyu-skills/tree/main/skills/baoyu-translate) from [baoyu-skills](https://github.com/JimLiu/baoyu-skills) (MIT License).
-
-The original skill handles translation; this version repurposes the same workflow architecture (quick / normal / refined modes, chunking, `EXTEND.md` preferences) for **writing improvement**.
-
-This is an independent project — not affiliated with or endorsed by baoyu-skills.
-
 ## License
 
-This skill is part of [mason-skills](../../README.md) and is released under the [MIT License](../../LICENSE).
+Part of [mason-skills](../../README.md) — [MIT License](../../LICENSE).
 
-Upstream attribution and license text: [NOTICE](../../NOTICE).
+**Upstream:** Derivative work based on [baoyu-translate](https://github.com/JimLiu/baoyu-skills/tree/main/skills/baoyu-translate) from [baoyu-skills](https://github.com/JimLiu/baoyu-skills) (MIT, Copyright Jim Liu). Independent project, not affiliated with baoyu-skills.
