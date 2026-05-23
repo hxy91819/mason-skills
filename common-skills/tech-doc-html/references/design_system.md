@@ -230,9 +230,9 @@ box-shadow: 0 10px 30px rgba(20, 20, 19, 0.10);
 </html>
 ```
 
-## Mermaid diagram guidelines
+## Mermaid
 
-Prefer Mermaid for complex architecture / flow / sequence — do not hand-write large SVG. Embedding must follow `references/mermaid_security.md` (`securityLevel` + `htmlLabels: false` + gate check).
+Security: `references/mermaid_security.md`. **Layout — vertical by default:** use `flowchart TB` (top-to-bottom). The page max-width is 1100px and many readers are on laptops/split-screen, so `LR` diagrams quickly overflow into horizontal scroll or shrink to unreadable. Choose `LR` only when the flow is genuinely left-to-right (pipeline stages, request/response timeline) **and** stays compact (typically ≤4 nodes in one chain, short labels, no fan-out). When a vertical diagram grows too tall, prefer `subgraph` grouping or splitting into multiple diagrams over flipping to `LR`. Call chains → `sequenceDiagram`.
 
 ```css
 .diagram {
@@ -253,7 +253,7 @@ Prefer Mermaid for complex architecture / flow / sequence — do not hand-write 
 }
 ```
 
-Common diagram types: `flowchart TB/LR`, `sequenceDiagram`, `stateDiagram-v2`, `erDiagram`.
+Common diagram types: `flowchart TB` (default — vertical fits 1100px page width), `flowchart LR` (only for short ≤4-node L→R chains that won't overflow on laptop screens), `sequenceDiagram`, `stateDiagram-v2`, `erDiagram`.
 
 ## SVG diagram guidelines
 

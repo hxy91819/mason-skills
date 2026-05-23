@@ -336,7 +336,7 @@ For complex system architecture, deployment topology, sequence diagrams, state m
 ```html
 <div class="diagram">
   <pre class="mermaid">
-flowchart LR
+flowchart TB
   Client["Client"] --> API["API Gateway"]
   API --> Cache["Redis Cache"]
   Cache --> DB[("MySQL")]
