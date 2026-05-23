@@ -1,49 +1,49 @@
-# 设计系统规范
+# Design System
 
-从 html-effectiveness 仓库提炼的完整设计系统，可直接复制代码到 HTML 文件中使用。
+Extracted design system for direct copy into HTML files.
 
-## CSS 变量
+## CSS variables
 
 ```css
 :root {
-  /* 色彩 */
-  --ivory:    #FAF9F5;   /* 页面背景（暖奶白） */
-  --slate:    #141413;   /* 主文字/强调色 */
-  --clay:     #D97757;   /* 高亮/告警/CTA（暖锈橙） */
-  --olive:    #788C5D;   /* 成功/确认（柔绿） */
-  --oat:      #E3DACC;   /* 次要强调/徽章（暖米色） */
-  --sky:      #6A8CAF;   /* 信息/链接（蓝灰） */
-  --rust:     #B04A3F;   /* 严重告警/删除（深红） */
+  /* Colors */
+  --ivory:    #FAF9F5;   /* Page background (warm ivory) */
+  --slate:    #141413;   /* Primary text / emphasis */
+  --clay:     #D97757;   /* Highlight / warning / CTA (warm rust orange) */
+  --olive:    #788C5D;   /* Success / confirm (soft green) */
+  --oat:      #E3DACC;   /* Secondary emphasis / badge (warm beige) */
+  --sky:      #6A8CAF;   /* Info / links (blue-gray) */
+  --rust:     #B04A3F;   /* Critical alert / delete (deep red) */
 
-  /* 灰阶 */
+  /* Grays */
   --gray-100: #F0EEE6;
   --gray-150: #F0EEE6;
   --gray-300: #D1CFC5;
   --gray-500: #87867F;
   --gray-700: #3D3D3A;
 
-  /* 字体：除代码外统一使用非衬线字体 */
+  /* Fonts: sans-serif everywhere except code */
   --sans:  system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --mono:  ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
 }
 ```
 
-## 色彩语义
+## Color semantics
 
-| 色彩变量 | 用途 |
-|----------|------|
-| `--clay` | 高亮重点、警告标识、CTA 按钮、active 边框 |
-| `--olive` | 成功状态、已完成标记、正面指标 |
-| `--oat` | 徽章背景、次要按钮、hover 背景 |
-| `--rust` | 严重告警、失败路径、删除操作 |
-| `--sky` | 信息标识、辅助链接色 |
-| `--slate` | 主文字、强调标题、代码面板背景 |
-| `--gray-500` | 次要文字、边框、箭头 |
+| Variable | Usage |
+|----------|-------|
+| `--clay` | Highlights, warnings, CTA buttons, active borders |
+| `--olive` | Success state, completed markers, positive metrics |
+| `--oat` | Badge background, secondary buttons, hover background |
+| `--rust` | Critical alerts, failure paths, delete actions |
+| `--sky` | Info markers, secondary link color |
+| `--slate` | Primary text, emphasis headings, code panel background |
+| `--gray-500` | Secondary text, borders, arrows |
 
-## 排版层级
+## Typography hierarchy
 
 ```css
-/* 页面标题 */
+/* Page title */
 h1 {
   font-family: var(--sans);
   font-weight: 650;
@@ -54,7 +54,7 @@ h1 {
   margin-bottom: 16px;
 }
 
-/* 章节标题 */
+/* Section title */
 h2 {
   font-family: var(--sans);
   font-weight: 650;
@@ -64,7 +64,7 @@ h2 {
   margin: 40px 0 12px;
 }
 
-/* 小节标题 */
+/* Subsection title */
 h3 {
   font-family: var(--sans);
   font-weight: 650;
@@ -73,7 +73,7 @@ h3 {
   margin-bottom: 6px;
 }
 
-/* 正文 */
+/* Body */
 body, p {
   font-family: var(--sans);
   font-size: 15px;
@@ -81,7 +81,7 @@ body, p {
   color: var(--gray-700);
 }
 
-/* Eyebrow 标签（章节类型标识） */
+/* Eyebrow label (section type) */
 .eyebrow {
   font-family: var(--sans);
   font-size: 11px;
@@ -91,7 +91,7 @@ body, p {
   margin-bottom: 10px;
 }
 
-/* 单等宽标签 */
+/* Mono-style label */
 .label {
   font-family: var(--sans);
   font-size: 11px;
@@ -100,7 +100,7 @@ body, p {
   color: var(--gray-500);
 }
 
-/* 内联代码 */
+/* Inline code */
 code {
   font-family: var(--mono);
   font-size: 13px;
@@ -110,74 +110,74 @@ code {
 }
 ```
 
-## 间距系统
+## Spacing system
 
-| 用途 | 尺寸 |
-|------|------|
-| 最小间隙 | 8px |
-| 元素内间距 | 12px |
-| 卡片内 padding | 16-20px |
-| section 间距 | 48-64px |
-| 页面顶部 padding | 56px |
-| 页面底部 padding | 120px |
+| Usage | Size |
+|-------|------|
+| Minimum gap | 8px |
+| Inner element spacing | 12px |
+| Card padding | 16–20px |
+| Section spacing | 48–64px |
+| Page top padding | 56px |
+| Page bottom padding | 120px |
 | max-width | 1100px |
 
-## 圆角规范
+## Border radius
 
-| 元素类型 | 圆角 |
-|----------|------|
-| 小按钮/chip | 6-8px |
-| 面板/卡片 | 12-14px |
-| 代码面板 | 12px |
-| 胶囊按钮 | 999px |
+| Element | Radius |
+|---------|--------|
+| Small button / chip | 6–8px |
+| Panel / card | 12–14px |
+| Code panel | 12px |
+| Pill button | 999px |
 
-## 边框规范
+## Borders
 
 ```css
-/* 标准边框 */
+/* Standard border */
 border: 1.5px solid var(--gray-300);
 
-/* 强调边框（hover/active） */
+/* Emphasis border (hover/active) */
 border: 2px solid var(--clay);
 
-/* 面板边框 */
+/* Panel border */
 border: 1.5px solid var(--gray-300);
 border-radius: 14px;
 ```
 
-## 阴影
+## Shadows
 
-仅在 hover 状态使用，保持克制：
+Use sparingly, hover only:
 ```css
-/* 卡片 hover */
+/* Card hover */
 box-shadow: 0 10px 30px rgba(20, 20, 19, 0.10);
 ```
 
-## 响应式断点
+## Responsive breakpoints
 
 ```css
 @media (max-width: 960px) {
-  /* 两栏→单栏 */
+  /* Two columns → single column */
   .page { grid-template-columns: 1fr; }
 }
 @media (max-width: 760px) {
-  /* 双列网格→单列 */
+  /* Two-column grid → single column */
   .grid { grid-template-columns: 1fr; }
 }
 ```
 
-## 页面骨架
+## Page skeleton
 
 ```html
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>技术方案标题</title>
+<title>Technical Design Title</title>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
 <style>
-  :root { /* 粘贴上方 CSS 变量 */ }
+  :root { /* Paste CSS variables above */ }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
     background: var(--ivory);
@@ -198,12 +198,12 @@ box-shadow: 0 10px 30px rgba(20, 20, 19, 0.10);
 <div class="page">
   <!-- Header -->
   <header>
-    <div class="eyebrow">技术方案 · 类型标签</div>
-    <h1>方案标题</h1>
-    <p class="lead">一句话摘要...</p>
+    <div class="eyebrow">Technical Design · Type Label</div>
+    <h1>Design Title</h1>
+    <p class="lead">One-line summary...</p>
   </header>
 
-  <!-- 内容 sections -->
+  <!-- Content sections -->
 </div>
 
 <script>
@@ -224,15 +224,15 @@ box-shadow: 0 10px 30px rgba(20, 20, 19, 0.10);
     },
     flowchart: { useMaxWidth: true, htmlLabels: false, curve: 'basis' }
   });
-  // 其他交互逻辑
+  // Other interaction logic
 </script>
 </body>
 </html>
 ```
 
-## Mermaid 图表规范
+## Mermaid diagram guidelines
 
-复杂架构/流程/时序图优先用 Mermaid，不要手写大段 SVG。嵌入时必须遵循 `references/mermaid_security.md`（`securityLevel` + `htmlLabels: false` + gate 检查）。
+Prefer Mermaid for complex architecture / flow / sequence — do not hand-write large SVG. Embedding must follow `references/mermaid_security.md` (`securityLevel` + `htmlLabels: false` + gate check).
 
 ```css
 .diagram {
@@ -253,14 +253,14 @@ box-shadow: 0 10px 30px rgba(20, 20, 19, 0.10);
 }
 ```
 
-常用 diagram 类型：`flowchart TB/LR`、`sequenceDiagram`、`stateDiagram-v2`、`erDiagram`。
+Common diagram types: `flowchart TB/LR`, `sequenceDiagram`, `stateDiagram-v2`, `erDiagram`.
 
-## SVG 图表规范
+## SVG diagram guidelines
 
-以下适用于**少量节点**的可点击图、滑块调参图、简单流动动画——复杂关系图请用上文 Mermaid。
+For **few-node** clickable diagrams, slider tuning, simple flow animation — use Mermaid for complex relationships.
 
 ```css
-/* 图表容器 */
+/* Diagram container */
 .diagram {
   background: #fff;
   border: 1.5px solid var(--gray-300);
@@ -269,13 +269,13 @@ box-shadow: 0 10px 30px rgba(20, 20, 19, 0.10);
   overflow-x: auto;
 }
 
-/* SVG 基础 */
+/* SVG base */
 svg { display: block; width: 100%; height: auto; }
 svg text { font-family: var(--sans); font-size: 12px; fill: var(--slate); }
 svg .sub  { font-size: 10px; fill: var(--gray-500); }
 ```
 
-SVG 箭头标记定义：
+SVG arrow markers:
 ```html
 <defs>
   <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
@@ -289,7 +289,7 @@ SVG 箭头标记定义：
 </defs>
 ```
 
-## 代码面板规范
+## Code panel guidelines
 
 ```css
 .code {
@@ -305,17 +305,17 @@ SVG 箭头标记定义：
   color: #E8E6DE;
   white-space: pre;
 }
-/* 语法高亮 */
-.code .kw  { color: var(--clay); }      /* 关键字 */
-.code .str { color: var(--olive); }     /* 字符串 */
-.code .cm  { color: var(--gray-500); }  /* 注释 */
-.code .fn  { color: #C9B98A; }          /* 函数名 */
+/* Syntax highlighting */
+.code .kw  { color: var(--clay); }      /* Keywords */
+.code .str { color: var(--olive); }     /* Strings */
+.code .cm  { color: var(--gray-500); }  /* Comments */
+.code .fn  { color: #C9B98A; }          /* Function names */
 ```
 
-## 交互基础规范
+## Interaction base styles
 
 ```css
-/* 可交互元素通用 hover */
+/* Generic hover for interactive elements */
 .interactive {
   cursor: pointer;
   transition: transform 150ms ease, border-color 150ms ease;
@@ -325,18 +325,18 @@ SVG 箭头标记定义：
   border-color: var(--slate);
 }
 
-/* Active 状态（被选中的节点） */
+/* Active state (selected node) */
 .active {
   border-color: var(--clay);
   border-width: 2px;
 }
 
-/* 滑块统一风格 */
+/* Unified slider style */
 input[type=range] {
   accent-color: var(--clay);
 }
 
-/* 按钮通用样式 */
+/* Generic button style */
 button {
   appearance: none;
   border: 1.5px solid var(--gray-300);
