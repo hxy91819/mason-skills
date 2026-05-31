@@ -1,7 +1,7 @@
 ---
 name: article-polish
 description: Polishes and improves article writing with three modes - quick (direct polish), normal (analyze then polish), and refined (analyze, polish, review, finalize). Supports custom style preferences, target audience tuning, and writing goals via EXTEND.md. Use when the user asks to polish, rewrite, improve, condense, expand, or refine articles and writing.
-version: 1.1.0
+version: 1.2.0
 metadata:
   openclaw:
     homepage: https://github.com/JimLiu/baoyu-skills/tree/main/skills/baoyu-translate
@@ -96,13 +96,17 @@ All configurable values in one place. EXTEND.md overrides these; CLI flags overr
 | `academic` | Scholarly and rigorous | Formal register, precise terminology |
 | `storytelling` | Narrative-driven | Smooth transitions, engaging pacing |
 | `elegant` | Refined and polished | Careful word choices, rhythmic prose |
+| `chinese` | Anti-AI Chinese prose (opt-in) | Strips AI fingerprints from Chinese writing; auto-picks a 直接型/分析型 benchmark by genre. Only when explicitly selected |
 
 Custom style descriptions are also accepted, e.g., `--style "poetic and contemplative"`.
+
+**Chinese module (`style: chinese`)**: A dedicated rule set for Chinese prose that removes the four-layer AI fingerprints (思维模式 / 句式 / 词汇 / 结构). See [Chinese Anti-AI Module](#chinese-anti-ai-module) below.
 
 **Auto-detection**:
 - "quick polish", "quick", "fast polish" → quick mode
 - "refined", "refine", "publication quality", "full polish" → refined mode
 - Otherwise → default mode (normal)
+- **Chinese content**: the default style (`natural`, etc.) preserves the author's voice and is **not** overridden for Chinese. The `chinese` style is **opt-in** — only apply it when the user explicitly selects it (`--style chinese`, EXTEND.md, or a request like "去 AI 味" / "anti-AI"). If the source is predominantly Chinese and no Chinese-specific intent is expressed, you may surface a one-line suggestion ("This is Chinese prose — reply `chinese` to apply the anti-AI Chinese style") but do not switch automatically.
 
 **Upgrade prompt**: After normal mode completes, display:
 > Polish complete. To further review and refine, reply "refine" or "continue refining".
@@ -211,6 +215,7 @@ Before polishing chunks:
 - **Audience awareness**: Adjust vocabulary and explanation depth for target audience
 - **Preserve format**: Keep all markdown formatting (headings, bold, italic, images, links, code blocks)
 - **Frontmatter**: If source has YAML frontmatter, rename source-metadata fields with `source` prefix (camelCase: `url`→`sourceUrl`, `title`→`sourceTitle`, etc.), add polished values as new top-level fields (skip `title` if body has H1), keep other fields as-is
+- **Chinese content**: only when `style: chinese` is explicitly selected, additionally apply the [Chinese Anti-AI Module](#chinese-anti-ai-module) — load its rules into the analyze, polish, and review steps. Under any other style, preserve the author's voice as usual (no benchmark convergence)
 
 #### Quick Mode
 
@@ -257,6 +262,24 @@ Style: {style}
 Goal: {goal}
 Audience: {audience}
 ```
+
+## Chinese Anti-AI Module
+
+This module is **opt-in**: it activates only when `style: chinese` is explicitly selected (via `--style chinese`, EXTEND.md, or an explicit anti-AI request). It is never auto-applied just because the content is Chinese — under any other style the author's voice is preserved as usual. When active, load the rule source [references/zh/anti-ai.md](references/zh/anti-ai.md). It is the single source of truth for Chinese polishing and contains two functional halves that map onto the existing workflow steps:
+
+| Rule half | Source sections | Applied in step |
+|-----------|-----------------|-----------------|
+| **Diagnostic** (detect AI fingerprints) | §1–4 fingerprints + §7 判定标准 | `01-analysis.md` (analyze) and `04-critique.md` (critical review) |
+| **Generative** (how to rewrite) | Benchmarks + §5–12 principles | Polish / `05-revision.md` |
+
+How it integrates with each mode:
+
+- **Analyze step**: scan the source for the four fingerprint layers (思维模式 / 句式 / 词汇 / 结构), record hit locations and types, and estimate fingerprint density per §7 (每 500 字 3 处 → 全文需要改写). Record findings in `01-analysis.md`.
+- **Benchmark selection** (`§0 风格自动判定`): pick **直接型** (narrative / opinion / experiential) or **分析型** (analytical / data-driven / argumentative) by genre — the agent decides automatically, no user input. Note the chosen benchmark in `01-analysis.md` / `02-prompt.md` so chunk subagents stay consistent.
+- **Polish / Revision step**: rewrite toward the chosen benchmark and apply §5–12 (具体胜过抽象, 断言需要支撑, 信任读者, 比喻结构对应, 中英文加空格, 零 emoji, etc.).
+- **Critical review step** (refined / continued-refine): re-scan density per §7 to verify fingerprints are gone before finalizing.
+
+When chunking long Chinese content, inline the chosen benchmark and the relevant rules into `02-prompt.md` so every chunk subagent converges on the same style.
 
 ## Extension Support
 

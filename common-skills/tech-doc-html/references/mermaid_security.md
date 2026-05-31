@@ -95,9 +95,50 @@ Exit code `0` means all `<pre class="mermaid">` blocks parse; on `1`, output inc
 | `Expecting 'EOF'` | Unclosed `{}` or `[]` | Check diamond nodes `{label}` are paired |
 | `&dollar;` fails in browser | HTML entity encoding | Write `$` or `${...}` directly in `<pre>`, not entities |
 
-### Gate 3: Browser render validation
+### Gate 3: Runtime smoke (browser render)
 
-After syntax pre-check, Playwright validates render + interaction (see QA workflow).
+After syntax pre-check, the skill's runtime gate loads the HTML in headless Chromium and asserts zero `pageerror` / `console.error`:
+
+```bash
+node common-skills/tech-doc-html/scripts/qa/check_runtime.mjs <project-root> path/to/output.html
+```
+
+`<project-root>` is a directory with `node_modules/playwright` installed. The gate also waits for every `<pre class="mermaid">` to reach `data-processed=true`, so it catches "diagram parses but renders broken" cases the syntax pre-check cannot.
+
+## Rendering pitfalls (caught by runtime gate, not syntax gate)
+
+### Hidden Mermaid diagrams produce `translate(undefined, NaN)`
+
+If a diagram is rendered inside a container with `display: none` (tabbed UI, swipe carousel, "switch to active lane" pattern), Mermaid's text positioning relies on `getBBox()` which returns `0/0` in hidden subtrees. The result: the SVG **is produced**, but several `<g>` elements get `transform="translate(undefined, NaN)"`, console fills with errors, and visible labels are misaligned after the container becomes visible.
+
+**Symptom (caught by `check_runtime.mjs`):**
+
+```
+[console.error] Error: <g> attribute transform: Expected number, "translate(undefined, NaN)".
+```
+
+**Remediation pattern:** render every `.mermaid` block while it is still laid out (`display: block`), then hide non-active ones via a body class flip after `mermaid.run()` resolves:
+
+```html
+<style>
+  .lane-diagram { display: block; }
+  body.mermaid-ready .lane-diagram { display: none; }
+  body.mermaid-ready .lane-diagram.active { display: block; }
+</style>
+<script>
+  mermaid.initialize({ startOnLoad: false, securityLevel: 'sandbox', /* ... */ });
+  (async () => {
+    try { await mermaid.run({ querySelector: '.mermaid' }); }
+    finally { document.body.classList.add('mermaid-ready'); }
+  })();
+</script>
+```
+
+Key points:
+
+- `startOnLoad: false` — control timing manually
+- Render-then-hide order: every diagram is briefly visible during measurement, then css flip hides non-active ones in a single paint
+- `data-processed="true"` is still set by Mermaid on each `<pre class="mermaid">`, so `check_runtime.mjs`'s readiness wait still works
 
 ### Gate rule reference (matches pre-commit)
 
@@ -112,9 +153,10 @@ After syntax pre-check, Playwright validates render + interaction (see QA workfl
 
 ## Relationship to QA workflow
 
-Playwright only verifies "diagram renders" — it **cannot** replace the security config gate. Full QA order:
+The runtime gate only verifies "diagram renders + no JS errors" — it **cannot** replace the security/syntax config gates. Full QA order:
 
-1. `check_mermaid_insecure_config.py` → exit 0  
-2. Playwright console 0 errors + `.mermaid svg` exists  
+1. `check_mermaid_insecure_config.py` → exit 0
+2. `check_mermaid_syntax.mjs` → exit 0
+3. `check_runtime.mjs` → exit 0 (zero `pageerror` / `console.error`, all `pre.mermaid[data-processed=true]`)
 
-Both must pass before publishing HTML.
+All three must pass before publishing HTML.

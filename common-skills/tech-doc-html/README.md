@@ -46,24 +46,31 @@ tech-doc-html/
 │   ├── design_system.md                  # CSS variables, typography, page skeleton
 │   ├── component_patterns.md             # Reusable HTML/CSS/JS templates
 │   └── mermaid_security.md               # Sandbox config and diagram rules
-└── scripts/security/
-    ├── check_mermaid_insecure_config.py  # Pre-publish security gate
-    └── check_mermaid_syntax.mjs          # Mermaid syntax helper
+└── scripts/
+    ├── security/
+    │   ├── check_mermaid_insecure_config.py  # Mermaid config security gate
+    │   └── check_mermaid_syntax.mjs          # Mermaid syntax pre-check
+    └── qa/
+        ├── check_runtime.mjs                 # Runtime smoke gate (no MCP)
+        └── screenshot.mjs                    # Visual self-review helper
 ```
 
 ## Quality gates
 
-Before shipping an HTML file, the skill enforces:
+Before shipping an HTML file, the skill enforces three gates in order:
 
-1. **Mermaid security** — `securityLevel: 'sandbox'` or `'strict'`, no unsafe `click` handlers or `javascript:` URLs
-2. **Playwright QA** — zero console errors; interactive elements must actually work
+1. **Mermaid security config** (`scripts/security/check_mermaid_insecure_config.py`) — `securityLevel: 'sandbox'` or `'strict'`, no unsafe `click` handlers or `javascript:` URLs.
+2. **Mermaid syntax** (`scripts/security/check_mermaid_syntax.mjs`) — all `<pre class="mermaid">` blocks pass `mermaid.parse()`.
+3. **Runtime smoke** (`scripts/qa/check_runtime.mjs`) — page loads in headless Chromium, Mermaid finishes rendering, zero `pageerror`, zero `console.error`. Catches `translate(NaN)` from hidden diagrams and JS SyntaxError that the syntax gate misses.
+
+All three must exit `0` before publishing. `scripts/qa/screenshot.mjs` is a self-review helper, not a gate.
 
 See `assets/example_output.html` for the expected output quality bar.
 
 ## Requirements
 
 - **Browser**: file opens directly; Mermaid diagrams need network access for CDN
-- **Validation**: Python 3 for the security script; Playwright MCP for QA (when available)
+- **Validation**: Python 3 for the security gate; Node + `npm i mermaid jsdom` for the syntax gate; Node + `npm i playwright` (with `npx playwright install chromium`) for the runtime gate and screenshot helper. The three gate scripts all take a `<project-root>` argument so a single install can serve multiple projects.
 
 ## License
 
