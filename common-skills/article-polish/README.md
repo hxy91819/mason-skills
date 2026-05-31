@@ -14,6 +14,8 @@ Improves writing with three modes:
 
 It also supports style presets, audience tuning, polish goals, long-document chunking, and persistent preferences via `EXTEND.md`.
 
+For Chinese writing, the opt-in `chinese` style loads a dedicated anti-AI rule set that strips the four-layer fingerprints of AI-generated Chinese and rewrites toward a human, direct voice. By default the author's voice is preserved; the `chinese` style is applied only when explicitly selected. See [references/zh/anti-ai.md](references/zh/anti-ai.md).
+
 ## License
 
 Part of [mason-skills](../../README.md) — [MIT License](../../LICENSE).

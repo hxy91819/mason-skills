@@ -20,6 +20,12 @@ Complete guide to polish styles.
 | `storytelling` | Narratives | Engaging pacing |
 | `elegant` | Premium content | Refined, polished |
 
+## Language-Specific Styles
+
+| Style | Best For | Effect |
+|-------|----------|--------|
+| `chinese` | Chinese prose | Strips four-layer AI fingerprints; auto-picks 直接型/分析型 benchmark |
+
 ## Style Details
 
 ### Natural
@@ -97,6 +103,19 @@ Refined and polished. Careful word choices, rhythmic prose.
 - Rhythmic prose
 - Aesthetic refinement
 - Sophisticated without being pretentious
+
+### Chinese (反 AI 中文)
+Removes the stable fingerprints of AI-generated Chinese across four layers — 思维模式 (assumed-balance, escalation formulas, conclusion-first), 句式, 词汇, and 结构 — and rewrites toward a human, direct voice.
+
+**When to use**: Any Chinese article, essay, opinion piece, or analysis — **opt-in only** (explicitly select `--style chinese`; the default style preserves the author's voice even for Chinese)
+
+**Characteristics**:
+- Auto-selects a benchmark per genre: **直接型** (narrative/opinion) or **分析型** (analytical/data-driven)
+- 具体胜过抽象, 断言需要支撑, 信任读者 (no redundant restatement)
+- Natural paragraphs over bullet lists; detail follows information, not symmetry
+- 中英文之间加空格, terms use 中英双语 on first mention, zero emoji
+
+[Full rules: zh/anti-ai.md](zh/anti-ai.md)
 
 ## Custom Styles
 
