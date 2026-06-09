@@ -12,6 +12,34 @@ Skills live under `common-skills/`. Each skill is a directory with a required `S
 common-skills/
 ├── article-polish/
 │   └── SKILL.md
+├── article-workflow/
+│   ├── README.md
+│   ├── brief/
+│   │   └── SKILL.md
+│   ├── clean-sources/
+│   │   └── SKILL.md
+│   ├── section-review/
+│   │   └── SKILL.md
+│   ├── evidence-pool/
+│   │   └── SKILL.md
+│   ├── ai-edit-pass/
+│   │   └── SKILL.md
+│   ├── global-review/
+│   │   └── SKILL.md
+│   ├── main-draft/
+│   │   └── SKILL.md
+│   ├── visual-plan/
+│   │   └── SKILL.md
+│   ├── style-bible/
+│   │   └── SKILL.md
+│   ├── polish/
+│   │   └── SKILL.md
+│   ├── final-review/
+│   │   └── SKILL.md
+│   ├── publish/
+│   │   └── SKILL.md
+│   └── skill-maker/
+│       └── SKILL.md
 └── tech-doc-html/
     ├── SKILL.md
     ├── references/       # Design system, component templates, security rules
@@ -31,6 +59,11 @@ See [common-skills/README.md](common-skills/README.md) for authoring guidelines.
    - **Project** — `.cursor/skills/<skill-name>/` (shared with the repository)
 3. Cursor discovers skills automatically from the `SKILL.md` frontmatter.
 
+For the `article-workflow` group, copy the entire directory:
+```
+~/.cursor/skills/article-workflow/
+```
+
 ### Other agents
 
 Skills are plain markdown. You can adapt the instructions for other AI coding tools that support custom system prompts or skill files.
@@ -40,11 +73,36 @@ Skills are plain markdown. You can adapt the instructions for other AI coding to
 | Skill | Description |
 |-------|-------------|
 | [article-polish](common-skills/article-polish/) | Article polishing with quick / normal / refined modes. Derivative work based on [baoyu-translate](https://github.com/JimLiu/baoyu-skills/tree/main/skills/baoyu-translate). |
+| [article-workflow](common-skills/article-workflow/) | A phased article optimization workflow with 13 skills — from brief generation through final publication. See [workflow README](common-skills/article-workflow/README.md) for phase order and usage. |
 | [tech-doc-html](common-skills/tech-doc-html/) | Interactive single-file HTML from technical design docs. Original skill design; visual style inspired by [html-effectiveness](https://github.com/ThariqS/html-effectiveness). |
 
 ### article-polish
 
 Polishes and improves writing with three modes (quick / normal / refined). Supports style presets, audience tuning, long-document chunking, and persistent preferences via `EXTEND.md`.
+
+### article-workflow
+
+A phased article optimization workflow. Each skill handles one phase — from brief generation through final publication. Skills are designed to be used in sequence, but each can also be invoked independently. See the [workflow README](common-skills/article-workflow/README.md) for details.
+
+**Recommended order:**
+
+| Phase | Skill | Purpose |
+|-------|-------|---------|
+| 0 | `article-workflow-brief` | Generate an editorial brief |
+| 0.5 | `article-workflow-clean-sources` | Clean oral draft transcription errors |
+| 1 | `article-workflow-section-review` | Section-by-section narrative review |
+| 2 | `article-workflow-evidence-pool` | Fact-checking and material pool |
+| 3 | *(Author self-read and direct editing)* | Author directly edits `.article-workflow/00-cleaned-sources/` |
+| 3.5 | `article-workflow-ai-edit-pass` | AI-assisted editing based on confirmed decisions |
+| 4 | `article-workflow-global-review` | Whole-article coherence review |
+| 4.5 | `article-workflow-main-draft` | Integrate sections into a continuous draft |
+| 4.6 | `article-workflow-visual-plan` | Illustration and visual aid planning |
+| 5.0 | `article-workflow-style-bible` | Extract a style bible |
+| 5 | `article-workflow-polish` | Multi-round polishing |
+| 6 | `article-workflow-final-review` | Final review and reader testing |
+| 8 | `article-workflow-publish` | Sync to publishing channels |
+
+The `article-workflow-skill-maker` is a meta skill for turning a manually executed phase into a reusable workflow skill.
 
 ### tech-doc-html
 
@@ -69,6 +127,10 @@ This repository is released under the [MIT License](LICENSE).
 ### [article-polish](common-skills/article-polish/)
 
 Derivative work based on [baoyu-translate](https://github.com/JimLiu/baoyu-skills/tree/main/skills/baoyu-translate) from [baoyu-skills](https://github.com/JimLiu/baoyu-skills) (MIT, Copyright Jim Liu). Repurposes the workflow for writing improvement. Independent project.
+
+### [article-workflow](common-skills/article-workflow/)
+
+Original skill designs for a phased article optimization workflow. Each skill covers one phase — from brief generation through publication. The visual planning phase references a generic `article-illustrator` skill for prompt construction rules.
 
 ### [tech-doc-html](common-skills/tech-doc-html/)
 
