@@ -40,6 +40,10 @@ common-skills/
 │   │   └── SKILL.md
 │   └── skill-maker/
 │       └── SKILL.md
+├── mermaid-lint/
+│   ├── SKILL.md
+│   ├── validate-mermaid.py    # Extracts mermaid blocks, drives the worker
+│   └── mermaid-worker.mjs     # Renders every block in one browser session
 └── tech-doc-html/
     ├── SKILL.md
     ├── references/       # Design system, component templates, security rules
@@ -74,6 +78,7 @@ Skills are plain markdown. You can adapt the instructions for other AI coding to
 |-------|-------------|
 | [article-polish](common-skills/article-polish/) | Article polishing with quick / normal / refined modes. Derivative work based on [baoyu-translate](https://github.com/JimLiu/baoyu-skills/tree/main/skills/baoyu-translate). |
 | [article-workflow](common-skills/article-workflow/) | A phased article optimization workflow with 13 skills — from brief generation through final publication. See [workflow README](common-skills/article-workflow/README.md) for phase order and usage. |
+| [mermaid-lint](common-skills/mermaid-lint/) | Validates and fixes mermaid diagrams in markdown. Renders every block against the real mermaid renderer and reports all failures in one pass. Original skill design. |
 | [tech-doc-html](common-skills/tech-doc-html/) | Interactive single-file HTML from technical design docs. Original skill design; visual style inspired by [html-effectiveness](https://github.com/ThariqS/html-effectiveness). |
 
 ### article-polish
@@ -104,6 +109,29 @@ A phased article optimization workflow. Each skill handles one phase — from br
 
 The `article-workflow-skill-maker` is a meta skill for turning a manually executed phase into a reusable workflow skill.
 
+### mermaid-lint
+
+Finds every mermaid diagram in one or more markdown files, validates it, and fixes the
+broken ones. Unlike the other skills here it ships executable helpers, so it needs
+Node.js and [`@mermaid-js/mermaid-cli`](https://github.com/mermaid-js/mermaid-cli)
+available on `PATH`; the skill will not install them for you.
+
+Two design decisions are worth calling out, because the obvious alternatives are worse:
+
+- **It renders each diagram instead of only parsing it.** `mermaid.parse()` covers the
+  parse phase only, so errors raised while rendering slip through — an invalid gantt date
+  such as `notadate` parses fine but fails to render. Rendering answers the question a
+  document author actually has: will this diagram show up?
+- **It renders the whole batch in a single browser session.** Spawning one Chromium per
+  diagram costs roughly 1.7s each; sharing a session brings the marginal cost down to
+  about 12ms, so 60 diagrams take ~2s instead of ~100s. Running `mmdc` over the markdown
+  file directly would also share a session, but it aborts on the first bad diagram, which
+  defeats the point of a linter.
+
+Block extraction follows CommonMark fence rules. A deliberately broken example nested
+inside a longer fence is not reported as a real error, and directive-style blocks,
+fences carrying an info string, and tilde fences are all recognized.
+
 ### tech-doc-html
 
 An **original Cursor skill** that converts technical specs into interactive HTML visualizations. The agent picks components per section (Mermaid diagrams, SVG sliders, comparison tables, risk matrices), runs Mermaid security checks and Playwright QA, and applies a visual style inspired by [html-effectiveness](https://github.com/ThariqS/html-effectiveness).
@@ -131,6 +159,12 @@ Derivative work based on [baoyu-translate](https://github.com/JimLiu/baoyu-skill
 ### [article-workflow](common-skills/article-workflow/)
 
 Original skill designs for a phased article optimization workflow. Each skill covers one phase — from brief generation through publication. The visual planning phase references a generic `article-illustrator` skill for prompt construction rules.
+
+### [mermaid-lint](common-skills/mermaid-lint/)
+
+Original skill design. Drives [mermaid](https://github.com/mermaid-js/mermaid) through
+[`@mermaid-js/mermaid-cli`](https://github.com/mermaid-js/mermaid-cli) (MIT) at runtime;
+neither project's code is vendored here.
 
 ### [tech-doc-html](common-skills/tech-doc-html/)
 
