@@ -1,57 +1,64 @@
 ---
 name: mermaid-lint
-description: 验证并修复 markdown 文件中 mermaid 图表的语法错误，支持单文件、多文件和整个目录。当用户编辑了包含 mermaid 图的 markdown，或要求检查/修复 mermaid 语法时使用。
+description: Validate and fix mermaid diagram syntax in markdown files, across a single file, several files, or a whole directory. Use when the user has edited markdown containing mermaid diagrams, or asks to check or fix mermaid syntax.
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep, AskUserQuestion, AskQuestion
 ---
 
 # Mermaid Lint
 
-验证 markdown 文件中所有 mermaid 图表的语法正确性，定位错误并自动修复。
+Validate every mermaid diagram in one or more markdown files, locate the failures, and fix them.
 
-**输入**: 一个或多个 markdown 文件路径、glob 或目录。若用户未提供，搜索当前目录下的 `.md` 文件并询问用户要检查哪些。
+**Input**: one or more markdown file paths, globs, or directories. If the user gives none, search the current directory for `.md` files and ask which ones to check.
 
-## 校验方式
+## How validation works
 
-脚本把每个 mermaid 块喂给真实的 mermaid 渲染器（无头浏览器里的 `mermaid.render`），能渲染出来才算通过。
+The script feeds each mermaid block to the real mermaid renderer (`mermaid.render` inside a headless browser). A block passes only if it renders.
 
-不要改成 `mermaid.parse`。`parse` 只覆盖解析阶段，渲染和布局阶段抛出的错误它看不到——例如 gantt 里的非法日期 `notadate` 能通过 `parse` 却渲染失败。用户真正关心的是"这张图在文档里能不能显示"，只有渲染器能回答。
+Do not switch this to `mermaid.parse`. `parse` covers the parse phase only, so errors raised during rendering and layout escape it — an invalid gantt date such as `notadate` passes `parse` but fails to render. What the user actually wants to know is whether the diagram will display, and only the renderer answers that.
 
-整批图表共用一个浏览器会话，因此校验 60 个图表和校验 1 个图表的耗时都在 2 秒量级，可以放心一次性扫整个目录。
+The whole batch shares one browser session, so checking 60 diagrams costs about as much as checking one. Scanning an entire directory in a single run is the intended usage, not a last resort.
+
+Two things this skill deliberately does **not** do:
+
+- It never inspects the rendered output. The SVG is discarded, nothing is written to disk, and no image is reviewed. The verdict is only whether rendering threw.
+- It therefore says nothing about whether a diagram is *good*. Overlapping labels, tangled edges, a reversed arrow, or a diagram that contradicts the surrounding prose all render fine and all pass. This is a syntax and renderability linter, not a diagram design review. Do not claim otherwise when reporting results.
+
+One caveat worth mentioning to the user when it matters: validation runs against the mermaid version bundled with the locally installed mermaid-cli, which may differ from the version GitHub or an IDE preview uses.
 
 ---
 
-## 第〇步：依赖检测
+## Step 0: Check dependencies
 
-先跑一次验证脚本，若输出 JSON 中 `status` 为 `"missing_dependency"`，按 `install_hints` 处理。
+Run the validator once. If the JSON output has `status` set to `"missing_dependency"`, handle it via `install_hints`.
 
 ```bash
 python {baseDirectory}/validate-mermaid.py "<markdown_file>"
 ```
 
-**不要自作主张安装依赖。** 缺依赖时把 `missing` 和 `install_hints` 展示给用户，询问下一步，提供这些选项：
+**Do not install anything on your own initiative.** Show the user the `missing` list and `install_hints`, then ask how to proceed, offering these options:
 
-- 用 `npx -p @mermaid-js/mermaid-cli mmdc` 临时运行，不往全局装东西
-- 由用户自行安装后重试
-- 取消操作
+- Run through `npx -p @mermaid-js/mermaid-cli mmdc` so nothing is installed globally
+- Let the user install it and retry
+- Cancel
 
-只有用户明确同意后才执行安装命令。全局 `npm install -g` 会影响用户机器上所有项目，必须由用户拍板。
+Only run an install command after the user explicitly agrees. A global `npm install -g` affects every project on their machine, so it is their call to make.
 
 ---
 
-## 第一步：运行验证
+## Step 1: Run validation
 
 ```bash
-# 单文件
+# Single file
 python {baseDirectory}/validate-mermaid.py "docs/architecture.md"
 
-# 多文件 / glob / 整个目录（目录会递归匹配 *.md）
+# Several files, a glob, or a whole directory (directories match *.md recursively)
 python {baseDirectory}/validate-mermaid.py "docs/**/*.md"
 python {baseDirectory}/validate-mermaid.py docs/
 ```
 
-脚本输出 JSON 到 stdout。退出码：`0` 全部通过，`1` 存在语法错误，`2` 用法错误或依赖缺失。
+The script writes JSON to stdout. Exit codes: `0` everything passed, `1` syntax errors present, `2` usage error or missing dependency.
 
-### 输出结构
+### Output structure
 
 ```json
 {
@@ -83,7 +90,7 @@ python {baseDirectory}/validate-mermaid.py docs/
         }
       ],
       "warnings": [
-        { "line": 88, "message": "第 88 行的 mermaid 代码块直到文件结尾都没有闭合，已跳过校验。" }
+        { "line": 88, "message": "Mermaid code block opened at line 88 is never closed before end of file; skipped." }
       ],
       "blocks": [
         { "index": 1, "line_start": 20, "line_end": 35, "diagram_type": "graph TD", "valid": true }
@@ -93,99 +100,96 @@ python {baseDirectory}/validate-mermaid.py docs/
 }
 ```
 
-`error_line_in_file` 已经是源文件里的绝对行号，直接用它定位，不要再拿 `line_start` 换算。
+`error_line_in_file` is already an absolute line number in the source file. Use it directly instead of recomputing from `line_start`.
 
-`warnings` 不会让退出码变成 1，但同样需要处理并报告给用户——未闭合的代码块本身就是文档缺陷。
+`warnings` do not change the exit code to 1, but still handle them and report them — an unterminated code block is a document defect in its own right.
 
-`timed_out` 为 `true` 表示该块渲染超时或渲染进程崩溃，不一定是语法错误，通常是图表过大。这类块要提示用户人工确认，不要当成语法问题去"修"。
+`timed_out` set to `true` means rendering timed out or the render process crashed. That is not necessarily a syntax error and is usually an oversized diagram. Flag these for the user to confirm manually rather than trying to "fix" them.
 
 ---
 
-## 第二步：修复错误
+## Step 2: Fix the errors
 
-对每个文件 `errors` 数组中的每一项：
+For each entry in each file's `errors` array:
 
-1. **读取源文件**，定位 `line_start` 到 `line_end` 之间的 mermaid 块。
-2. **分析 `error_message` 和 `mermaid_source`**，理解语法问题的根因。
-3. **用 Edit 工具直接修复对应的 mermaid 块**。只改有问题的部分，不动其他内容。
+1. **Read the source file** and locate the mermaid block between `line_start` and `line_end`.
+2. **Analyse `error_message` and `mermaid_source`** to understand the root cause.
+3. **Edit the offending mermaid block directly.** Change only what is broken; leave everything else alone.
 
-### 常见错误模式速查
+### Common error patterns
 
-| 错误信息关键词 | 常见原因 | 修复方向 |
+| Error message contains | Usual cause | Fix direction |
 |---|---|---|
-| `Expecting 'SQE'` | `[` 未闭合 | 补上 `]` |
-| `Expecting 'PE'` | `(` 未闭合 | 补上 `)` |
-| `Expecting 'DIAMOND_STOP'` | `{` 未闭合 | 补上 `}` |
-| `Unexpected token` | 使用了非法字符或关键字 | 检查是否有特殊字符需要用引号包裹 |
-| `Lexer error` / `Lexical error` | 非法字符 | 删除或转义特殊字符 |
-| `Parse error on line N` | 块内第 N 行语法错误 | 用 `error_line_in_file` 定位源文件行 |
-| `Invalid date:...` | gantt 日期不符合 `dateFormat` | 改成符合声明格式的日期 |
-| `Trying to inactivate an inactive participant` | sequenceDiagram 的 activate/deactivate 不配对 | 补齐或删除多余的 `deactivate` |
-| `Negative values are not allowed` | pie 图出现负数 | 改成非负数值 |
-| `Edge limit exceeded` | 图表边数超出 mermaid 上限 | 拆分成多张图 |
+| `Expecting 'SQE'` | unclosed `[` | add the missing `]` |
+| `Expecting 'PE'` | unclosed `(` | add the missing `)` |
+| `Expecting 'DIAMOND_STOP'` | unclosed `{` | add the missing `}` |
+| `Unexpected token` | illegal character or reserved word | quote the text that needs escaping |
+| `Lexer error` / `Lexical error` | illegal character | remove or escape it |
+| `Parse error on line N` | syntax error on block-relative line N | use `error_line_in_file` to locate it in the source |
+| `Invalid date:...` | gantt date does not match `dateFormat` | rewrite the date in the declared format |
+| `Trying to inactivate an inactive participant` | unbalanced activate/deactivate in sequenceDiagram | add the missing `activate` or drop the extra `deactivate` |
+| `Negative values are not allowed` | negative value in a pie chart | use non-negative values |
+| `Edge limit exceeded` | diagram exceeds mermaid's edge cap | split it into several diagrams |
 
-### 修复原则
+### Fixing principles
 
-- **最小修改**：只修正语法错误，不重写、不重排正确的图表。
-- **保留语义**：修复后的图表应尽量保持原作者想表达的结构。
-- **不确定时询问**：如果无法确定原意（比如缺失的节点名称），询问用户而不是猜测。
+- **Minimal edits**: correct the syntax error only. Do not rewrite or reflow diagrams that already work.
+- **Preserve intent**: the fixed diagram should keep the structure the original author meant to express.
+- **Ask when unsure**: if the original intent is unrecoverable, such as a missing node label, ask the user instead of guessing.
 
 ---
 
-## 第三步：重新验证
+## Step 3: Re-validate
 
-修复完成后，**必须重新运行验证脚本**：
+After fixing, **always run the validator again**:
 
 ```bash
 python {baseDirectory}/validate-mermaid.py "<same_targets>"
 ```
 
-- 若全部通过：报告完成。
-- 若仍有错误：继续修复，循环此流程。
-- 若同一个块连续 3 次修复失败：停止自动修复，将该块的源码和错误信息完整展示给用户，请求人工介入。
+- All passing: report completion.
+- Still failing: keep fixing and repeat this loop.
+- Same block failed three times in a row: stop fixing it automatically, show the user its full source and error message, and ask for help.
 
 ---
 
-## 输出格式
+## Reporting format
 
-验证过程中向用户展示进度：
+Show progress as you go:
 
 ```
-## Mermaid Lint: docs/ (2 个文件)
+## Mermaid Lint: docs/ (2 files)
 
-检查到 7 个 mermaid 图表
+Found 7 mermaid diagrams
 
   architecture.md
-    Block 1 (行 20-35): graph TD — 通过
-    Block 3 (行 70-85): classDiagram — 语法错误
-      行 74: 未闭合的方括号
-    警告 行 88: mermaid 代码块未闭合，已跳过
+    Block 1 (lines 20-35): graph TD — passed
+    Block 3 (lines 70-85): classDiagram — syntax error
+      line 74: unclosed square bracket
+    Warning line 88: mermaid code block never closed, skipped
 
   design.md
-    Block 1 (行 12-24): sequenceDiagram — 通过
+    Block 1 (lines 12-24): sequenceDiagram — passed
 
-正在修复 architecture.md Block 3 ...
-[修复完成，重新验证]
-
-全部 7 个 mermaid 图表验证通过，1 处警告待人工确认。
+All 7 mermaid diagrams pass. 1 warning needs manual confirmation.
 ```
 
 ---
 
-## 环境变量
+## Environment variables
 
-正常使用不需要设置，仅用于排查问题：
+Not needed in normal use; these exist for troubleshooting.
 
-- `MERMAID_LINT_BLOCK_TIMEOUT_MS`：单个图表的渲染超时，默认 `20000`。
-- `MERMAID_LINT_SESSION_OVERHEAD_MS`：单轮会话里浏览器启动等固定开销的预算，默认 `15000`。冷启动很慢的机器可以调高。
+- `MERMAID_LINT_BLOCK_TIMEOUT_MS`: render timeout for a single diagram. Default `20000`.
+- `MERMAID_LINT_SESSION_OVERHEAD_MS`: budget for fixed per-session cost such as browser startup. Default `15000`. Raise it on machines with slow cold starts.
 
 ---
 
-## 使用示例
+## Example invocations
 
 ```
-用户: /mermaid-lint docs/architecture.md
-用户: 帮我检查这个 markdown 里的 mermaid 图有没有语法问题
-用户: 把 docs 目录下所有文档的 mermaid 图都验一遍
-用户: 修一下 docs/design.md 里的 mermaid 报错
+User: /mermaid-lint docs/architecture.md
+User: check whether the mermaid diagrams in this markdown have syntax problems
+User: validate the mermaid diagrams across everything under docs/
+User: fix the mermaid errors in docs/design.md
 ```
