@@ -1,0 +1,7 @@
+interface:
+  display_name: "Open Source Contribution"
+  short_description: "Ship public repos without leaks or unsafe installers"
+  default_prompt: "Use $open-source-contribution to prepare this repository for safe open-source contribution and publication."
+
+policy:
+  allow_implicit_invocation: true

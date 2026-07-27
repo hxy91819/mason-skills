@@ -44,6 +44,8 @@ common-skills/
 │   ├── SKILL.md
 │   ├── validate-mermaid.py    # Extracts mermaid blocks, drives the worker
 │   └── mermaid-worker.mjs     # Renders every block in one browser session
+├── open-source-contribution/
+│   └── SKILL.md
 └── tech-doc-html/
     ├── SKILL.md
     ├── references/       # Design system, component templates, security rules
@@ -79,6 +81,7 @@ Skills are plain markdown. You can adapt the instructions for other AI coding to
 | [article-polish](common-skills/article-polish/) | Article polishing with quick / normal / refined modes. Derivative work based on [baoyu-translate](https://github.com/JimLiu/baoyu-skills/tree/main/skills/baoyu-translate). |
 | [article-workflow](common-skills/article-workflow/) | A phased article optimization workflow with 13 skills — from brief generation through final publication. See [workflow README](common-skills/article-workflow/README.md) for phase order and usage. |
 | [mermaid-lint](common-skills/mermaid-lint/) | Validates and fixes mermaid diagrams in markdown. Renders every block against the real mermaid renderer and reports all failures in one pass. Original skill design. |
+| [open-source-contribution](common-skills/open-source-contribution/) | Open-source contribution hygiene: privacy scanning, Git history cleanup, installer hardening, autoreview, and safe push/PR validation. |
 | [tech-doc-html](common-skills/tech-doc-html/) | Interactive single-file HTML from technical design docs. Original skill design; visual style inspired by [html-effectiveness](https://github.com/ThariqS/html-effectiveness). |
 
 ### article-polish
@@ -131,6 +134,14 @@ Two design decisions are worth calling out, because the obvious alternatives are
 Block extraction follows CommonMark fence rules. A deliberately broken example nested
 inside a longer fence is not reported as a real error, and directive-style blocks,
 fences carrying an info string, and tilde fences are all recognized.
+
+### open-source-contribution
+
+Standardizes open-source contribution cleanup and release checks for coding
+agents: scan file content and Git metadata, remove local paths and private
+identities, harden installers, preserve streaming behavior in local proxies,
+run gitleaks/pre-commit/tests, use autoreview as a closeout gate, and verify
+history rewrites before pushing.
 
 ### tech-doc-html
 
