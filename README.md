@@ -40,6 +40,8 @@ common-skills/
 │   │   └── SKILL.md
 │   └── skill-maker/
 │       └── SKILL.md
+├── distill/
+│   └── SKILL.md
 ├── mermaid-lint/
 │   ├── SKILL.md
 │   ├── validate-mermaid.py    # Extracts mermaid blocks, drives the worker
@@ -80,6 +82,7 @@ Skills are plain markdown. You can adapt the instructions for other AI coding to
 |-------|-------------|
 | [article-polish](common-skills/article-polish/) | Article polishing with quick / normal / refined modes. Derivative work based on [baoyu-translate](https://github.com/JimLiu/baoyu-skills/tree/main/skills/baoyu-translate). |
 | [article-workflow](common-skills/article-workflow/) | A phased article optimization workflow with 13 skills — from brief generation through final publication. See [workflow README](common-skills/article-workflow/README.md) for phase order and usage. |
+| [distill](common-skills/distill/) | Extracts verified lessons from a conversation and integrates them into the project's existing documentation through an approval-gated workflow. |
 | [mermaid-lint](common-skills/mermaid-lint/) | Validates and fixes mermaid diagrams in markdown. Renders every block against the real mermaid renderer and reports all failures in one pass. Original skill design. |
 | [open-source-contribution](common-skills/open-source-contribution/) | Open-source contribution hygiene: privacy scanning, Git history cleanup, installer hardening, autoreview, and safe push/PR validation. |
 | [tech-doc-html](common-skills/tech-doc-html/) | Interactive single-file HTML from technical design docs. Original skill design; visual style inspired by [html-effectiveness](https://github.com/ThariqS/html-effectiveness). |
@@ -111,6 +114,12 @@ A phased article optimization workflow. Each skill handles one phase — from br
 | 8 | `article-workflow-publish` | Sync to publishing channels |
 
 The `article-workflow-skill-maker` is a meta skill for turning a manually executed phase into a reusable workflow skill.
+
+### distill
+
+Reviews the current conversation for reusable lessons, maps each approved lesson into
+the project's existing documentation, applies only a user-approved change plan, and
+checks references and indexes for consistency.
 
 ### mermaid-lint
 
