@@ -82,7 +82,7 @@ Skills are plain markdown. You can adapt the instructions for other AI coding to
 |-------|-------------|
 | [article-polish](common-skills/article-polish/) | Article polishing with quick / normal / refined modes. Derivative work based on [baoyu-translate](https://github.com/JimLiu/baoyu-skills/tree/main/skills/baoyu-translate). |
 | [article-workflow](common-skills/article-workflow/) | A phased article optimization workflow with 13 skills — from brief generation through final publication. See [workflow README](common-skills/article-workflow/README.md) for phase order and usage. |
-| [distill](common-skills/distill/) | Extracts verified lessons from a conversation and integrates them into the project's existing documentation through an approval-gated workflow. |
+| [distill](common-skills/distill/) | Extracts verified lessons into project documentation and reviews executed skills end to end, prioritizing observed failures and detours while guarding against capability loss and over-optimization. |
 | [mermaid-lint](common-skills/mermaid-lint/) | Validates and fixes mermaid diagrams in markdown. Renders every block against the real mermaid renderer and reports all failures in one pass. Original skill design. |
 | [open-source-contribution](common-skills/open-source-contribution/) | Open-source contribution hygiene: privacy scanning, Git history cleanup, installer hardening, autoreview, and safe push/PR validation. |
 | [tech-doc-html](common-skills/tech-doc-html/) | Interactive single-file HTML from technical design docs. Original skill design; visual style inspired by [html-effectiveness](https://github.com/ThariqS/html-effectiveness). |
@@ -119,7 +119,10 @@ The `article-workflow-skill-maker` is a meta skill for turning a manually execut
 
 Reviews the current conversation for reusable lessons, maps each approved lesson into
 the project's existing documentation, applies only a user-approved change plan, and
-checks references and indexes for consistency.
+checks references and indexes for consistency. When skills were executed, it reconstructs
+their complete execution paths, fixes evidenced failures and avoidable detours first, and
+allows step reduction only when capabilities, validation, safeguards, and approval gates
+remain intact.
 
 ### mermaid-lint
 
