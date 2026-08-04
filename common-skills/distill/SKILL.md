@@ -7,7 +7,11 @@ description: Extract verified lessons from the current conversation and integrat
 
 Turn durable lessons from the current conversation into concise, structured project documentation.
 
-Follow all four phases. Get the user's approval before moving from one phase to the next.
+Follow all four phases. Phase 1 is the approval gate for the lessons and their proposed
+destinations. After the user confirms or revises that scope, continue through audit,
+editing, and consistency checks without asking them to approve the same scope again.
+Ask again only when the audit discovers a materially different destination, a broader
+change, or an external/destructive write that needs its own authorization.
 
 ---
 
@@ -62,7 +66,9 @@ Present a lesson list. For each item, include:
 3. The proposed change type: add section, append item, update content, or create document
 4. For skill improvements, the execution evidence, root cause classification, exact skill path, and protected capabilities or safeguards
 
-Wait for the user to confirm or revise the list before continuing.
+Wait for the user to confirm or revise the list before continuing. A confirmation of
+the lesson list also authorizes the smallest documentation and skill edits needed to
+preserve those lessons in the proposed destinations.
 
 ---
 
@@ -81,14 +87,18 @@ Wait for the user to confirm or revise the list before continuing.
 
 Preserve verified facts only. Prefer concise additions to existing documents over new documents.
 
-Present a change plan containing:
+Record a change plan containing:
 
 - Target file
 - Change type
 - Summary of the intended content
 - For skill changes, the observed failure or detour, intended reliable path, preserved invariants, and validation method
 
-Wait for approval before editing files.
+Share the plan as a progress update and continue editing. Do not create a second
+approval gate for destinations and content already covered by the confirmed lesson
+list. Stop for approval only if the audit reveals a material scope expansion, a
+different repository not named or implied by the approved destinations, or an
+external/destructive write.
 
 ---
 
@@ -136,7 +146,8 @@ Report the number of lessons preserved, the files changed, the skills reviewed, 
 
 ## Guardrails
 
-- Never skip the approval gates after Phases 1 and 2.
+- Never skip the Phase 1 approval gate. Do not repeat it after Phase 2 unless the audit
+  materially expands or redirects the approved scope.
 - Never preserve speculation as fact.
 - Prefer three precise lines to thirty vague lines.
 - Keep the project documentation index synchronized.

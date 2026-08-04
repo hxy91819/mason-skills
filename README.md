@@ -117,12 +117,13 @@ The `article-workflow-skill-maker` is a meta skill for turning a manually execut
 
 ### distill
 
-Reviews the current conversation for reusable lessons, maps each approved lesson into
-the project's existing documentation, applies only a user-approved change plan, and
-checks references and indexes for consistency. When skills were executed, it reconstructs
-their complete execution paths, fixes evidenced failures and avoidable detours first, and
-allows step reduction only when capabilities, validation, safeguards, and approval gates
-remain intact.
+Reviews the current conversation for reusable lessons, gets approval for the lesson
+scope once, maps each approved lesson into the project's existing documentation, and
+checks references and indexes for consistency. It asks again only when the audit reveals
+a material scope expansion or a separately protected write. When skills were executed,
+it reconstructs their complete execution paths, fixes evidenced failures and avoidable
+detours first, and allows step reduction only when capabilities, validation, safeguards,
+and approval gates remain intact.
 
 ### mermaid-lint
 
