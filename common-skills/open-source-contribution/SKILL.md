@@ -14,6 +14,9 @@ push.
 
 - Never expose tokens, private keys, prompt logs, local transcripts, shell
   secrets, private service names, or corporate/internal email addresses.
+- Use a user-approved personal open-source email or GitHub noreply address for
+  public commit authors and committers. Treat employer/corporate addresses as
+  prohibited even when they are already configured globally or locally.
 - Treat Git commit metadata as public data. Secret scanners do not catch author
   and committer names/emails.
 - Do not rewrite history unless the user explicitly allows it. If allowed, use
@@ -41,10 +44,23 @@ gitleaks detect --no-git --redact --no-banner --source .
 Metadata checks:
 
 ```bash
+git config --get user.email
 git log --format='%h %an <%ae> | %cn <%ce>' --all
 git remote -v
 gh repo view --json visibility,description,url,repositoryTopics 2>/dev/null || true
 ```
+
+Before creating public commits, replace an employer/corporate Git email with a
+repository-local, user-approved personal open-source address:
+
+```bash
+git config --local user.email 'approved-open-source-address@example.com'
+```
+
+If unpushed commits already contain a prohibited address, obtain explicit user
+approval before rewriting their author and committer metadata. Verify the
+rewritten publish range before pushing; do not treat a scanner-only pass as
+sufficient metadata validation.
 
 Classify findings:
 
@@ -52,8 +68,9 @@ Classify findings:
   transcripts, private logs, hidden binary artifacts, sensitive hostnames.
 - **Usually fix**: absolute local paths, usernames, old private project names,
   machine-specific service names, corporate copyright holder strings.
-- **Acceptable when intentional**: public GitHub username in clone URLs,
-  documented public repository URL, public maintainer identity.
+- **Acceptable when intentional**: user-approved personal open-source or GitHub
+  noreply email, public GitHub username in clone URLs, documented public
+  repository URL, public maintainer identity.
 
 ## Git History Cleanup
 
