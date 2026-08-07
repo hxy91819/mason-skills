@@ -29,6 +29,32 @@ push.
 - Run review after non-trivial changes. Treat review findings as advisory, then
   independently verify and fix only real, in-scope issues.
 
+## GitHub Merge Email Gate
+
+Treat GitHub-generated merge and squash commits as a separate identity path:
+local `git config user.email` does not control their author email.
+
+Before the first server-side merge for an account:
+
+1. Identify the approved personal address. For Mason's public repositories,
+   use `masonxhuang@proton.me`; employer addresses are prohibited.
+2. Verify that GitHub **Settings → Emails → Primary email address** uses the
+   approved address. The public `email` returned by `gh api user` is not proof
+   of the account's primary email.
+3. If available, cross-check with `gh api user/emails` and require the approved
+   address to have `primary: true` and `verified: true`. This endpoint needs the
+   `user` OAuth scope; do not broaden authentication scopes automatically.
+4. When the primary-email state cannot be verified, pause the server-side
+   merge and ask the user to confirm the GitHub setting. Do not infer it from
+   repository-local Git configuration.
+
+After every server-side merge, resolve the merge SHA and inspect the raw commit
+metadata through the GitHub commits API. Confirm that the author is the
+approved address or an approved GitHub noreply address before declaring the
+merge complete. GitHub's `noreply@github.com` committer on web-generated commits
+is expected. A prohibited author email is a privacy incident; report it and
+obtain explicit approval before rewriting published history.
+
 ## Privacy Review
 
 Before public push or PR, scan both tracked files and Git metadata.
