@@ -10,6 +10,8 @@ Skills live under `common-skills/`. Each skill is a directory with a required `S
 
 ```
 common-skills/
+├── ask-oracle/
+│   └── SKILL.md
 ├── article-polish/
 │   └── SKILL.md
 ├── article-workflow/
@@ -80,12 +82,18 @@ Skills are plain markdown. You can adapt the instructions for other AI coding to
 
 | Skill | Description |
 |-------|-------------|
+| [ask-oracle](common-skills/ask-oracle/) | Produces a concise brief containing the original request and all decision-relevant context, reserving technical judgment for an expert oracle. |
 | [article-polish](common-skills/article-polish/) | Article polishing with quick / normal / refined modes. Derivative work based on [baoyu-translate](https://github.com/JimLiu/baoyu-skills/tree/main/skills/baoyu-translate). |
 | [article-workflow](common-skills/article-workflow/) | A phased article optimization workflow with 13 skills — from brief generation through final publication. See [workflow README](common-skills/article-workflow/README.md) for phase order and usage. |
 | [distill](common-skills/distill/) | Reviews agent sessions for evidence-backed harness improvements, pruning stale or conflicting rules before strengthening specs, tools, checks, skills, or CI. |
 | [mermaid-lint](common-skills/mermaid-lint/) | Validates and fixes mermaid diagrams in markdown. Renders every block against the real mermaid renderer and reports all failures in one pass. Original skill design. |
 | [open-source-contribution](common-skills/open-source-contribution/) | Open-source contribution hygiene: privacy scanning, Git history cleanup, installer hardening, autoreview, and safe push/PR validation. |
 | [tech-doc-html](common-skills/tech-doc-html/) | Interactive single-file HTML from technical design docs. Original skill design; visual style inspired by [html-effectiveness](https://github.com/ThariqS/html-effectiveness). |
+
+### ask-oracle
+
+A manually invoked skill that frames the user's request and all known decision-changing
+context, then asks an expert oracle to supply the technical judgment.
 
 ### article-polish
 
