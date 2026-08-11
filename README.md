@@ -82,7 +82,7 @@ Skills are plain markdown. You can adapt the instructions for other AI coding to
 |-------|-------------|
 | [article-polish](common-skills/article-polish/) | Article polishing with quick / normal / refined modes. Derivative work based on [baoyu-translate](https://github.com/JimLiu/baoyu-skills/tree/main/skills/baoyu-translate). |
 | [article-workflow](common-skills/article-workflow/) | A phased article optimization workflow with 13 skills — from brief generation through final publication. See [workflow README](common-skills/article-workflow/README.md) for phase order and usage. |
-| [distill](common-skills/distill/) | Extracts verified lessons into project documentation and reviews executed skills end to end, prioritizing observed failures and detours while guarding against capability loss and over-optimization. |
+| [distill](common-skills/distill/) | Reviews agent sessions for evidence-backed harness improvements, pruning stale or conflicting rules before strengthening specs, tools, checks, skills, or CI. |
 | [mermaid-lint](common-skills/mermaid-lint/) | Validates and fixes mermaid diagrams in markdown. Renders every block against the real mermaid renderer and reports all failures in one pass. Original skill design. |
 | [open-source-contribution](common-skills/open-source-contribution/) | Open-source contribution hygiene: privacy scanning, Git history cleanup, installer hardening, autoreview, and safe push/PR validation. |
 | [tech-doc-html](common-skills/tech-doc-html/) | Interactive single-file HTML from technical design docs. Original skill design; visual style inspired by [html-effectiveness](https://github.com/ThariqS/html-effectiveness). |
@@ -117,13 +117,11 @@ The `article-workflow-skill-maker` is a meta skill for turning a manually execut
 
 ### distill
 
-Reviews the current conversation for reusable lessons, gets approval for the lesson
-scope once, maps each approved lesson into the project's existing documentation, and
-checks references and indexes for consistency. It asks again only when the audit reveals
-a material scope expansion or a separately protected write. When skills were executed,
-it reconstructs their complete execution paths, fixes evidenced failures and avoidable
-detours first, and allows step reduction only when capabilities, validation, safeguards,
-and approval gates remain intact.
+Replays the current session as a Harness Engineering retrospective, including failures,
+successful shortcuts, and interaction friction. Before adding guidance, it audits existing
+rules for staleness, duplication, conflicts, deterministic replacements, and misplaced
+scope. It then proposes at most five changes across specs, context, skills, tools,
+environment, tests, lint, pre-commit, CI, and evals behind one compact approval gate.
 
 ### mermaid-lint
 
