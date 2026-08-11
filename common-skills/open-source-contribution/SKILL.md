@@ -34,19 +34,27 @@ push.
 Treat GitHub-generated merge and squash commits as a separate identity path:
 local `git config user.email` does not control their author email.
 
-Before the first server-side merge for an account:
+Treat an explicitly approved personal address recorded in this skill or by the
+user as durable account-level confirmation. Reuse it across repositories and
+future PRs without asking again unless the user revokes it, evidence conflicts
+with it, or post-merge metadata violates it. For Mason's public repositories,
+the approved address is `masonxhuang@proton.me`; employer addresses are
+prohibited.
 
-1. Identify the approved personal address. For Mason's public repositories,
-   use `masonxhuang@proton.me`; employer addresses are prohibited.
-2. Verify that GitHub **Settings → Emails → Primary email address** uses the
-   approved address. The public `email` returned by `gh api user` is not proof
-   of the account's primary email.
-3. If available, cross-check with `gh api user/emails` and require the approved
+Before a server-side merge:
+
+1. Use the durable approved address when one is recorded. For an account with
+   no durable confirmation, ask once for the GitHub **Settings → Emails →
+   Primary email address** and record the approved personal address.
+2. If available, cross-check with `gh api user/emails` and require the approved
    address to have `primary: true` and `verified: true`. This endpoint needs the
    `user` OAuth scope; do not broaden authentication scopes automatically.
-4. When the primary-email state cannot be verified, pause the server-side
-   merge and ask the user to confirm the GitHub setting. Do not infer it from
-   repository-local Git configuration.
+3. Treat a missing `user` scope or unavailable email API as unavailable
+   corroboration, not as a blocker, when durable confirmation already exists.
+4. Pause only when no durable confirmation exists or available evidence
+   conflicts with the approved address. The public `email` returned by
+   `gh api user` and repository-local Git configuration are not substitutes for
+   first-time confirmation.
 
 After every server-side merge, resolve the merge SHA and inspect the raw commit
 metadata through the GitHub commits API. Confirm that the author is the
