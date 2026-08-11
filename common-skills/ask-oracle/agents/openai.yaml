@@ -1,0 +1,7 @@
+interface:
+  display_name: "询问先知"
+  short_description: "Prepare a concise neutral brief for an oracle"
+  default_prompt: "Use $ask-oracle to prepare a concise brief asking an oracle for technical guidance."
+
+policy:
+  allow_implicit_invocation: false
