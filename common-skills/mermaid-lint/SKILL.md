@@ -29,6 +29,9 @@ One caveat worth mentioning to the user when it matters: validation runs against
 
 ## Step 0: Check dependencies
 
+Resolve the interpreter before the first run: prefer `python3`, then `python`. If neither exists, report
+`missing_dependency` with an install hint instead of invoking a nonexistent command.
+
 Run the validator once. If the JSON output has `status` set to `"missing_dependency"`, handle it via `install_hints`.
 
 ```bash
@@ -42,6 +45,12 @@ python {baseDirectory}/validate-mermaid.py "<markdown_file>"
 - Cancel
 
 Only run an install command after the user explicitly agrees. A global `npm install -g` affects every project on their machine, so it is their call to make.
+
+If Chromium exists but launch fails with sandbox, profile, executable-permission, or browser-process
+permission errors, classify it as an environment/browser permission failure rather than Mermaid syntax.
+Retry only with an already available permitted browser configuration; do not install a browser, disable
+host security, or rewrite diagrams. Report the failing launch detail and ask for permission when the
+required browser execution is outside the current sandbox.
 
 ---
 
