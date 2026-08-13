@@ -257,10 +257,19 @@ def _strip_indent(raw_line: str, indent: int) -> str:
 
 
 def _infer_diagram_type(content_lines: list) -> str:
-    """Infer the diagram type from the first non-empty line of the block."""
+    """Infer the diagram type from the first diagram statement."""
+    in_directive = False
     for line in content_lines:
         stripped = line.strip()
         if not stripped:
+            continue
+        if in_directive:
+            in_directive = "}%%" not in stripped
+            continue
+        if stripped.startswith("%%{"):
+            in_directive = "}%%" not in stripped
+            continue
+        if stripped.startswith("%%"):
             continue
         parts = stripped.split()
         first = parts[0]

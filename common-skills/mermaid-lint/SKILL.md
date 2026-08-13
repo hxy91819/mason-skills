@@ -1,18 +1,37 @@
 ---
 name: mermaid-lint
-description: Validate and fix mermaid diagram syntax in markdown files, across a single file, several files, or a whole directory. Use when the user has edited markdown containing mermaid diagrams, or asks to check or fix mermaid syntax.
-allowed-tools: Read, Write, Edit, Bash, Glob, Grep, AskUserQuestion, AskQuestion
+description: Create, edit, validate, and fix Mermaid diagrams in Markdown with secure defaults. Use whenever Codex adds or changes a Mermaid diagram, or when the user asks to check Mermaid syntax, renderability, or safety across one file, several files, or a directory.
 ---
 
 # Mermaid Lint
 
-Validate every mermaid diagram in one or more markdown files, locate the failures, and fix them.
+Author Mermaid safely, then validate every diagram with the real renderer. Locate and fix syntax, rendering, and unsafe-configuration defects.
 
 **Input**: one or more markdown file paths, globs, or directories. If the user gives none, search the current directory for `.md` files and ask which ones to check.
 
+## Secure-by-default authoring
+
+When creating or materially editing a diagram, use the repository's centralized Mermaid security configuration if it enforces an equivalent or stronger policy. Otherwise begin each block with:
+
+```mermaid
+%%{init: {"securityLevel": "strict", "htmlLabels": false}}%%
+flowchart LR
+    A["Plain-text label"] --> B["Plain-text label"]
+```
+
+Apply this baseline:
+
+- Keep diagrams non-interactive. Put links beside the diagram in Markdown instead of using `click` actions.
+- Use quoted plain-text labels. Treat text from users, tools, logs, and external documents as untrusted; normalize it before placing it in Mermaid source.
+- Keep `securityLevel` at `strict` or `sandbox` and `htmlLabels` at `false`.
+- Reject `loose` / `antiscript`, `htmlLabels: true`, callback actions, `javascript:` URLs, and an empty `secure` allowlist.
+- If the repository owns a runtime renderer, configure the same baseline centrally, sanitize the rendered SVG before DOM insertion, and block renderer network access. The repository configuration remains the source of truth; do not add per-diagram directives that the target renderer rejects.
+
+For an existing diagram, preserve intent and appearance while bringing any unsafe configuration to the baseline. If the target platform cannot support the baseline, report the incompatibility instead of weakening security silently.
+
 ## How validation works
 
-The script feeds each mermaid block to the real mermaid renderer (`mermaid.render` inside a headless browser). A block passes only if it renders.
+The script feeds each Mermaid block to the real renderer (`mermaid.render` inside a headless browser) configured with strict security, HTML labels disabled, and external network requests blocked. A block passes only if it renders.
 
 Do not switch this to `mermaid.parse`. `parse` covers the parse phase only, so errors raised during rendering and layout escape it — an invalid gantt date such as `notadate` passes `parse` but fails to render. What the user actually wants to know is whether the diagram will display, and only the renderer answers that.
 
@@ -54,7 +73,11 @@ required browser execution is outside the current sandbox.
 
 ---
 
-## Step 1: Run validation
+## Step 1: Review security
+
+Before rendering, inspect every new or changed Mermaid block and any repository-owned Mermaid initializer. Apply the secure baseline above. A render pass does not prove safety: the renderer can successfully display an unsafe diagram.
+
+## Step 2: Run validation
 
 ```bash
 # Single file
@@ -117,7 +140,7 @@ The script writes JSON to stdout. Exit codes: `0` everything passed, `1` syntax 
 
 ---
 
-## Step 2: Fix the errors
+## Step 3: Fix the errors
 
 For each entry in each file's `errors` array:
 
@@ -142,13 +165,14 @@ For each entry in each file's `errors` array:
 
 ### Fixing principles
 
+- **Secure output**: keep the secure baseline while fixing syntax; never make a diagram render by weakening security.
 - **Minimal edits**: correct the syntax error only. Do not rewrite or reflow diagrams that already work.
 - **Preserve intent**: the fixed diagram should keep the structure the original author meant to express.
 - **Ask when unsure**: if the original intent is unrecoverable, such as a missing node label, ask the user instead of guessing.
 
 ---
 
-## Step 3: Re-validate
+## Step 4: Re-validate
 
 After fixing, **always run the validator again**:
 
@@ -180,7 +204,7 @@ Found 7 mermaid diagrams
   design.md
     Block 1 (lines 12-24): sequenceDiagram — passed
 
-All 7 mermaid diagrams pass. 1 warning needs manual confirmation.
+All 7 Mermaid diagrams use the secure baseline and render successfully. 1 warning needs manual confirmation.
 ```
 
 ---
@@ -198,7 +222,9 @@ Not needed in normal use; these exist for troubleshooting.
 
 ```
 User: /mermaid-lint docs/architecture.md
+User: add a Mermaid architecture diagram to docs/architecture.md
 User: check whether the mermaid diagrams in this markdown have syntax problems
+User: review the Mermaid diagrams for unsafe configuration
 User: validate the mermaid diagrams across everything under docs/
 User: fix the mermaid errors in docs/design.md
 ```

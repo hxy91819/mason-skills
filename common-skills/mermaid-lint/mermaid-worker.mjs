@@ -124,12 +124,28 @@ async function runSession(blocks, results) {
     let page;
     try {
       page = await browser.newPage();
+      // Diagram source is untrusted; remote images or icons must not turn linting into a network client.
+      await page.setRequestInterception(true);
+      page.on("request", (request) => {
+        const url = request.url();
+        if (url === "about:blank" || url.startsWith("data:")) {
+          request.continue();
+          return;
+        }
+        request.abort();
+      });
       await page.setContent("<!DOCTYPE html><html><body></body></html>");
       await page.addScriptTag({ path: bundlePath });
       await page.evaluate(() => {
         // suppressErrorRendering makes render throw instead of drawing an error
         // diagram that would otherwise be mistaken for success.
-        window.mermaid.initialize({ startOnLoad: false, suppressErrorRendering: true });
+        window.mermaid.initialize({
+          startOnLoad: false,
+          suppressErrorRendering: true,
+          securityLevel: "strict",
+          htmlLabels: false,
+          flowchart: { htmlLabels: false },
+        });
       });
       await page.exposeFunction("lintStarted", (key) => {
         inFlight = key;
