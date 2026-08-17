@@ -76,25 +76,67 @@ harness change; they are one candidate, not several.
 
 ## Phase 3: Decide and Apply
 
-Rank candidates by safety and correctness impact, likely recurrence, evidence strength,
-feedback speed, maintenance cost, and context load. Present at most five non-overlapping
-candidates:
+Rank candidates internally by safety and correctness impact, likely recurrence, evidence
+strength, feedback speed, maintenance cost, and context load. Present at most five
+non-overlapping candidates as a decision brief, not as the internal audit record:
 
-```text
-N. <session signal> -> <harness gap>
-   Change: <add | update | merge | delete | move | experiment> <target>
-   Verify now: <check that can run in the current task>
-   Eval: <future-session prediction, only when needed>
+```markdown
+You need to decide: <one-sentence decision and consequence>. Recommendation: <answer>.
+
+1. **<plain-language outcome>**
+   <In one short sentence: what can go wrong and what the change will improve.>
+
+   > Technical detail: <specific mechanism, affected surface, current verification, and
+   > future-session prediction when one is needed.>
+
+Reply <shortest unambiguous confirmation or exclusion instruction>.
 ```
+
+The main text must stand on its own for a reader who has not read the repository or the
+audit. Use the user's language and the project's established terms. Give each candidate
+one outcome-focused title, one short sentence connecting the observable failure to the
+improvement, and one technical blockquote. Keep one claim per sentence; split or shorten
+chained clauses. Do not lead with file paths, commands, tool versions, internal
+classifications, or labels such as `Change`, `Verify now`, and `Eval`.
+
+Apply the **wait-what check** before sending: hide every blockquote and read only the
+opening, titles, and main sentences. A reader must be able to choose without repository
+context. The opening must state the user-visible problems, not name their technical
+causes. Under each title, write exactly one prose sentence before the blockquote; move
+every additional fact into the blockquote. Inline code, file paths, exact versions, code
+or configuration literals, and implementation identifiers are allowed only inside the
+blockquote.
+
+```markdown
+<!-- Too technical for the decision layer -->
+1. **Support npm 12 pack JSON and registry retries**
+
+<!-- Decision layer plus disclosed technical detail -->
+1. **Avoid treating a successful release as failed**
+   Publishing tools can report the same success differently or take time to synchronize,
+   so make validation tolerate those expected differences without hiding a real failure.
+
+   > Technical detail: Accept the npm 11 array and npm 12 single-object output, then use
+   > bounded registry retries; verify with focused tests, typecheck, lint, and real output.
+```
+
+Keep technical precision through progressive disclosure instead of deleting it. Put
+concrete versions, protocols, files, commands, code or configuration literals, function
+names, implementation mechanisms, verification, and eval predictions only in the
+blockquote below the relevant item. The main text may retain a technical domain term only
+when the user needs it to tell candidates apart; explain it on first use when the project
+has no clearer established name. Do not repeat technical details in both layers. Keep each
+technical note focused on facts that help the user assess scope, confidence, or risk; it
+is not a dump of the analysis trace.
 
 Recommend the complete set by default; the user can confirm it or exclude candidate
 numbers. For any other real choices, use a decision tree: explore facts yourself, ask the
 whole currently unblocked frontier in one short numbered round, include a recommended
 answer, then recompute after the reply. Ask no question whose viable answer is already
 determined by evidence, prior decisions, constraints, or delegated defaults. A candidate
-is not ready without a concrete action target and a verification that can run now. Put
-behavior that only a future agent run can prove under `Eval`, never `Verify now`. Write
-`Verify now` as an inspection or command plus its expected result, not as a question.
+is not ready without a concrete action target and a verification that can run now. Keep
+future-session predictions distinct from checks that can run now, even when both appear
+in the same technical note.
 
 After confirmation, read the target repository instructions and sources of truth, then
 make the smallest approved changes. Prefer modifying or deleting existing surfaces over
@@ -112,5 +154,7 @@ Check that conflicts and duplicates are gone, links and pointers resolve, determ
 facts are not needlessly cached in prose, improved skills validate, and unrelated user
 work remains untouched.
 
-Report the candidates applied, actions taken, validation results, and any reviewed skills
-or signals that correctly produced no change. Keep the handoff concise.
+Report the user-visible outcome first. Put files, commands, validation results, and any
+reviewed skills or signals that correctly produced no change afterward as supporting
+detail. Keep the handoff concise and use the same plain-language-first structure as the
+decision brief.
