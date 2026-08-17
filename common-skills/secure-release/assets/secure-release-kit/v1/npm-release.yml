@@ -1,0 +1,192 @@
+# Copy this file to .github/workflows/release.yml. The exact filename and the
+# npm-release Environment are part of the npm Trusted Publisher identity.
+name: Release npm package
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing stable vX.Y.Z tag to publish
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: npm-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: 24.15.0
+  NPM_VERSION: 12.0.2
+  NPM_REGISTRY: https://registry.npmjs.org/
+  KIT: .github/secure-release/v1/secure_release.py
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Require the primary workflow ref
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo '::error::Dispatch this release from the main workflow ref.' >&2
+          exit 1
+
+      - name: Require a stable release tag
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo '::error::Release tag must be a stable vX.Y.Z value.' >&2
+            exit 1
+          fi
+
+      - name: Check out the exact release tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: ${{ env.NPM_REGISTRY }}
+
+      - name: Install pinned release npm
+        run: |
+          npm install --global "npm@${NPM_VERSION}" --no-audit --no-fund
+          test "$(npm --version)" = "$NPM_VERSION"
+
+      - name: Run repository privacy gates
+        run: |
+          PATTERN='PRIVATE_''TOKEN|AUTH_''TOKEN|API_''KEY|SE''CRET|PASS''WORD|Bea''rer |gh''p_|github_''pat_|BE''GIN .*PRIVATE K''EY'
+          if git grep -n -I -E "($PATTERN)" HEAD -- .; then
+            exit 1
+          fi
+
+      - name: Validate source identity
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          python3 "$KIT" source --tag "$RELEASE_TAG" --version "$VERSION" --primary-ref origin/main
+
+      - name: Install frozen dependencies and run project checks
+        run: |
+          npm ci
+          npm test
+
+      - name: Package once and extract committed release notes
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          python3 "$KIT" npm-pack --tag "$RELEASE_TAG" --package-dir . --output-dir release --manifest release/manifest.json
+          python3 "$KIT" changelog --tag "$RELEASE_TAG" --changelog CHANGELOG.md --notes release/release-notes.md
+          VERSION="${RELEASE_TAG#v}"
+          mapfile -t TARBALLS < <(find release -maxdepth 1 -type f -name '*.tgz' -print)
+          test "${#TARBALLS[@]}" -eq 1
+          python3 "$KIT" manifest-create --tag "$RELEASE_TAG" --version "$VERSION" --artifact "${TARBALLS[0]}" --artifact release/release-notes.md --output release/manifest.json
+
+      - name: Upload the verified handoff bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: npm-release-${{ inputs.tag }}
+          path: release/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: npm-release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out the exact release tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: ${{ env.NPM_REGISTRY }}
+
+      - name: Install pinned release npm
+        run: |
+          npm install --global "npm@${NPM_VERSION}" --no-audit --no-fund
+          test "$(npm --version)" = "$NPM_VERSION"
+
+      - name: Download the preflight bytes
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: npm-release-${{ inputs.tag }}
+          path: release
+
+      - name: Reverify and publish exact bytes
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          PACKAGE="$(node -p "require('./package.json').name")"
+          mapfile -t TARBALLS < <(find release -maxdepth 1 -type f -name '*.tgz' -print)
+          test "${#TARBALLS[@]}" -eq 1
+          TARBALL="${TARBALLS[0]}"
+          python3 "$KIT" manifest-verify --manifest release/manifest.json --directory release --tag "$RELEASE_TAG" --version "$VERSION"
+          if python3 "$KIT" npm-absent --package "$PACKAGE" --version "$VERSION" --registry "$NPM_REGISTRY"; then
+            python3 "$KIT" npm-publish --artifact "$TARBALL" --registry "$NPM_REGISTRY"
+          else
+            python3 "$KIT" npm-existing --package "$PACKAGE" --version "$VERSION" --artifact "$TARBALL" --registry "$NPM_REGISTRY"
+          fi
+          python3 "$KIT" npm-smoke --package "$PACKAGE" --version "$VERSION" --registry "$NPM_REGISTRY"
+
+  github-release:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the exact release tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download the published bytes
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: npm-release-${{ inputs.tag }}
+          path: release
+
+      - name: Create or reconcile the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          if ! gh release create "$RELEASE_TAG" release/*.tgz release/manifest.json release/release-notes.md --verify-tag --title "$RELEASE_TAG" --notes-file release/release-notes.md; then
+            gh release view "$RELEASE_TAG" >/dev/null
+          fi
+          mkdir published-release
+          gh release download "$RELEASE_TAG" --dir published-release
+          gh release view "$RELEASE_TAG" --json assets,body,isDraft,isPrerelease,tagName > release-metadata.json
+          test "$(jq -r .tagName release-metadata.json)" = "$RELEASE_TAG"
+          test "$(jq -r .isDraft release-metadata.json)" = false
+          test "$(jq -r .isPrerelease release-metadata.json)" = false
+          test "$(jq -r .body release-metadata.json)" = "$(cat release/release-notes.md)"
+          cmp release/manifest.json published-release/manifest.json
+          python3 "$KIT" manifest-verify --manifest published-release/manifest.json --directory published-release --tag "$RELEASE_TAG"
