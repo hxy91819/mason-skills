@@ -44,12 +44,19 @@ common-skills/
 │       └── SKILL.md
 ├── distill/
 │   └── SKILL.md
+├── large-task-planning/
+│   ├── SKILL.md
+│   ├── agents/
+│   └── scripts/
 ├── mermaid-lint/
 │   ├── SKILL.md
 │   ├── validate-mermaid.py    # Extracts mermaid blocks, drives the worker
 │   └── mermaid-worker.mjs     # Renders every block in one browser session
 ├── open-source-contribution/
 │   └── SKILL.md
+├── story-direction-review/
+│   ├── SKILL.md
+│   └── agents/
 └── tech-doc-html/
     ├── SKILL.md
     ├── references/       # Design system, component templates, security rules
@@ -78,6 +85,13 @@ For the `article-workflow` group, copy the entire directory:
 
 Skills are plain markdown. You can adapt the instructions for other AI coding tools that support custom system prompts or skill files.
 
+Agents that discover user-scoped skills from `~/.agents/skills` can link individual skills:
+
+```bash
+ln -s /path/to/mason-skills/common-skills/large-task-planning ~/.agents/skills/large-task-planning
+ln -s /path/to/mason-skills/common-skills/story-direction-review ~/.agents/skills/story-direction-review
+```
+
 ## Available skills
 
 | Skill | Description |
@@ -86,8 +100,10 @@ Skills are plain markdown. You can adapt the instructions for other AI coding to
 | [article-polish](common-skills/article-polish/) | Article polishing with quick / normal / refined modes. Derivative work based on [baoyu-translate](https://github.com/JimLiu/baoyu-skills/tree/main/skills/baoyu-translate). |
 | [article-workflow](common-skills/article-workflow/) | A phased article optimization workflow with 13 skills — from brief generation through final publication. See [workflow README](common-skills/article-workflow/README.md) for phase order and usage. |
 | [distill](common-skills/distill/) | Reviews agent sessions for evidence-backed harness improvements, pruning stale or conflicting rules before strengthening specs, tools, checks, skills, or CI. |
+| [large-task-planning](common-skills/large-task-planning/) | Builds an executable Epic/Story portal with dependency checks, evidence contracts, and a generated status dashboard. Explicit invocation only. |
 | [mermaid-lint](common-skills/mermaid-lint/) | Validates and fixes mermaid diagrams in markdown. Renders every block against the real mermaid renderer and reports all failures in one pass. Original skill design. |
 | [open-source-contribution](common-skills/open-source-contribution/) | Open-source contribution hygiene: privacy scanning, Git history cleanup, installer hardening, autoreview, and safe push/PR validation. |
+| [story-direction-review](common-skills/story-direction-review/) | Reviews a completed Story for direction drift, invalidated assumptions, coverage gaps, and necessary plan changes. Explicit invocation only. |
 | [tech-doc-html](common-skills/tech-doc-html/) | Interactive single-file HTML from technical design docs. Original skill design; visual style inspired by [html-effectiveness](https://github.com/ThariqS/html-effectiveness). |
 
 ### ask-oracle
@@ -131,6 +147,13 @@ rules for staleness, duplication, conflicts, deterministic replacements, and mis
 scope. It then proposes at most five changes across specs, context, skills, tools,
 environment, tests, lint, pre-commit, CI, and evals behind one compact approval gate.
 
+### large-task-planning
+
+Creates a compact project portal for engineering work that continues across sessions or
+agents. It separates human intent from execution cards, validates dependencies and
+coverage ownership, supports inserted IDs such as `STORY-03.1`, and generates a status
+dashboard. It is manually invoked so ordinary tasks stay lightweight.
+
 ### mermaid-lint
 
 Finds every mermaid diagram in one or more markdown files, validates it, and fixes the
@@ -161,6 +184,13 @@ agents: scan file content and Git metadata, remove local paths and private
 identities, harden installers, preserve streaming behavior in local proxies,
 run gitleaks/pre-commit/tests, use autoreview as a closeout gate, and verify
 history rewrites before pushing.
+
+### story-direction-review
+
+Performs a read-only, big-picture review after a Story is complete. It distinguishes
+direction drift and invalidated planning assumptions from ordinary code-review findings,
+then returns one decision: continue, patch the handoff, insert a Story, or replan. It is
+manually invoked and changes no files unless the user separately requests it.
 
 ### tech-doc-html
 
@@ -195,6 +225,14 @@ Original skill designs for a phased article optimization workflow. Each skill co
 Original skill design. Drives [mermaid](https://github.com/mermaid-js/mermaid) through
 [`@mermaid-js/mermaid-cli`](https://github.com/mermaid-js/mermaid-cli) (MIT) at runtime;
 neither project's code is vendored here.
+
+### [large-task-planning](common-skills/large-task-planning/)
+
+Original skill design for outcome-sized engineering plans and deterministic Epic/Story status portals.
+
+### [story-direction-review](common-skills/story-direction-review/)
+
+Original skill design for independent, big-picture review of completed engineering Stories.
 
 ### [tech-doc-html](common-skills/tech-doc-html/)
 

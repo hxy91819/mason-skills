@@ -19,7 +19,7 @@ Instructions for the agent go here.
 
 - Use lowercase kebab-case for directory names (e.g. `code-review`, `api-docs`).
 - Keep names short and descriptive.
-- Write all skill content in English.
+- Use one consistent language per skill. Choose the language that best serves its intended users; English is recommended for the broadest reach but is not required.
 
 ## Optional files
 

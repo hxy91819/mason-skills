@@ -1,0 +1,7 @@
+interface:
+  display_name: "Story Direction Review"
+  short_description: "独立检查 Story 是否偏航、遗漏或需要调整后续计划"
+  default_prompt: "Use $story-direction-review to review a completed Story for direction drift, major omissions, and plan changes."
+
+policy:
+  allow_implicit_invocation: false
