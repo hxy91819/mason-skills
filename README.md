@@ -46,7 +46,9 @@ common-skills/
 │   └── SKILL.md
 ├── large-task-planning/
 │   ├── SKILL.md
+│   ├── agent-schema.md
 │   ├── agents/
+│   ├── examples/
 │   └── scripts/
 ├── mermaid-lint/
 │   ├── SKILL.md
@@ -99,8 +101,8 @@ ln -s /path/to/mason-skills/common-skills/story-direction-review ~/.agents/skill
 | [ask-oracle](common-skills/ask-oracle/) | Produces a concise brief containing the original request and all decision-relevant context, reserving technical judgment for an expert oracle. |
 | [article-polish](common-skills/article-polish/) | Article polishing with quick / normal / refined modes. Derivative work based on [baoyu-translate](https://github.com/JimLiu/baoyu-skills/tree/main/skills/baoyu-translate). |
 | [article-workflow](common-skills/article-workflow/) | A phased article optimization workflow with 13 skills — from brief generation through final publication. See [workflow README](common-skills/article-workflow/README.md) for phase order and usage. |
-| [distill](common-skills/distill/) | Reviews agent sessions for evidence-backed harness improvements, pruning stale or conflicting rules before strengthening specs, tools, checks, skills, or CI. |
-| [large-task-planning](common-skills/large-task-planning/) | Builds an executable Epic/Story portal with dependency checks, evidence contracts, and a generated status dashboard. Explicit invocation only. |
+| [distill](common-skills/distill/) | Reviews agent sessions for evidence-backed harness and project-knowledge improvements, pruning stale, conflicting, or incorrect guidance before strengthening durable decisions, docs, specs, tools, checks, skills, or CI. |
+| [large-task-planning](common-skills/large-task-planning/) | Builds an executable Epic/Story portal: human Markdown intent, script-owned Agent JSON, and a generated status dashboard. Explicit invocation only. |
 | [mermaid-lint](common-skills/mermaid-lint/) | Validates and fixes mermaid diagrams in markdown. Renders every block against the real mermaid renderer and reports all failures in one pass. Original skill design. |
 | [open-source-contribution](common-skills/open-source-contribution/) | Open-source contribution hygiene: privacy scanning, Git history cleanup, installer hardening, autoreview, and safe push/PR validation. |
 | [secure-release](common-skills/secure-release/) | Integrates fail-closed release pipelines using a versioned CI kit; npm is the first implemented adapter. |
@@ -142,18 +144,29 @@ The `article-workflow-skill-maker` is a meta skill for turning a manually execut
 
 ### distill
 
-Replays the current session as a Harness Engineering retrospective, including failures,
-successful shortcuts, and interaction friction. Before adding guidance, it audits existing
-rules for staleness, duplication, conflicts, deterministic replacements, and misplaced
-scope. It then proposes at most five changes across specs, context, skills, tools,
-environment, tests, lint, pre-commit, CI, and evals behind one compact approval gate.
+Replays the current session as a harness and project-knowledge retrospective, including
+failures, successful shortcuts, interaction friction, and durable product or technical
+decisions. It distinguishes user-confirmed decisions from agent proposals and checks that
+material choices were explained in human-facing sources before implementation. Before
+adding guidance, it audits existing rules and project documentation for
+staleness, duplication, conflicts, incorrect claims, deterministic replacements, and
+misplaced detail. It prioritizes deletion, correction, and consolidation before adding
+missing global context or decision rationale. It proposes up to eight changes or
+questions per round across both lanes, continuing through a decision tree when needed,
+then applies the confirmed set behind one approval gate.
 
 ### large-task-planning
 
 Creates a compact project portal for engineering work that continues across sessions or
-agents. It separates human intent from execution cards, validates dependencies and
-coverage ownership, supports inserted IDs such as `STORY-03.1`, and generates a status
-dashboard. It is manually invoked so ordinary tasks stay lightweight.
+agents. Humans read Markdown epics and stories; agents keep structured JSON state that
+scripts alone may write. The skill validates dependencies and coverage ownership,
+requires user-visible confirmation for decisions that change product or release shape,
+supports inserted IDs such as `STORY-03.1`, and generates the status dashboard from JSON.
+It is manually invoked so ordinary tasks stay lightweight.
+
+The token-login prompt and runner live in
+[`common-skills/large-task-planning/examples/token-login/`](common-skills/large-task-planning/examples/token-login/).
+The latest generated portal is [`docs/largeplan-example/`](docs/largeplan-example/).
 
 ### mermaid-lint
 

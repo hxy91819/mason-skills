@@ -1,6 +1,6 @@
 interface:
   display_name: "Large Task Planning"
-  short_description: "用 Epic、Story 和证据门户规划大型工程"
+  short_description: "用 Epic、Story、Agent JSON 和生成的项目进展规划大型工程"
   default_prompt: "Use $large-task-planning to build an executable Epic and Story delivery plan for this engineering effort."
 
 policy:

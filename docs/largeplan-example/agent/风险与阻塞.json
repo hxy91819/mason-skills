@@ -1,0 +1,10 @@
+{
+  "kind": "risk-register",
+  "schema_version": 1,
+  "epic": "EPIC-TOKEN-LOGIN",
+  "updated": "2026-08-18",
+  "pending_decisions": [],
+  "watch_items": [
+    "STORY-05 灰度前复核企业邮件服务在早高峰的投递配额。"
+  ]
+}

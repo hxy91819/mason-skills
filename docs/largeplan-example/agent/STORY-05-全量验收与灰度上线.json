@@ -1,0 +1,52 @@
+{
+  "kind": "agent-card",
+  "schema_version": 1,
+  "story": "STORY-05",
+  "intent_version": 1,
+  "status": "blocked",
+  "owner": "待领取",
+  "blocker": "STORY-03 未完成",
+  "status_updated": "2026-08-18",
+  "refreshed": "待领取",
+  "code_baseline": "待领取",
+  "owns": [
+    "TOKEN_ROLLOUT"
+  ],
+  "verifies": [
+    "TOKEN_ISSUE",
+    "TOKEN_VERIFY",
+    "TOKEN_GUARD",
+    "TOKEN_AUDIT"
+  ],
+  "goal": "预发全量验收一次通过，生产灰度一天无回退后转全量，共享密码入口下线且回退演练成功。",
+  "decision_boundary": "下线与回退节奏按人读 Story 关键决策执行；灰度起点为行政团队；任何高危告警或回退需求都必须停止并上报。",
+  "technical_plan": "编写并执行预发全量验收清单；按行政团队先行灰度一天；通过配置开关下线共享密码入口并演练一次发布内恢复；上线后一周跟踪投递与登录成功率。",
+  "authoritative_inputs": "agent/令牌契约.json；agent/门禁.json；STORY-03 与 STORY-04 执行卡 handoff。",
+  "claim_checks": "复核 intent_version=1；STORY-03 与 STORY-04 已完成且交接完整；确认预发与生产发布入口；远端基线未漂移。",
+  "checklist": [
+    {
+      "done": false,
+      "text": "编写并在预发执行全量验收清单，一次通过。"
+    },
+    {
+      "done": false,
+      "text": "行政团队灰度一天并确认无回退需求与高危告警。"
+    },
+    {
+      "done": false,
+      "text": "灰度通过后转为全量并隐藏共享密码入口。"
+    },
+    {
+      "done": false,
+      "text": "演练配置开关在一次发布内恢复共享密码入口。"
+    },
+    {
+      "done": false,
+      "text": "跟踪上线后一周的成功率并归档证据、完成交接。"
+    }
+  ],
+  "steps": "1) 汇总前四个 Story 交接；2) 预发验收；3) 灰度；4) 全量与下线；5) 回退演练与一周跟踪。每步以清单条目或监控数据达标为完成条件。",
+  "verification": "记录验收清单结果、灰度决策记录、回退演练时间线与成功率数据；固定分母为人读验收标准 4 条。",
+  "stop_conditions": "验收清单出现失败项；灰度期出现高危告警或回退需求；成功率低于契约阈值。",
+  "handoff": "未开始。"
+}

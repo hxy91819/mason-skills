@@ -1,0 +1,4 @@
+使用 $large-task-planning 完成下面的用户任务：
+skill 路径：{skill_dir}
+
+在当前仓库 docs/largeplan-example/ 下，为“给内部文档站增加一次性令牌登录”建立一整套项目门户。

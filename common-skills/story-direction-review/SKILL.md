@@ -10,7 +10,7 @@ disable-model-invocation: true
 
 ## 1. 保持独立
 
-优先由未执行该 Story 的 Reviewer 进行检查。先读取 Epic、项目进展、刚完成的 Story、执行卡交接和后续 Story 地图；只有结论存在疑点时才读取原始证据或相关代码。无法获得独立 Reviewer 时明确说明限制，不把执行 Agent 的分析总结直接当成事实。
+优先由未执行该 Story 的 Reviewer 进行检查。先读取 Epic、项目进展、刚完成的 Story、执行卡 `handoff` 和后续 Story 地图；只有结论存在疑点时才读取原始证据或相关代码。无法获得独立 Reviewer 时明确说明限制，不把执行 Agent 的分析总结直接当成事实。
 
 完成标准：能区分人确认的意图、执行结果、新发现事实和原计划假设。
 
@@ -38,10 +38,10 @@ disable-model-invocation: true
 
 - 新事实不影响已完成结果时，保留 Story `done`，只调整未来计划。
 - 新事实推翻已完成结论时，保留历史并标记相关证据失效，把 Story 改回 `in_progress` 或 `blocked`。
-- 插入任务时保留所有既有 Story 的 ID；使用 `STORY-NN.M` 插入号，例如在 `STORY-03` 后增加 `STORY-03.1`，并只更新必要依赖、链接、执行卡和仪表盘。超过 Epic 的 Story 上限时再评估拆分 Epic。
-- 修改人确认的意图前取得明确授权，并递增受影响 Story 与执行卡的 `intent_version`。
+- 插入任务时保留所有既有 Story 的 ID；使用 `STORY-NN.M` 插入号，例如在 `STORY-03` 后增加 `STORY-03.1`，并只更新必要依赖、执行卡 JSON 和仪表盘。超过 Epic 的 Story 上限时再评估拆分 Epic。
+- 修改人确认的意图前取得明确授权，并递增受影响 Story 与执行卡的 `intent_version`。Agent JSON 只通过 `epic_story.py` 的 `write`/`patch`/`render` 更新。
 
-先返回审查结果。用户要求落地时，再把结论写入刚完成执行卡的 `交接`，记录日期、2～4 条依据、计划影响和可直接复制的下一步提示词；按仓库规则提交。普通审查不自行创建文档、提交或推送。
+先返回审查结果。用户要求落地时，再把结论写入刚完成执行卡的 `handoff`，记录日期、2～4 条依据、计划影响和可直接复制的下一步提示词；按仓库规则提交。普通审查不自行创建文档、提交或推送。
 
 ## 5. 使用固定输出
 
