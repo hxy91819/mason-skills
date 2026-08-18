@@ -1,13 +1,15 @@
 ---
 name: distill
-description: Review the current conversation as a harness-engineering retrospective, then prune or strengthen the specs, context, instructions, tools, checks, workflows, and environment that shape future agent runs. Use after substantial agent work, debugging, retries, user corrections, or skill execution when session evidence may reveal reusable improvements.
+description: Review the current conversation as a harness and project-knowledge retrospective, then prune or strengthen the specs, documentation, decisions, context, instructions, tools, checks, workflows, and environment that shape future human and agent work. Use after substantial agent work, debugging, retries, user corrections, or skill execution when session evidence may reveal reusable improvements or durable product and technical decisions.
 ---
 
-# Distill the Session into the Harness
+# Distill the Session into the Harness and Project Knowledge
 
-Turn session evidence into the smallest verified harness change that makes future runs
-more reliable. The harness includes intent and specs, context and knowledge, instructions
-and skills, tools and scripts, environment and permissions, and verification and evals.
+Turn session evidence into the smallest verified harness and project-knowledge changes
+that make future work more reliable. The harness includes intent and specs, context and
+instructions, skills, tools and scripts, environment and permissions, and verification
+and evals. Project knowledge includes the durable documentation and decision rationale
+that give humans and agents an accurate global view of the project.
 
 Follow all four phases. Phase 3 is the single approval gate: confirmation of the proposed
 candidate set authorizes its smallest in-scope edits. Ask again only for a materially
@@ -23,20 +25,29 @@ Reconstruct the complete session trajectory:
 - Successful shortcuts worth making repeatable
 - User interaction friction, including avoidable questions or excessive output
 - Every executed skill, from instruction loading through validation and handoff
+- Every durable product or technical decision made or clarified by the user, including
+  its rationale, constraints, rejected alternatives when they prevent future confusion,
+  and affected project concepts
+- Every material decision introduced by the agent, the user-visible consequences that
+  were disclosed before approval, and the exact evidence that the user confirmed it
 
 Compare the actual path with the shortest reliable path. Classify each material signal as
-a **harness gap**, **execution defect**, **environment or tool defect**, **request
-ambiguity**, or **one-off event**. An agent mistake becomes a harness candidate only when
-the harness could reliably prevent, expose, or shorten it. Carry unverified improvements
-as hypotheses.
+a **harness gap**, **project-knowledge gap**, **execution defect**, **environment or tool
+defect**, **request ambiguity**, or **one-off event**. An agent mistake becomes a harness
+candidate only when the harness could reliably prevent, expose, or shorten it. A session
+detail becomes a project-knowledge candidate only when it improves durable global
+understanding or preserves decision rationale. Carry unverified improvements as
+hypotheses.
 
-Complete this phase when every material detour, correction, and shortcut has traceable
-conversation or tool evidence.
+Complete this phase when every material detour, correction, shortcut, and durable decision
+has traceable conversation or tool evidence.
 
 ## Phase 2: Audit and Route
 
-Inspect the applicable harness before proposing additions. Audit each existing rule or
-mechanism in scope:
+Audit two required lanes before proposing additions: the applicable harness and the
+project documentation touched by the session's concepts or decisions. A lane may produce
+no candidate only after its relevant sources of truth have been inspected. Apply this
+table to every existing rule, mechanism, or document in scope:
 
 | State | Action |
 |---|---|
@@ -51,6 +62,67 @@ Resolve conflicts from, in order: the user's current explicit intent and declare
 authority and scope; approved specs and contracts; then implementation, tests, and
 configuration as evidence of current behavior rather than automatic proof of intended
 behavior. Never silently choose between unresolved semantic rules.
+
+### Decision approval and visibility
+
+Treat a decision as material when it changes what the user receives or must operate,
+including product or release composition, independent usability, installation and offline
+behavior, compatibility or migration, supported environments, security boundaries,
+external dependencies, or operational ownership and cost.
+
+For every material decision, record its provenance as explicitly user-confirmed, inherited
+from an approved source, or agent-proposed. An agent-proposed decision remains a hypothesis
+until the user sees the choice, user-visible consequences, rationale or tradeoff, and any
+rejected alternative needed to understand it, then confirms it. Approval of a broad plan
+counts only when that plan disclosed those consequences in plain language; package names,
+implementation terminology, code, tests, or completed work do not prove informed approval.
+
+Audit discoverability separately from authority. A material decision must be visible at
+the appropriate abstraction level in a document its human stakeholders are expected to
+read. Agent-only execution material may carry exact implementation details, but it cannot
+be the sole place where the decision or its consequences appear. A human-facing summary
+and a linked detailed contract are complementary, not duplicate sources of truth.
+
+When one human-facing document carries multiple material decisions, present them as a
+numbered decision list. For every item, state the decider, the agent recommendation and
+whether the user accepted or rejected it, and the result and user-visible impact. Mark an
+unconfirmed recommendation as pending user confirmation; never rewrite it as a user
+decision because implementation already exists.
+
+If implementation, documentation, or a gate relies on an unconfirmed or human-invisible
+material decision, propose surfacing the decision for approval and revoking the affected
+readiness or completion claim before treating current behavior as intended.
+
+### Project-knowledge lane
+
+Keep project documentation as a compact map for humans and agents: product concepts,
+system boundaries, architecture, major workflows, and the decisions needed to reason
+about them. Route details that code, tests, types, schemas, or configuration already make
+cheap to discover back to those sources. When a durable decision's rationale is local to
+code and the code cannot express why the choice exists, preserve it in a
+decision-oriented comment; otherwise update the narrowest authoritative document.
+
+Preserve every durable product or technical decision established by the user in one
+authoritative location. Record the choice and why it was made, plus constraints or
+consequences needed to apply it correctly. Do not create a duplicate decision log when an
+existing product, architecture, specification, or code surface is already the better
+home.
+
+Simplify documentation in this order:
+
+1. Delete or reconcile conflicting, superseded, and duplicate material.
+2. Correct claims that disagree with current approved intent or verified behavior.
+3. Consolidate scattered explanations into the narrowest authoritative source and leave
+   pointers only where discovery requires them.
+4. Add only missing global context or decision rationale that survives the evidence and
+   value gates.
+
+Prefer a net reduction when deletion or consolidation communicates the same truth. Keep
+implementation walkthroughs, line-by-line behavior, inventories, and other cheap lookups
+in code and the environment. Persistent documentation must describe the project, not the
+retrospective session that caused it to change.
+
+### Harness lane
 
 Prefer pruning and consolidation before addition. Route the surviving signal to the
 closest reliable layer:
@@ -70,15 +142,17 @@ meaning. Let the environment state facts that are cheap to inspect; prose should
 intent, rationale, non-obvious constraints, or routing. Remove a safety, permission,
 approval, or validation rule only after equivalent protection is demonstrated.
 
-Complete this phase when every surviving signal has one proposed action and target layer,
-with existing overlap and conflicts accounted for. Group signals solved by the same
-harness change; they are one candidate, not several.
+Complete this phase when every surviving signal in both lanes has one proposed action and
+target layer, with existing overlap and conflicts accounted for. Group signals solved by
+the same authoritative change; they are one candidate, not several.
 
 ## Phase 3: Decide and Apply
 
 Rank candidates internally by safety and correctness impact, likely recurrence, evidence
-strength, feedback speed, maintenance cost, and context load. Present at most five
-non-overlapping candidates as a decision brief, not as the internal audit record:
+strength, feedback speed, maintenance cost, and context load. Present up to eight
+non-overlapping candidates per round as a decision brief, grouped under **Harness** and
+**Project knowledge** when both have candidates. Do not suppress one lane to make room
+for the other, and do not present the internal audit record:
 
 ```markdown
 You need to decide: <one-sentence decision and consequence>. Recommendation: <answer>.
@@ -130,19 +204,27 @@ technical note focused on facts that help the user assess scope, confidence, or 
 is not a dump of the analysis trace.
 
 Recommend the complete set by default; the user can confirm it or exclude candidate
-numbers. For any other real choices, use a decision tree: explore facts yourself, ask the
-whole currently unblocked frontier in one short numbered round, include a recommended
-answer, then recompute after the reply. Ask no question whose viable answer is already
-determined by evidence, prior decisions, constraints, or delegated defaults. A candidate
-is not ready without a concrete action target and a verification that can run now. Keep
+numbers. Treat Phase 3 as one approval stage that may span multiple question rounds. For
+any other real choices, map a decision tree, explore facts yourself, and ask the currently
+unblocked frontier in numbered rounds of at most eight questions. Include a recommended
+answer for every question. When more than eight frontier decisions remain, ask the eight
+highest-impact independent decisions, then recompute the frontier after the reply. Do not
+cap the total number of rounds or leave a branch silently assumed. Ask no question whose
+viable answer is already determined by evidence, prior decisions, constraints, or
+delegated defaults.
+
+Do not edit until the frontier is empty and the user confirms the resulting candidate
+set. That final confirmation is the single approval gate for all rounds. A candidate is
+not ready without a concrete action target and a verification that can run now. Keep
 future-session predictions distinct from checks that can run now, even when both appear
 in the same technical note.
 
 After confirmation, read the target repository instructions and sources of truth, then
 make the smallest approved changes. Prefer modifying or deleting existing surfaces over
 creating new artifacts. Preserve supported behavior, safety controls, validation depth,
-and approval gates. Create no persistent retrospective report; an approved eval may add
-only the artifact needed to run the experiment.
+and approval gates. Create no persistent retrospective report; project-documentation
+edits must update durable sources of truth, and an approved eval may add only the artifact
+needed to run the experiment.
 
 ## Phase 4: Prove
 
@@ -151,8 +233,10 @@ the end. For every candidate, verify the predicted recurrence is prevented, expo
 shortened. Revise or revert a change whose prediction fails.
 
 Check that conflicts and duplicates are gone, links and pointers resolve, deterministic
-facts are not needlessly cached in prose, improved skills validate, and unrelated user
-work remains untouched.
+facts and implementation details are not needlessly cached in prose, every captured
+decision has one authoritative home and explicit approval provenance, and a stakeholder
+reading only the human-facing sources can explain each material choice and its consequence.
+Check that improved skills validate and unrelated user work remains untouched.
 
 Report the user-visible outcome first. Put files, commands, validation results, and any
 reviewed skills or signals that correctly produced no change afterward as supporting
