@@ -29,6 +29,15 @@ push.
 - Run review after non-trivial changes. Treat review findings as advisory, then
   independently verify and fix only real, in-scope issues.
 
+## Secure Release Routing
+
+When the task includes designing, migrating, or validating a registry or
+GitHub release pipeline, use the `secure-release` skill for the release
+protocol, runtime kit, ecosystem adapter, and rerun semantics. Keep this skill
+for public-repository privacy, identity, security baseline, review, and push/PR
+hygiene. Apply both sets of completion gates without copying the detailed
+release protocol into this file.
+
 ## GitHub Merge Email Gate
 
 Treat GitHub-generated merge and squash commits as a separate identity path:
