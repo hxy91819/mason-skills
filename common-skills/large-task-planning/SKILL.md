@@ -149,11 +149,11 @@ python3 <skill-dir>/scripts/epic_story.py status \
   --epic <topic/epics/EPIC-ID.md> --stories-dir <topic/stories> --json
 ```
 
-仪表盘只保留一组 `epic-story-dashboard` 标记。脚本检查项目入口、独立 Epic 路径、章节、字数、Story 数量、TODO、插入编号、数值顺序、前向依赖/依赖环、状态、链接和仪表盘新鲜度；同时检查意图版本一致、覆盖项唯一主责，以及进行中 Story 已记录执行卡刷新日期和代码基线。`render` 只替换受控区块。
+仪表盘只保留一组 `epic-story-dashboard` 标记。脚本检查项目入口、独立 Epic 路径、章节、字数、Story 数量、TODO、插入编号、数值顺序、前向依赖/依赖环、状态、链接和仪表盘新鲜度；同时检查意图版本一致、覆盖项唯一主责，以及进行中 Story 已记录执行卡刷新日期和代码基线。`render` 会按 `depends_on` 同步「STORY-XX 未完成」阻塞后再替换受控区块；真实阻塞（例如环境未就绪）不会被改写。`check` 在该依赖阻塞过期时失败。
 
 ## 7. 驱动 Agent 闭环
 
-从项目进展的“可领取”项选择第一个 Story，只加载该 Story、对应执行卡及执行卡直接引用的共享资料。先执行 `领取检查`，更新 `refreshed` 和 `code_baseline`；确认 intent_version、覆盖、代码入口和上一 Story 交接一致后，才能设置 `in_progress` 和 owner。随后保存首次失败、修复根因并从统一入口复验；满足全部 TODO 和验收后设置 `done`、刷新仪表盘、更新证据并提交推送，执行会话到此停止。
+从项目进展的“可领取”项选择第一个 Story，只加载该 Story、对应执行卡及执行卡直接引用的共享资料。先执行 `领取检查`，更新 `refreshed` 和 `code_baseline`；确认 intent_version、覆盖、代码入口和上一 Story 交接一致后，才能设置 `in_progress` 和 owner。随后保存首次失败、修复根因并从统一入口复验；满足全部 TODO 和验收后设置 `done`，再运行 `render`（会自动放开仅因前置未完成而阻塞的下一 Story），更新证据并提交推送，执行会话到此停止。
 
 只有用户显式要求方向检查时，才在领取下一 Story 前调用 `$story-direction-review`。方向检查只看结果是否偏航、重大遗漏和新事实对后续计划的影响，不替代代码审查。`INSERT_STORY` 优先使用最近已完成 Story 的插入号；只有主要目标、门禁或假设失效时才使用 `REPLAN`。
 

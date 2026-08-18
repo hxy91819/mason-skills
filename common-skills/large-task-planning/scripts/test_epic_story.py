@@ -458,6 +458,86 @@ verifies: []
         self.assertEqual(1, result.returncode)
         self.assertIn("覆盖项 TEST 被多个 Story 主责: STORY-01, STORY-02", result.stderr)
 
+    def mark_done(self, path: Path) -> None:
+        text = path.read_text(encoding="utf-8")
+        text = text.replace("status: todo", "status: done").replace("status: blocked", "status: done")
+        text = text.replace("owner: 待领取", "owner: Agent")
+        text = text.replace("- [ ] ", "- [x] ")
+        path.write_text(text, encoding="utf-8")
+        story_id = next(line.split(":", 1)[1].strip() for line in text.splitlines() if line.startswith("id: "))
+        for card in self.agent.glob(f"{story_id}-*执行卡.md"):
+            card.write_text(
+                card.read_text(encoding="utf-8")
+                .replace("refreshed: 待领取", "refreshed: 2026-08-18")
+                .replace("code_baseline: 待领取", "code_baseline: testhash"),
+                encoding="utf-8",
+            )
+
+    def test_render_clears_finished_dependency_blocker(self) -> None:
+        second = self.add_story("STORY-02", "后续", "STORY-01", "NEXT")
+        self.mark_done(self.story)
+        second.write_text(
+            second.read_text(encoding="utf-8")
+            .replace("status: todo", "status: blocked")
+            .replace("blocker: 无", "blocker: STORY-01 未完成"),
+            encoding="utf-8",
+        )
+
+        rendered = self.run_cli("render", *self.common_args(), "--dashboard", self.dashboard)
+        self.assertEqual(0, rendered.returncode, rendered.stderr)
+        self.assertIn("已同步依赖阻塞: STORY-02", rendered.stdout)
+        updated = second.read_text(encoding="utf-8")
+        self.assertIn("status: todo", updated)
+        self.assertIn("blocker: 无", updated)
+        self.assertIn("可领取：STORY-02", self.dashboard.read_text(encoding="utf-8"))
+
+    def test_render_marks_waiting_story_blocked(self) -> None:
+        second = self.add_story("STORY-02", "后续", "STORY-01", "NEXT")
+        stale = self.run_cli("check", *self.common_args())
+        self.assertEqual(1, stale.returncode)
+        self.assertIn("依赖阻塞已过期，请运行 render: STORY-02", stale.stderr)
+
+        rendered = self.run_cli("render", *self.common_args(), "--dashboard", self.dashboard)
+        self.assertEqual(0, rendered.returncode, rendered.stderr)
+        self.assertIn("已同步依赖阻塞: STORY-02", rendered.stdout)
+        updated = second.read_text(encoding="utf-8")
+        self.assertIn("status: blocked", updated)
+        self.assertIn("blocker: STORY-01 未完成", updated)
+
+    def test_render_keeps_non_dependency_blocker(self) -> None:
+        second = self.add_story("STORY-02", "后续", "STORY-01", "NEXT")
+        self.mark_done(self.story)
+        second.write_text(
+            second.read_text(encoding="utf-8")
+            .replace("status: todo", "status: blocked")
+            .replace("blocker: 无", "blocker: 证书未就绪"),
+            encoding="utf-8",
+        )
+
+        rendered = self.run_cli("render", *self.common_args(), "--dashboard", self.dashboard)
+        self.assertEqual(0, rendered.returncode, rendered.stderr)
+        self.assertNotIn("已同步依赖阻塞", rendered.stdout)
+        updated = second.read_text(encoding="utf-8")
+        self.assertIn("status: blocked", updated)
+        self.assertIn("blocker: 证书未就绪", updated)
+
+        checked = self.run_cli("check", *self.common_args(), "--dashboard", self.dashboard)
+        self.assertEqual(0, checked.returncode, checked.stderr)
+
+    def test_check_fails_when_dependency_blocker_is_stale(self) -> None:
+        second = self.add_story("STORY-02", "后续", "STORY-01", "NEXT")
+        self.mark_done(self.story)
+        second.write_text(
+            second.read_text(encoding="utf-8")
+            .replace("status: todo", "status: blocked")
+            .replace("blocker: 无", "blocker: STORY-01 未完成"),
+            encoding="utf-8",
+        )
+
+        checked = self.run_cli("check", *self.common_args())
+        self.assertEqual(1, checked.returncode)
+        self.assertIn("依赖阻塞已过期，请运行 render: STORY-02", checked.stderr)
+
     def test_started_story_requires_refreshed_code_baseline(self) -> None:
         text = self.story.read_text(encoding="utf-8").replace("status: todo", "status: in_progress").replace(
             "owner: 待领取", "owner: Agent"

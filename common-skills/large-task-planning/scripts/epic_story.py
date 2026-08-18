@@ -2,7 +2,7 @@
 """校验 Epic、Story、执行卡、覆盖映射及内容预算，并生成或查询项目仪表盘。
 
 参数定义：通过子命令接收 Epic 文件、Story 目录和可选仪表盘路径。
-输出定义：check/status 只读；render 仅替换仪表盘的受控标记区块；错误写入 stderr。
+输出定义：check/status 只读；render 先按 depends_on 同步「STORY-XX 未完成」阻塞，再替换仪表盘受控标记区块；错误写入 stderr。
 退出码：0 成功，1 文档或仪表盘校验失败，2 I/O 或命令行错误。
 """
 
@@ -34,6 +34,7 @@ COVERAGE_ID_RE = re.compile(r"^[A-Z0-9][A-Z0-9_.:-]*$")
 GATE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
 HEADING_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
 TODO_RE = re.compile(r"^- \[([ xX])\]\s+(.+?)\s*$", re.MULTILINE)
+DEPENDENCY_UNFINISHED_RE = re.compile(r"^(STORY-\d{2}(?:\.[1-9]\d*)?) 未完成$")
 LINK_RE = re.compile(r"\[([^\]]*)\]\([^)]+\)")
 HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 MARKDOWN_MARKUP_RE = re.compile(r"[\s`*_>#|:\-\[\](){}\\]+")
@@ -358,6 +359,69 @@ def ready_story_ids(stories: Sequence[WorkItem]) -> Tuple[str, ...]:
     )
 
 
+def first_unfinished_dependency(story: WorkItem, completed: Sequence[str] | set[str]) -> str | None:
+    done = set(completed)
+    return next((item for item in story.depends_on if item not in done), None)
+
+
+def planned_dependency_gate(story: WorkItem, completed: Sequence[str] | set[str]) -> Tuple[str, str] | None:
+    """若只因前置 Story 未完成而阻塞，返回应对齐的 status/blocker。"""
+    unfinished = first_unfinished_dependency(story, completed)
+    blocker = str(story.metadata.get("blocker", "")).strip()
+    if story.status == "todo" and unfinished is not None and blocker in {"", "无"}:
+        return ("blocked", f"{unfinished} 未完成")
+    if story.status == "blocked" and DEPENDENCY_UNFINISHED_RE.fullmatch(blocker):
+        if unfinished is None:
+            return ("todo", "无")
+        wanted = f"{unfinished} 未完成"
+        if blocker != wanted:
+            return ("blocked", wanted)
+    return None
+
+
+def stale_dependency_gates(stories: Sequence[WorkItem]) -> Tuple[str, ...]:
+    completed = {story.item_id for story in stories if story.status == "done"}
+    return tuple(story.item_id for story in stories if planned_dependency_gate(story, completed))
+
+
+def _replace_frontmatter_fields(path: Path, updates: Dict[str, str]) -> None:
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].strip() != "---":
+        raise DocumentError(f"{path}: 文件必须以 YAML frontmatter 开始")
+    try:
+        end = next(index for index, line in enumerate(lines[1:], 1) if line.strip() == "---")
+    except StopIteration as exc:
+        raise DocumentError(f"{path}: frontmatter 缺少结束标记 ---") from exc
+    replaced: set[str] = set()
+    for index in range(1, end):
+        key = lines[index].split(":", 1)[0].strip()
+        if key not in updates:
+            continue
+        ending = "\n" if lines[index].endswith("\n") else ""
+        lines[index] = f"{key}: {updates[key]}{ending}"
+        replaced.add(key)
+    missing = set(updates) - replaced
+    if missing:
+        raise DocumentError(f"{path}: 无法更新 frontmatter 字段 {', '.join(sorted(missing))}")
+    _atomic_write(path, "".join(lines))
+
+
+def sync_dependency_gates(stories: Sequence[WorkItem]) -> Tuple[str, ...]:
+    """把仅表示前置未完成的 blocker 写成与 depends_on 一致，避免 Agent 漏改。"""
+    completed = {story.item_id for story in stories if story.status == "done"}
+    changed: List[str] = []
+    today = date.today().isoformat()
+    for story in stories:
+        planned = planned_dependency_gate(story, completed)
+        if planned is None:
+            continue
+        status, blocker = planned
+        _replace_frontmatter_fields(story.path, {"status": status, "blocker": blocker, "updated": today})
+        changed.append(story.item_id)
+    return tuple(changed)
+
+
 def validate_project(epic: WorkItem, stories: Sequence[WorkItem]) -> List[str]:
     errors: List[str] = []
     errors.extend(_require_fields(epic, ("kind", "id", "title", "status", "owner", "updated", "coverage")))
@@ -638,6 +702,13 @@ def command_check(args: argparse.Namespace) -> int:
     epic, stories = load_project(args.epic, args.stories_dir)
     if not _validate_or_report(epic, stories):
         return 1
+    stale = stale_dependency_gates(stories)
+    if stale:
+        print(
+            f"ERROR: 依赖阻塞已过期，请运行 render: {', '.join(stale)}",
+            file=sys.stderr,
+        )
+        return 1
     if args.overview:
         overview = args.overview.read_text(encoding="utf-8")
         if not _report_errors(validate_overview(args.overview, overview)):
@@ -658,15 +729,23 @@ def command_render(args: argparse.Namespace) -> int:
     epic, stories = load_project(args.epic, args.stories_dir)
     if not _validate_or_report(epic, stories):
         return 1
+    synced = sync_dependency_gates(stories)
+    if synced:
+        epic, stories = load_project(args.epic, args.stories_dir)
+        if not _validate_or_report(epic, stories):
+            return 1
     current = args.dashboard.read_text(encoding="utf-8")
     updated = _replace_dashboard(current, dashboard_block(epic, stories, args.dashboard), args.dashboard)
     if not _report_errors(validate_dashboard(args.dashboard, updated)):
         return 1
+    notes = [f"已同步依赖阻塞: {', '.join(synced)}"] if synced else []
     if updated == current:
-        print(f"OK: 仪表盘已是最新: {args.dashboard}")
+        notes.append(f"仪表盘已是最新: {args.dashboard}")
+        print("OK: " + "；".join(notes))
         return 0
     _atomic_write(args.dashboard, updated)
-    print(f"OK: 已更新仪表盘: {args.dashboard}")
+    notes.append(f"已更新仪表盘: {args.dashboard}")
+    print("OK: " + "；".join(notes))
     return 0
 
 
@@ -723,7 +802,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="校验 Epic/Story、意图版本、覆盖主责、执行卡与内容预算，并生成项目仪表盘。",
         epilog=(
             "输出与退出码:\n"
-            "  check/status 不修改文件；render 只替换 dashboard 标记区块；错误写入 stderr。\n"
+            "  check/status 不修改文件；render 先同步依赖阻塞再替换 dashboard 标记区块；错误写入 stderr。\n"
             "  0=成功，1=格式/状态/仪表盘校验失败，2=命令行或 I/O 错误。\n\n"
             "示例:\n"
             "  epic_story.py check --epic topic/epics/EPIC-ID.md --stories-dir topic/stories\n"
@@ -741,13 +820,13 @@ def build_parser() -> argparse.ArgumentParser:
         subparser.add_argument("--epic", type=Path, required=True, help="Epic Markdown 文件")
         subparser.add_argument("--stories-dir", type=Path, required=True, help="包含 Story-*.md 的目录")
 
-    check = subparsers.add_parser("check", help="校验格式、依赖、状态和可选仪表盘新鲜度")
+    check = subparsers.add_parser("check", help="校验格式、依赖、状态、过期依赖阻塞和可选仪表盘新鲜度")
     add_common(check)
     check.add_argument("--overview", type=Path, help="同时检查人读项目入口的结构和字数")
     check.add_argument("--dashboard", type=Path, help="同时检查受控仪表盘是否为最新")
     check.set_defaults(handler=command_check)
 
-    render = subparsers.add_parser("render", help="校验后更新仪表盘受控区块")
+    render = subparsers.add_parser("render", help="同步依赖阻塞后更新仪表盘受控区块")
     add_common(render)
     render.add_argument("--dashboard", type=Path, required=True, help="包含受控标记的项目进展文件")
     render.set_defaults(handler=command_render)
