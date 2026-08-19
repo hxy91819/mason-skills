@@ -198,7 +198,9 @@ agents: scan file content and Git metadata, verify commit author name and email
 against the approved GitHub account, remove local paths and private identities,
 harden installers, preserve streaming behavior in local proxies, run
 gitleaks/pre-commit/tests, use autoreview as a closeout gate, and verify
-history rewrites before pushing.
+history rewrites before pushing. Ships `scripts/check_identity.py` (Python
+stdlib only; needs `git`, `gh` optional) that verifies repository-local Git
+identity and every commit author/committer against the approved GitHub account.
 
 ### secure-release
 
