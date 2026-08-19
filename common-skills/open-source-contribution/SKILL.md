@@ -13,10 +13,15 @@ push.
 ## Core Rules
 
 - Never expose tokens, private keys, prompt logs, local transcripts, shell
-  secrets, private service names, or corporate/internal email addresses.
+  secrets, private service names, corporate/internal email addresses, or
+  corporate identifiers (employee IDs, company usernames) as commit author
+  names.
 - Use a user-approved personal open-source email or GitHub noreply address for
   public commit authors and committers. Treat employer/corporate addresses as
   prohibited even when they are already configured globally or locally.
+- Match the public author name to the GitHub account: use the GitHub login or
+  an approved display name. Treat a corporate ID configured as `user.name` as
+  prohibited even when it is already configured globally or locally.
 - Treat Git commit metadata as public data. Secret scanners do not catch author
   and committer names/emails.
 - Do not rewrite history unless the user explicitly allows it. If allowed, use
@@ -38,23 +43,26 @@ for public-repository privacy, identity, security baseline, review, and push/PR
 hygiene. Apply both sets of completion gates without copying the detailed
 release protocol into this file.
 
-## GitHub Merge Email Gate
+## GitHub Merge Identity Gate
 
 Treat GitHub-generated merge and squash commits as a separate identity path:
-local `git config user.email` does not control their author email.
+local `git config user.name` and `user.email` do not control their author
+identity.
 
-Treat an explicitly approved personal address recorded in this skill or by the
+Treat an explicitly approved personal identity recorded in this skill or by the
 user as durable account-level confirmation. Reuse it across repositories and
 future PRs without asking again unless the user revokes it, evidence conflicts
 with it, or post-merge metadata violates it. For Mason's public repositories,
-the approved address is `masonxhuang@proton.me`; employer addresses are
-prohibited.
+the approved identity is GitHub account `hxy91819` with email
+`masonxhuang@proton.me`; employer addresses and corporate IDs used as author
+names (such as `masonxhuang`, Mason's company ID) are prohibited.
 
 Before a server-side merge:
 
-1. Use the durable approved address when one is recorded. For an account with
-   no durable confirmation, ask once for the GitHub **Settings → Emails →
-   Primary email address** and record the approved personal address.
+1. Use the durable approved identity (GitHub login and email) when one is
+   recorded. For an account with no durable confirmation, ask once for the
+   GitHub account login and **Settings → Emails → Primary email address**, and
+   record the approved personal identity.
 2. If available, cross-check with `gh api user/emails` and require the approved
    address to have `primary: true` and `verified: true`. This endpoint needs the
    `user` OAuth scope; do not broaden authentication scopes automatically.
@@ -66,11 +74,12 @@ Before a server-side merge:
    first-time confirmation.
 
 After every server-side merge, resolve the merge SHA and inspect the raw commit
-metadata through the GitHub commits API. Confirm that the author is the
+metadata through the GitHub commits API. Confirm that the author name is the
+approved GitHub login (or an approved display name) and the author email is the
 approved address or an approved GitHub noreply address before declaring the
 merge complete. GitHub's `noreply@github.com` committer on web-generated commits
-is expected. A prohibited author email is a privacy incident; report it and
-obtain explicit approval before rewriting published history.
+is expected. A prohibited author name or email is a privacy incident; report it
+and obtain explicit approval before rewriting published history.
 
 ## Privacy Review
 
@@ -87,33 +96,56 @@ gitleaks detect --no-git --redact --no-banner --source .
 Metadata checks:
 
 ```bash
+git config --get user.name
 git config --get user.email
 git log --format='%h %an <%ae> | %cn <%ce>' --all
+gh api user --jq '.login' 2>/dev/null || true
 git remote -v
 gh repo view --json visibility,description,url,repositoryTopics 2>/dev/null || true
 ```
 
-Before creating public commits, replace an employer/corporate Git email with a
-repository-local, user-approved personal open-source address:
+Compare every author/committer name and email in the log against the approved
+GitHub identity. A corporate ID used as an author name (a company username that
+differs from the GitHub login) is a must-fix finding even when the email is
+already personal.
 
-```bash
-git config --local user.email 'approved-open-source-address@example.com'
-```
+Before creating public commits, check the repository-local Git identity and
+commit history:
 
-If unpushed commits already contain a prohibited address, obtain explicit user
-approval before rewriting their author and committer metadata. Verify the
-rewritten publish range before pushing; do not treat a scanner-only pass as
-sufficient metadata validation.
+1. Check the repository-local identity:
+
+   ```bash
+   git config --local --get user.name
+   git config --local --get user.email
+   ```
+
+   When either is missing or not the approved personal identity, configure it
+   directly without asking and report the change in the final report:
+
+   ```bash
+   git config --local user.name 'approved-github-login'
+   git config --local user.email 'approved-open-source-address@example.com'
+   git config --local user.useConfigOnly true
+   ```
+
+2. Scan commit history for prohibited names and addresses. When any commit
+   uses a company email or corporate ID, ask the user whether to rewrite
+   history. Rewrite only after explicit user confirmation; never rewrite on the
+   agent's own initiative. When the user confirms, follow Git History Cleanup
+   and verify the rewritten publish range before pushing; do not treat a
+   scanner-only pass as sufficient metadata validation.
 
 Classify findings:
 
-- **Must fix**: real tokens, private keys, company/internal emails, local
-  transcripts, private logs, hidden binary artifacts, sensitive hostnames.
+- **Must fix**: real tokens, private keys, company/internal emails, corporate
+  IDs or company usernames used as commit author names, local transcripts,
+  private logs, hidden binary artifacts, sensitive hostnames.
 - **Usually fix**: absolute local paths, usernames, old private project names,
   machine-specific service names, corporate copyright holder strings.
 - **Acceptable when intentional**: user-approved personal open-source or GitHub
-  noreply email, public GitHub username in clone URLs, documented public
-  repository URL, public maintainer identity.
+  noreply email, user-approved GitHub login as author name, public GitHub
+  username in clone URLs, documented public repository URL, public maintainer
+  identity.
 
 ## Git History Cleanup
 
@@ -337,6 +369,8 @@ Include:
 
 - Files changed and why.
 - Privacy checks run and their result.
+- Repository-local Git identity changes made (user.name/user.email configured
+  to the approved personal identity).
 - Tests, lint, gitleaks, and autoreview command/result.
 - Git history rewrite details if performed.
 - Remote URL, branch, and final commit SHA if pushed.

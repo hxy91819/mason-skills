@@ -104,7 +104,7 @@ ln -s /path/to/mason-skills/common-skills/story-direction-review ~/.agents/skill
 | [distill](common-skills/distill/) | Reviews agent sessions for evidence-backed harness and project-knowledge improvements, pruning stale, conflicting, or incorrect guidance before strengthening durable decisions, docs, specs, tools, checks, skills, or CI. |
 | [large-task-planning](common-skills/large-task-planning/) | Builds an executable Epic/Story portal: human Markdown intent, script-owned Agent JSON, and a generated status dashboard. Explicit invocation only. |
 | [mermaid-lint](common-skills/mermaid-lint/) | Validates and fixes mermaid diagrams in markdown. Renders every block against the real mermaid renderer and reports all failures in one pass. Original skill design. |
-| [open-source-contribution](common-skills/open-source-contribution/) | Open-source contribution hygiene: privacy scanning, Git history cleanup, installer hardening, autoreview, and safe push/PR validation. |
+| [open-source-contribution](common-skills/open-source-contribution/) | Open-source contribution hygiene: identity verification, privacy scanning, Git history cleanup, installer hardening, autoreview, and safe push/PR validation. |
 | [secure-release](common-skills/secure-release/) | Integrates fail-closed release pipelines using a versioned CI kit; npm is the first implemented adapter. |
 | [story-direction-review](common-skills/story-direction-review/) | Reviews a completed Story for direction drift, invalidated assumptions, coverage gaps, and necessary plan changes. Explicit invocation only. |
 | [tech-doc-html](common-skills/tech-doc-html/) | Interactive single-file HTML from technical design docs. Original skill design; visual style inspired by [html-effectiveness](https://github.com/ThariqS/html-effectiveness). |
@@ -194,9 +194,10 @@ fences carrying an info string, and tilde fences are all recognized.
 ### open-source-contribution
 
 Standardizes open-source contribution cleanup and release checks for coding
-agents: scan file content and Git metadata, remove local paths and private
-identities, harden installers, preserve streaming behavior in local proxies,
-run gitleaks/pre-commit/tests, use autoreview as a closeout gate, and verify
+agents: scan file content and Git metadata, verify commit author name and email
+against the approved GitHub account, remove local paths and private identities,
+harden installers, preserve streaming behavior in local proxies, run
+gitleaks/pre-commit/tests, use autoreview as a closeout gate, and verify
 history rewrites before pushing.
 
 ### secure-release
