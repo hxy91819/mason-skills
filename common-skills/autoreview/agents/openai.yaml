@@ -1,0 +1,6 @@
+interface:
+  display_name: "Auto Review"
+  short_description: "Run a structured pre-commit or ship review"
+  default_prompt: "Use $autoreview to review the requested local change or PR."
+policy:
+  allow_implicit_invocation: false
