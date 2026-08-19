@@ -96,30 +96,25 @@ gitleaks detect --no-git --redact --no-banner --source .
 Metadata checks:
 
 ```bash
-git config --get user.name
-git config --get user.email
-git log --format='%h %an <%ae> | %cn <%ce>' --all
-gh api user --jq '.login' 2>/dev/null || true
+python3 {baseDirectory}/scripts/check_identity.py
 git remote -v
 gh repo view --json visibility,description,url,repositoryTopics 2>/dev/null || true
 ```
 
-Compare every author/committer name and email in the log against the approved
-GitHub identity. A corporate ID used as an author name (a company username that
-differs from the GitHub login) is a must-fix finding even when the email is
-already personal.
+The script checks repository-local `user.name`/`user.email` and every
+author/committer in history against the approved identity, and cross-checks the
+GitHub login via `gh` when available. A corporate ID used as an author name (a
+company username that differs from the GitHub login) is a must-fix finding even
+when the email is already personal. Override the defaults with `--name`,
+`--email`, `--github-login`, `--allowed-name`, `--prohibited-email`, and
+`--prohibited-name` for accounts other than Mason's.
 
 Before creating public commits, check the repository-local Git identity and
 commit history:
 
-1. Check the repository-local identity:
-
-   ```bash
-   git config --local --get user.name
-   git config --local --get user.email
-   ```
-
-   When either is missing or not the approved personal identity, configure it
+1. Check the repository-local identity with the identity check script
+   (`python3 {baseDirectory}/scripts/check_identity.py`). When it reports a
+   missing or non-approved local `user.name`/`user.email`, configure them
    directly without asking and report the change in the final report:
 
    ```bash
