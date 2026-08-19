@@ -190,6 +190,10 @@ are known:
 git cat-file -e OLD_SHA^{commit} 2>/dev/null && echo "old commit still exists"
 ```
 
+GitHub retains pull-request head refs (`refs/pull/N/head`) after force-push and
+branch deletion; old SHAs stay fetchable there and cannot be removed through
+git or the API. Report them as residual exposure.
+
 ## Repository Hygiene
 
 Minimum public repository baseline:
