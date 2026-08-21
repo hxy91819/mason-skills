@@ -2061,6 +2061,110 @@ def materialize_tree_snapshot(
     return count
 
 
+def tree_blob_ids(
+    repo: Path,
+    ref: str,
+    paths: list[str],
+) -> dict[str, bytes]:
+    if not paths:
+        return {}
+    records = git_bytes(
+        repo,
+        "--literal-pathspecs",
+        "ls-tree",
+        "-rz",
+        ref,
+        "--",
+        *paths,
+    ).stdout
+    found: dict[str, bytes] = {}
+    for record in records.split(b"\0"):
+        if not record:
+            continue
+        metadata, raw_path = record.split(b"\t", 1)
+        mode, object_type, object_id = metadata.split()
+        if object_type != b"blob" or mode == b"160000":
+            continue
+        found[raw_path.decode(SUBPROCESS_TEXT_ENCODING, errors="strict")] = object_id
+    return found
+
+
+def index_blob_ids(
+    repo: Path,
+    paths: list[str],
+) -> dict[str, bytes]:
+    if not paths:
+        return {}
+    records = git_bytes(
+        repo,
+        "--literal-pathspecs",
+        "ls-files",
+        "--stage",
+        "-z",
+        "--",
+        *paths,
+    ).stdout
+    found: dict[str, bytes] = {}
+    for record in records.split(b"\0"):
+        if not record:
+            continue
+        metadata, raw_path = record.split(b"\t", 1)
+        mode, object_id, stage = metadata.split()
+        if stage != b"0" or mode == b"160000":
+            continue
+        found[raw_path.decode(SUBPROCESS_TEXT_ENCODING, errors="strict")] = object_id
+    return found
+
+
+def remove_pure_rename_paths(
+    base: dict[str, bytes],
+    reviewed: dict[str, bytes],
+    paths: list[str],
+) -> list[str]:
+    deleted = set(base) - set(reviewed)
+    added = set(reviewed) - set(base)
+    deleted_by_blob: dict[bytes, list[str]] = {}
+    added_by_blob: dict[bytes, list[str]] = {}
+    for path in deleted:
+        deleted_by_blob.setdefault(base[path], []).append(path)
+    for path in added:
+        added_by_blob.setdefault(reviewed[path], []).append(path)
+    pure_rename_paths: set[str] = set()
+    for object_id, deleted_paths in deleted_by_blob.items():
+        added_paths = added_by_blob.get(object_id, [])
+        if len(deleted_paths) == len(added_paths) == 1:
+            pure_rename_paths.update((deleted_paths[0], added_paths[0]))
+    return [path for path in paths if path not in pure_rename_paths]
+
+
+def deduplicate_pure_rename_paths(
+    repo: Path,
+    base_ref: str,
+    reviewed_ref: str,
+    paths: list[str],
+) -> list[str]:
+    """Exclude byte-identical one-to-one renames from changed-content snapshots."""
+    if not base_ref or not paths:
+        return paths
+    base = tree_blob_ids(repo, base_ref, paths)
+    reviewed = tree_blob_ids(repo, reviewed_ref, paths)
+    return remove_pure_rename_paths(base, reviewed, paths)
+
+
+def deduplicate_index_rename_paths(
+    repo: Path,
+    base_ref: str,
+    paths: list[str],
+) -> list[str]:
+    if not base_ref or not paths:
+        return paths
+    return remove_pure_rename_paths(
+        tree_blob_ids(repo, base_ref, paths),
+        index_blob_ids(repo, paths),
+        paths,
+    )
+
+
 def open_worktree_parent(repo: Path, rel_path: Path) -> int | bool | None:
     required_dir_fd = {os.open, os.stat, os.readlink}
     if not required_dir_fd <= os.supports_dir_fd:
@@ -2416,6 +2520,18 @@ def prepare_trufflehog_history(
         paths = sorted(set(staged_paths + unstaged_paths))
         head = git(repo, "rev-parse", "--verify", "HEAD", check=False).strip()
         if head:
+            unstaged_path_set = set(unstaged_paths)
+            stable_index_paths = [
+                path for path in paths if path not in unstaged_path_set
+            ]
+            deduplicated = set(
+                deduplicate_index_rename_paths(repo, head, stable_index_paths)
+            )
+            paths = [
+                path
+                for path in paths
+                if path not in stable_index_paths or path in deduplicated
+            ]
             materialize_tree_snapshot(repo, root, head, paths)
         base_commit = commit_snapshot(root, "baseline")
         clear_snapshot_paths(root, paths)
@@ -2469,6 +2585,7 @@ def prepare_trufflehog_history(
             reviewed_ref,
         )
     if base_ref:
+        paths = deduplicate_pure_rename_paths(repo, base_ref, reviewed_ref, paths)
         materialize_tree_snapshot(repo, root, base_ref, paths)
     base_commit = commit_snapshot(root, "baseline")
     clear_snapshot_paths(root, paths)
