@@ -13,7 +13,8 @@ Use this skill only when the user explicitly invokes it. The invocation authoriz
 1. Check the current branch, `git status --short`, and `git worktree list`. Preserve unrelated work and continue when the current task has not yet modified the shared workspace.
 2. Resolve the repository root and create the task worktree at `<repo-root>/.worktrees/<task-name>`. Use a short, recognizable task name and a branch name consistent with the repository.
 3. Add `/.worktrees/` to the repository's `.git/info/exclude` if it is not already present. Preserve the file's existing contents and add the entry only once.
-4. Create the task branch and worktree from the requested base, or from the current `HEAD` when no base was specified. Confirm the path and branch with `git worktree list` before editing.
+4. Select a clean base commit. By default, fetch and use the target remote's default branch, such as `upstream/main` or `origin/main`; when no remote exists, use the local default branch. Use another branch only when the user explicitly requests it or the repository or task requires it.
+5. Create the task branch and worktree from that exact base. Before editing, confirm the path and branch with `git worktree list` and require `git status --short` in the new worktree to be empty.
 
 ## Work And Deliver
 
