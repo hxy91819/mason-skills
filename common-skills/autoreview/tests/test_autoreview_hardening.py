@@ -267,6 +267,144 @@ class AutoreviewHardeningTests(unittest.TestCase):
                             text=True,
                         )
 
+    def test_trufflehog_deduplicates_unchanged_renames(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            repo = init_repo(Path(tempdir))
+            old_path = repo / "old.py"
+            content = (
+                "def test_" + "secret_like_path_values_are_blocked(self):\n    pass\n"
+            )
+            old_path.write_text(content, encoding="utf-8")
+            git(repo, "add", old_path.name)
+            git(repo, "commit", "-q", "-m", "base")
+            old_path.rename(repo / "new.py")
+            git(repo, "add", "-A")
+            git(repo, "commit", "-q", "-m", "move")
+
+            with tempfile.TemporaryDirectory() as scan_dir:
+                scan_repo = Path(scan_dir)
+                base_commit = self.helper["prepare_trufflehog_history"](
+                    repo,
+                    "commit",
+                    None,
+                    "HEAD",
+                    scan_repo,
+                )
+                commits = git(
+                    scan_repo,
+                    "log",
+                    "--reverse",
+                    "--format=%H",
+                ).splitlines()
+                self.assertEqual(commits[0], base_commit)
+                for commit in commits:
+                    self.assertEqual(
+                        git(scan_repo, "ls-tree", "-r", "--name-only", commit),
+                        "",
+                    )
+
+    def test_trufflehog_deduplicates_staged_unchanged_renames(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            repo = init_repo(Path(tempdir))
+            old_path = repo / "old.py"
+            content = (
+                "def test_" + "secret_like_path_values_are_blocked(self):\n    pass\n"
+            )
+            old_path.write_text(content, encoding="utf-8")
+            git(repo, "add", old_path.name)
+            git(repo, "commit", "-q", "-m", "base")
+            old_path.rename(repo / "new.py")
+            git(repo, "add", "-A")
+
+            with tempfile.TemporaryDirectory() as scan_dir:
+                scan_repo = Path(scan_dir)
+                base_commit = self.helper["prepare_trufflehog_history"](
+                    repo,
+                    "local",
+                    None,
+                    "HEAD",
+                    scan_repo,
+                )
+                commits = git(
+                    scan_repo,
+                    "log",
+                    "--reverse",
+                    "--format=%H",
+                ).splitlines()
+                self.assertEqual(commits[0], base_commit)
+                for commit in commits:
+                    self.assertEqual(
+                        git(scan_repo, "ls-tree", "-r", "--name-only", commit),
+                        "",
+                    )
+
+    def test_trufflehog_keeps_renamed_path_with_unstaged_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            repo = init_repo(Path(tempdir))
+            old_path = repo / "old.py"
+            old_path.write_text("before\n", encoding="utf-8")
+            git(repo, "add", old_path.name)
+            git(repo, "commit", "-q", "-m", "base")
+            new_path = repo / "new.py"
+            old_path.rename(new_path)
+            git(repo, "add", "-A")
+            new_path.write_text("after\n", encoding="utf-8")
+
+            with tempfile.TemporaryDirectory() as scan_dir:
+                scan_repo = Path(scan_dir)
+                self.helper["prepare_trufflehog_history"](
+                    repo,
+                    "local",
+                    None,
+                    "HEAD",
+                    scan_repo,
+                )
+                commits = git(
+                    scan_repo,
+                    "log",
+                    "--reverse",
+                    "--format=%H",
+                ).splitlines()
+                self.assertEqual(
+                    git(scan_repo, "show", f"{commits[1]}:new.py"),
+                    "before\n",
+                )
+                self.assertEqual(
+                    git(scan_repo, "show", f"{commits[2]}:new.py"),
+                    "after\n",
+                )
+
+    def test_trufflehog_keeps_copied_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            repo = init_repo(Path(tempdir))
+            source = repo / "source.py"
+            source.write_text("copied content\n", encoding="utf-8")
+            git(repo, "add", source.name)
+            git(repo, "commit", "-q", "-m", "base")
+            (repo / "copy.py").write_bytes(source.read_bytes())
+            git(repo, "add", "copy.py")
+            git(repo, "commit", "-q", "-m", "copy")
+
+            with tempfile.TemporaryDirectory() as scan_dir:
+                scan_repo = Path(scan_dir)
+                self.helper["prepare_trufflehog_history"](
+                    repo,
+                    "commit",
+                    None,
+                    "HEAD",
+                    scan_repo,
+                )
+                commits = git(
+                    scan_repo,
+                    "log",
+                    "--reverse",
+                    "--format=%H",
+                ).splitlines()
+                self.assertEqual(
+                    git(scan_repo, "show", f"{commits[1]}:copy.py"),
+                    "copied content\n",
+                )
+
     def test_trufflehog_history_scans_deleted_content_in_reverse_commit(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             repo = init_repo(Path(tempdir))
