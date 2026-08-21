@@ -1,0 +1,7 @@
+interface:
+  display_name: "Use Worktree"
+  short_description: "在项目内创建并完成一次隔离的 worktree 任务"
+  default_prompt: "Use $use-worktree to complete this task in one isolated Git worktree and clean it up after delivery."
+
+policy:
+  allow_implicit_invocation: false
