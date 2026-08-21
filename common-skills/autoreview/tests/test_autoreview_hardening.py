@@ -1099,7 +1099,7 @@ class AutoreviewHardeningTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "unknown base ref"):
                 self.helper["branch_bundle"](repo, "origin/main")
 
-    def test_commit_bundle_rejects_merge_commits(self) -> None:
+    def test_merge_commit_bundle_rejection(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             repo = init_repo(Path(tempdir))
             (repo / "base.txt").write_text("base\n", encoding="utf-8")
@@ -1783,7 +1783,7 @@ class AutoreviewHardeningTests(unittest.TestCase):
             with self.subTest(rel=rel):
                 self.assertIsNotNone(self.helper["sensitive_repo_path_risk"](rel))
 
-    def test_secret_like_path_values_are_blocked(self) -> None:
+    def test_sensitive_path_values_are_blocked(self) -> None:
         secret_path = "notes-" + "ghp_" + "A" * 24 + ".txt"
 
         self.assertEqual(
@@ -3624,7 +3624,7 @@ class AutoreviewHardeningTests(unittest.TestCase):
 
         self.assertTrue(self.helper["secret_text_risk"](content))
 
-    def test_secret_detector_allows_dotted_calls(self) -> None:
+    def test_dotted_call_detection_allows_safe_calls(self) -> None:
         for content in (
             "token=secrets.token_urlsafe(32)",
             "token = provider.issue_token()",
