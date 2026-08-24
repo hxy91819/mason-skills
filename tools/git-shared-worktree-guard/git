@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # 定义：共享工作区的 Git 保护 wrapper。正常 Git 命令透明转发，会破坏当前工作区现场的命令经影响预检后拒绝。
-# 参数：与 Git 完全相同；--wrapper-help 显示说明；--user-approved=<reason> 是单次授权。
+# 参数：与 Git 完全相同；--wrapper-help 显示说明；--user-approved=<reason> 是单次授权；
+#       --task-authorized=<reason> 仅用于已明确授权的安全 worktree 清理。
 # 输出：放行命令保留 Git 原始输出和退出码；被拦截时向 stderr 输出提示并返回 77。
 # 决策：先探测命令的实际影响；只有确认会破坏现场才拦截，无影响或无法确认时交给全局规则。
 
@@ -27,6 +28,9 @@ Options:
   --user-approved=<reason>   Allow one state-changing command after the user
                              explicitly approves it. Must appear immediately
                              after "git" and include a non-empty audit reason.
+  --task-authorized=<reason> Allow one clean, non-forced `worktree remove` when
+                             the current task already explicitly authorizes the
+                             exact target. Includes a non-empty audit reason.
 
 Outputs:
   Forwarded commands: original Git stdout, stderr, and exit code.
@@ -68,7 +72,12 @@ BLOCKED: 预检确认该命令会改变共享仓库或工作区状态。
 2. 可能影响的文件、分支、worktree 或历史；
 3. 为什么必须执行，以及如何恢复。
 
-只有用户在当前任务中对该次操作给出明确同意后，才可使用单次 break-glass 授权重试：
+若当前任务已明确授权该目标，Agent 可以直接使用 `--user-approved`；无需再次向用户确认。
+如果授权、目标或影响范围不明确，才先说明风险并请求确认。对于干净、非强制的 worktree
+清理，优先使用受限的 `--task-authorized`：
+  git --task-authorized='<记录当前任务的明确授权>' ${command_text#git }
+
+其他受影响操作在用户明确同意后，可使用单次 break-glass 授权：
   git --user-approved='<记录用户授权理由>' ${command_text#git }
 EOF
   exit 77
@@ -81,6 +90,18 @@ run_approved() {
   cat >&2 <<EOF
 BREAK-GLASS: 正在执行用户明确授权的 Git 写操作。
 授权理由: ${approval_reason}
+完整命令: $(render_command git "$@")
+EOF
+  exec "$REAL_GIT" "$@"
+}
+
+run_task_authorized() {
+  local authorization_reason="$1"
+  shift
+
+  cat >&2 <<EOF
+TASK-AUTHORIZED: 正在执行当前任务已明确授权的安全 Git 清理操作。
+授权理由: ${authorization_reason}
 完整命令: $(render_command git "$@")
 EOF
   exec "$REAL_GIT" "$@"
@@ -590,6 +611,49 @@ submodule_changes_worktree() {
   [[ "${1:-}" == "update" || "${1:-}" == "deinit" || "${1:-}" == "absorbgitdirs" ]]
 }
 
+safe_worktree_remove() {
+  local target=""
+  local target_path=""
+  local top_level=""
+  local status=""
+  local arg
+  local separator_seen=0
+  local -a positionals=()
+
+  [[ "${1:-}" == "remove" ]] || return 1
+  shift
+
+  for arg in "$@"; do
+    if ((separator_seen == 1)); then
+      positionals+=("$arg")
+      continue
+    fi
+    case "$arg" in
+      --)
+        separator_seen=1
+        ;;
+      -f|--force)
+        return 1
+        ;;
+      -*)
+        return 1
+        ;;
+      *)
+        positionals+=("$arg")
+        ;;
+    esac
+  done
+
+  ((${#positionals[@]} == 1)) || return 1
+  target="${positionals[0]}"
+  target_path="$(cd -- "$target" && pwd -P)" || return 1
+  top_level="$(git_probe rev-parse --show-toplevel 2>/dev/null)" || return 1
+  [[ "$target_path" != "$top_level" ]] || return 1
+  git_probe worktree list --porcelain | grep -Fqx "worktree ${target_path}" || return 1
+  status="$(git_probe -C "$target_path" status --porcelain --untracked-files=all)" || return 1
+  [[ -z "$status" ]]
+}
+
 reflog_is_destructive() {
   [[ "${1:-}" == "expire" || "${1:-}" == "delete" ]]
 }
@@ -643,6 +707,7 @@ is_blocked() {
 
 main() {
   local approval_reason=""
+  local task_authorization_reason=""
   local subcommand_index
   local command
   local -a args
@@ -661,7 +726,24 @@ main() {
       echo "ERROR: use --user-approved=<reason>; the audit reason cannot be omitted." >&2
       return 64
       ;;
+    --task-authorized=*)
+      task_authorization_reason="${1#--task-authorized=}"
+      shift
+      if [[ -z "$task_authorization_reason" ]]; then
+        echo "ERROR: --task-authorized requires a non-empty authorization reason." >&2
+        return 64
+      fi
+      ;;
+    --task-authorized)
+      echo "ERROR: use --task-authorized=<reason>; the audit reason cannot be omitted." >&2
+      return 64
+      ;;
   esac
+
+  if [[ -n "$approval_reason" && -n "$task_authorization_reason" ]]; then
+    echo "ERROR: use either --user-approved or --task-authorized, not both." >&2
+    return 64
+  fi
 
   args=("$@")
   subcommand_index="$(find_subcommand_index "$@")"
@@ -683,6 +765,12 @@ main() {
   fi
 
   if is_blocked "$command" ${command_args[@]+"${command_args[@]}"}; then
+    if [[ -n "$task_authorization_reason" ]]; then
+      if [[ "$command" == "worktree" ]] && safe_worktree_remove ${command_args[@]+"${command_args[@]}"}; then
+        run_task_authorized "$task_authorization_reason" "$@"
+      fi
+      block_command "$@"
+    fi
     if [[ -n "$approval_reason" ]]; then
       run_approved "$approval_reason" "$@"
     fi
