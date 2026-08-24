@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+"""Run autoreview's optional TruffleHog credential preflight explicitly."""
+
+from __future__ import annotations
+
+import argparse
+import runpy
+from pathlib import Path
+
+
+AUTOREVIEW = Path(__file__).with_name("autoreview")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Scan a Git change with TruffleHog before commit, push, or external review."
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["local", "branch", "commit"],
+        default="local",
+        help="Change target to scan: local worktree, branch diff, or one commit.",
+    )
+    parser.add_argument("--base", help="Base ref for --mode branch.")
+    parser.add_argument("--commit", default="HEAD", help="Commit ref for --mode commit.")
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    helper = runpy.run_path(str(AUTOREVIEW), run_name="autoreview_trufflehog")
+    repo = helper["repo_root"]()
+    if args.mode == "branch" and not args.base:
+        raise SystemExit("--base is required with --mode branch")
+    target_ref = args.base if args.mode == "branch" else None
+    helper["run_trufflehog_preflight"](
+        repo,
+        args.mode,
+        target_ref,
+        args.commit,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
