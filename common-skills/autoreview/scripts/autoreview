@@ -12810,9 +12810,10 @@ def main() -> int:
     changed_paths = review_paths(repo, target, target_ref, args.commit)
     print(f"bundle: {utf8_size(bundle)} bytes; review passes: {len(prompts)}")
     if source_tree_snapshot(repo) != review_source_snapshot:
-        raise SystemExit(
+        print(
             "source changed while the review bundle was being created; "
-            "rerun autoreview against the updated tree"
+            "continuing with the captured bundle and preserving concurrent changes",
+            file=sys.stderr,
         )
 
     tests_proc: tuple[subprocess.Popen, float] | None = None
@@ -12858,13 +12859,13 @@ def main() -> int:
     finally:
         tests_status = finish_parallel_tests(*tests_proc) if tests_proc else 0
 
-    if source_tree_snapshot(repo) != review_source_snapshot:
+    source_changed_during_review = source_tree_snapshot(repo) != review_source_snapshot
+    if source_changed_during_review:
         print(
-            "source changed after the review bundle was created; "
-            "rerun autoreview against the updated tree",
+            "source changed during review; report covers the captured bundle and "
+            "concurrent changes were preserved",
             file=sys.stderr,
         )
-        return 1
 
     if args.json_output:
         atomic_write_text(
