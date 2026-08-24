@@ -651,6 +651,57 @@ class AutoreviewCompatibilityTests(unittest.TestCase):
             AUTOREVIEW.codex_model_access_failure(stderr_result, "gpt-5.6-sol")
         )
 
+    def test_claude_model_access_failure_reports_actionable_configuration(self) -> None:
+        result = subprocess.CompletedProcess(
+            ["claude"],
+            1,
+            "",
+            'API Error: 404 {"error":{"message":"model claude-fable-5 not found"}}',
+        )
+        environment = {
+            "AUTOREVIEW_ENGINE": "claude",
+            "AUTOREVIEW_CLAUDE_MODEL": "claude-fable-5",
+        }
+
+        with mock.patch.dict(os.environ, environment, clear=True), mock.patch.object(
+            sys,
+            "argv",
+            ["autoreview"],
+        ):
+            args = AUTOREVIEW.reviewer_args(AUTOREVIEW.parse_args())[0]
+
+        with tempfile.TemporaryDirectory(prefix="autoreview-claude-access.") as tmpdir, mock.patch.object(
+            AUTOREVIEW,
+            "ensure_claude_isolation_supported",
+        ), mock.patch.object(
+            AUTOREVIEW,
+            "resolve_command",
+            return_value="/usr/bin/claude",
+        ), mock.patch.object(
+            AUTOREVIEW,
+            "run_with_heartbeat",
+            return_value=result,
+        ):
+            with self.assertRaises(SystemExit) as error:
+                AUTOREVIEW.run_claude(args, Path(tmpdir), "review")
+
+        message = str(error.exception)
+        self.assertIn("requested Claude reviewer model is unavailable: claude-fable-5", message)
+        self.assertIn("did not silently switch", message)
+        self.assertIn("clear or replace AUTOREVIEW_MODEL/AUTOREVIEW_CLAUDE_MODEL", message)
+
+    def test_claude_capacity_failure_is_not_reported_as_account_access(self) -> None:
+        result = subprocess.CompletedProcess(
+            ["claude"],
+            1,
+            "",
+            "model claude-fable-5 is temporarily unavailable due to capacity",
+        )
+
+        self.assertFalse(
+            AUTOREVIEW.claude_model_access_failure(result, "claude-fable-5")
+        )
+
     def test_extract_json_accepts_dict_result_payload(self) -> None:
         payload = {
             "type": "result",
