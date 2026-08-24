@@ -14,7 +14,7 @@
   ],
   "verifies": [],
   "goal": "员工提交企业邮箱后，站点生成只存摘要的一次性令牌，并在 1 分钟内投递含登录链接与验证码的邮件。",
-  "decision_boundary": "投递渠道锁定企业邮箱；令牌只存摘要；不触碰文档内容与权限模型；契约参数变化必须先更新《一次性令牌契约》并请用户确认。",
+  "decision_boundary": "投递渠道锁定企业邮箱；令牌只存摘要；不触碰文档内容与权限模型；契约参数固定为已确认值，Agent 可在契约范围内完成实现。",
   "technical_plan": "在文档站后端新增令牌模块：申请接口、企业域名校验、令牌生成与摘要存储、邮件模板与发送重试；全部参数以 agent/令牌契约.json 为准。",
   "authoritative_inputs": "agent/令牌契约.json；agent/门禁.json；epics/EPIC-TOKEN-LOGIN.md 的全局设计。",
   "claim_checks": "复核 intent_version=1；本卡无前置 Story；确认登录页与后端代码入口存在；确认远端基线与本卡记录一致。",

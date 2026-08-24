@@ -7,30 +7,36 @@ gate: RELEASE
 depends_on: [STORY-03, STORY-04]
 updated: 2026-08-18
 intent_version: 1
+language: zh-Hans
 ---
 
 # 全量验收与灰度上线
 
+<!-- large-task-planning:vision -->
 ## 愿景
 
 一次性令牌登录在预发环境通过全量验收，在生产灰度后成为文档站默认入口。共享密码入口对用户消失，但需要时可以在一次发布内恢复。
 
+<!-- large-task-planning:scope -->
 ## 范围
 
 预发全量验收、生产灰度、共享密码入口下线与回退演练。本 Story 同时复核前四个 Story 的结果是否在真实环境成立，不再开发新能力。
 
+<!-- large-task-planning:key-decisions -->
 ## 关键决策
 
+<!-- large-task-planning:decision owner=user -->
 1. **共享密码入口在全量验收通过后下线，保留配置开关可在一次发布内恢复。**
    - 决定者：用户。
    - Agent 建议：建议开关至少保留 30 天再移除，用户采纳。
    - 结果与影响：用户得到单一干净的登录入口；代价是回退依赖开关存在，需在演练中验证。
-
+<!-- large-task-planning:decision owner=user -->
 2. **上线节奏为先灰度一天，再全量放开。**
    - 决定者：用户。
    - Agent 建议：建议从行政团队开始灰度，用户采纳并指定行政团队先行。
    - 结果与影响：影响面先小后大；代价是上线多一天，期间两种入口并存。
 
+<!-- large-task-planning:acceptance-criteria -->
 ## 验收标准
 
 - 预发全量验收清单一次性通过，证据归档到 agent/evidence/。

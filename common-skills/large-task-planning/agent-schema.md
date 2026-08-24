@@ -4,6 +4,10 @@ Agent 文档是结构化 JSON，只通过 `scripts/epic_story.py` 的 `template`
 
 字段名、枚举和清单规则以脚本校验为准。本页给写作模板。
 
+## 语言与语义章节
+
+Epic 和全部 Story 都必须有相同的 `language`（BCP-47，例如 `zh-Hans`、`zh-Hant`、`en`）。人读 Markdown 的每个二级标题前必须有 `<!-- large-task-planning:<section-id> -->`；脚本按 section id 校验结构，不限制标题或正文语言。完整的 section id 列表和标记格式见 `SKILL.md`。
+
 ## 执行卡 `agent-card`
 
 路径：`agent/STORY-NN[.M]-短标题.json`。文件名必须以 Story ID 加连字符开头。每个 Story 恰好一份。
@@ -23,7 +27,7 @@ Agent 文档是结构化 JSON，只通过 `scripts/epic_story.py` 的 `template`
   "owns": ["AUTH_STATE"],
   "verifies": [],
   "goal": "完成时的可观察结果。",
-  "decision_boundary": "不可变条件，以及必须询问的变化。",
+  "decision_boundary": "不可变条件，以及 Agent 可在已确认方案内自行处理的实现取舍。",
   "technical_plan": "实现路径；精确参数放到共享契约。",
   "authoritative_inputs": "本卡直接依赖的共享 JSON、代码入口和基线。",
   "claim_checks": "领取时复核 intent_version、前置交接、代码入口和远端基线。",
@@ -34,7 +38,7 @@ Agent 文档是结构化 JSON，只通过 `scripts/epic_story.py` 的 `template`
   ],
   "steps": "按顺序写出实现步骤，每步带完成条件。",
   "verification": "命令、退出码、固定分母和交付证明。",
-  "stop_conditions": "必须停止并询问的输入漂移。",
+  "stop_conditions": "使已确认方案失效的输入漂移；暂停并回到计划修订。",
   "handoff": "起止版本、副作用、清理和下一个 Story 输入。"
 }
 ```
@@ -77,7 +81,7 @@ python3 scripts/epic_story.py write --file topic/agent/STORY-01-标题.json --fr
 }
 ```
 
-两项合计最多 6 条。没有时用空数组，不要写 `"无"`。
+两项合计最多 6 条。`pending_decisions` 仅用于全量计划获准前的待决事项；批准后必须为空。没有时用空数组，不要写 `"无"`。
 
 ## 共享资料 `agent-reference`
 

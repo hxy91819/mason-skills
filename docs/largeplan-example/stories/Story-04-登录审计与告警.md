@@ -7,18 +7,22 @@ gate: COMPONENT
 depends_on: [STORY-02]
 updated: 2026-08-18
 intent_version: 1
+language: zh-Hans
 ---
 
 # 登录审计与告警
 
+<!-- large-task-planning:vision -->
 ## 愿景
 
 登录链路的每次签发、成功、失败和锁定都留下可查询的记录。出现异常模式时当天就触发告警，运维不需要翻日志才能发现滥用。
 
+<!-- large-task-planning:scope -->
 ## 范围
 
 四类审计事件的写入、面向运维的查询页和基础告警规则；记录保留期按《一次性令牌契约》执行。业务文档的访问权限审计不在本 Story 内。
 
+<!-- large-task-planning:acceptance-criteria -->
 ## 验收标准
 
 - 四类事件都有记录，包含时间、邮箱、来源地址和结果。

@@ -21,22 +21,110 @@ from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
 
-GENERATED_NOTICE = "> 本文由脚本根据 Agent JSON 状态源生成，请勿手工修改。"
 SCHEMA_VERSION = 1
 KIND_CARD = "agent-card"
 KIND_RISK = "risk-register"
 KIND_REFERENCE = "agent-reference"
-STATUS_LABELS = {
-    "todo": "待开始",
-    "in_progress": "进行中",
-    "blocked": "阻塞",
-    "done": "已完成",
+STATUS_IDS = ("todo", "in_progress", "blocked", "done")
+DASHBOARD_LABELS = {
+    "zh-Hans": {
+        "progress": "项目进展",
+        "notice": "> 本文由脚本根据 Agent JSON 状态源生成，请勿手工修改。",
+        "overview": "Epic / Story 一览",
+        "risks": "风险与阻塞",
+        "epic": "Epic",
+        "stories": "Story",
+        "completed": "已完成",
+        "current_progress": "当前推进",
+        "ready": "可领取",
+        "none": "无",
+        "story": "Story",
+        "status": "状态",
+        "progress_column": "进度",
+        "checklist": "执行清单",
+        "current_result": "当前结果或下一步",
+        "blocked": "阻塞",
+        "all_done": "全部完成",
+        "current_blocker": "当前阻塞",
+        "planning_pending": "规划待决",
+        "follow_up": "后续关注",
+        "no_risks": "当前没有规划待决或后续关注的风险。",
+        "risk_type": "类型",
+        "item": "事项",
+        "status_labels": {"todo": "待开始", "in_progress": "进行中", "blocked": "阻塞", "done": "已完成"},
+    },
+    "zh-Hant": {
+        "progress": "專案進展",
+        "notice": "> 本文由腳本根據 Agent JSON 狀態來源產生，請勿手動修改。",
+        "overview": "Epic / Story 一覽",
+        "risks": "風險與阻塞",
+        "epic": "Epic",
+        "stories": "Story",
+        "completed": "已完成",
+        "current_progress": "目前推進",
+        "ready": "可領取",
+        "none": "無",
+        "story": "Story",
+        "status": "狀態",
+        "progress_column": "進度",
+        "checklist": "執行清單",
+        "current_result": "目前結果或下一步",
+        "blocked": "阻塞",
+        "all_done": "全部完成",
+        "current_blocker": "目前阻塞",
+        "planning_pending": "規劃待決",
+        "follow_up": "後續關注",
+        "no_risks": "目前沒有規劃待決或後續關注的風險。",
+        "risk_type": "類型",
+        "item": "事項",
+        "status_labels": {"todo": "待開始", "in_progress": "進行中", "blocked": "阻塞", "done": "已完成"},
+    },
+    "en": {
+        "progress": "Project Progress",
+        "notice": "> This page is generated from the Agent JSON source of truth. Do not edit it manually.",
+        "overview": "Epic / Story Overview",
+        "risks": "Risks and Blockers",
+        "epic": "Epic",
+        "stories": "Stories",
+        "completed": "completed",
+        "current_progress": "Current progress",
+        "ready": "Ready to claim",
+        "none": "none",
+        "story": "Story",
+        "status": "Status",
+        "progress_column": "Progress",
+        "checklist": "Checklist",
+        "current_result": "Current result or next step",
+        "blocked": "Blocked",
+        "all_done": "All complete",
+        "current_blocker": "Current blocker",
+        "planning_pending": "Planning decision",
+        "follow_up": "Follow-up",
+        "no_risks": "There are no pending planning decisions or follow-up risks.",
+        "risk_type": "Type",
+        "item": "Item",
+        "status_labels": {"todo": "Not started", "in_progress": "In progress", "blocked": "Blocked", "done": "Done"},
+    },
 }
 STORY_ID_RE = re.compile(r"^STORY-(\d{2})(?:\.([1-9]\d*))?$")
 EPIC_ID_RE = re.compile(r"^EPIC-[A-Z0-9][A-Z0-9-]*$")
 COVERAGE_ID_RE = re.compile(r"^[A-Z0-9][A-Z0-9_.:-]*$")
 GATE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
+LANGUAGE_TAG_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$")
 HEADING_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
+SECTION_MARKER_COMMENT_RE = re.compile(
+    r"^<!--\s*large-task-planning:([a-z][a-z0-9-]*)\s*-->[ \t]*$", re.MULTILINE
+)
+SECTION_MARKER_RE = re.compile(
+    r"^<!--\s*large-task-planning:([a-z][a-z0-9-]*)\s*-->[ \t]*\n^##\s+(.+?)\s*$",
+    re.MULTILINE,
+)
+DECISION_MARKER_RE = re.compile(
+    r"^<!--\s*large-task-planning:decision\s+owner=(user|pending)\s*-->[ \t]*\n"
+    r"^([1-9]\d*)\.\s+.+?(?=^<!--\s*large-task-planning:decision\s+owner=|"
+    r"^<!--\s*large-task-planning:(?!decision\s+owner=)|\Z)",
+    re.MULTILINE | re.DOTALL,
+)
 DECISION_ITEM_RE = re.compile(r"^([1-9]\d*)\.\s+.+?(?=^[1-9]\d*\.\s+|\Z)", re.MULTILINE | re.DOTALL)
 FENCE_LINE_RE = re.compile(r"^```[^\n]*$", re.MULTILINE)
 FENCED_CODE_BLOCK_RE = re.compile(
@@ -46,24 +134,17 @@ DEPENDENCY_UNFINISHED_RE = re.compile(r"^(STORY-\d{2}(?:\.[1-9]\d*)?) 未完成$
 LINK_RE = re.compile(r"\[([^\]]*)\]\([^)]+\)")
 HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 MARKDOWN_MARKUP_RE = re.compile(r"[\s`*_>#|:\-\[\](){}\\]+")
-HUMAN_DYNAMIC_LINE_RE = re.compile(
-    r"^(?:-\s*)?(状态|负责人|阻塞|完成进度|当前进展)[：:]\s*\S", re.MULTILINE
-)
-HUMAN_DYNAMIC_HEADING_RE = re.compile(
-    r"^##\s+(当前状态|项目状态|门禁状态|关键基线)\s*$", re.MULTILINE
-)
 MIN_CHECKLIST_ITEMS = 3
 MAX_CHECKLIST_ITEMS = 7
-MAX_STORIES = 7
 MAX_CHECKLIST_ITEM_CHARS = 120
 OVERVIEW_CONTENT_LIMIT = 1500
 EPIC_CONTENT_LIMIT = 3000
 STORY_CONTENT_LIMIT = 2200
 DASHBOARD_CONTENT_LIMIT = 3000
-EPIC_HEADINGS = ("愿景", "全局设计", "成功标准", "Story 地图", "项目边界", "权威文档")
-STORY_HEADINGS = ("愿景", "范围", "关键决策", "验收标准")
-DASHBOARD_HEADINGS = ("Epic / Story 一览", "风险与阻塞")
-OVERVIEW_HEADINGS = ("项目一览", "Epic", "Agent 入口")
+EPIC_SECTIONS = ("vision", "global-design", "manual-acceptance", "success-criteria", "story-map", "project-boundaries", "authoritative-documents")
+STORY_SECTIONS = ("vision", "scope", "key-decisions", "acceptance-criteria")
+DASHBOARD_SECTIONS = ("epic-story-overview", "risks-blockers")
+OVERVIEW_SECTIONS = ("project-overview", "epics", "agent-entry")
 MAX_RISK_ITEMS = 6
 CARD_STRING_FIELDS = (
     "goal",
@@ -103,9 +184,9 @@ RISK_FIELD_ORDER = (
 )
 REFERENCE_FIELD_ORDER = ("kind", "schema_version", "id", "title", "updated", "body")
 RISK_LIST_FIELDS = ("pending_decisions", "watch_items")
-RISK_HEADING_FIELDS = {
-    "待用户决策": "pending_decisions",
-    "后续关注": "watch_items",
+RISK_SECTION_FIELDS = {
+    "planning-pending": "pending_decisions",
+    "follow-up": "watch_items",
 }
 
 
@@ -119,6 +200,7 @@ class WorkItem:
     metadata: Dict[str, object]
     body: str
     headings: Tuple[str, ...]
+    sections: Tuple[str, ...]
 
     @property
     def item_id(self) -> str:
@@ -183,8 +265,8 @@ class RiskRegister:
     path: Path
     data: Dict[str, object]
 
-    def items(self, heading: str) -> Tuple[str, ...]:
-        field = RISK_HEADING_FIELDS[heading]
+    def items(self, section: str) -> Tuple[str, ...]:
+        field = RISK_SECTION_FIELDS[section]
         value = self.data.get(field, [])
         if not isinstance(value, list):
             return ()
@@ -289,13 +371,17 @@ def _parse_frontmatter(path: Path, text: str) -> Tuple[Dict[str, object], str]:
     return metadata, "\n".join(lines[end + 1 :]).strip() + "\n"
 
 
-def _section(body: str, heading: str) -> str:
-    match = re.search(rf"^##\s+{re.escape(heading)}\s*$", body, re.MULTILINE)
-    if not match:
-        return ""
-    next_heading = re.search(r"^##\s+", body[match.end() :], re.MULTILINE)
-    end = match.end() + next_heading.start() if next_heading else len(body)
-    return body[match.end() : end]
+def _sections(body: str) -> Tuple[str, ...]:
+    return tuple(match.group(1) for match in SECTION_MARKER_RE.finditer(body))
+
+
+def _section(body: str, section: str) -> str:
+    markers = tuple(SECTION_MARKER_RE.finditer(body))
+    for index, marker in enumerate(markers):
+        if marker.group(1) == section:
+            end = markers[index + 1].start() if index + 1 < len(markers) else len(body)
+            return body[marker.end() : end]
+    return ""
 
 
 def load_item(path: Path) -> WorkItem:
@@ -305,7 +391,7 @@ def load_item(path: Path) -> WorkItem:
         raise DocumentError(f"无法读取 {path}: {exc}") from exc
     metadata, body = _parse_frontmatter(path, text)
     headings = tuple(match.group(1).strip() for match in HEADING_RE.finditer(body))
-    return WorkItem(path, metadata, body, headings)
+    return WorkItem(path, metadata, body, headings, _sections(body))
 
 
 def _require_fields(item: WorkItem, fields: Sequence[str]) -> List[str]:
@@ -318,14 +404,6 @@ def _reject_fields(item: WorkItem, fields: Sequence[str]) -> List[str]:
         for field in fields
         if field in item.metadata
     ]
-
-
-def _reject_human_dynamic_body(path: Path, text: str, errors: List[str]) -> None:
-    """拒绝人读正文里的手工状态缓存，自动生成的项目进展不调用本检查。"""
-    for match in HUMAN_DYNAMIC_LINE_RE.finditer(text):
-        errors.append(f"{path}: 人读文档不保存手工动态状态“{match.group(1)}”")
-    for match in HUMAN_DYNAMIC_HEADING_RE.finditer(text):
-        errors.append(f"{path}: 人读文档不保存手工动态章节“{match.group(1)}”")
 
 
 def _validate_date(item: WorkItem, errors: List[str]) -> None:
@@ -344,30 +422,55 @@ def _validate_iso_date(path: Path, field: str, value: object, errors: List[str])
 
 
 def _validate_sections(item: WorkItem, required: Sequence[str], errors: List[str]) -> None:
-    for heading in required:
-        count = item.headings.count(heading)
+    for section in required:
+        count = item.sections.count(section)
         if count == 0:
-            errors.append(f"{item.path}: 缺少二级标题 ## {heading}")
+            errors.append(f"{item.path}: 缺少语义章节 {section}")
         elif count > 1:
-            errors.append(f"{item.path}: 二级标题 ## {heading} 只能出现一次")
-        elif not _section(item.body, heading).strip():
-            errors.append(f"{item.path}: ## {heading} 不能为空")
+            errors.append(f"{item.path}: 语义章节 {section} 只能出现一次")
+        elif not _section(item.body, section).strip():
+            errors.append(f"{item.path}: 语义章节 {section} 不能为空")
 
 
-def _validate_heading_contract(
-    path: Path, headings: Sequence[str], allowed: Sequence[str], errors: List[str]
+def _validate_section_contract(
+    path: Path,
+    body: str,
+    headings: Sequence[str],
+    sections: Sequence[str],
+    allowed: Sequence[str],
+    errors: List[str],
 ) -> None:
-    unexpected = [heading for heading in headings if heading not in allowed]
+    marker_count = len(tuple(SECTION_MARKER_COMMENT_RE.finditer(body)))
+    if marker_count != len(sections) or len(headings) != len(sections):
+        errors.append(
+            f"{path}: 每个二级标题都必须紧接在 <!-- large-task-planning:<section-id> --> 语义标记后"
+        )
+    unexpected = [section for section in sections if section not in allowed]
     if unexpected:
-        errors.append(f"{path}: 存在不允许的二级标题: {', '.join(unexpected)}")
+        errors.append(f"{path}: 存在不允许的语义章节: {', '.join(unexpected)}")
         return
-    duplicates = sorted({heading for heading in headings if headings.count(heading) > 1})
+    duplicates = sorted({section for section in sections if sections.count(section) > 1})
     if duplicates:
-        errors.append(f"{path}: 二级标题重复: {', '.join(duplicates)}")
+        errors.append(f"{path}: 语义章节重复: {', '.join(duplicates)}")
         return
-    expected = tuple(heading for heading in allowed if heading in headings)
-    if tuple(headings) != expected:
-        errors.append(f"{path}: 二级标题顺序必须为: {' -> '.join(allowed)}")
+    expected = tuple(section for section in allowed if section in sections)
+    if tuple(sections) != expected:
+        errors.append(f"{path}: 语义章节顺序必须为: {' -> '.join(allowed)}")
+
+
+def _validate_language(item: WorkItem, errors: List[str]) -> None:
+    language = str(item.metadata.get("language", "")).strip()
+    if not LANGUAGE_TAG_RE.fullmatch(language):
+        errors.append(f"{item.path}: language 必须是 BCP-47 语言标签，如 zh-Hans、zh-Hant 或 en")
+
+
+def dashboard_labels(language: str) -> Dict[str, object]:
+    normalized = language.lower()
+    if normalized.startswith(("zh-hant", "zh-tw", "zh-hk", "zh-mo")):
+        return DASHBOARD_LABELS["zh-Hant"]
+    if normalized == "zh" or normalized.startswith(("zh-hans", "zh-cn", "zh-sg")):
+        return DASHBOARD_LABELS["zh-Hans"]
+    return DASHBOARD_LABELS["en"]
 
 
 def _validate_flat_document(
@@ -394,54 +497,49 @@ def _validate_budget(path: Path, text: str, limit: int, errors: List[str]) -> No
 
 def _validate_global_design(epic: WorkItem, errors: List[str]) -> None:
     """架构图只属于全局设计；独立能力可以各自使用一张图。"""
-    section = _section(epic.body, "全局设计")
+    section = _section(epic.body, "global-design")
     if not section.strip():
         return
 
     section_blocks = tuple(FENCED_CODE_BLOCK_RE.finditer(section))
     if not section_blocks:
-        errors.append(f"{epic.path}: ## 全局设计必须包含至少一张 Mermaid 或 fenced text 架构图")
+        errors.append(f"{epic.path}: global-design 必须包含至少一张 Mermaid 或 fenced text 架构图")
     for block in section_blocks:
         language = block.group(1)
         diagram = block.group(2).strip()
         if language not in {"mermaid", "text"}:
-            errors.append(f"{epic.path}: ## 全局设计的架构图只能使用 mermaid 或 text 代码块")
+            errors.append(f"{epic.path}: global-design 的架构图只能使用 mermaid 或 text 代码块")
         if not diagram:
-            errors.append(f"{epic.path}: ## 全局设计的架构图不能为空")
+            errors.append(f"{epic.path}: global-design 的架构图不能为空")
 
     all_blocks = tuple(FENCED_CODE_BLOCK_RE.finditer(epic.body))
     fence_lines = tuple(FENCE_LINE_RE.finditer(epic.body))
     if len(all_blocks) != len(section_blocks) or len(fence_lines) != 2 * len(all_blocks):
-        errors.append(f"{epic.path}: 只能在 ## 全局设计中保留完整的架构图代码块")
+        errors.append(f"{epic.path}: 只能在 global-design 中保留完整的架构图代码块")
 
 
 def _validate_key_decisions(story: WorkItem, card: AgentCard, errors: List[str]) -> None:
     """确保人读决策可追溯到用户确认与 Agent 建议。"""
-    section = _section(story.body, "关键决策").strip()
+    section = _section(story.body, "key-decisions").strip()
     if not section:
         return
 
-    decisions = tuple(DECISION_ITEM_RE.finditer(section))
-    if not decisions:
-        errors.append(f"{story.path}: ## 关键决策必须使用从 1 开始的连续编号")
+    plain_decisions = tuple(DECISION_ITEM_RE.finditer(section))
+    if not plain_decisions:
+        errors.append(f"{story.path}: key-decisions 必须使用从 1 开始的连续编号")
         return
-    numbers = tuple(int(match.group(1)) for match in decisions)
-    if numbers != tuple(range(1, len(decisions) + 1)):
-        errors.append(f"{story.path}: ## 关键决策必须使用从 1 开始的连续编号")
+    numbers = tuple(int(match.group(1)) for match in plain_decisions)
+    if numbers != tuple(range(1, len(plain_decisions) + 1)):
+        errors.append(f"{story.path}: key-decisions 必须使用从 1 开始的连续编号")
 
-    has_pending = False
-    for number, match in zip(numbers, decisions):
-        decision = match.group(0)
-        for label in ("决定者：", "Agent 建议：", "结果与影响："):
-            if not re.search(rf"{re.escape(label)}\s*\S+", decision):
-                errors.append(f"{story.path}: 关键决策 {number} 缺少 {label}")
-        owner = re.search(r"决定者：\s*(用户|待用户确认)", decision)
-        if not owner:
-            errors.append(f"{story.path}: 关键决策 {number} 的决定者只能是用户或待用户确认")
-        elif owner.group(1) == "待用户确认":
-            has_pending = True
+    markers = tuple(DECISION_MARKER_RE.finditer(section))
+    if len(markers) != len(plain_decisions):
+        errors.append(
+            f"{story.path}: 每项关键决策必须紧接在 <!-- large-task-planning:decision owner=user|pending --> 后"
+        )
+    has_pending = any(marker.group(1) == "pending" for marker in markers)
     if has_pending and card.status != "blocked":
-        errors.append(f"{card.path}: 人读 Story 存在待用户确认的关键决策时 status 必须为 blocked")
+        errors.append(f"{card.path}: 存在 pending 关键决策时 status 必须为 blocked")
 
 
 def _require_schema_meta(path: Path, data: Dict[str, object], kind: str, errors: List[str]) -> None:
@@ -487,8 +585,8 @@ def validate_card_document(path: Path, data: Dict[str, object]) -> List[str]:
     if not isinstance(intent, int) or isinstance(intent, bool) or intent < 1:
         errors.append(f"{path}: intent_version 必须是正整数")
     status = str(data.get("status", ""))
-    if status not in STATUS_LABELS:
-        errors.append(f"{path}: status 必须是 {', '.join(STATUS_LABELS)}")
+    if status not in STATUS_IDS:
+        errors.append(f"{path}: status 必须是 {', '.join(STATUS_IDS)}")
     for field in ("owner", "blocker"):
         if not str(data.get(field, "")).strip():
             errors.append(f"{path}: {field} 不能为空")
@@ -653,28 +751,29 @@ def _story_progress(card: AgentCard) -> Tuple[Tuple[bool, str], ...]:
     return card.checklist
 
 
-def validate_dashboard(path: Path, text: str) -> List[str]:
+def validate_dashboard(path: Path, text: str, language: str) -> List[str]:
     errors: List[str] = []
     headings = tuple(match.group(1).strip() for match in HEADING_RE.finditer(text))
-    for required in DASHBOARD_HEADINGS:
-        if required not in headings:
-            errors.append(f"{path}: 缺少自动生成章节 ## {required}")
-    _validate_heading_contract(path, headings, DASHBOARD_HEADINGS, errors)
+    sections = _sections(text)
+    for required in DASHBOARD_SECTIONS:
+        if required not in sections:
+            errors.append(f"{path}: 缺少自动生成语义章节 {required}")
+    _validate_section_contract(path, text, headings, sections, DASHBOARD_SECTIONS, errors)
     _validate_flat_document(path, text, errors, allow_tables=True)
     _validate_budget(path, text, DASHBOARD_CONTENT_LIMIT, errors)
-    if GENERATED_NOTICE not in text:
+    if str(dashboard_labels(language)["notice"]) not in text:
         errors.append(f"{path}: 必须声明本文由 Agent 资料自动生成")
     return errors
 
 
 def validate_overview(path: Path, text: str) -> List[str]:
     errors: List[str] = []
-    _reject_human_dynamic_body(path, text, errors)
     headings = tuple(match.group(1).strip() for match in HEADING_RE.finditer(text))
-    for required in OVERVIEW_HEADINGS:
-        if required not in headings:
-            errors.append(f"{path}: 缺少二级标题 ## {required}")
-    _validate_heading_contract(path, headings, OVERVIEW_HEADINGS, errors)
+    sections = _sections(text)
+    for required in OVERVIEW_SECTIONS:
+        if required not in sections:
+            errors.append(f"{path}: 缺少语义章节 {required}")
+    _validate_section_contract(path, text, headings, sections, OVERVIEW_SECTIONS, errors)
     _validate_flat_document(path, text, errors, allow_tables=False)
     _validate_budget(path, text, OVERVIEW_CONTENT_LIMIT, errors)
     return errors
@@ -776,9 +875,8 @@ def _validate_optional_agent_json(agent_dir: Path, errors: List[str], reserved: 
 
 def validate_project(epic: WorkItem, stories: Sequence[WorkItem]) -> List[str]:
     errors: List[str] = []
-    errors.extend(_require_fields(epic, ("kind", "id", "title", "updated", "coverage")))
+    errors.extend(_require_fields(epic, ("kind", "id", "title", "updated", "coverage", "language")))
     errors.extend(_reject_fields(epic, ("status", "owner", "blocker")))
-    _reject_human_dynamic_body(epic.path, epic.body, errors)
     if epic.metadata.get("kind") != "epic":
         errors.append(f"{epic.path}: kind 必须为 epic")
     if not EPIC_ID_RE.fullmatch(str(epic.metadata.get("id", ""))):
@@ -788,12 +886,13 @@ def validate_project(epic: WorkItem, stories: Sequence[WorkItem]) -> List[str]:
     if not str(epic.metadata.get("title", "")).strip():
         errors.append(f"{epic.path}: title 不能为空")
     _validate_date(epic, errors)
-    _validate_sections(epic, ("愿景", "全局设计", "成功标准", "Story 地图"), errors)
-    _validate_heading_contract(epic.path, epic.headings, EPIC_HEADINGS, errors)
+    _validate_language(epic, errors)
+    _validate_sections(epic, ("vision", "global-design", "manual-acceptance", "success-criteria", "story-map"), errors)
+    _validate_section_contract(epic.path, epic.body, epic.headings, epic.sections, EPIC_SECTIONS, errors)
     _validate_flat_document(epic.path, epic.body, errors, allow_tables=True, allow_code_blocks=True)
     _validate_global_design(epic, errors)
     _validate_budget(epic.path, epic.body, EPIC_CONTENT_LIMIT, errors)
-    story_map = _section(epic.body, "Story 地图")
+    story_map = _section(epic.body, "story-map")
     coverage_value = epic.metadata.get("coverage")
     coverage_ids = tuple(str(item) for item in coverage_value) if isinstance(coverage_value, list) else ()
     if not isinstance(coverage_value, list) or not coverage_ids:
@@ -803,9 +902,6 @@ def validate_project(epic: WorkItem, stories: Sequence[WorkItem]) -> List[str]:
     for coverage_id in coverage_ids:
         if not COVERAGE_ID_RE.fullmatch(coverage_id):
             errors.append(f"{epic.path}: coverage 标识格式无效: {coverage_id}")
-
-    if len(stories) > MAX_STORIES:
-        errors.append(f"{epic.path}: 一个 Epic 最多 {MAX_STORIES} 个 Story，当前 {len(stories)} 个")
 
     story_by_id: Dict[str, WorkItem] = {}
     agent_cards: Dict[str, AgentCard] = {}
@@ -822,11 +918,11 @@ def validate_project(epic: WorkItem, stories: Sequence[WorkItem]) -> List[str]:
                     "depends_on",
                     "updated",
                     "intent_version",
+                    "language",
                 ),
             )
         )
         errors.extend(_reject_fields(story, ("status", "owner", "blocker")))
-        _reject_human_dynamic_body(story.path, story.body, errors)
         story_id = str(story.metadata.get("id", ""))
         if story.metadata.get("kind") != "story":
             errors.append(f"{story.path}: kind 必须为 story")
@@ -851,8 +947,11 @@ def validate_project(epic: WorkItem, stories: Sequence[WorkItem]) -> List[str]:
         if not str(story.metadata.get("title", "")).strip():
             errors.append(f"{story.path}: title 不能为空")
         _validate_date(story, errors)
-        _validate_sections(story, ("愿景", "范围", "验收标准"), errors)
-        _validate_heading_contract(story.path, story.headings, STORY_HEADINGS, errors)
+        _validate_language(story, errors)
+        if story.metadata.get("language") != epic.metadata.get("language"):
+            errors.append(f"{story.path}: language 必须与 {epic.path.name} 一致")
+        _validate_sections(story, ("vision", "scope", "acceptance-criteria"), errors)
+        _validate_section_contract(story.path, story.body, story.headings, story.sections, STORY_SECTIONS, errors)
         _validate_flat_document(story.path, story.body, errors, allow_tables=False)
         _validate_budget(story.path, story.body, STORY_CONTENT_LIMIT, errors)
         card = _validate_agent_card(story, errors)
@@ -931,6 +1030,15 @@ def validate_project(epic: WorkItem, stories: Sequence[WorkItem]) -> List[str]:
     else:
         reserved_agent_paths.append(register.path)
         errors.extend(validate_risk_document(register.path, register.data, epic.item_id))
+        if register.items("planning-pending"):
+            active_cards = [
+                card.path.name for card in agent_cards.values() if card.status in {"todo", "in_progress", "done"}
+            ]
+            if active_cards:
+                errors.append(
+                    f"{register.path}: 存在规划待决事项时所有 Story 必须为 blocked，当前非阻塞卡: "
+                    f"{', '.join(active_cards)}"
+                )
     if stories:
         _validate_optional_agent_json(_agent_dir(stories), errors, reserved_agent_paths)
     return errors
@@ -958,6 +1066,8 @@ def _table_cell(value: object) -> str:
 
 
 def dashboard_document(epic: WorkItem, stories: Sequence[WorkItem], dashboard_path: Path) -> str:
+    labels = dashboard_labels(str(epic.metadata["language"]))
+    statuses = labels["status_labels"]
     cards = _load_agent_cards(stories)
     register = _load_risk_register(epic, stories)
     completed = sum(1 for card in cards.values() if card.status == "done")
@@ -966,31 +1076,32 @@ def dashboard_document(epic: WorkItem, stories: Sequence[WorkItem], dashboard_pa
     epic_status = derived_epic_status(cards)
     epic_link = _markdown_link(f"{epic.item_id} {epic.title}", epic.path, dashboard_path.parent)
     lines = [
-        f"# {epic.title} 项目进展",
+        f"# {epic.title} {labels['progress']}",
         "",
-        GENERATED_NOTICE,
+        str(labels["notice"]),
         "",
-        "## Epic / Story 一览",
+        "<!-- large-task-planning:epic-story-overview -->",
+        f"## {labels['overview']}",
         "",
-        f"- Epic：{epic_link}（{STATUS_LABELS[epic_status]}）",
-        f"- Story：{completed}/{len(stories)} 已完成",
-        f"- 当前推进：{', '.join(active) if active else '无'}",
-        f"- 可领取：{', '.join(ready) if ready else '无'}",
+        f"- {labels['epic']}：{epic_link}（{statuses[epic_status]}）",
+        f"- {labels['stories']}：{completed}/{len(stories)} {labels['completed']}",
+        f"- {labels['current_progress']}：{', '.join(active) if active else labels['none']}",
+        f"- {labels['ready']}：{', '.join(ready) if ready else labels['none']}",
         "",
-        "| Story | 状态 | 进度 | 当前结果或下一步 |",
+        f"| {labels['story']} | {labels['status']} | {labels['progress_column']} | {labels['current_result']} |",
         "| --- | --- | ---: | --- |",
     ]
     for story in stories:
         card = cards[story.item_id]
         progress = _story_progress(card)
         done_count = sum(1 for checked, _ in progress if checked)
-        next_item = next((text for checked, text in progress if not checked), "全部完成")
+        next_item = next((text for checked, text in progress if not checked), str(labels["all_done"]))
         story_link = _markdown_link(f"{story.item_id} {story.title}", story.path, dashboard_path.parent)
         checklist = f"{done_count}/{len(progress)}"
         if card.status == "blocked":
-            current = f"阻塞：{card.blocker}"
+            current = f"{labels['blocked']}：{card.blocker}"
         elif card.status == "done":
-            current = progress[-1][1] if progress else "已完成"
+            current = progress[-1][1] if progress else str(labels["all_done"])
         else:
             current = next_item
         lines.append(
@@ -998,7 +1109,7 @@ def dashboard_document(epic: WorkItem, stories: Sequence[WorkItem], dashboard_pa
             + " | ".join(
                 (
                     _table_cell(story_link),
-                    _table_cell(STATUS_LABELS[card.status]),
+                    _table_cell(statuses[card.status]),
                     _table_cell(checklist),
                     _table_cell(current),
                 )
@@ -1010,14 +1121,14 @@ def dashboard_document(epic: WorkItem, stories: Sequence[WorkItem], dashboard_pa
         card = cards[story.item_id]
         if card.status == "blocked" and not DEPENDENCY_UNFINISHED_RE.fullmatch(card.blocker):
             story_link = _markdown_link(story.item_id, story.path, dashboard_path.parent)
-            risk_rows.append(("当前阻塞", f"{story_link}：{card.blocker}"))
-    risk_rows.extend(("待用户决策", item) for item in register.items("待用户决策"))
-    risk_rows.extend(("后续关注", item) for item in register.items("后续关注"))
-    lines.extend(("", "## 风险与阻塞", ""))
+            risk_rows.append((str(labels["current_blocker"]), f"{story_link}：{card.blocker}"))
+    risk_rows.extend((str(labels["planning_pending"]), item) for item in register.items("planning-pending"))
+    risk_rows.extend((str(labels["follow_up"]), item) for item in register.items("follow-up"))
+    lines.extend(("", "<!-- large-task-planning:risks-blockers -->", f"## {labels['risks']}", ""))
     if not risk_rows:
-        lines.append("当前没有需要用户决策或后续关注的风险。")
+        lines.append(str(labels["no_risks"]))
     else:
-        lines.extend(("| 类型 | 事项 |", "| --- | --- |"))
+        lines.extend((f"| {labels['risk_type']} | {labels['item']} |", "| --- | --- |"))
         for kind, item in risk_rows:
             lines.append(f"| {_table_cell(kind)} | {_table_cell(item)} |")
     return "\n".join(lines).rstrip() + "\n"
@@ -1075,7 +1186,7 @@ def command_check(args: argparse.Namespace) -> int:
     if args.dashboard:
         current = args.dashboard.read_text(encoding="utf-8")
         expected = dashboard_document(epic, stories, args.dashboard)
-        if not _report_errors(validate_dashboard(args.dashboard, expected)):
+        if not _report_errors(validate_dashboard(args.dashboard, expected, str(epic.metadata["language"]))):
             return 1
         if expected != current:
             print(f"ERROR: 仪表盘已过期，请运行 render: {args.dashboard}", file=sys.stderr)
@@ -1099,7 +1210,7 @@ def command_render(args: argparse.Namespace) -> int:
             return 1
     current = args.dashboard.read_text(encoding="utf-8") if args.dashboard.exists() else ""
     updated = dashboard_document(epic, stories, args.dashboard)
-    if not _report_errors(validate_dashboard(args.dashboard, updated)):
+    if not _report_errors(validate_dashboard(args.dashboard, updated, str(epic.metadata["language"]))):
         return 1
     notes = [f"已同步依赖阻塞: {', '.join(synced)}"] if synced else []
     if updated == current:
@@ -1158,16 +1269,18 @@ def command_status(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
-        print(f"{epic.item_id} {epic.title}: {STATUS_LABELS[derived_epic_status(cards)]}")
-        print(f"可领取: {', '.join(ready) if ready else '无'}")
+        labels = dashboard_labels(str(epic.metadata["language"]))
+        statuses = labels["status_labels"]
+        print(f"{epic.item_id} {epic.title}: {statuses[derived_epic_status(cards)]}")
+        print(f"{labels['ready']}: {', '.join(ready) if ready else labels['none']}")
         for story in stories:
             card = cards[story.item_id]
             progress = _story_progress(card)
             done_count = sum(1 for checked, text in progress if checked)
-            next_item = next((text for checked, text in progress if not checked), "全部完成")
+            next_item = next((text for checked, text in progress if not checked), str(labels["all_done"]))
             print(
-                f"{story.item_id}\t{STATUS_LABELS[card.status]}\t"
-                f"执行清单 {done_count}/{len(progress)}\t{next_item}"
+                f"{story.item_id}\t{statuses[card.status]}\t"
+                f"{labels['checklist']} {done_count}/{len(progress)}\t{next_item}"
             )
     return 0
 
@@ -1272,7 +1385,7 @@ def template_card(story_id: str) -> Dict[str, object]:
         "owns": ["COVERAGE"],
         "verifies": [],
         "goal": "用可观察结果说明本 Story 完成时发生了什么。",
-        "decision_boundary": "列出不可变条件和必须询问用户的变化。",
+        "decision_boundary": "列出不可变条件和 Agent 可在已确认方案内自行处理的实现取舍。",
         "technical_plan": "说明实现路径，精确参数放到共享契约。",
         "authoritative_inputs": "列出本卡直接依赖的共享 JSON、代码入口和基线。",
         "claim_checks": "复核 intent_version、前置交接、代码入口和远端基线。",

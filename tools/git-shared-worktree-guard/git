@@ -164,7 +164,8 @@ branch_is_read_only() {
 }
 
 git_probe() {
-  "$REAL_GIT" "${GIT_GLOBAL_ARGS[@]}" "$@"
+  # bash 3.2 在 set -u 下展开空数组会报 unbound variable，必须用 +缺省展开保护。
+  "$REAL_GIT" ${GIT_GLOBAL_ARGS[@]+"${GIT_GLOBAL_ARGS[@]}"} "$@"
 }
 
 diff_has_changes() {
@@ -240,7 +241,7 @@ stash_push_has_effect() {
   done
 
   if ((staged_only == 1 || keep_index == 0)); then
-    if diff_has_changes --cached -- "${pathspecs[@]}"; then
+    if diff_has_changes --cached -- ${pathspecs[@]+"${pathspecs[@]}"}; then
       return 0
     else
       probe_status=$?
@@ -249,7 +250,7 @@ stash_push_has_effect() {
   fi
 
   if ((staged_only == 0)); then
-    if diff_has_changes -- "${pathspecs[@]}"; then
+    if diff_has_changes -- ${pathspecs[@]+"${pathspecs[@]}"}; then
       return 0
     else
       probe_status=$?
@@ -258,12 +259,12 @@ stash_push_has_effect() {
   fi
 
   if ((include_untracked == 1)); then
-    list_output="$(git_probe ls-files --others --exclude-standard -- "${pathspecs[@]}")" || return 2
+    list_output="$(git_probe ls-files --others --exclude-standard -- ${pathspecs[@]+"${pathspecs[@]}"})" || return 2
     [[ -n "$list_output" ]] && return 0
   fi
 
   if ((include_ignored == 1)); then
-    list_output="$(git_probe ls-files --others --ignored --exclude-standard -- "${pathspecs[@]}")" || return 2
+    list_output="$(git_probe ls-files --others --ignored --exclude-standard -- ${pathspecs[@]+"${pathspecs[@]}"})" || return 2
     [[ -n "$list_output" ]] && return 0
   fi
 
@@ -360,7 +361,7 @@ clean_has_effect() {
     fi
   fi
 
-  output="$(git_probe clean --dry-run "${preview_args[@]}" 2>/dev/null)" || return 2
+  output="$(git_probe clean --dry-run ${preview_args[@]+"${preview_args[@]}"} 2>/dev/null)" || return 2
   [[ -n "$output" ]]
 }
 
@@ -458,9 +459,9 @@ restore_has_effect() {
   fi
 
   if [[ -n "$source" ]]; then
-    diff_has_changes "$source" -- "${pathspecs[@]}"
+    diff_has_changes "$source" -- ${pathspecs[@]+"${pathspecs[@]}"}
   else
-    diff_has_changes -- "${pathspecs[@]}"
+    diff_has_changes -- ${pathspecs[@]+"${pathspecs[@]}"}
   fi
   probe_status=$?
   return "$probe_status"
@@ -509,9 +510,9 @@ checkout_has_effect() {
   if ((separator_seen == 1)); then
     ((${#pathspecs[@]} > 0)) || return 2
     if ((${#before_separator[@]} > 0)); then
-      diff_has_changes "${before_separator[0]}" -- "${pathspecs[@]}"
+      diff_has_changes "${before_separator[0]}" -- ${pathspecs[@]+"${pathspecs[@]}"}
     else
-      diff_has_changes -- "${pathspecs[@]}"
+      diff_has_changes -- ${pathspecs[@]+"${pathspecs[@]}"}
     fi
     probe_status=$?
     return "$probe_status"
@@ -531,7 +532,7 @@ checkout_has_effect() {
     return 0
   fi
 
-  diff_has_changes -- "${before_separator[@]}"
+  diff_has_changes -- ${before_separator[@]+"${before_separator[@]}"}
 }
 
 switch_has_effect() {
@@ -681,7 +682,7 @@ main() {
     command_args=("${args[@]:subcommand_index+1}")
   fi
 
-  if is_blocked "$command" "${command_args[@]}"; then
+  if is_blocked "$command" ${command_args[@]+"${command_args[@]}"}; then
     if [[ -n "$approval_reason" ]]; then
       run_approved "$approval_reason" "$@"
     fi

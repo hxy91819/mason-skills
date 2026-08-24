@@ -7,18 +7,22 @@ gate: COMPONENT
 depends_on: [STORY-02]
 updated: 2026-08-18
 intent_version: 1
+language: zh-Hans
 ---
 
 # 令牌防护与生命周期
 
+<!-- large-task-planning:vision -->
 ## 愿景
 
 令牌从签发到消亡都被守护：用一次立即失效，申请太频繁会被拦下，过期数据按时清理，存储不随时间膨胀。滥用者无法靠重放或高频申请打开缺口。
 
+<!-- large-task-planning:scope -->
 ## 范围
 
 单次使用的原子失效；按邮箱和来源地址的申请频控与临时锁定；过期令牌的定时清理任务。全部参数以《一次性令牌契约》为准。审计事件的写入与告警不在本 Story 内，由 STORY-04 交付。
 
+<!-- large-task-planning:acceptance-criteria -->
 ## 验收标准
 
 - 同一令牌第二次使用被拒绝，且该员工可以立即重新申请。

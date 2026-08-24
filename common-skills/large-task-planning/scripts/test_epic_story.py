@@ -3,6 +3,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 
 
@@ -71,7 +72,7 @@ class EpicStoryTest(unittest.TestCase):
         self.dashboard = self.root / "项目进展.md"
         self.risks = self.agent / "风险与阻塞.json"
         self.overview.write_text(
-            "# 项目\n\n## 项目一览\n看进展。\n\n## Epic\n- Epic。\n\n## Agent 入口\n- Agent。\n",
+            "# 项目\n\n<!-- large-task-planning:project-overview -->\n## 项目一览\n看进展。\n\n<!-- large-task-planning:epics -->\n## Epic\n- Epic。\n\n<!-- large-task-planning:agent-entry -->\n## Agent 入口\n- Agent。\n",
             encoding="utf-8",
         )
         self.epic.write_text(
@@ -81,15 +82,23 @@ id: EPIC-TEST
 title: 测试 Epic
 updated: 2026-08-17
 coverage: [TEST]
+language: zh-Hans
 ---
 # Epic
+<!-- large-task-planning:vision -->
 ## 愿景
 愿景。
+<!-- large-task-planning:global-design -->
 ## 全局设计
 统一设计。
 {EPIC_MERMAID_BLOCK}
+<!-- large-task-planning:manual-acceptance -->
+## 人工验收
+- 甲方在测试环境完成一次业务操作，并在产品界面确认结果。
+<!-- large-task-planning:success-criteria -->
 ## 成功标准
 - 交付。
+<!-- large-task-planning:story-map -->
 ## Story 地图
 - [Story](../stories/Story-01-测试.md)
 """.format(EPIC_MERMAID_BLOCK=EPIC_MERMAID_BLOCK),
@@ -106,17 +115,23 @@ gate: G1
 depends_on: []
 updated: 2026-08-17
 intent_version: 1
+language: zh-Hans
 ---
 # Story
+<!-- large-task-planning:vision -->
 ## 愿景
 可验证。
+<!-- large-task-planning:scope -->
 ## 范围
 完成本次可观察结果。
+<!-- large-task-planning:key-decisions -->
 ## 关键决策
+<!-- large-task-planning:decision owner=user -->
 1. **固定输入。**
    - 决定者：用户。
    - Agent 建议：采用固定输入，用户采纳。
    - 结果与影响：输出可复现。
+<!-- large-task-planning:acceptance-criteria -->
 ## 验收标准
 - 二元通过。
 """,
@@ -339,7 +354,7 @@ intent_version: 1
         self.assertEqual(1, result.returncode)
         self.assertIn("执行清单必须包含 3～7 个复选项", result.stderr)
 
-    def test_human_story_rejects_todo_heading(self) -> None:
+    def test_human_story_rejects_untagged_heading(self) -> None:
         text = self.story.read_text(encoding="utf-8").replace(
             "## 验收标准",
             "## TODO\n- [x] 历史项。\n\n## 验收标准",
@@ -347,7 +362,7 @@ intent_version: 1
         self.story.write_text(text, encoding="utf-8")
         result = self.run_cli("check", *self.common_args())
         self.assertEqual(1, result.returncode)
-        self.assertIn("不允许的二级标题: TODO", result.stderr)
+        self.assertIn("每个二级标题都必须紧接在", result.stderr)
 
     def test_human_story_rejects_delivery_evidence(self) -> None:
         self.story.write_text(
@@ -357,18 +372,79 @@ intent_version: 1
         )
         result = self.run_cli("check", *self.common_args())
         self.assertEqual(1, result.returncode)
-        self.assertIn("不允许的二级标题: 交付证据", result.stderr)
+        self.assertIn("每个二级标题都必须紧接在", result.stderr)
 
-    def test_human_documents_reject_visible_dynamic_state(self) -> None:
+    def test_visible_headings_can_use_the_project_language(self) -> None:
         self.overview.write_text(
-            self.overview.read_text(encoding="utf-8").replace(
-                "# 项目\n", "# 项目\n\n- 状态：进行中\n"
-            ),
+            self.overview.read_text(encoding="utf-8")
+            .replace("项目一览", "Project Overview")
+            .replace("Agent 入口", "Agent Entry"),
             encoding="utf-8",
         )
         result = self.run_cli("check", *self.common_args(), "--overview", self.overview)
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_english_project_uses_semantic_sections_and_localized_dashboard(self) -> None:
+        self.epic.write_text(
+            self.epic.read_text(encoding="utf-8")
+            .replace("language: zh-Hans", "language: en")
+            .replace("## 愿景", "## Goal")
+            .replace("## 全局设计", "## System Design")
+            .replace("## 人工验收", "## Manual Acceptance")
+            .replace("## 成功标准", "## Success Criteria")
+            .replace("## Story 地图", "## Story Map"),
+            encoding="utf-8",
+        )
+        self.story.write_text(
+            self.story.read_text(encoding="utf-8")
+            .replace("language: zh-Hans", "language: en")
+            .replace("## 愿景", "## Goal")
+            .replace("## 范围", "## Scope")
+            .replace("## 关键决策", "## Key Decisions")
+            .replace("## 验收标准", "## Acceptance Criteria"),
+            encoding="utf-8",
+        )
+        self.overview.write_text(
+            self.overview.read_text(encoding="utf-8")
+            .replace("项目一览", "Project Overview")
+            .replace("Agent 入口", "Agent Entry"),
+            encoding="utf-8",
+        )
+        rendered = self.run_cli("render", *self.common_args(), "--dashboard", self.dashboard)
+        self.assertEqual(0, rendered.returncode, rendered.stderr)
+        checked = self.run_cli(
+            "check", *self.common_args(), "--overview", self.overview, "--dashboard", self.dashboard
+        )
+        self.assertEqual(0, checked.returncode, checked.stderr)
+        output = self.dashboard.read_text(encoding="utf-8")
+        self.assertIn("## Epic / Story Overview", output)
+        self.assertIn("## Risks and Blockers", output)
+        self.assertIn("This page is generated", output)
+
+    def test_traditional_chinese_project_uses_traditional_dashboard_labels(self) -> None:
+        self.epic.write_text(
+            self.epic.read_text(encoding="utf-8").replace("language: zh-Hans", "language: zh-Hant"),
+            encoding="utf-8",
+        )
+        self.story.write_text(
+            self.story.read_text(encoding="utf-8").replace("language: zh-Hans", "language: zh-Hant"),
+            encoding="utf-8",
+        )
+        rendered = self.run_cli("render", *self.common_args(), "--dashboard", self.dashboard)
+        self.assertEqual(0, rendered.returncode, rendered.stderr)
+        output = self.dashboard.read_text(encoding="utf-8")
+        self.assertIn("测试 Epic 專案進展", output)
+        self.assertIn("## 風險與阻塞", output)
+        self.assertIn("請勿手動修改", output)
+
+    def test_story_language_must_match_the_epic(self) -> None:
+        self.story.write_text(
+            self.story.read_text(encoding="utf-8").replace("language: zh-Hans", "language: en"),
+            encoding="utf-8",
+        )
+        result = self.run_cli("check", *self.common_args())
         self.assertEqual(1, result.returncode)
-        self.assertIn("人读文档不保存手工动态状态“状态”", result.stderr)
+        self.assertIn("language 必须与 EPIC-TEST.md 一致", result.stderr)
 
     def test_human_story_rejects_solution_overview(self) -> None:
         self.story.write_text(
@@ -380,7 +456,7 @@ intent_version: 1
         self.mark_done(self.story)
         result = self.run_cli("check", *self.common_args())
         self.assertEqual(1, result.returncode)
-        self.assertIn("不允许的二级标题: 解决方案概览", result.stderr)
+        self.assertIn("每个二级标题都必须紧接在", result.stderr)
 
     def test_epic_must_be_a_standalone_file(self) -> None:
         misplaced = self.root / "README.md"
@@ -391,11 +467,50 @@ intent_version: 1
         self.assertIn("Epic 必须独立保存", result.stderr)
 
     def test_epic_requires_global_design(self) -> None:
-        text = self.epic.read_text(encoding="utf-8").replace("## 全局设计", "## 其他设计")
+        text = self.epic.read_text(encoding="utf-8").replace(
+            "<!-- large-task-planning:global-design -->\n", ""
+        )
         self.epic.write_text(text, encoding="utf-8")
         result = self.run_cli("check", *self.common_args())
         self.assertEqual(1, result.returncode)
-        self.assertIn("缺少二级标题 ## 全局设计", result.stderr)
+        self.assertIn("缺少语义章节 global-design", result.stderr)
+
+    def test_epic_requires_manual_acceptance(self) -> None:
+        text = self.epic.read_text(encoding="utf-8").replace(
+            "<!-- large-task-planning:manual-acceptance -->\n", ""
+        )
+        self.epic.write_text(text, encoding="utf-8")
+        result = self.run_cli("check", *self.common_args())
+        self.assertEqual(1, result.returncode)
+        self.assertIn("缺少语义章节 manual-acceptance", result.stderr)
+
+    def test_epic_rejects_unknown_semantic_section(self) -> None:
+        text = self.epic.read_text(encoding="utf-8").replace(
+            "large-task-planning:manual-acceptance", "large-task-planning:planning-decision"
+        )
+        self.epic.write_text(text, encoding="utf-8")
+        result = self.run_cli("check", *self.common_args())
+        self.assertEqual(1, result.returncode)
+        self.assertIn("存在不允许的语义章节: planning-decision", result.stderr)
+
+    def test_pending_planning_decision_blocks_the_entire_epic(self) -> None:
+        data = self.read_json(self.risks)
+        data["pending_decisions"] = ["确认产品边界。"]
+        self.write_json(self.risks, data)
+        result = self.run_cli("check", *self.common_args())
+        self.assertEqual(1, result.returncode)
+        self.assertIn("存在规划待决事项时所有 Story 必须为 blocked", result.stderr)
+
+    def test_epic_allows_more_than_seven_stories(self) -> None:
+        dependency = "STORY-01"
+        for index in range(2, 9):
+            story_id = f"STORY-{index:02d}"
+            self.add_story(story_id, f"测试{index}", dependency, f"TEST{index}")
+            dependency = story_id
+        rendered = self.run_cli("render", *self.common_args(), "--dashboard", self.dashboard)
+        self.assertEqual(0, rendered.returncode, rendered.stderr)
+        result = self.run_cli("check", *self.common_args())
+        self.assertEqual(0, result.returncode, result.stderr)
 
     def test_epic_global_design_requires_architecture_diagram(self) -> None:
         text = self.epic.read_text(encoding="utf-8").replace(EPIC_MERMAID_BLOCK, "只有文字。")
@@ -526,19 +641,21 @@ flowchart LR
         self.assertEqual(1, result.returncode)
         self.assertIn("intent_version 必须与", result.stderr)
 
-    def test_key_decision_requires_decider_agent_advice_and_impact(self) -> None:
-        text = self.story.read_text(encoding="utf-8").replace("Agent 建议：", "实现建议：")
+    def test_key_decision_requires_an_owner_marker(self) -> None:
+        text = self.story.read_text(encoding="utf-8").replace(
+            "<!-- large-task-planning:decision owner=user -->\n", ""
+        )
         self.story.write_text(text, encoding="utf-8")
         result = self.run_cli("check", *self.common_args())
         self.assertEqual(1, result.returncode)
-        self.assertIn("关键决策 1 缺少 Agent 建议：", result.stderr)
+        self.assertIn("每项关键决策必须紧接在", result.stderr)
 
     def test_pending_key_decision_requires_blocked_story(self) -> None:
-        text = self.story.read_text(encoding="utf-8").replace("决定者：用户", "决定者：待用户确认")
+        text = self.story.read_text(encoding="utf-8").replace("owner=user", "owner=pending")
         self.story.write_text(text, encoding="utf-8")
         result = self.run_cli("check", *self.common_args())
         self.assertEqual(1, result.returncode)
-        self.assertIn("存在待用户确认的关键决策时 status 必须为 blocked", result.stderr)
+        self.assertIn("存在 pending 关键决策时 status 必须为 blocked", result.stderr)
 
     def test_human_documents_reject_dynamic_status_fields(self) -> None:
         self.story.write_text(
@@ -711,7 +828,7 @@ flowchart LR
         data = self.read_json(self.card)
         self.assertEqual("in_progress", data["status"])
         self.assertEqual("Codex", data["owner"])
-        self.assertEqual("2026-08-18", data["status_updated"])
+        self.assertEqual(date.today().isoformat(), data["status_updated"])
         self.assertTrue(data["checklist"][1]["done"])
 
     def test_patch_can_update_risk_register(self) -> None:
@@ -725,7 +842,7 @@ flowchart LR
         self.assertEqual(0, result.returncode, result.stderr)
         data = self.read_json(self.risks)
         self.assertEqual(["需要复核上游。"], data["watch_items"])
-        self.assertEqual("2026-08-18", data["updated"])
+        self.assertEqual(date.today().isoformat(), data["updated"])
 
     def test_template_writes_card_scaffold(self) -> None:
         target = self.agent / "STORY-09-脚手架.json"

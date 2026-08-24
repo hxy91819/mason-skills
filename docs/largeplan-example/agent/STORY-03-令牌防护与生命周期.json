@@ -14,7 +14,7 @@
   ],
   "verifies": [],
   "goal": "令牌单次使用立即失效，申请受频控与临时锁定约束，过期数据被定时清理，连续运行后存储体积稳定。",
-  "decision_boundary": "防护参数一律以《一次性令牌契约》为准，不得自行放宽或收紧；清理不得触碰审计记录；参数变化必须先确认。",
+  "decision_boundary": "防护参数一律以《一次性令牌契约》为准，不得自行放宽或收紧；清理不得触碰审计记录；Agent 可在契约范围内完成实现。",
   "technical_plan": "为校验端点补充原子失效；按邮箱与来源地址实现申请频控和临时锁定；新增幂等的过期令牌清理任务并支持手工触发。",
   "authoritative_inputs": "agent/令牌契约.json；agent/门禁.json；STORY-02 执行卡 handoff。",
   "claim_checks": "复核 intent_version=1；STORY-02 已完成且交接完整；确认频控与清理的代码入口；远端基线未漂移。",
