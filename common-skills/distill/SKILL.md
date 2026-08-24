@@ -157,41 +157,80 @@ for the other, and do not present the internal audit record:
 ```markdown
 You need to decide: <one-sentence decision and consequence>. Recommendation: <answer>.
 
-1. **<plain-language outcome>**
-   <In one short sentence: what can go wrong and what the change will improve.>
+1. **<overview title>**
+   问题： <the current problem, same plain style as the solution paragraph>
 
-   > Technical detail: <specific mechanism, affected surface, current verification, and
-   > future-session prediction when one is needed.>
+   方案： <the solution, same plain style as the problem paragraph>
+
+   > Technical detail: <mechanism, files, verification; same language as the user.>
 
 Reply <shortest unambiguous confirmation or exclusion instruction>.
 ```
 
 The main text must stand on its own for a reader who has not read the repository or the
-audit. Use the user's language and the project's established terms. Give each candidate
-one outcome-focused title, one short sentence connecting the observable failure to the
-improvement, and one technical blockquote. Keep one claim per sentence; split or shorten
-chained clauses. Do not lead with file paths, commands, tool versions, internal
-classifications, or labels such as `Change`, `Verify now`, and `Eval`.
+audit. Write every user-visible sentence in the user's language, including the technical
+blockquote. Do not switch to English because this skill or its examples are in English.
+Keep code, paths, identifiers, and command names in their original form. The label
+`Technical detail` may stay.
+
+Give each candidate an overview title, two short prefixed paragraphs, and one technical
+blockquote. The title names the topic; it does not have to name the mechanism. Prefix the
+first paragraph with `问题：` and the second with `方案：` when the user wrote Chinese;
+use `Problem:` and `Solution:` when the user wrote English. Keep both paragraphs in the
+same plain register, with no file paths, commands, identifiers, or implementation facts.
+The problem paragraph explains only the current problem. The solution paragraph explains
+only the solution: what will be different, what still has to pass, what reruns on
+failure, and where that failure is visible. An item is not ready if those two roles are
+mixed into one paragraph, if a prefix is missing, or if the solution paragraph restates
+the problem. Keep one claim per sentence; split or shorten chained clauses. Do not lead
+with labels such as `Change`, `Verify now`, and `Eval`.
 
 Apply the **wait-what check** before sending: hide every blockquote and read only the
-opening, titles, and main sentences. A reader must be able to choose without repository
-context. The opening must state the user-visible problems, not name their technical
-causes. Under each title, write exactly one prose sentence before the blockquote; move
-every additional fact into the blockquote. Inline code, file paths, exact versions, code
-or configuration literals, and implementation identifiers are allowed only inside the
-blockquote.
+opening, titles, and two prefixed paragraphs. A reader must be able to choose without
+repository context, including restating the problem from `问题：` / `Problem:` and the
+solution from `方案：` / `Solution:`. The opening must state the user-visible problems,
+not name their technical causes. Move file paths, commands, identifiers, and other
+implementation facts into the blockquote.
 
 ```markdown
 <!-- Too technical for the decision layer -->
 1. **Support npm 12 pack JSON and registry retries**
 
+<!-- Problem and solution mixed; body leaks implementation; prefixes missing -->
+2. **Don't run the slow checks in one queue**
+   They currently run one after another, so split the CI workflow into parallel jobs.
+
 <!-- Decision layer plus disclosed technical detail -->
 1. **Avoid treating a successful release as failed**
-   Publishing tools can report the same success differently or take time to synchronize,
-   so make validation tolerate those expected differences without hiding a real failure.
+   Problem: Publishing tools can report the same success differently, or take time to
+   show up, so a real publish can look like a failure.
+
+   Solution: Treat those expected differences as success, and wait a bounded time for
+   the registry, without hiding a real failure.
 
    > Technical detail: Accept the npm 11 array and npm 12 single-object output, then use
    > bounded registry retries; verify with focused tests, typecheck, lint, and real output.
+
+2. **Don't run the slow checks in one queue**
+   Problem: They currently run one after another. When a later check flakes, the whole
+   pipeline including work that already passed has to start over.
+
+   Solution: Run the checks that can proceed independently in parallel. Landing still
+   requires all of them; a failure reruns only that check, and that check's record is
+   where the failure shows.
+
+   > Technical detail: Split the serial CI `check` and release `preflight` into parallel
+   > jobs; landing still requires every job to succeed.
+
+<!-- Language switch: the user wrote Chinese, the note is English -->
+> Technical detail: Split the serial CI `check` job into parallel jobs.
+
+<!-- Same language as the user, including 问题： / 方案： -->
+问题： 它们现在排成一条队。后面一项一抖，已经通过的部分也要整场重来。
+
+方案： 能独立做的检查改成并行。合入仍要全部通过；一条失败只重跑那一条，失败记录在那一条上。
+
+> Technical detail: 把 CI 的 `check` 和发布预检拆成并行 job；一条失败只重跑那一条，失败记录在那条 job 的日志里。
 ```
 
 Keep technical precision through progressive disclosure instead of deleting it. Put
@@ -201,7 +240,8 @@ blockquote below the relevant item. The main text may retain a technical domain 
 when the user needs it to tell candidates apart; explain it on first use when the project
 has no clearer established name. Do not repeat technical details in both layers. Keep each
 technical note focused on facts that help the user assess scope, confidence, or risk; it
-is not a dump of the analysis trace.
+is not a dump of the analysis trace. The note uses the user's language; only identifiers
+stay in their original form.
 
 Recommend the complete set by default; the user can confirm it or exclude candidate
 numbers. Treat Phase 3 as one approval stage that may span multiple question rounds. For
@@ -215,9 +255,9 @@ delegated defaults.
 
 Do not edit until the frontier is empty and the user confirms the resulting candidate
 set. That final confirmation is the single approval gate for all rounds. A candidate is
-not ready without a concrete action target and a verification that can run now. Keep
-future-session predictions distinct from checks that can run now, even when both appear
-in the same technical note.
+not ready without a `方案：` / `Solution:` paragraph and a verification that can run
+now. Keep future-session predictions distinct from checks that can run now, even when
+both appear in the same technical note.
 
 After confirmation, read the target repository instructions and sources of truth, then
 make the smallest approved changes. Prefer modifying or deleting existing surfaces over

@@ -335,6 +335,16 @@ MAX_DELETION_SECRET_FRAGMENTS = 256
 class ReviewChunk(NamedTuple):
     content: str
     context: str = ""
+# These are syntax/selector references, not reusable credential material. They can
+# legitimately appear in a relocated test or browser helper after a deletion-only
+# secret redaction, so they must not block that relocation.
+NON_MATERIAL_SECRET_FRAGMENT_VALUES = frozenset({"password", "username"})
+NON_MATERIAL_SECRET_FRAGMENT_PATTERNS = (
+    re.compile(r"^/[^\r\n]*$"),
+    re.compile(r"^[A-Za-z][A-Za-z0-9_.-]*\[[^\r\n\]]+\]$"),
+)
+
+
 SECRET_PLACEHOLDER_VALUES = {
     "__openclaw_redacted__",
     "changeme",
@@ -7574,15 +7584,22 @@ def review_secret_fragments(
     )
     try:
         for segment in segments:
-            fragments.update(
-                segment[start:end]
-                for start, end in review_repeatable_secret_spans(
-                    segment,
-                    javascript_dialect=javascript_dialect,
-                )
-                if segment[start:end]
-                and segment[start:end].casefold() not in SECRET_PLACEHOLDER_VALUES
-            )
+            for start, end in review_repeatable_secret_spans(
+                segment,
+                javascript_dialect=javascript_dialect,
+            ):
+                fragment = segment[start:end]
+                if (
+                    fragment
+                    and fragment == fragment.strip()
+                    and fragment.casefold() not in SECRET_PLACEHOLDER_VALUES
+                    and fragment.casefold() not in NON_MATERIAL_SECRET_FRAGMENT_VALUES
+                    and not any(
+                        pattern.fullmatch(fragment)
+                        for pattern in NON_MATERIAL_SECRET_FRAGMENT_PATTERNS
+                    )
+                ):
+                    fragments.add(fragment)
             fragments.update(
                 fragment
                 for fragment in private_key_body_fragments(segment)
@@ -7745,8 +7762,9 @@ def redact_deletion_only_secret_values(
                 )
             except SystemExit:
                 refuse_secret_like_review_patch(label)
-            if not fragments:
-                refuse_secret_like_review_patch(label)
+        # A risky deletion can contain only syntax references (for example
+        # password form fields). Keep the deletion hunk in the redaction pass,
+        # but do not require a reusable credential fragment.
         deletion_sections[index] = (old_dialect, old_content, fragments)
         all_fragments.update(fragments)
 
@@ -7787,8 +7805,6 @@ def redact_deletion_only_secret_values(
                 refuse_secret_like_review_patch(label)
 
     for index, (dialect, _old_content, fragments) in deletion_sections.items():
-        if not fragments:
-            continue
         try:
             redacted = redact_deleted_file_secret_lines(
                 units[index],
@@ -7802,8 +7818,11 @@ def redact_deletion_only_secret_values(
             sorted(fragments, key=lambda fragment: (-len(fragment), fragment))
         )
         if (
-            secret_text_risk(old_content, javascript_dialect=dialect)
-            or secret_text_risk(new_content)
+            review_secret_fragments(
+                old_content,
+                javascript_dialect=dialect,
+            )
+            or review_secret_fragments(new_content)
             or (residual_pattern is not None and residual_pattern.search(old_content))
         ):
             refuse_secret_like_review_patch(label)

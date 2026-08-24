@@ -274,6 +274,61 @@ class AutoreviewSecretScannerTests(unittest.TestCase):
             with self.subTest(content=content):
                 self.assertTrue(AUTOREVIEW.secret_text_risk(content))
 
+    def test_deletion_relocation_ignores_normal_password_and_session_paths(self) -> None:
+        old_content = "\n".join(
+            (
+                "def login(username: str, password: str):",
+                '    credentials = json.dumps({"username": username, "password": password})',
+                '    selector = "input[name=password]"',
+                '    has_session_secret = os.path.exists("/etc/dsh-auth/session-secret")',
+            )
+        ) + "\n"
+        patch = (
+            "diff --git a/tests/old.py b/tests/old.py\n"
+            "deleted file mode 100644\n"
+            "--- a/tests/old.py\n"
+            "+++ /dev/null\n"
+            "@@ -1,4 +0,0 @@\n"
+            + "".join(f"-{line}\n" for line in old_content.splitlines())
+        )
+        fragments: set[str] = set()
+
+        result = AUTOREVIEW.redact_deletion_only_secret_values(
+            "local diff",
+            patch,
+            {"tests/old.py"},
+            {"tests/old.py"},
+            set(),
+            "tests/new.py\n" + old_content,
+            fragments,
+        )
+
+        self.assertEqual(fragments, set())
+        self.assertIn("input[name=password]", result)
+
+    def test_deletion_relocation_still_rejects_real_credential_reuse(self) -> None:
+        credential = "actual-production-secret-value-123"
+        old_content = f'password = "{credential}"\n'
+        patch = (
+            "diff --git a/tests/old.py b/tests/old.py\n"
+            "deleted file mode 100644\n"
+            "--- a/tests/old.py\n"
+            "+++ /dev/null\n"
+            "@@ -1 +0,0 @@\n"
+            f"-{old_content}"
+        )
+
+        with self.assertRaisesRegex(SystemExit, "known secret-like value"):
+            AUTOREVIEW.redact_deletion_only_secret_values(
+                "local diff",
+                patch,
+                {"tests/old.py"},
+                {"tests/old.py"},
+                set(),
+                "tests/new.py\n" + old_content,
+                set(),
+            )
+
 
 class AutoreviewCompatibilityTests(unittest.TestCase):
     @classmethod
