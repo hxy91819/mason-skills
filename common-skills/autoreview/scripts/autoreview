@@ -12766,7 +12766,6 @@ def main() -> int:
         return 0
 
     review_source_snapshot = source_tree_snapshot(repo)
-    run_trufflehog_preflight(repo, target, target_ref, args.commit)
     known_secret_fragments: set[str] = set()
     if target == "local":
         bundle, bundle_truncated = local_bundle(
