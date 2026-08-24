@@ -10226,6 +10226,23 @@ def run_codex(args: argparse.Namespace, repo: Path, prompt: str) -> str:
     raise AssertionError("unreachable")
 
 
+def claude_model_access_failure(result: subprocess.CompletedProcess[str], model: str) -> bool:
+    detail = f"{result.stderr}\n{result.stdout}".lower()
+    if model.lower() not in detail:
+        return False
+    return any(
+        marker in detail
+        for marker in (
+            "does not exist or you do not have access",
+            "do not have access to",
+            "not available to your account",
+            "not found",
+            "unknown model",
+            "invalid model",
+        )
+    )
+
+
 def run_claude(args: argparse.Namespace, repo: Path, prompt: str) -> str:
     ensure_claude_isolation_supported(args, repo)
     cmd = [
@@ -10270,7 +10287,17 @@ def run_claude(args: argparse.Namespace, repo: Path, prompt: str) -> str:
             resolve_root=repo,
         )
     if result.returncode != 0:
-        raise SystemExit(f"claude engine failed ({result.returncode})\n{result.stderr or result.stdout}")
+        detail = result.stderr or result.stdout
+        if args.model and claude_model_access_failure(result, args.model):
+            raise SystemExit(
+                f"requested Claude reviewer model is unavailable: {args.model}\n"
+                "autoreview preserved the requested reviewer and did not silently switch models.\n"
+                "If an environment override selected this model, clear or replace "
+                "AUTOREVIEW_MODEL/AUTOREVIEW_CLAUDE_MODEL before rerunning. Otherwise, rerun "
+                "without explicit --engine/--model or choose a model already verified for this account.\n"
+                f"claude engine failed ({result.returncode})\n{detail}"
+            )
+        raise SystemExit(f"claude engine failed ({result.returncode})\n{detail}")
     return result.stdout
 
 
