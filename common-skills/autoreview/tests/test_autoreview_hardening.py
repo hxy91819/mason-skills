@@ -5456,11 +5456,12 @@ class AutoreviewHardeningTests(unittest.TestCase):
                 check=False,
             )
 
-            self.assertEqual(result.returncode, 1, result.stdout)
+            self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn(
-                "source changed after the review bundle was created",
+                "source changed during review; report covers the captured bundle",
                 result.stderr,
             )
+            self.assertIn("autoreview clean", result.stdout)
             self.assertTrue(record_path.is_file())
 
     def test_source_tree_snapshot_hashes_binary_and_untracked_tail_bytes(
