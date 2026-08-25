@@ -59,11 +59,16 @@ common-skills/
 ├── story-direction-review/
 │   ├── SKILL.md
 │   └── agents/
-└── tech-doc-html/
+├── tech-doc-html/
+│   ├── SKILL.md
+│   ├── references/       # Design system, component templates, security rules
+│   ├── scripts/          # Validation helpers
+│   └── assets/           # Example output
+└── worktree-cleanup/
     ├── SKILL.md
-    ├── references/       # Design system, component templates, security rules
-    ├── scripts/          # Validation helpers
-    └── assets/           # Example output
+    ├── agents/
+    ├── scripts/
+    └── tests/
 ```
 
 See [common-skills/README.md](common-skills/README.md) for authoring guidelines.
@@ -92,6 +97,7 @@ Agents that discover user-scoped skills from `~/.agents/skills` can link individ
 ```bash
 ln -s /path/to/mason-skills/common-skills/large-task-planning ~/.agents/skills/large-task-planning
 ln -s /path/to/mason-skills/common-skills/story-direction-review ~/.agents/skills/story-direction-review
+ln -s /path/to/mason-skills/common-skills/worktree-cleanup ~/.agents/skills/worktree-cleanup
 ```
 
 ## Available skills
@@ -108,6 +114,7 @@ ln -s /path/to/mason-skills/common-skills/story-direction-review ~/.agents/skill
 | [secure-release](common-skills/secure-release/) | Integrates fail-closed release pipelines using a versioned CI kit; npm is the first implemented adapter. |
 | [story-direction-review](common-skills/story-direction-review/) | Reviews a completed Story for direction drift, invalidated assumptions, coverage gaps, and necessary plan changes. Explicit invocation only. |
 | [tech-doc-html](common-skills/tech-doc-html/) | Interactive single-file HTML from technical design docs. Original skill design; visual style inspired by [html-effectiveness](https://github.com/ThariqS/html-effectiveness). |
+| [worktree-cleanup](common-skills/worktree-cleanup/) | Audits Git worktrees, backs up `.local`, and removes worktrees for merged or closed GitHub PRs. Explicit invocation only. |
 
 ### ask-oracle
 
@@ -268,3 +275,7 @@ Original skill design for independent, big-picture review of completed engineeri
 ### [tech-doc-html](common-skills/tech-doc-html/)
 
 Original Cursor skill design. Visual style inspired by [html-effectiveness](https://github.com/ThariqS/html-effectiveness) (Apache-2.0, Copyright Anthropic PBC). Style patterns used in `references/design_system.md` and `references/component_patterns.md`. [Full Apache-2.0 text](licenses/APACHE-2.0.txt).
+
+### [worktree-cleanup](common-skills/worktree-cleanup/)
+
+Original skill design for explicitly invoked, GitHub-aware worktree retirement. It reports first, preserves dirty or unresolved worktrees by default, backs up `.local`, and records every apply attempt in a manifest.

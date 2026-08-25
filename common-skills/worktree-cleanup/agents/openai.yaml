@@ -1,0 +1,7 @@
+interface:
+  display_name: "Worktree Cleanup"
+  short_description: "Audit and safely retire stale Git worktrees"
+  default_prompt: "Use $worktree-cleanup to audit this repository's worktrees and safely remove eligible stale ones."
+
+policy:
+  allow_implicit_invocation: false
