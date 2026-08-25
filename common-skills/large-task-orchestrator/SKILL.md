@@ -35,6 +35,21 @@ Quota exhaustion is an execution-attempt outcome, not a Story state; record the 
 
 Only the orchestrator changes plan state. Patch and render promptly after dispatch, worker result, validator result, and handoff. On resume, run the plan's status command and reconcile every `in_progress` or `blocked` card against its recorded role/session, actual ACPX or Herdr session, working tree, and evidence before dispatching anything. Never redispatch a non-`todo` Story merely because conversation context was lost.
 
+## Keep one lightweight local notebook
+
+Use `<repository>/.local/large-task-orchestrator/notebook.ndjson` as the default orchestrator notebook. Keep one file per repository and distinguish missions with `run_id`; never create one notebook per Story, worker, or validator. Keep it local and untracked. Before the first write, confirm the exact path is ignored; when necessary, add it to `.git/info/exclude` instead of changing the shared `.gitignore` merely for orchestration.
+
+Create the file only at the first qualifying event. Append one compact JSON object for:
+
+- An unexpected provider, quota, session, tool, or environment failure that changes routing or the next action.
+- A worker handoff, concurrent-edit conflict, or validator result whose context is not fully represented by the execution card.
+- Discovery, promotion, or resolution of a blocker.
+- A checkpoint immediately before context compaction or orchestrator handoff when active work would otherwise be hard to reconstruct.
+
+Do not record routine successful dispatches, ordinary progress messages, full transcripts, diffs, requirements, test logs, or facts already authoritative in the plan. Keep each entry under 1200 UTF-8 bytes with only `time`, `run_id`, `event`, `story`, `session`, up to three short `facts`, `decision`, `next`, and `plan_ref`; omit unused fields and all secrets. Use no more than one checkpoint per Story phase. When a run approaches 30 entries, append one consolidation entry and continue only for new blockers or materially changed recovery actions.
+
+The notebook is recovery evidence, never a status source. If an event changes readiness, dependencies, acceptance, sequence, or user decisions, update the execution card, risk register, or authorized plan first and let the notebook point to that record. On resume, read the plan first, then only the latest relevant notebook entries, then reconcile actual agent sessions and Git state.
+
 Before dispatch and again before integration, read applicable `AGENTS.md` files and inspect the current branch, `git status --short`, and `git worktree list`. Treat unrelated changes as concurrent work and preserve them.
 
 ## Select the control surface
