@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import subprocess
@@ -7,11 +8,20 @@ import sys
 import tempfile
 import time
 import unittest
+from argparse import Namespace
+from contextlib import redirect_stdout
+from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "cleanup_worktrees.py"
 REAL_GIT = "/usr/bin/git"
+SCRIPT_SPEC = spec_from_file_location("cleanup_worktrees", SCRIPT)
+assert SCRIPT_SPEC is not None and SCRIPT_SPEC.loader is not None
+CLEANUP_WORKTREES = module_from_spec(SCRIPT_SPEC)
+sys.modules[SCRIPT_SPEC.name] = CLEANUP_WORKTREES
+SCRIPT_SPEC.loader.exec_module(CLEANUP_WORKTREES)
 
 
 class CleanupWorktreesTest(unittest.TestCase):
@@ -31,7 +41,9 @@ class CleanupWorktreesTest(unittest.TestCase):
         self.run_git("init", "-b", "main", str(self.repo), cwd=self.root)
         self.run_git("config", "user.name", "Test User")
         self.run_git("config", "user.email", "test@example.invalid")
-        (self.repo / ".gitignore").write_text(".local/\n.env\n", encoding="utf-8")
+        (self.repo / ".gitignore").write_text(
+            ".local/\n.env\nignored-*/\n", encoding="utf-8"
+        )
         (self.repo / "tracked.txt").write_text("baseline\n", encoding="utf-8")
         self.run_git("add", ".")
         self.run_git("commit", "-m", "baseline")
@@ -158,7 +170,7 @@ else:
         self.assertIsInstance(token, str)
         return token
 
-    def test_apply_requires_an_exact_dry_run_approval_token(self) -> None:
+    def test_apply_requires_a_dry_run_approval_source(self) -> None:
         result = self.run_helper("--apply", "--json")
 
         self.assertEqual(result.returncode, 2)
@@ -268,6 +280,21 @@ else:
         self.assertEqual(entry["remote_proof"]["branches"], ["task-123"])
         self.assertIsInstance(entry["approval_token"], str)
 
+    def test_remote_branch_witness_change_keeps_stable_approval_valid(self) -> None:
+        self.fake_no_pr = True
+        old = time.time() - 25 * 3600
+        os.utime(self.worktree / ".git", (old, old))
+        _, report = self.audit()
+        token = self.approval_for(report, self.worktree)
+        self.remote_heads["alias-branch"] = self.remote_heads["task-123"]
+
+        result = self.run_helper("--apply", "--approve", token, "--json")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        applied = json.loads(result.stdout)
+        self.assertEqual(applied["removed"], 1)
+        self.assertFalse(self.worktree.exists())
+
     def test_recent_prless_worktree_is_kept(self) -> None:
         self.fake_no_pr = True
 
@@ -285,9 +312,103 @@ else:
         result = self.run_helper("--apply", "--approve", token, "--json")
 
         self.assertEqual(result.returncode, 1)
-        error = json.loads(result.stdout)
-        self.assertIn("stale approval", error["error"])
+        applied = json.loads(result.stdout)
+        self.assertEqual(applied["rejected_approvals"], [token[:12]])
+        self.assertEqual(applied["removed"], 0)
         self.assertTrue(self.worktree.exists())
+
+    def test_stale_approval_does_not_block_other_approved_target(self) -> None:
+        second = self.add_worktree("task-456")
+        _, report = self.audit()
+        first_token = self.approval_for(report, self.worktree)
+        second_token = self.approval_for(report, second)
+        (self.worktree / "new-untracked.txt").write_text("changed\n", encoding="utf-8")
+
+        result = self.run_helper(
+            "--apply",
+            "--approve",
+            first_token,
+            "--approve",
+            second_token,
+            "--json",
+        )
+
+        self.assertEqual(result.returncode, 1)
+        applied = json.loads(result.stdout)
+        self.assertEqual(applied["rejected_approvals"], [first_token[:12]])
+        self.assertEqual(applied["removed"], 1)
+        self.assertTrue(self.worktree.exists())
+        self.assertFalse(second.exists())
+
+    def test_state_drift_during_backup_stops_removal(self) -> None:
+        local_file = self.worktree / ".local" / "notes.txt"
+        local_file.parent.mkdir()
+        local_file.write_text("backup me\n", encoding="utf-8")
+        environment = self.helper_environment()
+        args = Namespace(
+            repo=str(self.repo),
+            apply=False,
+            backup_root=None,
+            min_no_pr_age_hours=24.0,
+        )
+        real_copytree = CLEANUP_WORKTREES.shutil.copytree
+
+        def copy_then_mutate(*copy_args: object, **copy_kwargs: object) -> object:
+            copied = real_copytree(*copy_args, **copy_kwargs)
+            local_file.write_text("changed during backup\n", encoding="utf-8")
+            return copied
+
+        with mock.patch.dict(os.environ, environment, clear=True):
+            report = CLEANUP_WORKTREES.discover(args)
+            token = self.approval_for(report, self.worktree)
+            with mock.patch.object(
+                CLEANUP_WORKTREES.shutil,
+                "copytree",
+                side_effect=copy_then_mutate,
+            ):
+                CLEANUP_WORKTREES.apply_candidates(report, [token])
+
+        entry = report["entries"][0]
+        self.assertEqual(entry["action"], "failed")
+        self.assertIn("ignored files changed", entry["error"])
+        self.assertTrue(self.worktree.exists())
+
+    def test_duplicate_approval_token_is_rejected_before_removal(self) -> None:
+        _, report = self.audit()
+        token = self.approval_for(report, self.worktree)
+
+        result = self.run_helper(
+            "--apply",
+            "--approve",
+            token,
+            "--approve",
+            token,
+            "--json",
+        )
+
+        self.assertEqual(result.returncode, 1)
+        error = json.loads(result.stdout)
+        self.assertIn("Duplicate approval tokens", error["error"])
+        self.assertTrue(self.worktree.exists())
+
+    def test_text_report_discloses_truncated_ignored_deletion_scope(self) -> None:
+        local_file = self.worktree / ".local" / "notes.txt"
+        local_file.parent.mkdir()
+        local_file.write_text("backup me\n", encoding="utf-8")
+        for index in range(51):
+            ignored_file = self.worktree / f"ignored-{index:02d}" / "data.txt"
+            ignored_file.parent.mkdir()
+            ignored_file.write_text("discard me\n", encoding="utf-8")
+        _, report = self.audit()
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            CLEANUP_WORKTREES.print_text(report)
+
+        rendered = output.getvalue()
+        self.assertIn("local_backup: yes", rendered)
+        self.assertIn("ignored_roots_deleted_count: 51", rendered)
+        self.assertIn("ignored_roots_deleted_sample_truncated: yes", rendered)
 
     def test_git_guard_task_authorization_is_used_when_available(self) -> None:
         _, report = self.audit()
@@ -315,7 +436,7 @@ os.execv("/usr/bin/git", ["git", *sys.argv[1:]])
         self.assertEqual(json.loads(result.stdout)["removed"], 1)
         self.assertFalse(self.worktree.exists())
 
-    def test_failed_first_removal_marks_remaining_targets_not_attempted(self) -> None:
+    def test_failed_removal_does_not_block_later_approved_target(self) -> None:
         second = self.add_worktree("task-456")
         _, report = self.audit()
         approvals = [
@@ -328,7 +449,7 @@ os.execv("/usr/bin/git", ["git", *sys.argv[1:]])
 import os
 import sys
 
-if sys.argv[1:3] == ["worktree", "remove"]:
+if sys.argv[1:3] == ["worktree", "remove"] and sys.argv[3].endswith("task-123"):
     print("simulated worktree guard", file=sys.stderr)
     sys.exit(77)
 os.execv("/usr/bin/git", ["git", *sys.argv[1:]])
@@ -350,8 +471,62 @@ os.execv("/usr/bin/git", ["git", *sys.argv[1:]])
         applied = json.loads(result.stdout)
         actions = {entry["path"]: entry["action"] for entry in applied["entries"]}
         self.assertEqual(actions[str(self.worktree)], "authorization-required")
-        self.assertEqual(actions[str(second)], "not-attempted")
+        self.assertEqual(actions[str(second)], "removed")
         self.assertTrue(self.worktree.exists())
+        self.assertFalse(second.exists())
+
+    def test_approval_report_survives_default_branch_advancing(self) -> None:
+        self.fake_no_pr = True
+        self.remote_heads["task-123"] = "f" * 40
+        old = time.time() - 25 * 3600
+        os.utime(self.worktree / ".git", (old, old))
+        report_path = self.root / "approval-report.json"
+        audit = self.run_helper(
+            "--dry-run",
+            "--json",
+            "--write-approval-report",
+            str(report_path),
+        )
+        self.assertEqual(audit.returncode, 0, audit.stderr)
+        self.default_head = "e" * 40
+
+        result = self.run_helper(
+            "--apply",
+            "--approve-report",
+            str(report_path),
+            "--json",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        applied = json.loads(result.stdout)
+        self.assertEqual(applied["removed"], 1)
+        self.assertEqual(applied["rejected_approvals"], [])
+        self.assertFalse(self.worktree.exists())
+
+    def test_approval_report_does_not_include_new_candidate(self) -> None:
+        report_path = self.root / "approval-report.json"
+        audit = self.run_helper(
+            "--dry-run",
+            "--json",
+            "--write-approval-report",
+            str(report_path),
+        )
+        self.assertEqual(audit.returncode, 0, audit.stderr)
+        second = self.add_worktree("task-456")
+
+        result = self.run_helper(
+            "--apply",
+            "--approve-report",
+            str(report_path),
+            "--json",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        applied = json.loads(result.stdout)
+        actions = {entry["path"]: entry["action"] for entry in applied["entries"]}
+        self.assertEqual(actions[str(self.worktree)], "removed")
+        self.assertEqual(actions[str(second)], "not-approved")
+        self.assertFalse(self.worktree.exists())
         self.assertTrue(second.exists())
 
 

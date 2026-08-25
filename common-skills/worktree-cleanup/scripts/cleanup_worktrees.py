@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Audit and retire Git worktrees whose commits are durable on GitHub.
 
-Inputs: a Git repository, a minimum age for PR-less worktrees, optional dry-run
-approval tokens, and an optional backup root. Outputs: a bounded text or JSON
-report plus per-target metadata and a batch manifest in apply mode. Exit 0 means
-the audit/apply completed, 1 means discovery or removal failed, and 2 is an
-argparse usage error.
+Inputs: a Git repository, a minimum age for PR-less worktrees, a reviewed dry-run
+report or selected approval tokens, and an optional backup root. Outputs: a
+bounded text or JSON report plus per-target metadata and a batch manifest in
+apply mode. Exit 0 means every approved candidate completed, 1 means discovery,
+approval, backup, or removal had a rejected item, and 2 is an argparse usage
+error.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -335,6 +337,52 @@ def read_worktree_dirty(path: Path) -> tuple[bool | None, str | None]:
     return bool(result.stdout.strip()), None
 
 
+def read_local_tree_fingerprint(local_dir: Path) -> tuple[dict[str, Any] | None, str | None]:
+    pending = [local_dir]
+    entries: list[dict[str, Any]] = []
+    while pending:
+        current = pending.pop()
+        try:
+            metadata = current.lstat()
+        except FileNotFoundError:
+            if current == local_dir:
+                break
+            return None, f"path disappeared while inventorying .local: {current}"
+        except OSError as exc:
+            return None, f"cannot inventory .local path {current}: {exc}"
+
+        relative = "." if current == local_dir else str(current.relative_to(local_dir))
+        item = {
+            "path": relative,
+            "mode": metadata.st_mode,
+            "size": metadata.st_size,
+            "mtime_ns": metadata.st_mtime_ns,
+            "symlink_target": None,
+        }
+        if stat.S_ISLNK(metadata.st_mode):
+            try:
+                item["symlink_target"] = os.readlink(current)
+            except OSError as exc:
+                return None, f"cannot read .local symlink {current}: {exc}"
+        elif stat.S_ISDIR(metadata.st_mode):
+            try:
+                children = sorted(
+                    (Path(entry.path) for entry in os.scandir(current)),
+                    key=lambda child: child.name,
+                    reverse=True,
+                )
+            except OSError as exc:
+                return None, f"cannot inventory .local directory {current}: {exc}"
+            pending.extend(children)
+        entries.append(item)
+
+    encoded = json.dumps(entries, sort_keys=True, separators=(",", ":")).encode()
+    return {
+        "entry_count": len(entries),
+        "metadata_digest": hashlib.sha256(encoded).hexdigest(),
+    }, None
+
+
 def read_ignored_roots(path: Path) -> tuple[dict[str, Any] | None, str | None]:
     result = run_command(
         [
@@ -353,6 +401,9 @@ def read_ignored_roots(path: Path) -> tuple[dict[str, Any] | None, str | None]:
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "git ls-files failed"
         return None, detail
+    local_tree, local_tree_error = read_local_tree_fingerprint(path / ".local")
+    if local_tree_error is not None:
+        return None, local_tree_error
     roots = sorted(value for value in result.stdout.split("\0") if value)
     encoded = "\0".join(roots).encode("utf-8", errors="surrogateescape")
     discarded = [
@@ -370,6 +421,7 @@ def read_ignored_roots(path: Path) -> tuple[dict[str, Any] | None, str | None]:
             "discarded_count": len(discarded),
             "discarded_sample": discarded[:IGNORED_SAMPLE_LIMIT],
             "discarded_sample_truncated": len(discarded) > IGNORED_SAMPLE_LIMIT,
+            "local_tree": local_tree,
         },
         None,
     )
@@ -405,6 +457,7 @@ def local_fingerprint(
         "dirty": dirty,
         "ignored_count": ignored["count"] if ignored else None,
         "ignored_digest": ignored["digest"] if ignored else None,
+        "local_tree": ignored["local_tree"] if ignored else None,
     }
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
@@ -412,19 +465,12 @@ def local_fingerprint(
 
 
 def approval_token(entry: dict[str, Any], repo_root: Path) -> str:
-    pr = entry["pr"] or {}
-    proof = entry["remote_proof"] or {}
     value = {
         "repo": str(repo_root),
         "path": entry["path"],
         "head": entry["head"],
         "branch": entry["branch"],
         "local_fingerprint": entry["local_fingerprint"],
-        "pr_number": pr.get("number"),
-        "pr_state": pr.get("state"),
-        "pr_head_oid": pr.get("head_ref_oid"),
-        "proof_kind": proof.get("kind"),
-        "proof_remote_head": proof.get("remote_head"),
     }
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
@@ -476,12 +522,15 @@ def parse_args() -> argparse.Namespace:
         description="Audit and retire remotely durable Git worktrees.",
         epilog=(
             "Examples:\n"
-            "  cleanup_worktrees.py --repo . --dry-run --json\n"
+            "  cleanup_worktrees.py --repo . --dry-run --json "
+            "--write-approval-report /tmp/audit.json\n"
+            "  cleanup_worktrees.py --repo . --apply "
+            "--approve-report /tmp/audit.json\n"
             "  cleanup_worktrees.py --repo /src/project --apply --approve TOKEN\n\n"
             "Outputs:\n"
-            "  Dry-run emits approval tokens for eligible worktrees. Apply mode accepts "
-            "only those exact tokens, backs up .local, removes each still-matching "
-            "worktree, and writes metadata plus a batch manifest."
+            "  Dry-run can save the reviewed candidate set as an approval report. "
+            "Apply rechecks remote durability and local state, removes still-matching "
+            "approved worktrees, skips changed candidates, and never adds new candidates."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -494,19 +543,30 @@ def parse_args() -> argparse.Namespace:
     mode.add_argument(
         "--apply",
         action="store_true",
-        help="Remove worktrees matching one or more --approve tokens",
+        help="Remove worktrees approved by a report or one or more tokens",
     )
     mode.add_argument(
         "--dry-run",
         action="store_true",
         help="Report worktree status and approval tokens without deleting (default)",
     )
-    parser.add_argument(
+    approval = parser.add_mutually_exclusive_group()
+    approval.add_argument(
         "--approve",
         action="append",
         default=[],
         metavar="TOKEN",
-        help="Approve one exact dry-run candidate; repeat for multiple worktrees",
+        help="Approve one dry-run candidate; repeat for multiple worktrees",
+    )
+    approval.add_argument(
+        "--approve-report",
+        metavar="PATH",
+        help="Approve every candidate recorded in one reviewed dry-run JSON report",
+    )
+    parser.add_argument(
+        "--write-approval-report",
+        metavar="PATH",
+        help="Write the complete dry-run JSON to PATH for later --approve-report",
     )
     parser.add_argument(
         "--min-no-pr-age-hours",
@@ -530,10 +590,12 @@ def parse_args() -> argparse.Namespace:
         help="Emit machine-readable JSON instead of a text summary",
     )
     args = parser.parse_args()
-    if args.apply and not args.approve:
-        parser.error("--apply requires at least one --approve token from dry-run")
-    if not args.apply and args.approve:
-        parser.error("--approve is valid only with --apply")
+    if args.apply and not (args.approve or args.approve_report):
+        parser.error("--apply requires --approve-report or at least one --approve token")
+    if not args.apply and (args.approve or args.approve_report):
+        parser.error("--approve and --approve-report are valid only with --apply")
+    if args.apply and args.write_approval_report:
+        parser.error("--write-approval-report is valid only with dry-run")
     if not args.apply:
         args.dry_run = True
     return args
@@ -750,8 +812,31 @@ def discover(args: argparse.Namespace) -> dict[str, Any]:
         "approved": 0,
         "removed": 0,
         "failed": 0,
+        "rejected_approvals": [],
         "entries": entries,
     }
+
+
+def read_approval_report(path: str, summary: dict[str, Any]) -> list[str]:
+    report_path = Path(path).expanduser().resolve()
+    try:
+        raw = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CommandError(f"Cannot read approval report {report_path}: {exc}") from exc
+    if not isinstance(raw, dict) or not isinstance(raw.get("entries"), list):
+        raise CommandError(f"Invalid approval report {report_path}: missing entries")
+    if raw.get("common_repo_root") != summary["common_repo_root"]:
+        raise CommandError(
+            f"Approval report {report_path} belongs to a different repository"
+        )
+    tokens = [
+        entry.get("approval_token")
+        for entry in raw["entries"]
+        if isinstance(entry, dict) and entry.get("approval_token") is not None
+    ]
+    if not tokens or not all(isinstance(token, str) for token in tokens):
+        raise CommandError(f"Approval report {report_path} has no valid candidates")
+    return tokens
 
 
 def current_worktree(repo_root: Path, path: Path) -> WorktreeInfo | None:
@@ -790,18 +875,21 @@ def apply_candidates(summary: dict[str, Any], approved_tokens: list[str]) -> Non
         if entry["approval_token"] is not None
     }
     approvals = set(approved_tokens)
+    if len(approvals) != len(approved_tokens):
+        raise CommandError("Duplicate approval tokens are not allowed")
     unknown = sorted(approvals - set(eligible_by_token))
-    if unknown:
-        short = ", ".join(token[:12] for token in unknown)
-        raise CommandError(
-            f"Unknown or stale approval token(s): {short}; rerun dry-run and review again"
-        )
-
-    candidates = [eligible_by_token[token] for token in approved_tokens]
+    summary["rejected_approvals"] = [token[:12] for token in unknown]
+    candidates = [
+        eligible_by_token[token]
+        for token in approved_tokens
+        if token in eligible_by_token
+    ]
     for entry in summary["entries"]:
         if entry["approval_token"] is not None:
             entry["action"] = "approved" if entry in candidates else "not-approved"
     summary["approved"] = len(candidates)
+    if not candidates:
+        return
 
     backup_root = Path(summary["backup_root"]).resolve()
     for candidate in candidates:
@@ -827,12 +915,13 @@ def apply_candidates(summary: dict[str, Any], approved_tokens: list[str]) -> Non
             {
                 "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
                 "backup_root": str(batch_root),
+                "rejected_approvals": summary["rejected_approvals"],
                 "items": summary["entries"],
             },
         )
 
     update_manifest()
-    for index, candidate in enumerate(candidates):
+    for candidate in candidates:
         worktree_path = Path(candidate["path"])
         local_dir = worktree_path / ".local"
         metadata_path: Path | None = None
@@ -851,18 +940,19 @@ def apply_candidates(summary: dict[str, Any], approved_tokens: list[str]) -> Non
                 },
             )
 
+        def fail_candidate(error: str) -> None:
+            candidate["action"] = "failed"
+            candidate["error"] = error
+            summary["failed"] += 1
+            update_metadata()
+            update_manifest()
+
         state_error = revalidate_local_state(
             candidate, Path(summary["common_repo_root"])
         )
         if state_error is not None:
-            candidate["action"] = "failed"
-            candidate["error"] = state_error
-            summary["failed"] += 1
-            update_manifest()
-            for remaining in candidates[index + 1 :]:
-                remaining["action"] = "not-attempted"
-            update_manifest()
-            break
+            fail_candidate(state_error)
+            continue
 
         try:
             backup_dir = ensure_unique_backup_dir(batch_root, candidate["name"])
@@ -874,17 +964,18 @@ def apply_candidates(summary: dict[str, Any], approved_tokens: list[str]) -> Non
             if local_dir.exists():
                 shutil.copytree(local_dir, backup_dir / ".local", symlinks=True)
         except OSError as exc:
-            candidate["action"] = "failed"
-            candidate["error"] = f"backup failed: {exc}"
-            summary["failed"] += 1
-            update_metadata()
-            for remaining in candidates[index + 1 :]:
-                remaining["action"] = "not-attempted"
-            update_manifest()
-            break
+            fail_candidate(f"backup failed: {exc}")
+            continue
 
         update_metadata()
         update_manifest()
+
+        state_error = revalidate_local_state(
+            candidate, Path(summary["common_repo_root"])
+        )
+        if state_error is not None:
+            fail_candidate(state_error)
+            continue
 
         remove_args = ["git"]
         if guard_supports_task_authorization:
@@ -914,11 +1005,6 @@ def apply_candidates(summary: dict[str, Any], approved_tokens: list[str]) -> Non
             summary["removed"] += 1
 
         update_metadata()
-        if candidate["action"] != "removed":
-            for remaining in candidates[index + 1 :]:
-                remaining["action"] = "not-attempted"
-            update_manifest()
-            break
         update_manifest()
 
     summary["worktree_count_after"] = len(
@@ -947,6 +1033,7 @@ def print_text(summary: dict[str, Any]) -> None:
     print(f"approved: {summary['approved']}")
     print(f"removed: {summary['removed']}")
     print(f"failed: {summary['failed']}")
+    print(f"rejected_approvals: {len(summary['rejected_approvals'])}")
     print()
 
     for entry in summary["entries"]:
@@ -964,8 +1051,22 @@ def print_text(summary: dict[str, Any]) -> None:
             "  ignored_path_roots_not_files: "
             f"{ignored['count'] if ignored else 'unknown'}"
         )
-        if ignored and ignored["discarded_count"]:
-            print(f"  ignored_roots_deleted: {ignored['discarded_sample']}")
+        if ignored:
+            print(
+                "  local_backup: "
+                f"{'yes' if ignored['local_tree']['entry_count'] else 'no'}"
+            )
+            print(f"  ignored_roots_deleted_count: {ignored['discarded_count']}")
+            print(f"  ignored_roots_deleted_sample: {ignored['discarded_sample']}")
+            print(
+                "  ignored_roots_deleted_sample_truncated: "
+                f"{'yes' if ignored['discarded_sample_truncated'] else 'no'}"
+            )
+        else:
+            print("  local_backup: unknown")
+            print("  ignored_roots_deleted_count: unknown")
+            print("  ignored_roots_deleted_sample: unknown")
+            print("  ignored_roots_deleted_sample_truncated: unknown")
         print(f"  action: {entry['action']}")
         if entry["approval_token"]:
             print(f"  approval_token: {entry['approval_token']}")
@@ -991,7 +1092,14 @@ def main() -> int:
     try:
         summary = discover(args)
         if args.apply:
-            apply_candidates(summary, args.approve)
+            approved_tokens = (
+                read_approval_report(args.approve_report, summary)
+                if args.approve_report
+                else args.approve
+            )
+            apply_candidates(summary, approved_tokens)
+        elif args.write_approval_report:
+            write_json(Path(args.write_approval_report).expanduser(), summary)
     except (CommandError, OSError) as exc:
         emit_error(args, str(exc))
         return 1
@@ -1001,7 +1109,7 @@ def main() -> int:
         sys.stdout.write("\n")
     else:
         print_text(summary)
-    return 1 if summary["failed"] else 0
+    return 1 if summary["failed"] or summary["rejected_approvals"] else 0
 
 
 if __name__ == "__main__":
