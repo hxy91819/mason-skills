@@ -133,14 +133,18 @@ Do not repurpose failed or exhausted sessions for another Story.
 
 ## Integrate waves
 
-After each wave, reconcile the working tree, run proportionate integration checks, and release newly unblocked Stories. If concurrent agents touched the same semantic area despite ownership boundaries, pause that area and resolve only when intent is unambiguous; otherwise ask the user.
+After each wave, reconcile the working tree, run proportionate integration checks, checkpoint any validated work that could not be committed safely per Story, and release newly unblocked Stories. If concurrent agents touched the same semantic area despite ownership boundaries, pause that area and resolve only when intent is unambiguous; otherwise ask the user.
 
-## Commit and push
+## Checkpoint commits and final push
 
-After every Story card is `done` and combined integration checks pass, the orchestrator owns final repository delivery. Do not push a partial mission while a Story is blocked unless the plan explicitly defines that partial delivery or the user accepts it.
+Use Git commits as recoverable execution checkpoints. A phase is complete only when a Story's validator returns `CONTINUE`, the orchestrator reconciles its evidence, updates the card to `done`, renders the dashboard, and runs the Story's required checks. Then the orchestrator commits that Story's authorized changes with its Story ID in the message.
+
+Workers and validators never commit. Do not commit `worker_done`, `PATCH_PROMPT`, quota handoffs, routine notebook checkpoints, failing checks, or an `in_progress` card. Stage only the completed Story's owned files and plan artifacts; preserve unrelated concurrent changes. When parallel Stories or concurrent edits cannot be separated safely at file or hunk level, wait until all affected Stories validate, run the wave checks, and make one wave checkpoint commit listing their Story IDs. Put later cross-Story integration fixes in a separate integration commit after their checks pass. Never rewrite an earlier checkpoint merely to make the history tidier.
+
+Checkpoint commits stay local during execution. After every Story card is `done` and combined integration checks pass, the orchestrator owns the single final push. Do not push a partial mission while a Story is blocked unless the plan explicitly defines that partial delivery or the user accepts it.
 
 1. Recheck the current branch, `git status --short`, `git worktree list`, the complete diff, and commits ahead of the upstream. Confirm the delivery contains only task-authorized changes; preserve unrelated concurrent work and never stage it merely to obtain a clean tree.
-2. If validated task changes remain uncommitted, commit only those changes using the repository's commit convention. Do not amend or rewrite existing commits unless explicitly authorized.
+2. If validated task changes remain uncommitted, commit only those changes using the Story, wave, or integration checkpoint rule above. Do not amend or rewrite existing commits unless explicitly authorized.
 3. Push the current branch directly to its configured upstream without asking for another confirmation. If no upstream exists and exactly one suitable remote is unambiguous, set the upstream while pushing the current branch.
 4. Never force-push, push tags, push another branch, bypass hooks, or choose among ambiguous remotes. Treat authentication, protected-branch, non-fast-forward, ambiguous-remote, and inseparable-unrelated-commit failures as blockers instead of expanding scope.
 5. Record the pushed commit SHA, remote, branch, and push result in the plan's delivery state.
