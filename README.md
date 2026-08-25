@@ -101,7 +101,7 @@ ln -s /path/to/mason-skills/common-skills/story-direction-review ~/.agents/skill
 | [ask-oracle](common-skills/ask-oracle/) | Produces a concise brief containing the original request and all decision-relevant context, reserving technical judgment for an expert oracle. |
 | [article-polish](common-skills/article-polish/) | Article polishing with quick / normal / refined modes. Derivative work based on [baoyu-translate](https://github.com/JimLiu/baoyu-skills/tree/main/skills/baoyu-translate). |
 | [article-workflow](common-skills/article-workflow/) | A phased article optimization workflow with 13 skills — from brief generation through final publication. See [workflow README](common-skills/article-workflow/README.md) for phase order and usage. |
-| [distill](common-skills/distill/) | Reviews agent sessions for evidence-backed harness and project-knowledge improvements, pruning stale, conflicting, or incorrect guidance before strengthening durable decisions, docs, specs, tools, checks, skills, or CI. |
+| [distill](common-skills/distill/) | Reviews one session or a bounded periodic cross-session window for evidence-backed harness and project-knowledge improvements, treating user corrections and verified recurring patterns as first-class signals while pruning stale, conflicting, or ineffective guidance. |
 | [large-task-planning](common-skills/large-task-planning/) | Builds an executable Epic/Story portal: human Markdown intent, script-owned Agent JSON, and a generated status dashboard. Explicit invocation only. |
 | [mermaid-lint](common-skills/mermaid-lint/) | Validates and fixes mermaid diagrams in markdown. Renders every block against the real mermaid renderer and reports all failures in one pass. Original skill design. |
 | [open-source-contribution](common-skills/open-source-contribution/) | Open-source contribution hygiene: identity verification, privacy scanning, Git history cleanup, installer hardening, autoreview, and safe push/PR validation. |
@@ -144,14 +144,19 @@ The `article-workflow-skill-maker` is a meta skill for turning a manually execut
 
 ### distill
 
-Replays the current session as a harness and project-knowledge retrospective, including
-failures, successful shortcuts, interaction friction, and durable product or technical
-decisions. It distinguishes user-confirmed decisions from agent proposals and checks that
-material choices were explained in human-facing sources before implementation. Before
-adding guidance, it audits existing rules and project documentation for
-staleness, duplication, conflicts, incorrect claims, deterministic replacements, and
-misplaced detail. It prioritizes deletion, correction, and consolidation before adding
-missing global context or decision rationale. It proposes up to eight changes or
+Replays either the current session or a bounded periodic or milestone review window as a
+harness and project-knowledge retrospective. It treats explicit user corrections as
+high-authority belief changes, separates their intended scope from recurrence and impact,
+and ignores ordinary errors unless investigation produced a verified reusable conclusion.
+In review mode it merges semantically equivalent signals across distinct tasks, checks
+whether earlier improvements worked or regressed, and discloses evidence coverage without
+claiming access to unavailable conversation history.
+
+Before adding guidance, it audits existing rules and project documentation for staleness,
+duplication, conflicts, incorrect claims, deterministic replacements, misplaced detail,
+and discoverability from the next relevant task. Cross-session signal tables stay
+temporary: the skill creates no learning ledger or recurring report, and routes only the
+confirmed durable result to its authoritative source. It proposes up to eight changes or
 questions per round across both lanes, continuing through a decision tree when needed,
 then applies the confirmed set behind one approval gate.
 

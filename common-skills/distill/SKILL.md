@@ -1,9 +1,9 @@
 ---
 name: distill
-description: Review the current conversation as a harness and project-knowledge retrospective, then prune or strengthen the specs, documentation, decisions, context, instructions, tools, checks, workflows, and environment that shape future human and agent work. Use after substantial agent work, debugging, retries, user corrections, or skill execution when session evidence may reveal reusable improvements or durable product and technical decisions.
+description: Review the current conversation or a bounded set of recent sessions as a harness and project-knowledge retrospective, then prune or strengthen the specs, documentation, decisions, context, instructions, tools, checks, workflows, and environment that shape future human and agent work. Use after substantial agent work, debugging, retries, user corrections, or skill execution, and for periodic or milestone reviews when cross-session evidence may reveal recurring improvements, regressions, or durable product and technical decisions.
 ---
 
-# Distill the Session into the Harness and Project Knowledge
+# Distill Session Evidence into the Harness and Project Knowledge
 
 Turn session evidence into the smallest verified harness and project-knowledge changes
 that make future work more reliable. The harness includes intent and specs, context and
@@ -16,12 +16,30 @@ candidate set authorizes its smallest in-scope edits. Ask again only for a mater
 different target, an external repository, or a destructive change. Finish without edits
 when no candidate survives the evidence and value gates.
 
+## Operating Modes
+
+Use one workflow with two evidence scopes:
+
+- **Session mode** is the default. Review the current conversation and its tool evidence.
+- **Review mode** is explicit or scheduler-invoked. Review a bounded set of recent
+  sessions for recurring patterns, regressions, and the effectiveness of earlier changes.
+
+In review mode, read `references/periodic-review.md` before Phase 1 and follow its evidence
+boundary, batching, privacy, recurrence, and previous-change evaluation rules. A periodic
+trigger starts an audit; it never authorizes edits or weakens the Phase 3 approval gate.
+The caller or scheduler owns cadence and review-window state.
+
 ## Phase 1: Replay
 
 Reconstruct the complete session trajectory:
 
 - Intended outcome and acceptance criteria
-- Actions, tool feedback, failures, retries, corrections, and repeated work
+- Actions, tool feedback, failures, retries, and repeated work
+- Every explicit user correction, clarification, preference, or rejection of an agent
+  assumption. Capture the **belief delta**: what the agent believed, what the user
+  established instead, the intended scope, and the evidence for that scope.
+- Every non-obvious gotcha whose root cause and recovery were verified. Keep the reusable
+  conclusion separate from the ordinary error, failed command, or retry that exposed it.
 - Successful shortcuts worth making repeatable
 - User interaction friction, including avoidable questions or excessive output
 - Every executed skill, from instruction loading through validation and handoff
@@ -31,6 +49,10 @@ Reconstruct the complete session trajectory:
 - Every material decision introduced by the agent, the user-visible consequences that
   were disclosed before approval, and the exact evidence that the user confirmed it
 
+In review mode, merge semantically equivalent signals across the bounded evidence window
+as specified in the periodic-review reference. Do not turn shared error text or repeated
+retries within one task into false recurrence.
+
 Compare the actual path with the shortest reliable path. Classify each material signal as
 a **harness gap**, **project-knowledge gap**, **execution defect**, **environment or tool
 defect**, **request ambiguity**, or **one-off event**. An agent mistake becomes a harness
@@ -39,8 +61,9 @@ detail becomes a project-knowledge candidate only when it improves durable globa
 understanding or preserves decision rationale. Carry unverified improvements as
 hypotheses.
 
-Complete this phase when every material detour, correction, shortcut, and durable decision
-has traceable conversation or tool evidence.
+Complete this phase when every material detour, correction, shortcut, durable decision,
+and cross-session pattern within the stated evidence boundary has traceable conversation
+or tool evidence.
 
 ## Phase 2: Audit and Route
 
@@ -63,6 +86,29 @@ authority and scope; approved specs and contracts; then implementation, tests, a
 configuration as evidence of current behavior rather than automatic proof of intended
 behavior. Never silently choose between unresolved semantic rules.
 
+### Evidence, scope, and recurrence
+
+Evaluate four dimensions separately:
+
+- **Authority** determines whether a conclusion can be treated as intended truth.
+- **Scope** determines where it may be applied: task, repository, team or organization,
+  user preference, or general practice.
+- **Recurrence** estimates repeated future cost across distinct tasks or sessions.
+- **Impact** captures correctness, safety, time, and interaction cost even when an event
+  is rare.
+
+One explicit user correction may justify a candidate when its scope is clear and durable.
+Do not generalize a task-local instruction into a repository rule, or a personal preference
+into project truth. Route user preferences to user-scoped context only when that target is
+available and approved. A user-driven behavioral reversal without an explicit statement
+is a lower-authority hypothesis.
+
+Agent-inferred gotchas and best practices require independent verification; recurrence
+alone never makes them true. Repeated attempts inside one task do not increase recurrence.
+A mechanically verified, high-impact one-off may still justify a candidate. Recurrence
+after a prior change is stronger evidence that the change is undiscoverable, incomplete,
+misrouted, or based on a false hypothesis.
+
 ### Decision approval and visibility
 
 Treat a decision as material when it changes what the user receives or must operate,
@@ -82,6 +128,10 @@ the appropriate abstraction level in a document its human stakeholders are expec
 read. Agent-only execution material may carry exact implementation details, but it cannot
 be the sole place where the decision or its consequences appear. A human-facing summary
 and a linked detailed contract are complementary, not duplicate sources of truth.
+
+For every durable change, test the future task path: would a human or agent encountering
+the same work naturally reach the authoritative source before repeating the old mistake?
+If not, improve routing or placement rather than copying the rule into multiple locations.
 
 When one human-facing document carries multiple material decisions, present them as a
 numbered decision list. For every item, state the decider, the agent recommendation and
@@ -152,7 +202,13 @@ Rank candidates internally by safety and correctness impact, likely recurrence, 
 strength, feedback speed, maintenance cost, and context load. Present up to eight
 non-overlapping candidates per round as a decision brief, grouped under **Harness** and
 **Project knowledge** when both have candidates. Do not suppress one lane to make room
-for the other, and do not present the internal audit record:
+for the other, and do not present the internal audit record. In review mode, precede the
+brief with one plain sentence stating the exact review window, the number of distinct
+sessions or tasks covered, the evidence sources used, and material coverage gaps. This is
+evidence provenance, not the internal audit. In each technical note, distinguish checks
+that can run now from future efficacy predictions and identify whether support is an
+authoritative correction, a recurring pattern, or a post-change regression. Paraphrase
+corrections; do not expose raw private transcript text.
 
 ```markdown
 You need to decide: <one-sentence decision and consequence>. Recommendation: <answer>.
@@ -262,15 +318,20 @@ both appear in the same technical note.
 After confirmation, read the target repository instructions and sources of truth, then
 make the smallest approved changes. Prefer modifying or deleting existing surfaces over
 creating new artifacts. Preserve supported behavior, safety controls, validation depth,
-and approval gates. Create no persistent retrospective report; project-documentation
-edits must update durable sources of truth, and an approved eval may add only the artifact
-needed to run the experiment.
+and approval gates. Create no persistent retrospective report, learning log, or periodic-
+review checkpoint; project-documentation edits must update durable sources of truth, and
+an approved eval may add only the artifact needed to run the experiment. When no candidate
+survives in review mode, report the boundary and the disposition of material signals
+without writing a repository artifact.
 
 ## Phase 4: Prove
 
 Run the fastest relevant check after each change and the broader affected validation at
 the end. For every candidate, verify the predicted recurrence is prevented, exposed, or
-shortened. Revise or revert a change whose prediction fails.
+shortened. In review mode, use post-change evidence to classify earlier accepted changes
+as effective, inconclusive, regressed, or superseded. Do not claim success when the window
+is too short or partial to contain a comparable opportunity. Revise or revert a change
+whose prediction fails.
 
 Check that conflicts and duplicates are gone, links and pointers resolve, deterministic
 facts and implementation details are not needlessly cached in prose, every captured
@@ -280,5 +341,6 @@ Check that improved skills validate and unrelated user work remains untouched.
 
 Report the user-visible outcome first. Put files, commands, validation results, and any
 reviewed skills or signals that correctly produced no change afterward as supporting
-detail. Keep the handoff concise and use the same plain-language-first structure as the
-decision brief.
+detail. In review mode, include the evidence boundary and the effectiveness classification
+for previously accepted changes. Keep the handoff concise and use the same plain-language-
+first structure as the decision brief.
