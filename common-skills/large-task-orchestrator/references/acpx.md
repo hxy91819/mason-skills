@@ -22,7 +22,7 @@ acpx --cwd <repo> <agent> sessions new --name <role-session>
 
 On orchestrator resume, inspect and reuse the recorded session instead of calling `new` again. `sessions new` can replace an existing open scope, so uniqueness and plan reconciliation are required before creation.
 
-For Pi chores, select its advertised DeepSeek V4 Flash model and set thinking level to `max`. Model ID and thinking level are separate settings; do not invent a combined `deepseek-v4-flash-max` model ID. Read Pi's current configuration before dispatch because provider-qualified IDs may differ.
+Resolve the worker profile before session creation. Select the advertised model and apply the profile's effort through the adapter's advertised model variant or config option. Model ID and effort are separate settings unless the adapter explicitly advertises a combined variant; never synthesize an ID. Read the current adapter configuration before dispatch because provider-qualified IDs and supported effort values may differ.
 
 ## Dispatch a wave
 

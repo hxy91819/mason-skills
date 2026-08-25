@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "profiles": [
+    {
+      "name": "kimi-worker",
+      "match": {
+        "agent": "kimi"
+      },
+      "effort_by_difficulty": {
+        "routine": "max",
+        "standard": "max",
+        "complex": "max",
+        "critical": "max"
+      }
+    },
+    {
+      "name": "pi-deepseek-v4-flash-worker",
+      "match": {
+        "agent": "pi",
+        "model_contains": "deepseek-v4-flash"
+      },
+      "effort_by_difficulty": {
+        "routine": "high",
+        "standard": "high",
+        "complex": "max",
+        "critical": "max"
+      }
+    },
+    {
+      "name": "codex-worker",
+      "match": {
+        "agent": "codex"
+      },
+      "effort_by_difficulty": {
+        "routine": "medium",
+        "standard": "high",
+        "complex": "high",
+        "critical": "xhigh"
+      }
+    },
+    {
+      "name": "cursor-worker",
+      "match": {
+        "agent": "cursor"
+      },
+      "effort_by_difficulty": {
+        "routine": "medium",
+        "standard": "medium",
+        "complex": "high",
+        "critical": "high"
+      }
+    },
+    {
+      "name": "opencode-worker",
+      "match": {
+        "agent": "opencode"
+      },
+      "effort_by_difficulty": {
+        "routine": "medium",
+        "standard": "medium",
+        "complex": "high",
+        "critical": "high"
+      }
+    },
+    {
+      "name": "kiro-worker",
+      "match": {
+        "agent": "kiro"
+      },
+      "effort_by_difficulty": {
+        "routine": "medium",
+        "standard": "medium",
+        "complex": "high",
+        "critical": "high"
+      }
+    }
+  ]
+}

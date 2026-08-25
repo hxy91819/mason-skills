@@ -66,15 +66,17 @@ Use existing worktrees when the plan assigns them. Never create, switch, clean, 
 
 ## Route workers by capability
 
-Use these defaults, then adjust for actual availability and the Story's dominant risk:
+Use these capability defaults, then adjust for actual availability and the Story's dominant risk:
 
 | Story type | Preferred worker | Normal fallbacks |
 | --- | --- | --- |
 | Frontend, interaction, visual polish | Kimi | Cursor, then Codex |
 | Backend, API, data, correctness-heavy integration | Codex | OpenCode, then Cursor |
-| Quick mechanical work, small fixes, routine docs or checks | Pi with DeepSeek V4 Flash and `max` thinking | Another available fast model |
+| Quick mechanical work, small fixes, routine docs or checks | Pi with DeepSeek V4 Flash | Another available fast model |
 
 Kiro is a general-purpose fallback worker and independent validator when its advertised model fits the Story or another provider is quota-limited. Inspect the installed agent registry and advertised model IDs. For mixed Stories, select for the highest-risk portion; split only when the plan preserves independent acceptance and ownership.
+
+Before creating worker sessions, read [references/worker-profiles.md](references/worker-profiles.md), resolve the external worker-profile configuration, classify each Story's difficulty, and select the configured effort for the chosen agent/model. Treat the adapter's advertised model and effort options as authoritative. Record the resolved agent, model, effort, and profile source in the execution-card handoff so a replacement worker can reproduce or intentionally change the choice. Keep provider-specific effort values in configuration rather than this Skill.
 
 ## Dispatch a worker
 
