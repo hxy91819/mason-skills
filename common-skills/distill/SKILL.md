@@ -1,6 +1,6 @@
 ---
 name: distill
-description: Review the current conversation as a harness and project-knowledge retrospective, then prune or strengthen the specs, documentation, decisions, context, instructions, tools, checks, workflows, and environment that shape future human and agent work. Use after substantial agent work, debugging, retries, user corrections, or skill execution when session evidence may reveal reusable improvements or durable product and technical decisions.
+description: Review the current conversation as a harness and project-knowledge retrospective, then prune or strengthen the specs, documentation, decisions, context, instructions, tools, checks, workflows, and environment that shape future human and agent work. Use only when the user explicitly invokes $distill after substantial agent work, debugging, retries, user corrections, or skill execution.
 ---
 
 # Distill the Session into the Harness and Project Knowledge
