@@ -163,9 +163,11 @@ Before adding guidance, it audits existing rules and project documentation for s
 duplication, conflicts, incorrect claims, deterministic replacements, misplaced detail,
 and discoverability from the next relevant task. Cross-session signal tables stay
 temporary: the skill creates no learning ledger or recurring report, and routes only the
-confirmed durable result to its authoritative source. It proposes up to eight changes or
-questions per round across both lanes, continuing through a decision tree when needed,
-then applies the confirmed set behind one approval gate.
+confirmed durable result to its authoritative source. It presents up to eight changes or
+questions per message as a category-based frontier, with no total cap on candidates or
+rounds, then applies the confirmed set behind one approval gate. Periodic reviews use a
+user-local, repository-specific checkpoint to avoid re-reading covered sessions by
+default; the manager may reopen earlier evidence when it is useful.
 
 ### large-task-planning
 

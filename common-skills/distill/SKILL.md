@@ -27,7 +27,10 @@ Use one workflow with two evidence scopes:
 In review mode, read `references/periodic-review.md` before Phase 1 and follow its evidence
 boundary, batching, privacy, recurrence, and previous-change evaluation rules. A periodic
 trigger starts an audit; it never authorizes edits or weakens the Phase 3 approval gate.
-The caller or scheduler owns cadence and review-window state.
+The caller or scheduler owns cadence. Distill may use and update a user-local review
+checkpoint for the default evidence boundary, but the checkpoint is a soft retrieval
+cursor and never prevents the manager from reopening an earlier window when the evidence
+calls for it.
 
 ## Phase 1: Replay
 
@@ -199,16 +202,24 @@ the same authoritative change; they are one candidate, not several.
 ## Phase 3: Decide and Apply
 
 Rank candidates internally by safety and correctness impact, likely recurrence, evidence
-strength, feedback speed, maintenance cost, and context load. Present up to eight
-non-overlapping candidates per round as a decision brief, grouped under **Harness** and
-**Project knowledge** when both have candidates. Do not suppress one lane to make room
-for the other, and do not present the internal audit record. In review mode, precede the
-brief with one plain sentence stating the exact review window, the number of distinct
-sessions or tasks covered, the evidence sources used, and material coverage gaps. This is
-evidence provenance, not the internal audit. In each technical note, distinguish checks
-that can run now from future efficacy predictions and identify whether support is an
-authoritative correction, a recurring pattern, or a post-change regression. Paraphrase
-corrections; do not expose raw private transcript text.
+strength, feedback speed, maintenance cost, and context load. Treat the surviving
+candidates as a decision tree. The **frontier** is the set of candidates whose
+prerequisites and dependent choices are already settled. Present the frontier in numbered
+rounds, grouped by independent categories such as **Harness** and **Project knowledge**;
+split a category further when that keeps its choices understandable. Show at most eight
+non-overlapping candidates or questions in one message, but impose no total candidate or
+round limit. Do not suppress one category to fit another, silently drop lower-priority
+items, or merge unrelated candidates just to fit the per-message window. After each reply,
+recompute the frontier and continue with as many category rounds as needed until every
+surviving candidate has been shown and every real choice is settled. Do not present the
+internal audit record.
+
+In review mode, precede the first brief with one plain sentence stating the exact review
+window, the number of distinct sessions or tasks covered, the evidence sources used, and
+material coverage gaps. This is evidence provenance, not the internal audit. In each
+technical note, distinguish checks that can run now from future efficacy predictions and
+identify whether support is an authoritative correction, a recurring pattern, or a
+post-change regression. Paraphrase corrections; do not expose raw private transcript text.
 
 ```markdown
 You need to decide: <one-sentence decision and consequence>. Recommendation: <answer>.
@@ -299,15 +310,18 @@ technical note focused on facts that help the user assess scope, confidence, or 
 is not a dump of the analysis trace. The note uses the user's language; only identifiers
 stay in their original form.
 
-Recommend the complete set by default; the user can confirm it or exclude candidate
-numbers. Treat Phase 3 as one approval stage that may span multiple question rounds. For
-any other real choices, map a decision tree, explore facts yourself, and ask the currently
-unblocked frontier in numbered rounds of at most eight questions. Include a recommended
+Recommend the complete surviving set by default; the user can confirm it or exclude
+candidate numbers as the rounds proceed. Treat Phase 3 as one approval stage that may span
+any number of category and question rounds. For every real choice, map the design tree,
+explore facts yourself, and ask the currently unblocked frontier. Include a recommended
 answer for every question. When more than eight frontier decisions remain, ask the eight
-highest-impact independent decisions, then recompute the frontier after the reply. Do not
-cap the total number of rounds or leave a branch silently assumed. Ask no question whose
-viable answer is already determined by evidence, prior decisions, constraints, or
-delegated defaults.
+highest-impact independent decisions, then recompute the frontier after the reply. Never
+cap the total number of rounds or candidates, and never leave a branch silently assumed.
+Ask no question whose viable answer is already determined by evidence, prior decisions,
+constraints, or delegated defaults.
+
+For user choices, use grilling's numbered `Q1` / `Q2` format and mark the recommended
+answer with `➡️`; keep candidate proposals in this skill's existing decision-brief format.
 
 Do not edit until the frontier is empty and the user confirms the resulting candidate
 set. That final confirmation is the single approval gate for all rounds. A candidate is
@@ -319,10 +333,10 @@ After confirmation, read the target repository instructions and sources of truth
 make the smallest approved changes. Prefer modifying or deleting existing surfaces over
 creating new artifacts. Preserve supported behavior, safety controls, validation depth,
 and approval gates. Create no persistent retrospective report, learning log, or periodic-
-review checkpoint; project-documentation edits must update durable sources of truth, and
-an approved eval may add only the artifact needed to run the experiment. When no candidate
-survives in review mode, report the boundary and the disposition of material signals
-without writing a repository artifact.
+review checkpoint in the repository; project-documentation edits must update durable
+sources of truth, and an approved eval may add only the artifact needed to run the
+experiment. When no candidate survives in review mode, report the boundary and the
+disposition of material signals without writing a repository artifact.
 
 ## Phase 4: Prove
 

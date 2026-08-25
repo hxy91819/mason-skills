@@ -6,14 +6,55 @@ phases; it does not create a parallel learning system or a second approval path.
 ## 1. Establish the review boundary
 
 Review mode must be explicitly requested or invoked by an external scheduler. The skill
-does not schedule itself, remember the last run, or imply that a cadence has been created.
-A useful external cadence is weekly while a project is active and at milestone or release
-boundaries; skip routine windows with no material work.
+does not schedule itself or imply that a cadence has been created. A useful external
+cadence is weekly while a project is active and at milestone or release boundaries; skip
+routine windows with no material work.
 
 Choose the boundary in this order:
 
 1. A user- or caller-supplied date, commit, milestone, branch, or session range.
-2. Otherwise, the most recent seven days, capped at ten sessions with material work.
+2. Otherwise, a valid checkpoint from the user-local state described below. Start strictly
+   after its `reviewed_through` cursor and use the current invocation time as the fixed
+   upper bound.
+3. If no usable checkpoint exists, use the most recent seven days, initially capped at ten
+   sessions with material work.
+
+The checkpoint is a retrieval optimization, not an evidence exclusion rule. The manager
+may widen the lower bound or reopen already covered sessions when a regression, an
+unresolved signal, a coverage gap, a user request, or an informed judgment makes that
+useful. State the widened boundary and reason in the evidence-provenance sentence, and do
+not count a reopened session as a new recurrence merely because it was revisited.
+
+Store the checkpoint outside the repository, by default at
+`~/.local/state/distill/periodic-review/<repository-key>.json` (respect
+`XDG_STATE_HOME` when it is set). Derive `<repository-key>` from the canonical remote
+identity and canonical worktree path when both are available, otherwise use the canonical
+worktree path, so separate repositories and worktrees do not share a cursor. Strip URL
+credentials before using a remote identity; if it cannot be safely normalized, use the
+path. Keep only the minimum state needed for retrieval:
+
+```json
+{
+  "schema_version": 1,
+  "repository": "<canonical remote + worktree identity>",
+  "last_review_date": "YYYY-MM-DD",
+  "reviewed_through": "YYYY-MM-DDTHH:MM:SSZ"
+}
+```
+
+`last_review_date` is the user's local calendar date for display; `reviewed_through` is
+the exact RFC 3339 cursor used for exclusion and may carry the local offset.
+
+Create the parent directory as needed. Write the replacement in the same state directory
+and rename it atomically so an interrupted write cannot corrupt the previous cursor.
+
+Read malformed, future-dated, or inaccessible state as unavailable and report that
+coverage limitation. After all evidence batches and Phase 4 verification finish
+successfully, including a review that produces no candidate, atomically update
+`last_review_date` and `reviewed_through` to the completed fixed upper bound. Do not
+advance the cursor for an interrupted review, a review still waiting for Phase 3 approval,
+or an unverified partial result. Failure to write this optional local state must not block
+the review; report it and continue without pretending the cursor advanced.
 
 A material session contains at least one substantial repository change, durable decision,
 explicit correction, verified non-obvious gotcha, repeated debugging path, or meaningful
@@ -38,10 +79,14 @@ Prefer evidence in this order when available:
 4. Existing specs, instructions, skills, and documentation for current authority and
    discoverability.
 
-Process a large window in batches rather than dropping sessions silently. Keep batch
-results as temporary audit data and merge them before Phase 2. Do not persist raw
-transcripts, secrets, incidental errors, or user wording. If a scratch file is necessary,
-place it outside the repository and delete it before handoff.
+Freeze the upper boundary before collection. Process a large window in deterministic
+batches rather than dropping sessions silently; continue until every material session in
+the stated boundary has been considered, even when that requires more than the initial
+ten-session batch. Track batch cursors and coverage only in temporary audit data, merge
+semantically equivalent signals before Phase 2, and expose any missing batch or source in
+the provenance sentence. Do not persist raw transcripts, secrets, incidental errors, or
+user wording. If a scratch file is necessary, place it outside the repository and delete
+it before handoff.
 
 ## 3. Build a temporary signal table
 
@@ -116,8 +161,10 @@ Keep immediate checks separate from predictions that require future sessions.
 
 If no candidate survives, finish without edits. Report the boundary and summarize which
 material signals were already addressed, one-off, unverified, superseded, or outside the
-approved scope. Do not write a recurring report or checkpoint into the repository.
+approved scope. Update only the user-local checkpoint after the complete review as defined
+above; never write a recurring report, review ledger, or checkpoint into the repository.
 
 During Phase 4, run current verification for every new change and report earlier accepted
 changes as effective, inconclusive, regressed, or superseded. Never claim that a future
-review is scheduled; the caller or external scheduler owns cadence.
+review is scheduled; the caller or external scheduler owns cadence. A later review may
+still reopen earlier sessions when its evidence judgment warrants it.
