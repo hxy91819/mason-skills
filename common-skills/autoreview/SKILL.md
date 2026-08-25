@@ -1,6 +1,7 @@
 ---
 name: autoreview
 description: "Pre-commit/ship code review: Codex default; optional Claude or Pi."
+disable-model-invocation: true
 ---
 
 # Auto Review
