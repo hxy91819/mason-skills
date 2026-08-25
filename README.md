@@ -114,7 +114,7 @@ ln -s /path/to/mason-skills/common-skills/worktree-cleanup ~/.agents/skills/work
 | [secure-release](common-skills/secure-release/) | Integrates fail-closed release pipelines using a versioned CI kit; npm is the first implemented adapter. |
 | [story-direction-review](common-skills/story-direction-review/) | Reviews a completed Story for direction drift, invalidated assumptions, coverage gaps, and necessary plan changes. Explicit invocation only. |
 | [tech-doc-html](common-skills/tech-doc-html/) | Interactive single-file HTML from technical design docs. Original skill design; visual style inspired by [html-effectiveness](https://github.com/ThariqS/html-effectiveness). |
-| [worktree-cleanup](common-skills/worktree-cleanup/) | Audits Git worktrees, backs up `.local`, and removes worktrees for merged or closed GitHub PRs. Explicit invocation only. |
+| [worktree-cleanup](common-skills/worktree-cleanup/) | Audits clean worktrees, proves their HEAD is durable in a GitHub PR or branch, backs up `.local`, and removes only review-bound approvals. Explicit invocation only. |
 
 ### ask-oracle
 
@@ -280,4 +280,4 @@ Original Cursor skill design. Visual style inspired by [html-effectiveness](http
 
 ### [worktree-cleanup](common-skills/worktree-cleanup/)
 
-Original skill design for explicitly invoked, GitHub-aware worktree retirement. It reports first, preserves dirty or unresolved worktrees by default, backs up `.local`, and records every apply attempt in a manifest.
+Original skill design for explicitly invoked, GitHub-aware worktree retirement. It proves each clean HEAD is remotely durable, inventories ignored data, binds removal to reviewed approval tokens, backs up `.local`, and records every apply attempt in a manifest.
