@@ -30,7 +30,7 @@ Start one uniquely named supported agent in each role pane:
 herdr agent start <run-story-role-attempt> --kind <kind> --pane <pane-id> -- <native-agent-options>
 ```
 
-Use native options to select the configured model and effort only when the installed kind supports them. Keep them as separate settings unless that kind explicitly exposes a combined model variant, and validate both against the live agent capabilities before dispatch.
+Append the candidate's configured `native_args` after `--` only when the installed kind's native help supports them. Use those options to select the configured model and effort, keep them separate unless that kind explicitly exposes a combined model variant, and validate both against the live agent capabilities before dispatch.
 
 The agent name remains dedicated to one Story and one role. Worker and validator always use different panes and names. A replacement worker receives a new pane/name and attempt number for the same Story; never reuse a live agent name for different work.
 

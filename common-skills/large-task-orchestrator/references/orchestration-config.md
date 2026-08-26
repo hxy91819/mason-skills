@@ -20,6 +20,8 @@ The document has `version: 1`, a `routing` object, and a `profiles` array. A pro
 Each candidate contains:
 
 - `agent`: required ACPX agent name or Herdr kind.
+- `acpx_command`: optional complete ACP-compatible command passed as one `--agent` value instead of the registered name.
+- `native_args`: optional argument array appended when Herdr starts the configured `agent` kind.
 - `model_contains`: optional case-insensitive substring that the advertised model ID must contain.
 - `reason`: optional operator-facing rationale for a non-obvious routing constraint; it does not affect matching.
 
@@ -31,4 +33,4 @@ Each profile contains a unique `name`, `match.agent`, optional `match.role`, opt
 
 Choose the matching profile with the most match fields; when specificity ties, the project profile wins and then earlier array order wins. Classify difficulty from ambiguity, cross-module breadth, correctness risk, and cost of failure: `routine` is bounded mechanical work, `standard` is ordinary implementation, `complex` requires substantial reasoning or integration, and `critical` risks data, security, compatibility, or the remaining plan.
 
-Apply a configured effort only when the adapter advertises it. When the adapter exposes one effort, use that value. Otherwise keep its default and record the mismatch in the execution-card handoff and orchestrator notebook. Re-resolve routing and effort when switching agent or model; never inherit either from the prior attempt.
+Apply a configured effort only when the adapter advertises it or the candidate pins the same value in validated native startup arguments. When the adapter exposes one effort, use that value. Otherwise keep its default and record the mismatch in the execution-card handoff and orchestrator notebook. Re-resolve routing and effort when switching agent or model; never inherit either from the prior attempt.

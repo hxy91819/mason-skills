@@ -12,6 +12,8 @@ Kiro supports ACPX named sessions and advertises its available models during the
 
 An orchestration candidate is not an ACPX agent merely because a same-named shell wrapper launches a coding CLI. Use a custom candidate only when `acpx config show` resolves it to an ACP-compatible stdio adapter and its preflight succeeds. An ordinary interactive CLI wrapper does not qualify.
 
+When a candidate defines `acpx_command`, validate that exact command through its native help and use it as one quoted `--agent` value. Keep the candidate's logical `agent` for profile matching. Create its named session with `--agent <command> sessions new --name <role-session>`; prompt an existing session with `--agent <command> prompt -s <role-session>`. The explicit `prompt` verb is required because raw-agent parsing does not accept `-s` in the positional-agent form.
+
 Scope every invocation to the Story's repository with `--cwd <absolute-repo-path>`. Use unique names such as `<run>-<story>-worker-1` and `<run>-<story>-validator-1`. A replacement worker increments its attempt number.
 
 For first dispatch, choose a name not used by an earlier Story run and create a fresh session:
@@ -22,7 +24,9 @@ acpx --cwd <repo> <agent> sessions new --name <role-session>
 
 On orchestrator resume, inspect and reuse the recorded session instead of calling `new` again. `sessions new` can replace an existing open scope, so uniqueness and plan reconciliation are required before creation.
 
-Resolve the role profile before session creation. Select the advertised model and apply the profile's effort through the adapter's advertised model variant or config option. Model ID and effort are separate settings unless the adapter explicitly advertises a combined variant; never synthesize an ID. Read the current adapter configuration before dispatch because provider-qualified IDs and supported effort values may differ.
+Session lifecycle verbs do not share the prompt option shape: close a named session with `sessions close <role-session>`, not `sessions close -s <role-session>`. Check the installed command help before applying prompt-style flags to another verb.
+
+Resolve the role profile before session creation. Select the advertised model and apply the profile's effort through the adapter's advertised model variant, config option, or matching validated startup option from `acpx_command`. For a registered agent, create the session, inspect its advertised config option ID, then run `acpx --cwd <repo> <agent> set <effort-option-id> <effort> -s <role-session>` and verify the accepted value before the first task prompt. Model ID and effort are separate settings unless the adapter explicitly advertises a combined variant; never synthesize an ID. Read the current adapter configuration before dispatch because provider-qualified IDs, option IDs, and supported effort values may differ.
 
 ## Dispatch a wave
 
@@ -41,6 +45,8 @@ Use persistent named sessions for worker fixes and validator rechecks of the sam
 ## Observe and recover
 
 Use `status`, `sessions show`, and `sessions history` for the exact agent, repository, and session name. Parse JSON events and the final result block; also inspect the repository because output alone cannot prove changes landed.
+
+A client timeout or incomplete final result does not prove the named session is idle, even when the wrapper exits successfully. Inspect that exact session; if its prompt is still running, cancel it and confirm it is idle before sending a retry. Otherwise the retry only queues behind the stalled prompt.
 
 If a prompt must be stopped, use the matching agent and session:
 

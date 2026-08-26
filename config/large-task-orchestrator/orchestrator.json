@@ -24,6 +24,13 @@
         },
         {
           "agent": "kiro",
+          "acpx_command": "kiro-cli-chat acp --model gpt-5.6-luna --effort xhigh",
+          "native_args": [
+            "--model",
+            "gpt-5.6-luna",
+            "--effort",
+            "xhigh"
+          ],
           "model_contains": "luna",
           "reason": "Luna keeps lightweight validation focused; the default Sol tends to broaden review scope."
         }
@@ -52,8 +59,8 @@
       "effort_by_difficulty": {
         "routine": "high",
         "standard": "high",
-        "complex": "max",
-        "critical": "max"
+        "complex": "xhigh",
+        "critical": "xhigh"
       }
     },
     {
