@@ -21,12 +21,13 @@ Each candidate contains:
 
 - `agent`: required ACPX agent name or Herdr kind.
 - `model_contains`: optional case-insensitive substring that the advertised model ID must contain.
+- `reason`: optional operator-facing rationale for a non-obvious routing constraint; it does not affect matching.
 
 Walk the selected array in order. A candidate becomes eligible only after its adapter, authentication, configured model, and required capability pass preflight. On quota exhaustion or unavailability, preserve the attempt evidence and advance to the next candidate. Exhausting the array blocks the Story.
 
 ## Effort profiles
 
-Each profile contains a unique `name`, `match.agent`, optional `match.model_contains`, and `effort_by_difficulty`. The effort map may use `routine`, `standard`, `complex`, and `critical`; a missing key leaves the adapter default unchanged.
+Each profile contains a unique `name`, `match.agent`, optional `match.role`, optional `match.model_contains`, and `effort_by_difficulty`. `match.role` is `worker` or `validator`. The effort map may use `routine`, `standard`, `complex`, and `critical`; a missing key leaves the adapter default unchanged.
 
 Choose the matching profile with the most match fields; when specificity ties, the project profile wins and then earlier array order wins. Classify difficulty from ambiguity, cross-module breadth, correctness risk, and cost of failure: `routine` is bounded mechanical work, `standard` is ordinary implementation, `complex` requires substantial reasoning or integration, and `critical` risks data, security, compatibility, or the remaining plan.
 

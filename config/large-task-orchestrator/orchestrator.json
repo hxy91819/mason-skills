@@ -22,7 +22,11 @@
           "agent": "pi",
           "model_contains": "deepseek-v4-flash"
         },
-        { "agent": "kiro" }
+        {
+          "agent": "kiro",
+          "model_contains": "luna",
+          "reason": "Luna keeps lightweight validation focused; the default Sol tends to broaden review scope."
+        }
       ]
     }
   },
@@ -98,6 +102,20 @@
         "standard": "medium",
         "complex": "high",
         "critical": "high"
+      }
+    },
+    {
+      "name": "kiro-luna-validator",
+      "match": {
+        "role": "validator",
+        "agent": "kiro",
+        "model_contains": "luna"
+      },
+      "effort_by_difficulty": {
+        "routine": "xhigh",
+        "standard": "xhigh",
+        "complex": "xhigh",
+        "critical": "xhigh"
       }
     }
   ]
