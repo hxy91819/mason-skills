@@ -14,7 +14,7 @@
       }
     },
     {
-      "name": "pi-deepseek-v4-flash-worker",
+      "name": "pi-deepseek-v4-flash",
       "match": {
         "agent": "pi",
         "model_contains": "deepseek-v4-flash"
@@ -39,27 +39,27 @@
       }
     },
     {
-      "name": "cursor-worker",
+      "name": "codexl-worker",
       "match": {
-        "agent": "cursor"
+        "agent": "codexl"
       },
       "effort_by_difficulty": {
         "routine": "medium",
-        "standard": "medium",
+        "standard": "high",
         "complex": "high",
-        "critical": "high"
+        "critical": "xhigh"
       }
     },
     {
-      "name": "opencode-worker",
+      "name": "codexp-worker",
       "match": {
-        "agent": "opencode"
+        "agent": "codexp"
       },
       "effort_by_difficulty": {
         "routine": "medium",
-        "standard": "medium",
+        "standard": "high",
         "complex": "high",
-        "critical": "high"
+        "critical": "xhigh"
       }
     },
     {

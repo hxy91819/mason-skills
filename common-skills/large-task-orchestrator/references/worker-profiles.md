@@ -1,6 +1,6 @@
 # Worker profile configuration
 
-Use this reference only when routing or replacing a worker.
+Use this reference only when routing or replacing a worker or validator.
 
 ## Resolve configuration
 
