@@ -4,13 +4,13 @@ Use this branch when ACPX is the selected control surface.
 
 ## Discover and prepare
 
-Confirm `acpx` is installed, then inspect `acpx config show` and the relevant command help. The built-in names commonly include `kimi`, `kiro`, `codex`, `pi`, `cursor`, and `opencode`; user configuration may add routes such as `codexl` and `codexp`. Treat the resolved registry and adapter-advertised models as authoritative. The `cursor` route launches `cursor-agent acp`; the `kiro` route launches `kiro-cli-chat acp`.
+Confirm `acpx` is installed, then inspect `acpx config show` and the relevant command help. ACPX provides built-in agent names and user configuration may add custom ones. Treat the resolved registry and adapter-advertised models as authoritative. The `cursor` route launches `cursor-agent acp`; the `kiro` route launches `kiro-cli-chat acp`.
 
 Preflight every candidate before assigning it work. Confirm its local CLI or npx adapter can start an ACP server without sending a model prompt. Check native ACP help where available, such as `cursor-agent acp --help`, `kimi acp --help`, `kiro-cli-chat acp --help`, and `opencode acp --help`. For Kiro, also confirm `kiro-cli-chat whoami` succeeds without exposing account details. ACPX's Pi and Codex routes use the `pi-acp` and `@agentclientprotocol/codex-acp` npx packages; make them locally available before relying on offline execution. Exclude a candidate whose adapter, authentication, or required model configuration is unavailable.
 
 Kiro supports ACPX named sessions and advertises its available models during the ACP handshake. Read the recorded session's model list and choose by Story risk, validator cost, and quota; do not cache a model list in the plan or assume Kiro's current default remains stable.
 
-Shell wrappers and aliases such as `codexl` or `codexp` are not ACPX agents merely because they launch a coding CLI. Use them only when `acpx config show` resolves each name to an ACP-compatible stdio adapter and its preflight succeeds. An ordinary interactive CLI wrapper does not qualify.
+An orchestration candidate is not an ACPX agent merely because a same-named shell wrapper launches a coding CLI. Use a custom candidate only when `acpx config show` resolves it to an ACP-compatible stdio adapter and its preflight succeeds. An ordinary interactive CLI wrapper does not qualify.
 
 Scope every invocation to the Story's repository with `--cwd <absolute-repo-path>`. Use unique names such as `<run>-<story>-worker-1` and `<run>-<story>-validator-1`. A replacement worker increments its attempt number.
 

@@ -64,16 +64,13 @@ Derive a dependency DAG from the plan. A Story is claimable only when its depend
 
 Use existing worktrees when the plan assigns them. Never create, switch, clean, stash, reset, or remove branches or worktrees without explicit user authorization. Choose concurrency from ready work, provider capacity, and collision risk.
 
-## Route workers by capability
+## Route external roles
 
-Use this worker order, subject to live availability and the Story's dominant risk:
+Before creating any worker or validator session, read [references/orchestration-config.md](references/orchestration-config.md) and resolve the external configuration. Use the `frontend` worker route for a frontend-dominant Story and the `default` worker route otherwise; use the validator's `default` route for the validation gate. For mixed Stories, classify by the highest-risk portion; split only when the plan preserves independent acceptance and ownership.
 
-- General Stories: `codexl` → `codex` → `codexp` → Kiro.
-- Frontend-dominant Stories: Kimi → `codexl` → `codex` → `codexp` → Kiro.
+Walk the selected candidate array in order. Advance only when a candidate is unavailable, incompatible, or quota-exhausted. Every candidate must resolve to a live ACP-compatible agent and satisfy its configured model match. If no candidate remains, block the Story with the exact routing reason instead of inventing a fallback.
 
-Treat `codexl` and `codexp` as candidates only when the selected control surface resolves them to live ACP-compatible agents. Inspect the installed registry and advertised model IDs before dispatch. For mixed Stories, select for the highest-risk portion; split only when the plan preserves independent acceptance and ownership.
-
-Before creating any worker or validator session, read [references/worker-profiles.md](references/worker-profiles.md), resolve the external role profile, classify the Story's difficulty, and select the configured effort for the chosen agent/model. Treat the adapter's advertised model and effort options as authoritative. Record the resolved role, agent, model, effort, and profile source in the execution-card handoff so a replacement session can reproduce or intentionally change the choice. Keep provider-specific effort values in configuration rather than this Skill.
+Classify the Story's difficulty and select the matching configured effort profile. Treat the adapter's advertised model and effort options as authoritative. Record the resolved role, route, candidate, model, effort, and configuration sources in the execution-card handoff so a replacement session can reproduce or intentionally change the choice.
 
 ## Dispatch a worker
 
@@ -107,7 +104,7 @@ Require the worker's final response to end with this strict JSON block:
 
 ## Run the lightweight validation gate
 
-After `worker_done`, create a separate validator session dedicated to that Story. Keep the card `in_progress`, record the validator role/session in its existing handoff data, and prefer Pi with its advertised DeepSeek V4 Flash model. If that route is unavailable or quota-exhausted, use Kiro or another independent economical agent with enough domain ability for the acceptance criteria.
+After `worker_done`, create a separate validator session dedicated to that Story using the resolved validator route. Keep the card `in_progress` and record the validator role/session in its existing handoff data.
 
 Explicitly invoke the sibling `$story-direction-review` Skill in the validator prompt and follow its fixed output contract. Give it the Epic, Story, execution-card handoff, worker evidence, current diff, and remaining Story map. It checks goal direction, acceptance coverage, major omissions, and whether the next Story remains valid. Do not substitute a broad review, `autoreview`, architecture audit, style sweep, or refactor pass unless the plan explicitly requires one.
 

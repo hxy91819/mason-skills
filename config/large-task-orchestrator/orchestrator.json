@@ -1,5 +1,31 @@
 {
   "version": 1,
+  "routing": {
+    "worker": {
+      "default": [
+        { "agent": "codexl" },
+        { "agent": "codex" },
+        { "agent": "codexp" },
+        { "agent": "kiro" }
+      ],
+      "frontend": [
+        { "agent": "kimi" },
+        { "agent": "codexl" },
+        { "agent": "codex" },
+        { "agent": "codexp" },
+        { "agent": "kiro" }
+      ]
+    },
+    "validator": {
+      "default": [
+        {
+          "agent": "pi",
+          "model_contains": "deepseek-v4-flash"
+        },
+        { "agent": "kiro" }
+      ]
+    }
+  },
   "profiles": [
     {
       "name": "kimi-worker",
