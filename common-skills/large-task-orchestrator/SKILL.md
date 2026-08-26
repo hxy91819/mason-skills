@@ -68,9 +68,8 @@ Use existing worktrees when the plan assigns them. Never create, switch, clean, 
 
 Use this worker order, subject to live availability and the Story's dominant risk:
 
-1. Try the registered `codex`, `codexl`, and `codexp` routes in that order.
-2. For frontend-dominant Stories, use Kimi after the Codex routes are unavailable or quota-exhausted.
-3. Use Kiro when the applicable routes above are unavailable or quota-exhausted.
+- General Stories: `codexl` → `codex` → `codexp` → Kiro.
+- Frontend-dominant Stories: Kimi → `codexl` → `codex` → `codexp` → Kiro.
 
 Treat `codexl` and `codexp` as candidates only when the selected control surface resolves them to live ACP-compatible agents. Inspect the installed registry and advertised model IDs before dispatch. For mixed Stories, select for the highest-risk portion; split only when the plan preserves independent acceptance and ownership.
 
