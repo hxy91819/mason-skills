@@ -4,9 +4,7 @@ Use this branch when ACPX is the selected control surface.
 
 ## Discover and prepare
 
-Confirm `acpx` is installed, then inspect `acpx config show` and the relevant command help. ACPX provides built-in agent names and user configuration may add custom ones. Treat the resolved registry and adapter-advertised models as authoritative. The `cursor` route launches `cursor-agent acp`; the `kiro` route launches `kiro-cli-chat acp`.
-
-Preflight every candidate before assigning it work. Confirm its local CLI or npx adapter can start an ACP server without sending a model prompt. Check native ACP help where available, such as `cursor-agent acp --help`, `kimi acp --help`, `kiro-cli-chat acp --help`, and `opencode acp --help`. For Kiro, also confirm `kiro-cli-chat whoami` succeeds without exposing account details. ACPX's Pi and Codex routes use the `pi-acp` and `@agentclientprotocol/codex-acp` npx packages; make them locally available before relying on offline execution. Exclude a candidate whose adapter, authentication, or required model configuration is unavailable.
+Resolve the selected route from `acpx config show`, then use `sessions new` for the first candidate. ACPX has no `preflight` verb: fresh session creation is the single handshake and capability check. On resume, inspect the recorded session and use `sessions ensure` only for that exact session. Inspect later candidates only after this one is unavailable, incompatible, or quota-exhausted; do not probe the whole fallback chain up front.
 
 Kiro supports ACPX named sessions and advertises its available models during the ACP handshake. Read the recorded session's model list and choose by Story risk, validator cost, and quota; do not cache a model list in the plan or assume Kiro's current default remains stable.
 
@@ -16,25 +14,28 @@ When a candidate defines `acpx_command`, validate that exact command through its
 
 Scope every invocation to the Story's repository with `--cwd <absolute-repo-path>`. Use unique names such as `<run>-<story>-worker-1` and `<run>-<story>-validator-1`. A replacement worker increments its attempt number.
 
-For first dispatch, choose a name not used by an earlier Story run and create a fresh session:
+For first dispatch, choose a name not used by an earlier Story run and create a fresh session, then establish its provider identity baseline before prompting:
 
 ```bash
 acpx --cwd <repo> <agent> sessions new --name <role-session>
+acpx --cwd <repo> <agent> sessions show <role-session>
 ```
 
-On orchestrator resume, inspect and reuse the recorded session instead of calling `new` again. `sessions new` can replace an existing open scope, so uniqueness and plan reconciliation are required before creation.
+On orchestrator resume, run `sessions show <role-session>` and compare the recorded provider session identifier, agent, cwd, effective permission flags, and sandbox/capability fingerprint before reusing it with `sessions ensure`. Immediately run `sessions show` again after `ensure` and compare all fields before sending any prompt. If the session is missing, closed, mismatched, or changed during ensure, quarantine/reconcile the workspace and create a new attempt with the prior handoff; do not silently replay the Story under the same attempt. After every strict-JSON prompt, compare the returned provider `agentSessionId` (or equivalent identifier) with the pre-dispatch record; a changed or missing identifier is a continuity failure. Quarantine and reconcile all workspace side effects from that prompt before any validator or retry, then create a new attempt. `sessions new` can replace an existing open scope, so uniqueness and plan reconciliation are required before creation.
 
 Session lifecycle verbs do not share the prompt option shape: close a named session with `sessions close <role-session>`, not `sessions close -s <role-session>`. Check the installed command help before applying prompt-style flags to another verb.
 
-Resolve the role profile before session creation. Select the advertised model and apply the profile's effort through the adapter's advertised model variant, config option, or matching validated startup option from `acpx_command`. For a registered agent, create the session, inspect its advertised config option ID, then run `acpx --cwd <repo> <agent> set <effort-option-id> <effort> -s <role-session>` and verify the accepted value before the first task prompt. Model ID and effort are separate settings unless the adapter explicitly advertises a combined variant; never synthesize an ID. Read the current adapter configuration before dispatch because provider-qualified IDs, option IDs, and supported effort values may differ.
+Resolve the role profile before session creation. Select an advertised model. Apply effort only when the handshake or a validated startup argument explicitly supports it; otherwise keep the adapter default, record `effort=default`, and continue. Never guess option names or synthesize model IDs after a rejected setting.
 
 ## Dispatch a wave
 
-Submit one complete worker or validator prompt to each named session:
+Submit one complete worker or validator prompt immediately after the single preflight, with the resolved provider sandbox and non-interactive permission behavior:
 
 ```bash
-acpx --cwd <repo> --format json --json-strict <agent> -s <role-session> --file <prompt-path>
+acpx --cwd <repo> <resolved-permission-flags> --non-interactive-permissions fail --format json --json-strict <agent> -s <role-session> --file <prompt-path>
 ```
+
+Resolve `<resolved-permission-flags>` before dispatch and record it with the provider sandbox evidence and effective permission behavior in the execution-card handoff. ACPX's permission policy is tool-oriented and cannot by itself constrain file paths, shell arguments, or network destinations to a Story. A worker or validator may use automatic approval only when that provider sandbox independently enforces the role's repository, command, and network scope; validators still receive read and targeted-test authority without code-editing. Otherwise fail closed or route to an adapter with verifiable isolation. Do not use `--approve-all` merely to bypass an unproven boundary.
 
 Prompt text may instead arrive on stdin. Use the host's parallel command surface to start independent Story invocations concurrently. ACPX queueing is per session; `--no-wait` queues follow-ups to an already busy session and is not a substitute for separate parallel Story sessions.
 

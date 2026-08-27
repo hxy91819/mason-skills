@@ -1,6 +1,6 @@
 ---
 name: large-task-orchestrator
-description: Orchestrate an existing large task plan with external worker and validator agents, one Story per session.
+description: Persistently orchestrate an existing large task plan with external worker and validator agents, one Story per session.
 disable-model-invocation: true
 ---
 
@@ -16,6 +16,24 @@ Use the agent that invoked this Skill as the orchestrator. Run all Story impleme
 
 Workers and validators do not start other agents, edit the large task plan, or push repository changes.
 
+## Drive the mission autonomously
+
+Operate as a persistent goal runner: the default response to uncertainty is to inspect, decide, record, and continue. Resolve worker and validator questions yourself when the choice stays inside the accepted plan, task scope, and existing authority. Choose the lowest-risk reversible option supported by repository evidence, then validate the outcome; do not ask the user to select among equivalent implementation, tooling, routing, or recovery options.
+
+Treat runtime enablement as an orchestration decision. On startup/resume, reconcile every recorded capability lease before dispatch: restore or quarantine any project/personal elevation whose owner is absent, expired, or not verified closed. When an accepted Story requires ports, containers, network access, filesystem writes, or similar worker capabilities, adjust the selected worker's session to the minimum sufficient capability and continue. Prefer task/session scope. A project-level change is allowed only inside an isolated project scope, with an owner, expiry/checkpoint, serialized access for the elevation window, and restoration plus inheritance verification at Story close, handoff, abort, or restart. If a configured personal profile is the only viable authorized surface, apply the same lease requirements. If any restoration or verification fails, keep the affected chain blocked and do not dispatch unrelated work through the elevated scope. Add a notebook entry only when the change affects future routing or recovery.
+
+Record other non-obvious execution decisions in the authoritative plan field that owns the outcome, normally the execution-card handoff or verification evidence. Use the notebook only for its qualifying recovery events. A decision record is evidence for resumption, not a request for retrospective approval.
+
+Escalate only when no safe in-scope action can make meaningful progress because at least one of these conditions holds:
+
+- Required credentials or authority are unavailable to the orchestrator and cannot be obtained from the configured environment.
+- The next action is destructive, difficult to reverse, materially externally visible or costly, or expands the user's requested scope.
+- The choice changes product intent, acceptance criteria, or an authorized architecture boundary and the plan or repository provides no defensible default.
+- Concurrent edits conflict in the same semantic area and their intended outcome cannot be reconciled from available evidence.
+- Every viable control surface, route, and proportionate recovery for the affected work has been exhausted, or the validation contract requires a user-authorized replan.
+
+Before marking work `blocked`, inspect the exact failure, try the safe applicable recovery paths, and continue every independent ready Story. Block only the affected dependency chain; stop the mission only when no other meaningful plan work can proceed. When escalation is unavoidable, ask one minimum decision question and report the evidence, attempted recoveries, affected Stories, and the action that will resume execution. Do not treat ambiguity, a worker's first failure, a preference between reasonable options, or a sandbox mismatch by itself as a user blocker.
+
 ## Use the plan as state
 
 Treat the existing large task plan as the sole source of truth. Preserve its schema and status vocabulary; do not create a parallel ledger or repository sidecar.
@@ -28,7 +46,7 @@ Map orchestration phases onto its existing execution-card states:
 | --- | --- |
 | `todo` | Not claimed; readiness comes from dependencies and the generated project status. |
 | `in_progress` | Worker execution, `worker_done`, validation, and `needs_fix` remain active phases. Record the current agent/model/session and phase in existing `owner`, `verification`, and `handoff` fields. |
-| `blocked` | A decision, environment, authority, `INSERT_STORY`, or `REPLAN` prevents safe continuation. |
+| `blocked` | An exhausted environment or authority failure, irreconcilable decision, `INSERT_STORY`, or `REPLAN` prevents the affected dependency chain from continuing safely. |
 | `done` | Worker evidence is complete and the independent validator returned `CONTINUE`. |
 
 Quota exhaustion is an execution-attempt outcome, not a Story state; record the handoff and keep the card `in_progress` while switching workers.
@@ -54,7 +72,7 @@ Before dispatch and again before integration, read applicable `AGENTS.md` files 
 
 ## Select the control surface
 
-- Prefer ACPX for headless, persistent, structured orchestration. Read [references/acpx.md](references/acpx.md) before using it.
+- Prefer ACPX for headless, persistent, structured orchestration. When using it, follow the short path in [references/acpx.md](references/acpx.md): select one candidate, run one preflight, create/ensure one session, and dispatch. Read recovery guidance only when recovery is needed.
 - Use Herdr when `HERDR_ENV=1` and visible terminal panes are useful or requested. Read [references/herdr.md](references/herdr.md) before using it.
 - If neither surface is usable, report the missing capability instead of substituting built-in subagents.
 
@@ -68,11 +86,24 @@ Use existing worktrees when the plan assigns them. Never create, switch, clean, 
 
 Before creating any worker or validator session, read [references/orchestration-config.md](references/orchestration-config.md) and resolve the external configuration. Use the `frontend` worker route for a frontend-dominant Story and the `default` worker route otherwise; use the validator's `default` route for the validation gate. For mixed Stories, classify by the highest-risk portion; split only when the plan preserves independent acceptance and ownership.
 
-Walk the selected candidate array in order. Advance only when a candidate is unavailable, incompatible, or quota-exhausted. Every candidate must resolve to a live ACP-compatible agent and satisfy its configured model match. If no candidate remains, block the Story with the exact routing reason instead of inventing a fallback.
+Walk the selected candidate array lazily. Preflight and use the first candidate; advance only when it is unavailable, incompatible, or quota-exhausted. If no candidate remains, block the Story with the exact routing reason instead of inventing a fallback.
 
-Classify the Story's difficulty and select the matching configured effort profile. Treat the adapter's advertised model and effort options as authoritative. Record the resolved role, route, candidate, model, effort, and configuration sources in the execution-card handoff so a replacement session can reproduce or intentionally change the choice.
+Classify the Story's difficulty and select the matching configured effort profile when one exists. Treat the adapter's advertised model and effort options as authoritative. If effort is unsupported, use the adapter default without probing alternatives. Record the resolved role, route, candidate, model, effort, and configuration sources in the execution-card handoff.
 
 ## Dispatch a worker
+
+### ACPX golden path
+
+For a normal first dispatch, use this exact sequence after reading the current Story and route:
+
+```bash
+acpx --cwd <repo> <agent> sessions new --name <role-session>
+acpx --cwd <repo> <agent> sessions show <role-session>
+acpx --cwd <repo> <resolved-permission-flags> --non-interactive-permissions fail --format json --json-strict <agent> -s <role-session> --file <prompt-path>
+```
+
+`acpx` has no `preflight` subcommand. `sessions new` is the fresh-session handshake and bootstrap for first dispatch; on resume, inspect the recorded session and use `sessions ensure` only for that exact session. ACPX permission policies match tools, not reliable file paths, command arguments, or network destinations; they are not a Story boundary. Use automatic approval only when the selected provider sandbox independently enforces the Story's repository, command, and network scope, and record that evidence. Otherwise choose a route with enforceable isolation or let the worker fail closed under `--non-interactive-permissions fail`; never present a broad tool approval as least-permissive Story isolation. If the handshake advertises no effort option, use the adapter default and dispatch.
+`acpx` has no `preflight` subcommand. `sessions new` is the fresh-session handshake and bootstrap for first dispatch; run `sessions show` immediately after it and record the provider session identifier, agent, cwd, effective permission flags, and sandbox/capability fingerprint as the baseline before sending any prompt. On resume, run `sessions show <role-session>` first and compare all of those fields. Use `sessions ensure` only when the exact session and capability fingerprint are present and resumable; immediately run `sessions show` again and compare before prompting. If the session is missing, closed, mismatched, or changed during ensure, quarantine/reconcile the workspace and create a new attempt with the prior handoff instead of silently replaying under the same attempt. After every strict-JSON prompt, read the provider `agentSessionId` (or equivalent advertised identifier) and compare it with the baseline; a changed or missing identifier is a continuity failure. Quarantine and reconcile all workspace side effects from that prompt before any validator or retry, then create a new attempt; do not accept its work. Resolve `<resolved-permission-flags>` before dispatch: automatic approval (including `--approve-all`) is valid only when the selected provider sandbox independently enforces the Story's repository, command, and network scope, and that evidence is recorded. ACPX permission policies match tools, not reliable file paths, command arguments, or network destinations; they are not a Story boundary. Otherwise choose a route with enforceable isolation or let the worker fail closed under `--non-interactive-permissions fail`; never present a broad tool approval as least-permissive Story isolation. If the handshake advertises no effort option, use the adapter default and dispatch.
 
 Create a fresh worker session whose unique name contains the mission/run, Story ID, `worker`, and attempt number. Never reuse a worker session from a completed Story.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""校验 Epic、Story、Agent JSON 状态源及内容预算，并生成或查询项目进展。
+"""校验 Goal、Epic、Story、Agent JSON 状态源及内容预算，并生成或查询项目进展。
 
 参数定义：check/status/render 接收 Epic 文件和 Story 目录；write/patch/template 接收 Agent JSON 路径。
 输出定义：check/status 只读；write/patch 校验后规范化写入 Agent JSON；render 先同步依赖阻塞，再整份生成项目进展。
@@ -25,6 +25,7 @@ SCHEMA_VERSION = 1
 KIND_CARD = "agent-card"
 KIND_RISK = "risk-register"
 KIND_REFERENCE = "agent-reference"
+KIND_GOLDEN = "golden-acceptance"
 STATUS_IDS = ("todo", "in_progress", "blocked", "done")
 DASHBOARD_LABELS = {
     "zh-Hans": {
@@ -110,6 +111,7 @@ STORY_ID_RE = re.compile(r"^STORY-(\d{2})(?:\.([1-9]\d*))?$")
 EPIC_ID_RE = re.compile(r"^EPIC-[A-Z0-9][A-Z0-9-]*$")
 COVERAGE_ID_RE = re.compile(r"^[A-Z0-9][A-Z0-9_.:-]*$")
 GATE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
+GOLDEN_CASE_ID_RE = re.compile(r"^GC-(?:0[1-9]|[1-9]\d+)$")
 LANGUAGE_TAG_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$")
 HEADING_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
 SECTION_MARKER_COMMENT_RE = re.compile(
@@ -157,10 +159,12 @@ CARD_STRING_FIELDS = (
     "stop_conditions",
     "handoff",
 )
+CARD_IDENTITY_FIELDS = ("title", "epic", "gate", "depends_on")
 CARD_FIELD_ORDER = (
     "kind",
     "schema_version",
     "story",
+    *CARD_IDENTITY_FIELDS,
     "intent_version",
     "status",
     "owner",
@@ -170,6 +174,7 @@ CARD_FIELD_ORDER = (
     "code_baseline",
     "owns",
     "verifies",
+    "acceptance_cases",
     *CARD_STRING_FIELDS[:5],
     "checklist",
     *CARD_STRING_FIELDS[5:],
@@ -183,6 +188,25 @@ RISK_FIELD_ORDER = (
     "watch_items",
 )
 REFERENCE_FIELD_ORDER = ("kind", "schema_version", "id", "title", "updated", "body")
+GOLDEN_FIELD_ORDER = (
+    "kind",
+    "schema_version",
+    "epic",
+    "goal_version",
+    "updated",
+    "provenance",
+    "cases",
+)
+GOLDEN_CASE_FIELDS = (
+    "id",
+    "title",
+    "fixture",
+    "interaction",
+    "oracle",
+    "required_paths",
+    "evidence",
+    "pass_condition",
+)
 RISK_LIST_FIELDS = ("pending_decisions", "watch_items")
 RISK_SECTION_FIELDS = {
     "planning-pending": "pending_decisions",
@@ -233,6 +257,11 @@ class AgentCard:
     @property
     def verifies(self) -> Tuple[str, ...]:
         value = self.data.get("verifies", [])
+        return tuple(str(item) for item in value) if isinstance(value, list) else ()
+
+    @property
+    def acceptance_cases(self) -> Tuple[str, ...]:
+        value = self.data.get("acceptance_cases", [])
         return tuple(str(item) for item in value) if isinstance(value, list) else ()
 
     @property
@@ -309,6 +338,8 @@ def canonicalize_document(data: Dict[str, object]) -> Dict[str, object]:
         return _order_keys(data, CARD_FIELD_ORDER)
     if kind == KIND_RISK:
         return _order_keys(data, RISK_FIELD_ORDER)
+    if kind == KIND_GOLDEN:
+        return _order_keys(data, GOLDEN_FIELD_ORDER)
     return _order_keys(data, REFERENCE_FIELD_ORDER)
 
 
@@ -568,6 +599,7 @@ def validate_card_document(path: Path, data: Dict[str, object]) -> List[str]:
         "code_baseline",
         "owns",
         "verifies",
+        "acceptance_cases",
         *CARD_STRING_FIELDS,
         "checklist",
     )
@@ -617,10 +649,38 @@ def validate_card_document(path: Path, data: Dict[str, object]) -> List[str]:
             errors.append(f"{path}: {field} 不得包含重复覆盖项")
     if isinstance(data.get("owns"), list) and not data["owns"]:
         errors.append(f"{path}: owns 至少包含一个覆盖项")
+    acceptance_cases = data.get("acceptance_cases")
+    if not isinstance(acceptance_cases, list):
+        errors.append(f"{path}: acceptance_cases 必须是字符串数组")
+    elif any(
+        not isinstance(item, str) or not GOLDEN_CASE_ID_RE.fullmatch(item)
+        for item in acceptance_cases
+    ):
+        errors.append(f"{path}: acceptance_cases 只允许 GC-NN")
+    elif len(acceptance_cases) != len(set(acceptance_cases)):
+        errors.append(f"{path}: acceptance_cases 不得包含重复案例")
     for field in CARD_STRING_FIELDS:
         value = data.get(field)
         if field in data and (not isinstance(value, str) or not value.strip()):
             errors.append(f"{path}: {field} 必须是非空字符串")
+    for field in ("title", "epic"):
+        value = data.get(field)
+        if field in data and (not isinstance(value, str) or not value.strip()):
+            errors.append(f"{path}: {field} 必须是非空字符串")
+    if "gate" in data:
+        gate = data.get("gate")
+        if not isinstance(gate, str) or not gate.strip():
+            errors.append(f"{path}: gate 必须是非空字符串")
+        elif not GATE_ID_RE.fullmatch(gate):
+            errors.append(f"{path}: gate 必须是稳定的字母数字标识")
+    card_deps = data.get("depends_on")
+    if "depends_on" in data:
+        if not isinstance(card_deps, list) or any(
+            not isinstance(item, str) or not item.strip() for item in card_deps
+        ):
+            errors.append(f"{path}: depends_on 必须是非空字符串数组")
+        elif len(card_deps) != len(set(card_deps)):
+            errors.append(f"{path}: depends_on 不得包含重复 Story")
     checklist = data.get("checklist")
     if not isinstance(checklist, list):
         errors.append(f"{path}: checklist 必须是对象数组")
@@ -692,6 +752,84 @@ def validate_reference_document(path: Path, data: Dict[str, object]) -> List[str
     return errors
 
 
+def _validate_nonempty_string_list(
+    path: Path,
+    label: str,
+    value: object,
+    errors: List[str],
+    *,
+    allow_empty: bool = False,
+) -> None:
+    if not isinstance(value, list):
+        errors.append(f"{path}: {label} 必须是字符串数组")
+    elif not allow_empty and not value:
+        errors.append(f"{path}: {label} 不能为空")
+    elif any(not isinstance(item, str) or not item.strip() for item in value):
+        errors.append(f"{path}: {label} 只允许非空字符串")
+
+
+def validate_golden_document(
+    path: Path,
+    data: Dict[str, object],
+    epic_id: str | None = None,
+    goal_version: int | None = None,
+) -> List[str]:
+    errors: List[str] = []
+    _require_schema_meta(path, data, KIND_GOLDEN, errors)
+    extra = sorted(set(data) - set(GOLDEN_FIELD_ORDER))
+    if extra:
+        errors.append(f"{path}: 存在未知字段: {', '.join(extra)}")
+    for field in GOLDEN_FIELD_ORDER:
+        if field not in data:
+            errors.append(f"{path}: 缺少字段 {field}")
+    if epic_id is not None and data.get("epic") != epic_id:
+        errors.append(f"{path}: epic 必须引用 {epic_id}")
+    version = data.get("goal_version")
+    if not isinstance(version, int) or isinstance(version, bool) or version < 1:
+        errors.append(f"{path}: goal_version 必须是正整数")
+    elif goal_version is not None and version != goal_version:
+        errors.append(f"{path}: goal_version 必须与 Epic 一致")
+    _validate_iso_date(path, "updated", data.get("updated", ""), errors)
+    if data.get("provenance") not in {"user-provided", "user-confirmed"}:
+        errors.append(f"{path}: provenance 必须是 user-provided 或 user-confirmed")
+    cases = data.get("cases")
+    if not isinstance(cases, list) or not cases:
+        errors.append(f"{path}: cases 必须是非空对象数组")
+        return errors
+    seen: set[str] = set()
+    for index, case in enumerate(cases, 1):
+        label = f"cases[{index}]"
+        if not isinstance(case, dict):
+            errors.append(f"{path}: {label} 必须是对象")
+            continue
+        extra_case_fields = sorted(set(case) - set(GOLDEN_CASE_FIELDS))
+        if extra_case_fields:
+            errors.append(f"{path}: {label} 存在未知字段: {', '.join(extra_case_fields)}")
+        for field in GOLDEN_CASE_FIELDS:
+            if field not in case:
+                errors.append(f"{path}: {label} 缺少字段 {field}")
+        case_id = case.get("id")
+        if not isinstance(case_id, str) or not GOLDEN_CASE_ID_RE.fullmatch(case_id):
+            errors.append(f"{path}: {label}.id 必须匹配 GC-NN")
+        elif case_id in seen:
+            errors.append(f"{path}: 黄金案例 ID 重复: {case_id}")
+        else:
+            seen.add(case_id)
+        for field in ("title", "pass_condition"):
+            if not isinstance(case.get(field), str) or not str(case.get(field, "")).strip():
+                errors.append(f"{path}: {label}.{field} 必须是非空字符串")
+        for field in ("fixture", "interaction", "oracle", "evidence"):
+            _validate_nonempty_string_list(path, f"{label}.{field}", case.get(field), errors)
+        _validate_nonempty_string_list(
+            path,
+            f"{label}.required_paths",
+            case.get("required_paths"),
+            errors,
+            allow_empty=True,
+        )
+    return errors
+
+
 def validate_agent_document(path: Path, data: Dict[str, object]) -> List[str]:
     kind = str(data.get("kind", ""))
     if kind == KIND_CARD:
@@ -700,7 +838,11 @@ def validate_agent_document(path: Path, data: Dict[str, object]) -> List[str]:
         return validate_risk_document(path, data)
     if kind == KIND_REFERENCE:
         return validate_reference_document(path, data)
-    return [f"{path}: kind 必须是 {KIND_CARD}、{KIND_RISK} 或 {KIND_REFERENCE}"]
+    if kind == KIND_GOLDEN:
+        return validate_golden_document(path, data)
+    return [
+        f"{path}: kind 必须是 {KIND_CARD}、{KIND_RISK}、{KIND_REFERENCE} 或 {KIND_GOLDEN}"
+    ]
 
 
 def _agent_dir(stories: Sequence[WorkItem]) -> Path:
@@ -711,6 +853,11 @@ def _load_risk_register(epic: WorkItem, stories: Sequence[WorkItem]) -> RiskRegi
     path = _agent_dir(stories) / "风险与阻塞.json"
     data = load_json_document(path)
     return RiskRegister(path, data)
+
+
+def _load_golden_acceptance(stories: Sequence[WorkItem]) -> Tuple[Path, Dict[str, object]]:
+    path = _agent_dir(stories) / "黄金验收.json"
+    return path, load_json_document(path)
 
 
 def _load_agent_card(story: WorkItem) -> AgentCard:
@@ -743,6 +890,18 @@ def _validate_agent_card(story: WorkItem, errors: List[str]) -> AgentCard | None
     card_intent = card.data.get("intent_version")
     if str(card_intent) != story_intent:
         errors.append(f"{card.path}: intent_version 必须与 {story.path.name} 一致")
+    identity = (
+        ("title", story.metadata.get("title")),
+        ("epic", story.metadata.get("epic")),
+        ("gate", story.metadata.get("gate")),
+    )
+    for field, expected in identity:
+        if field in card.data and expected is not None and str(card.data.get(field)) != str(expected):
+            errors.append(f"{card.path}: {field} 必须与 {story.path.name} 一致")
+    card_deps = card.data.get("depends_on")
+    if isinstance(card_deps, list):
+        if tuple(str(item) for item in card_deps) != story.depends_on:
+            errors.append(f"{card.path}: depends_on 必须与 {story.path.name} 一致")
     return card
 
 
@@ -875,7 +1034,12 @@ def _validate_optional_agent_json(agent_dir: Path, errors: List[str], reserved: 
 
 def validate_project(epic: WorkItem, stories: Sequence[WorkItem]) -> List[str]:
     errors: List[str] = []
-    errors.extend(_require_fields(epic, ("kind", "id", "title", "updated", "coverage", "language")))
+    errors.extend(
+        _require_fields(
+            epic,
+            ("kind", "id", "title", "updated", "goal_version", "coverage", "language"),
+        )
+    )
     errors.extend(_reject_fields(epic, ("status", "owner", "blocker")))
     if epic.metadata.get("kind") != "epic":
         errors.append(f"{epic.path}: kind 必须为 epic")
@@ -887,11 +1051,16 @@ def validate_project(epic: WorkItem, stories: Sequence[WorkItem]) -> List[str]:
         errors.append(f"{epic.path}: title 不能为空")
     _validate_date(epic, errors)
     _validate_language(epic, errors)
+    goal_version_value = epic.metadata.get("goal_version")
+    if not str(goal_version_value).isdigit() or int(str(goal_version_value or "0")) < 1:
+        errors.append(f"{epic.path}: goal_version 必须是正整数")
+        goal_version: int | None = None
+    else:
+        goal_version = int(str(goal_version_value))
     _validate_sections(epic, ("vision", "global-design", "manual-acceptance", "success-criteria", "story-map"), errors)
     _validate_section_contract(epic.path, epic.body, epic.headings, epic.sections, EPIC_SECTIONS, errors)
     _validate_flat_document(epic.path, epic.body, errors, allow_tables=True, allow_code_blocks=True)
     _validate_global_design(epic, errors)
-    _validate_budget(epic.path, epic.body, EPIC_CONTENT_LIMIT, errors)
     story_map = _section(epic.body, "story-map")
     coverage_value = epic.metadata.get("coverage")
     coverage_ids = tuple(str(item) for item in coverage_value) if isinstance(coverage_value, list) else ()
@@ -902,6 +1071,29 @@ def validate_project(epic: WorkItem, stories: Sequence[WorkItem]) -> List[str]:
     for coverage_id in coverage_ids:
         if not COVERAGE_ID_RE.fullmatch(coverage_id):
             errors.append(f"{epic.path}: coverage 标识格式无效: {coverage_id}")
+
+    golden_path: Path | None = None
+    golden_case_ids: Tuple[str, ...] = ()
+    try:
+        golden_path, golden_data = _load_golden_acceptance(stories)
+    except DocumentError as exc:
+        errors.append(str(exc))
+    else:
+        errors.extend(
+            validate_golden_document(
+                golden_path,
+                golden_data,
+                epic.item_id,
+                goal_version,
+            )
+        )
+        cases = golden_data.get("cases")
+        if isinstance(cases, list):
+            golden_case_ids = tuple(
+                str(case.get("id"))
+                for case in cases
+                if isinstance(case, dict) and isinstance(case.get("id"), str)
+            )
 
     story_by_id: Dict[str, WorkItem] = {}
     agent_cards: Dict[str, AgentCard] = {}
@@ -978,6 +1170,9 @@ def validate_project(epic: WorkItem, stories: Sequence[WorkItem]) -> List[str]:
         for coverage_id in card.verifies:
             if coverage_id not in coverage_set:
                 errors.append(f"{card.path}: verifies 引用了 Epic 未声明的覆盖项 {coverage_id}")
+        for case_id in card.acceptance_cases:
+            if case_id not in golden_case_ids:
+                errors.append(f"{card.path}: acceptance_cases 引用了不存在的黄金案例 {case_id}")
     for coverage_id in coverage_ids:
         claimed_by = owners.get(coverage_id, [])
         if not claimed_by:
@@ -1022,7 +1217,53 @@ def validate_project(epic: WorkItem, stories: Sequence[WorkItem]) -> List[str]:
     for story_id in story_by_id:
         visit(story_id, ())
 
+    if stories and agent_cards and golden_case_ids:
+        final_story = stories[-1]
+        final_card = agent_cards.get(final_story.item_id)
+        if final_card is not None:
+            missing_cases = [
+                case_id for case_id in golden_case_ids if case_id not in final_card.acceptance_cases
+            ]
+            if missing_cases:
+                errors.append(
+                    f"{final_card.path}: 最后一个 Story 必须验收全部黄金案例，缺少: "
+                    f"{', '.join(missing_cases)}"
+                )
+
+            ancestors: set[str] = set()
+
+            def collect_ancestors(story_id: str) -> None:
+                story = story_by_id.get(story_id)
+                if story is None:
+                    return
+                for dependency in story.depends_on:
+                    if dependency in ancestors:
+                        continue
+                    ancestors.add(dependency)
+                    collect_ancestors(dependency)
+
+            collect_ancestors(final_story.item_id)
+            unlinked = [story.item_id for story in stories[:-1] if story.item_id not in ancestors]
+            if unlinked:
+                errors.append(
+                    f"{final_story.path}: 最后一个 Story 必须传递依赖全部前置 Story，缺少: "
+                    f"{', '.join(unlinked)}"
+                )
+            if final_card.status == "done":
+                missing_evidence = [
+                    case_id
+                    for case_id in golden_case_ids
+                    if case_id not in str(final_card.data.get("verification", ""))
+                ]
+                if missing_evidence:
+                    errors.append(
+                        f"{final_card.path}: 黄金验收完成证据缺少案例: "
+                        f"{', '.join(missing_evidence)}"
+                    )
+
     reserved_agent_paths: List[Path] = [card.path for card in agent_cards.values()]
+    if golden_path is not None:
+        reserved_agent_paths.append(golden_path)
     try:
         register = _load_risk_register(epic, stories)
     except DocumentError as exc:
@@ -1262,7 +1503,7 @@ def command_status(args: argparse.Namespace) -> int:
             "stories_total": len(stories),
             "ready_stories": list(ready),
             "content_chars": epic.content_chars,
-            "content_limit": EPIC_CONTENT_LIMIT,
+            "content_target": EPIC_CONTENT_LIMIT,
         },
         "stories": story_payloads,
     }
@@ -1327,7 +1568,7 @@ def coerce_set_value(raw: str) -> object:
 def command_patch(args: argparse.Namespace) -> int:
     data = load_json_document(args.file)
     kind = str(data.get("kind", ""))
-    if kind not in {KIND_CARD, KIND_RISK, KIND_REFERENCE}:
+    if kind not in {KIND_CARD, KIND_RISK, KIND_REFERENCE, KIND_GOLDEN}:
         raise DocumentError(f"{args.file}: 无法 patch 未知 kind {kind!r}")
     changed_status_fields = False
     for assignment in args.set or []:
@@ -1341,6 +1582,8 @@ def command_patch(args: argparse.Namespace) -> int:
             raise DocumentError(f"{args.file}: 未知执行卡字段 {field}")
         if kind == KIND_RISK and field not in RISK_FIELD_ORDER:
             raise DocumentError(f"{args.file}: 未知风险登记字段 {field}")
+        if kind == KIND_GOLDEN and field not in GOLDEN_FIELD_ORDER:
+            raise DocumentError(f"{args.file}: 未知黄金验收字段 {field}")
         data[field] = coerce_set_value(raw)
         if field in {"status", "owner", "blocker"}:
             changed_status_fields = True
@@ -1362,6 +1605,10 @@ def command_patch(args: argparse.Namespace) -> int:
         assignment.split("=", 1)[0].strip() == "updated" for assignment in args.set or []
     ):
         data["updated"] = date.today().isoformat()
+    if kind == KIND_GOLDEN and args.set and not any(
+        assignment.split("=", 1)[0].strip() == "updated" for assignment in args.set or []
+    ):
+        data["updated"] = date.today().isoformat()
     errors = validate_agent_document(args.file, data)
     if not _report_errors(errors):
         return 1
@@ -1375,6 +1622,10 @@ def template_card(story_id: str) -> Dict[str, object]:
         "kind": KIND_CARD,
         "schema_version": SCHEMA_VERSION,
         "story": story_id,
+        "title": "待填写",
+        "epic": "EPIC-NAME",
+        "gate": "GATE-ID",
+        "depends_on": [],
         "intent_version": 1,
         "status": "todo",
         "owner": "待领取",
@@ -1384,17 +1635,18 @@ def template_card(story_id: str) -> Dict[str, object]:
         "code_baseline": "待领取",
         "owns": ["COVERAGE"],
         "verifies": [],
+        "acceptance_cases": ["GC-01"],
         "goal": "用可观察结果说明本 Story 完成时发生了什么。",
         "decision_boundary": "列出不可变条件和 Agent 可在已确认方案内自行处理的实现取舍。",
-        "technical_plan": "说明实现路径，精确参数放到共享契约。",
-        "authoritative_inputs": "列出本卡直接依赖的共享 JSON、代码入口和基线。",
+        "technical_plan": "按顺序写实现路径，带代码锚点、本地运行方式、需要的测试数据与环境准备。",
+        "authoritative_inputs": "列出本卡直接依赖的共享 JSON、代码入口、基线和前置执行卡。",
         "claim_checks": "复核 intent_version、前置交接、代码入口和远端基线。",
         "checklist": [
             {"done": False, "text": "建立可失败的行为基线。"},
             {"done": False, "text": "实现本 Story 的核心结果。"},
             {"done": False, "text": "记录证据并完成交接。"},
         ],
-        "steps": "按顺序写出实现步骤，每步带完成条件。",
+        "steps": "按顺序写出实现步骤，每步以「判据：…」写明可验证的完成判据。",
         "verification": "记录命令、退出码、固定分母和交付证明。",
         "stop_conditions": "列出必须停止并询问的输入漂移。",
         "handoff": "记录起止版本、副作用、清理和下一个 Story 输入。",
@@ -1423,6 +1675,29 @@ def template_reference(doc_id: str, title: str) -> Dict[str, object]:
     }
 
 
+def template_golden(epic_id: str) -> Dict[str, object]:
+    return {
+        "kind": KIND_GOLDEN,
+        "schema_version": SCHEMA_VERSION,
+        "epic": epic_id,
+        "goal_version": 1,
+        "updated": date.today().isoformat(),
+        "provenance": "user-provided",
+        "cases": [
+            {
+                "id": "GC-01",
+                "title": "待填写的用户黄金案例",
+                "fixture": ["写明可复现的环境、账号、版本和固定输入。"],
+                "interaction": ["按顺序写用户操作或逐轮对话。"],
+                "oracle": ["写明已知正确结果及其权威依据。"],
+                "required_paths": [],
+                "evidence": ["写明需要保存的产品结果与能力调用证据。"],
+                "pass_condition": "全部 oracle 与必经路径在同一次验收中有证据时通过。",
+            }
+        ],
+    }
+
+
 def command_template(args: argparse.Namespace) -> int:
     if args.kind == KIND_CARD:
         if not args.story:
@@ -1432,6 +1707,10 @@ def command_template(args: argparse.Namespace) -> int:
         if not args.epic_id:
             raise DocumentError("template risk-register 需要 --epic-id")
         data = template_risk(args.epic_id)
+    elif args.kind == KIND_GOLDEN:
+        if not args.epic_id:
+            raise DocumentError("template golden-acceptance 需要 --epic-id")
+        data = template_golden(args.epic_id)
     else:
         if not args.doc_id or not args.title:
             raise DocumentError("template agent-reference 需要 --id 和 --title")
@@ -1461,6 +1740,7 @@ def build_parser() -> argparse.ArgumentParser:
             "--dashboard topic/项目进展.md\n"
             "  epic_story.py status --epic topic/epics/EPIC-ID.md --stories-dir topic/stories --json\n"
             "  epic_story.py template agent-card --story STORY-01 --file topic/agent/STORY-01-标题.json\n"
+            "  epic_story.py template golden-acceptance --epic-id EPIC-NAME --file topic/agent/黄金验收.json\n"
             "  epic_story.py write --file topic/agent/STORY-01-标题.json --from card.json\n"
             "  epic_story.py patch --file topic/agent/STORY-01-标题.json --set status=in_progress "
             "--set owner=Codex --check-item 1"
@@ -1502,10 +1782,14 @@ def build_parser() -> argparse.ArgumentParser:
     patch.set_defaults(handler=command_patch)
 
     template = subparsers.add_parser("template", help="输出或写入一份合法的 Agent JSON 模板")
-    template.add_argument("kind", choices=(KIND_CARD, KIND_RISK, KIND_REFERENCE), help="文档类型")
+    template.add_argument(
+        "kind",
+        choices=(KIND_CARD, KIND_RISK, KIND_REFERENCE, KIND_GOLDEN),
+        help="文档类型",
+    )
     template.add_argument("--file", type=Path, help="写入路径；省略则打印到 stdout")
     template.add_argument("--story", help="agent-card 的 Story ID")
-    template.add_argument("--epic-id", help="risk-register 的 Epic ID")
+    template.add_argument("--epic-id", help="risk-register 或 golden-acceptance 的 Epic ID")
     template.add_argument("--id", dest="doc_id", help="agent-reference 的 id")
     template.add_argument("--title", help="agent-reference 的标题")
     template.set_defaults(handler=command_template)

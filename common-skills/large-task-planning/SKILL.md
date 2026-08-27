@@ -6,49 +6,58 @@ disable-model-invocation: true
 
 # Large Task Planning
 
-把大型工程拆成独立 Epic、少量结果型 Story、简洁的人读一览和脚本维护的 Agent JSON。Story 是 Agent 的单会话工程单元；人先确认意图并看全盘，产品验收可以在整个 Epic 完成后进行。
+把大型工程作为一个可持续推进的 Goal：先锁定目标与黄金验收契约，再用独立 Epic、少量结果型 Story、简洁的人读一览和脚本维护的 Agent JSON 推进。Story 是 Agent 的单会话工程单元；计划是当前证据下的建议路径，可以围绕不变目标持续调整。
 
 JSON 字段、模板和命令细节见 [`agent-schema.md`](agent-schema.md)。可重复示例提示词与触发脚本见 [`examples/token-login/`](examples/token-login/)。
 
-## 1. 确认事实
+## 1. 锁定 Goal 与事实
 
 1. 阅读仓库 `AGENTS.md`、根 `README.md`、现有方案和代码入口。
 2. 检查主仓及相关 submodule 的 branch、`git status --short`、`git worktree list` 和基线 commit。
 3. 分开记录事实、判断、假设、非目标和真正改变方案的待决策项。
 4. 盘点消费者、接口、数据、后台任务、副作用、部署、测试和安全环境。
+5. 请用户提供能代表 Goal 完成的真实案例、正确结果依据和必要能力路径；把它们整理为 `agent/黄金验收.json`。用户只需提供业务样例，Agent 负责结构化，但不得自行发明正确答案。
 
-完成标准：目标、兼容边界、基线、不可触碰对象和决策项均可追溯。
+每个黄金案例同时记录可复现前提、连续交互、结果判据和证据。用户可见结果与必须经过的知识库、仓库、日志、数据库等路径分开记录；没有稳定 oracle 的演示输入不是黄金案例。真实在线数据可能漂移时，固定可回放快照或明确验收窗口。
 
-### 规划阶段一次性确认
+完成标准：目标、黄金案例、兼容边界、基线、不可触碰对象和决策项均可追溯。缺少用户提供或确认的黄金案例时，Goal 保持 blocked，不进入自主执行。
+
+### 目标稳定，计划可变
 
 把会改变用户拿到或必须运维的产品形态视为重大决策，包括发布物数量与组成、
 主产物能否独立使用、安装与离线边界、兼容与迁移、支持环境、安全边界、外部依赖、
-运维责任和显著成本。Agent 可以提出方案，但不能替用户确认。
+运维责任和显著成本。Agent 为每项重大决策写出选择、建议与所得代价，直接标记
+`owner=user`：这些决定与黄金验收共同构成 Goal 边界。
 
-在创建或领取任何执行卡前，先把全量方案交给用户一次性确认：Epic 的最终产品形态、
-全局设计、边界、人工验收点、全部 Story、所有重大决策及其后果。用户批准综合计划，
-只有在其中已经清楚披露这些后果时，才算确认相关决定；只列包名、组件名或实现动作不算充分披露。
+用户提供或确认黄金验收后，规划结束时不得再询问是否开始执行。写计划的 Agent 与执行计划的
+Agent 可以不是同一会话，项目进展的“可领取”就是开工信号。Epic、Story、依赖和技术路径是
+当前工作假设；新证据表明路径低效、错误或缺漏时，Agent 在 Goal 与重大决策边界内自行重排、
+插入、合并或重写后续计划，并刷新执行卡。只有目标、黄金验收或产品、发布、运维形态变化才需要用户决定。
 
-规划草案可以用“待用户确认”和 `pending_decisions` 收集尚未决定的事项，但它们必须在
-批准前全部消失。不得把它们分散到各个 Story 的执行中逐项询问，也不得把人工验收写成
-执行中的确认请求。
+Epic 的 `goal_version` 跟踪目标与黄金验收契约；仅在它们变化时递增。Story 的
+`intent_version` 跟踪该执行单元的人读意图；调整 Story 范围或验收时递增。单纯更新状态、证据、
+实现步骤或依赖阻塞不递增版本。
 
-批准后，Agent 应在已确认的范围和 `decision_boundary` 内连续完成整个 Epic。执行中若发现
-一个真正会改变产品、发布或运维形态的新问题，说明原方案存在缺口：暂停受影响工作，
-把完整影响汇入修订后的计划并重新确认；不要以单个 Story 的临时问题反复打断用户。不得
-先把决定写进 Agent JSON、代码或测试，再把已经完成的实现反推为用户意图。
+只有缺失某个决定就无法写出安全计划时才暂停提问，在当前对话中解决后继续；
+确实无法关闭的用 `owner=pending` 和 `pending_decisions` 登记，对应执行卡保持
+blocked。带着未关闭的待决项结束规划等于把决策推给执行会话，不允许。
+
+开始执行后，Agent 以黄金验收而不是初版计划判断是否完成。边界内的新事实直接回写全盘计划并继续；
+真正改变 Goal、黄金判据或产品、发布、运维形态时，暂停受影响工作，把完整影响汇入修订提案，
+等用户表态后递增 `goal_version` 再继续。不得先降低黄金判据或完成越界实现，再把结果反推为用户意图。
 
 ## 2. 固定文档角色和预算
 
-正文有效字符指去掉 YAML、空白、Markdown 标记和链接目标后的可见字符。以下是硬上限，不是写作目标；能更短就更短。
+正文有效字符指去掉 YAML、空白、Markdown 标记和链接目标后的可见字符。除 Epic 外，以下是硬上限；Epic 的 3000 字是可读性目标而非阻塞门禁，复杂 Goal 可以超出，但应把详细输入和证据下沉到权威资料。
 
 | 文档 | 受众与内容 | 上限 |
 | --- | --- | ---: |
 | `README.md` | 人读项目入口，只链接一览、Epic 和 Agent 入口 | 1500 |
-| `epics/EPIC-<ID>.md` | 愿景、全局设计图、人工验收、成功标准、每个 Story 的范围地图、边界 | 3000 |
+| `epics/EPIC-<ID>.md` | 愿景、全局设计图、人工验收、成功标准、每个 Story 的范围地图、边界 | 3000（软目标） |
 | `项目进展.md` | 脚本从 Agent JSON 生成的人读全盘 | 3000 |
 | `stories/Story-NN[.M]-*.md` | 愿景、范围、重大决策、验收标准 | 2200 |
 | `agent/STORY-NN[.M]-*.json` | Story 动态状态唯一源 | 一卡一 Story |
+| `agent/黄金验收.json` | 用户提供或确认的 Goal 黄金案例与 oracle | 一 Goal 一份 |
 | `agent/风险与阻塞.json` | 规划待决与后续关注 | 最多 6 项 |
 | 其他 `agent/*.json` | 按需加载的矩阵、门禁、契约和共享协议 | 一文一主题 |
 | `agent/evidence/*` | 证据产物，不经脚本规范化 | 按证据本身 |
@@ -64,7 +73,7 @@ JSON 字段、模板和命令细节见 [`agent-schema.md`](agent-schema.md)。�
 - `epic-story-overview`：从执行卡收集 status、执行清单和 blocker，再只呈现人需要的状态、进度和下一步；
 - `risks-blockers`：收集非依赖性当前阻塞、规划阶段尚未关闭的决策和后续关注项。
 
-同一事实只维护一次：愿景/全局设计/人工验收/边界在 Epic，范围/重大决策/工程完成条件在 Story，动态状态/执行清单/证据在执行卡，开放风险在风险登记，项目进展只是自动生成的投影。
+同一事实只维护一次：目标摘要/全局设计/人工验收索引/边界在 Epic，详细黄金案例在黄金验收契约，范围/重大决策/工程完成条件在 Story，动态状态/执行清单/证据在执行卡，开放风险在风险登记，项目进展只是自动生成的投影。
 
 “同一事实只维护一次”不等于把重大决定藏在 Agent 资料里。人读 Story 说明选择、原因、
 取舍和用户影响；执行卡与契约只补充精确参数和实现细节。
@@ -102,6 +111,7 @@ kind: epic
 id: EPIC-<NAME>
 title: <标题>
 updated: YYYY-MM-DD
+goal_version: <从 1 开始的正整数>
 coverage: [<结果级覆盖项>]
 language: <BCP-47，例如 zh-Hans、zh-Hant 或 en>
 ---
@@ -115,17 +125,30 @@ language: <BCP-47，例如 zh-Hans、zh-Hant 或 en>
 
 Epic 按共同业务目标或发布边界组织，不按数据库、API、测试等技术层拆。一个 Epic 可以包含多个独立交付结果；图应保留这些结果的独立性。方向已验证且多个 Epic 会反复修改同一核心组件时，优先合并为一个较大 Epic；只有风险边界、反馈窗口或独立价值确实不同才拆分。
 
-`manual-acceptance`是每个 Epic 的必填章节。以甲方业务验收代表为操作者，至少写出一个从可准备的业务前提、到其操作、再到可观察产品结果的验收点。只写甲方能在产品上看到、完成或确认的结果；不写 API 返回码、数据表、测试用例、内部组件或 Agent 执行步骤。每个验收点应共同证明 Epic 的愿景，而不是逐条复述 Story 的工程完成条件。
+`manual-acceptance`是每个 Epic 的必填章节，也是黄金案例的人读索引。以甲方业务验收代表为操作者，按案例 ID 概括从可准备的业务前提、到其操作、再到可观察产品结果的验收点，并指向 `agent/黄金验收.json`。这里只写甲方能在产品上看到、完成或确认的结果；精确输入、oracle、能力路径和证据要求只在黄金验收契约维护。
 
 本节是交付后的产品验收清单，不是待决策列表：不得添加“待对齐”“待确认”或要求用户在
 执行中作出选择的内容。范围、业务规则、优先级、角色体验或交付形态的所有重大决定，必须在
-规划阶段记录到受影响 Story 的`key-decisions`并一次性确认，避免在两处复制理由和实现细节。
+规划阶段记录到受影响 Story 的`key-decisions`，避免在两处复制理由和实现细节。
 
 `coverage` 只列结果级覆盖项，例如一个领域、一次全量验收或一次切换；详细接口和场景继续由 Agent 矩阵维护。每项必须由一张执行卡通过 `owns` 唯一主责，其他执行卡可用 `verifies` 声明复核，避免遗漏和重复归属。
 
+用脚本创建黄金验收契约，再以用户原始样例填充：
+
+```bash
+python3 <skill-dir>/scripts/epic_story.py template golden-acceptance \
+  --epic-id EPIC-<NAME> --file <topic>/agent/黄金验收.json
+```
+
+每个案例必须有唯一 `GC-NN`、可复现 fixture、逐轮 interaction、已知正确结果 `oracle`、
+可选必经路径 `required_paths`、可保存证据和二元 `pass_condition`。`provenance` 只能是
+`user-provided` 或 `user-confirmed`；Agent 草拟但尚未由用户确认的内容不能解除 Goal 阻塞。
+
 ## 4. 拆结果型 Story
 
-按一位 Agent 能在一次会话内完整理解、实施、验证、记录证据、提交和交接的工程结果拆分，不按文件、case 或单条命令拆。只有独立交付/回退、证据角色、权限副作用、冻结窗口或上下文无法闭环时才拆新 Story。Story 只能依赖编号更早的 Story，完成后工程结果必须独立成立，但不要求逐 Story 人工验收或单独提供用户价值。
+按一个 Agent 能在两到三轮会话压缩内完整理解、实施、验证、记录证据、提交和交接的工程结果拆分，不按文件、case 或单条命令拆。这里的“两到三轮”是容量目标：每轮都应能从当前 Story、直接权威输入和上一轮交接恢复工作；不是限制工具调用次数，也不是要求人为截断自然闭环。若预估需要超过三轮压缩，优先按独立结果、失败回退边界或上下文交接点拆成多个 Story；若不到一轮，只因文件不同或命令不同不要拆分。只有独立交付/回退、证据角色、权限副作用、冻结窗口或上下文无法闭环时才拆新 Story。Story 只能依赖编号更早的 Story，完成后工程结果必须独立成立，但不要求逐 Story 人工验收或单独提供用户价值。
+
+最后一个 Story 固定为“黄金验收与收口”。它依赖全部前置结果，在同一个 acceptance commit 上执行全部黄金案例，并为每个 `GC-NN` 保存用户可见结果、能力路径和证据。前序 Story 用执行卡的 `acceptance_cases` 标出会推进的案例；最终 Story 必须列出全部案例。最终卡只负责编排、复验和收口，详细输出下沉到 evidence，使它通常也能在两到三轮压缩内完成；若黄金案例本身过多，按独立能力拆前置 Story，但仍保留一次全量收口。黄金案例既是早期设计的 tracer bullet，也是最终原样复验的完成边界，不能只到最后才第一次运行。
 
 Story 数量以工作闭环为准。约 7 个是复盘拆分质量的建议值：超过时，检查是否只是把同一结果切得过碎，或是否已经形成可独立验收、可独立排期的产品成果；只有后者才拆成新的 Epic。若这些检查不支持拆分，保留超过 7 个 Story 的 Epic。
 
@@ -153,8 +176,8 @@ language: <与 Epic 相同的 BCP-47 标签>
 
 存在重大决策时，`key-decisions` 必填，按 1、2、3 连续编号，每项单独写清选择、Agent 建议与结果影响。每项前加决定者语义标记：
 
-- `<!-- large-task-planning:decision owner=user -->`：已由用户确认。
-- `<!-- large-task-planning:decision owner=pending -->`：仅规划草案可用；全量计划获准前必须消失。
+- `<!-- large-task-planning:decision owner=user -->`：计划落盘即视为授权，默认都用这个。
+- `<!-- large-task-planning:decision owner=pending -->`：仅当缺失该决定无法形成安全计划时临时使用；规划结束前必须在对话中关闭并改为 user，不得留到执行阶段。
 
 生成每项重大决策时使用以下格式；解释文字必须使用目标语言：
 
@@ -165,7 +188,7 @@ language: <与 Epic 相同的 BCP-47 标签>
    - <用户所得、用户动作和主要代价>。
 ```
 
-`owner=pending` 的重大决策只能存在于规划阶段，执行卡必须保持 `blocked`，并在 blocker 中指向人读决策。用户批准全量计划后，先将这些标记改为 `owner=user`，再领取任何 Story。执行卡的 `decision_boundary` 必须回指已确认的决定，并说明 Agent 可自行处理的实现取舍；不得首次引入改变产品或发布形态的选择。
+`owner=pending` 只允许出现在规划会话尚未结束时的例外场景，对应执行卡必须保持 `blocked`，并在 blocker 中指向人读决策；规划结束前全部关闭为 `owner=user`，之后才能领取 Story。默认路径没有这一步：决策随计划直接写成 `owner=user`。执行卡的 `decision_boundary` 必须回指关键决定，并说明 Agent 可自行处理的实现取舍；不得首次引入改变产品或发布形态的选择。
 
 愿景、范围、关键决策和验收标准属于人确认的意图。Agent 可用 `patch` 更新执行卡的 status、owner、blocker 和清单；修改人确认意图前必须获得当前任务的明确授权，并递增 `intent_version`。
 
@@ -176,7 +199,7 @@ python3 <skill-dir>/scripts/epic_story.py template agent-card \
   --story STORY-NN --file <topic>/agent/STORY-NN-短标题.json
 ```
 
-创建后立即 `write` 或 `patch` 填入真实 `owns`、目标、边界、清单和权威输入。`checklist` 保持 3～7 项，每项不超过 120 个有效字符。`claim_checks` 复核意图版本、前置交接、当前代码入口和远端基线。
+创建后立即 `write` 或 `patch` 填入真实身份字段（`title`、`epic`、`gate`、`depends_on`，必须与人读 Story 一致，脚本校验漂移）、`owns`、目标、边界、清单和权威输入。执行卡只收影响执行决策的信息，长资料一律经 `authoritative_inputs` 指路，不抄进卡。`checklist` 保持 3～7 项，每项不超过 120 个有效字符。`technical_plan` 按顺序写实现路径，带代码锚点、本地运行方式、需要的测试数据与环境准备，让执行 agent 不靠重新摸索就能开工；方案参照的现有实现列入 `authoritative_inputs`。`steps` 按顺序写出实现步骤，每步以「判据：…」写明可验证的完成判据，不写成「完成：…」。Story 有前置时，把前置执行卡路径列入 `authoritative_inputs`——领取会话只加载本卡及其直接引用，前置交接必须经由该字段可达；`claim_checks` 复核意图版本、前置交接、当前代码入口和远端基线。
 
 为每个 Epic 建立风险登记：
 
@@ -185,7 +208,7 @@ python3 <skill-dir>/scripts/epic_story.py template risk-register \
   --epic-id EPIC-<NAME> --file <topic>/agent/风险与阻塞.json
 ```
 
-`pending_decisions` 和 `watch_items` 只记录规划阶段需要用户选择、新授权或未来明确复核的开放事项。全量计划批准前，前者可以存在；批准后必须为空，执行中不得把普通实现取舍写为新的用户问题。依赖等待、已关闭问题、普通实现任务、通用风险提示和已有验收覆盖不进入此文档。
+`watch_items` 记录未来需要明确复核的开放事项；`pending_decisions` 只承接上文所述的 Goal 或重大边界例外，开始自主执行前必须清空。两者在执行中都不接收普通计划调整或实现取舍。依赖等待、已关闭问题、普通实现任务、通用风险提示和已有验收覆盖不进入此文档。
 
 共享协议、门禁、矩阵和需求使用 `kind: agent-reference` 的 JSON，同样只通过 `template`/`write`/`patch` 更新。执行卡用路径列出本 Story 真正要加载的共享文档。
 
@@ -193,10 +216,10 @@ python3 <skill-dir>/scripts/epic_story.py template risk-register \
 
 对需要基线控制的工程，分别记录不可变行为参考、可运行测试资产、持续开发的 live head 和本轮 acceptance commit。可观察增量同步更新范围、场景、目标实现和受影响证据；Schema、认证或破坏性协议变化形成 blocker。
 
-开工前做二元 readiness 判断：`ready` 表示完整计划已经确认，Agent 能只凭 Story、已刷新执行卡及其直接引用完成工作；`blocked` 表示规划仍让 Agent 自行发明需求、架构或验收决策。缺失关键决定、未清空 `pending_decisions`、覆盖项无人主责或权威资料互相冲突时保持 blocked；缺少与当前 Story 无关的文档类型不构成 blocker。
+开工前做二元 readiness 判断：`ready` 表示 Goal、黄金验收和当前可执行计划已落盘且自洽，Agent 能只凭 Story、已刷新执行卡及其直接引用继续推进；`blocked` 表示仍缺用户提供或确认的黄金案例、存在未关闭的 Goal 决策，或仍让 Agent 自行发明产品与验收边界。缺失 oracle、`goal_version` 漂移、未清空 `pending_decisions`、覆盖项无人主责或权威资料冲突时保持 blocked。后续计划尚会调整不构成 blocker。
 
-重大决策没有可追溯的用户确认，或只存在于 Agent 资料、代码和测试中时，同样必须保持
-`blocked`。已完成实现不能替代确认，也不能作为解除阻塞的依据。
+重大决策没有记录到 `key-decisions`，或只存在于代码和测试中时，同样必须保持
+`blocked`。已完成实现不能替代决策记录，也不能作为解除阻塞的依据。
 
 Story 是工作拆分，门禁是项目定义的授权条件。先定义少量稳定门禁，再让 Story 引用门禁 ID。例如：
 
@@ -234,9 +257,11 @@ python3 <skill-dir>/scripts/epic_story.py patch \
 
 ## 7. 驱动 Agent 闭环
 
-全量计划获准后，从项目进展的“可领取”项选择第一个 Story。用 `status --json` 取执行卡路径，只加载该 Story、对应 JSON 及 `authoritative_inputs` 直接引用的共享资料。先执行 `claim_checks`，再用 `patch` 更新 `status`、`owner`、`status_updated`、`refreshed` 和 `code_baseline`；确认 intent_version、覆盖、代码入口和上一 Story 交接一致后，才能设置 `in_progress`。随后保存首次失败、修复根因并从统一入口复验；满足全部执行清单和人读验收标准后 `patch` 为 `done`，再运行 `render`，更新证据并提交推送，执行会话到此停止。
+从项目进展的“可领取”项选择最能降低 Goal 风险的 Story；通常是第一个可领取项，若新证据改变优先级则先调整计划。用 `status --json` 取执行卡路径，只加载该 Story、对应 JSON 及 `authoritative_inputs` 直接引用的共享资料。先执行 `claim_checks`，再用 `patch` 更新 `status`、`owner`、`status_updated`、`refreshed` 和 `code_baseline`；确认 `goal_version`、intent_version、黄金案例映射、代码入口和前置交接一致后，才能设置 `in_progress`。随后保存首次失败、修复根因并从统一入口复验；满足全部执行清单和人读验收标准后 `patch` 为 `done`，再运行 `render`，更新证据并提交推送，执行会话到此停止。
 
-领取和交接都要复核新事实是否仍在已确认的决策边界内。边界内的实现取舍由 Agent 自行完成，不再请求用户确认。若新事实会使产品、发布或运维形态偏离计划，暂停受影响工作并回到全量计划修订；不得让执行卡成为人第一次发现该决定的地方。
+领取和交接都要复核新事实是否仍在 Goal 和决策边界内。边界内的实现取舍与计划调整由 Agent 自行完成，不再请求用户确认。计划调整时先保留已完成证据和稳定 Story ID；用插入 Story 承接新增工作，或重写尚未开始的 Story，并让最终验收 Story 继续位于依赖链末端。若新事实使 Goal、黄金判据或产品、发布、运维形态失效，暂停受影响工作并请求用户修订目标。
+
+最终黄金验收失败时先保留失败证据并判断根因：环境或 fixture 错误则修复验收条件；既定边界内的实现缺陷则在最终 Story 前插入修复 Story；Goal 或产品边界错误则请求用户修订。修复后先重跑失败案例，再在同一 acceptance commit 上重跑全部黄金案例。全部案例同时通过前，最终 Story 和 Epic 都不能为 done；不得为了变绿而降低、删除或改写黄金判据。
 
 只有用户显式要求方向检查时，才在领取下一 Story 前调用 `$story-direction-review`。方向检查只看结果是否偏航、重大遗漏和新事实对后续计划的影响，不替代代码审查。`INSERT_STORY` 优先使用最近已完成 Story 的插入号；只有主要目标、门禁或假设失效时才使用 `REPLAN`。
 

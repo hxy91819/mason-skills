@@ -29,6 +29,7 @@ def card_payload(story_id: str = "STORY-01", coverage: str = "TEST", slug: str =
         "code_baseline": "待领取",
         "owns": [coverage],
         "verifies": [],
+        "acceptance_cases": ["GC-01"],
         "goal": "产出可验证结果。",
         "decision_boundary": "愿景和验收由人维护。",
         "technical_plan": "固定输入后验证。",
@@ -81,6 +82,7 @@ kind: epic
 id: EPIC-TEST
 title: 测试 Epic
 updated: 2026-08-17
+goal_version: 1
 coverage: [TEST]
 language: zh-Hans
 ---
@@ -140,6 +142,29 @@ language: zh-Hans
         self.card = self.agent / "STORY-01-测试.json"
         self.write_json(self.card, card_payload())
         self.write_json(self.risks, risk_payload())
+        self.write_json(
+            self.agent / "黄金验收.json",
+            {
+                "kind": "golden-acceptance",
+                "schema_version": 1,
+                "epic": "EPIC-TEST",
+                "goal_version": 1,
+                "updated": "2026-08-17",
+                "provenance": "user-provided",
+                "cases": [
+                    {
+                        "id": "GC-01",
+                        "title": "测试案例",
+                        "fixture": ["固定测试输入。"],
+                        "interaction": ["执行一次测试。"],
+                        "oracle": ["得到预期结果。"],
+                        "required_paths": [],
+                        "evidence": ["保存结果。"],
+                        "pass_condition": "结果符合预期。",
+                    }
+                ],
+            },
+        )
         self.dashboard.write_text("旧内容\n", encoding="utf-8")
 
     def tearDown(self) -> None:
@@ -222,8 +247,8 @@ language: zh-Hans
         payload = json.loads(status.stdout)
         self.assertEqual(["STORY-01"], payload["epic"]["ready_stories"])
         self.assertEqual(["TEST"], payload["epic"]["coverage"])
-        self.assertEqual(3000, payload["epic"]["content_limit"])
-        self.assertLess(payload["epic"]["content_chars"], payload["epic"]["content_limit"])
+        self.assertEqual(3000, payload["epic"]["content_target"])
+        self.assertLess(payload["epic"]["content_chars"], payload["epic"]["content_target"])
         self.assertEqual(2200, payload["stories"][0]["content_limit"])
         self.assertEqual(1, payload["stories"][0]["checklist_done"])
         self.assertEqual(3, payload["stories"][0]["checklist_total"])
@@ -236,6 +261,7 @@ language: zh-Hans
         data["owner"] = "Agent"
         data["refreshed"] = "2026-08-17"
         data["code_baseline"] = "abc123"
+        data["verification"] = "GC-01：结果与证据已保存。"
         data["checklist"] = [{"done": True, "text": item["text"]} for item in data["checklist"]]
         self.write_json(self.card, data)
         result = self.run_cli("render", *self.common_args(), "--dashboard", self.dashboard)
@@ -484,6 +510,29 @@ language: zh-Hans
         self.assertEqual(1, result.returncode)
         self.assertIn("缺少语义章节 manual-acceptance", result.stderr)
 
+    def test_goal_requires_user_golden_acceptance_contract(self) -> None:
+        self.agent.joinpath("黄金验收.json").unlink()
+        result = self.run_cli("check", *self.common_args())
+        self.assertEqual(1, result.returncode)
+        self.assertIn("黄金验收.json", result.stderr)
+
+    def test_template_golden_acceptance_is_valid(self) -> None:
+        result = self.run_cli(
+            "template", "golden-acceptance", "--epic-id", "EPIC-TEST"
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual("golden-acceptance", payload["kind"])
+        self.assertEqual(["GC-01"], [case["id"] for case in payload["cases"]])
+
+    def test_final_story_must_list_all_golden_cases(self) -> None:
+        data = self.read_json(self.card)
+        data["acceptance_cases"] = []
+        self.write_json(self.card, data)
+        result = self.run_cli("check", *self.common_args())
+        self.assertEqual(1, result.returncode)
+        self.assertIn("最后一个 Story 必须验收全部黄金案例", result.stderr)
+
     def test_epic_rejects_unknown_semantic_section(self) -> None:
         text = self.epic.read_text(encoding="utf-8").replace(
             "large-task-planning:manual-acceptance", "large-task-planning:planning-decision"
@@ -542,12 +591,11 @@ flowchart LR
         result = self.run_cli("check", *self.common_args())
         self.assertEqual(0, result.returncode, result.stderr)
 
-    def test_epic_content_budget_is_enforced(self) -> None:
+    def test_epic_content_budget_is_a_soft_target(self) -> None:
         text = self.epic.read_text(encoding="utf-8").replace("愿景。", "愿景。" + "甲" * 3001)
         self.epic.write_text(text, encoding="utf-8")
         result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("超过上限 3000", result.stderr)
+        self.assertEqual(0, result.returncode, result.stderr)
 
     def test_overview_content_budget_is_enforced(self) -> None:
         text = self.overview.read_text(encoding="utf-8").replace("看进展。", "看进展。" + "丁" * 1501)
@@ -640,6 +688,61 @@ flowchart LR
         result = self.run_cli("check", *self.common_args())
         self.assertEqual(1, result.returncode)
         self.assertIn("intent_version 必须与", result.stderr)
+
+    def test_agent_card_identity_fields_mirror_the_story(self) -> None:
+        data = self.read_json(self.card)
+        data.update({"title": "完成测试", "epic": "EPIC-TEST", "gate": "G1", "depends_on": []})
+        self.write_json(self.card, data)
+        result = self.run_cli("check", *self.common_args())
+        self.assertEqual(0, result.returncode)
+
+    def test_agent_card_identity_drift_fails(self) -> None:
+        data = self.read_json(self.card)
+        data.update({"title": "另一个标题", "gate": "G2"})
+        self.write_json(self.card, data)
+        result = self.run_cli("check", *self.common_args())
+        self.assertEqual(1, result.returncode)
+        self.assertIn("title 必须与", result.stderr)
+        self.assertIn("gate 必须与", result.stderr)
+
+    def test_agent_card_depends_on_drift_fails(self) -> None:
+        self.add_story("STORY-02", "后续", "STORY-01", "TEST2")
+        card_path = self.agent / "STORY-02-后续.json"
+        data = self.read_json(card_path)
+        data["depends_on"] = ["STORY-01"]
+        self.write_json(card_path, data)
+        synced = self.run_cli(
+            "render", *self.common_args(), "--dashboard", str(self.dashboard)
+        )
+        self.assertEqual(0, synced.returncode, synced.stderr)
+        result = self.run_cli("check", *self.common_args())
+        self.assertEqual(0, result.returncode, result.stderr)
+        drifted = self.read_json(card_path)
+        drifted["depends_on"] = []
+        self.write_json(card_path, drifted)
+        result = self.run_cli("check", *self.common_args())
+        self.assertEqual(1, result.returncode)
+        self.assertIn("depends_on 必须与", result.stderr)
+
+    def test_template_card_includes_identity_fields(self) -> None:
+        result = self.run_cli("template", "agent-card", "--story", "STORY-01")
+        self.assertEqual(0, result.returncode)
+        payload = json.loads(result.stdout)
+        for field in ("title", "epic", "gate", "depends_on"):
+            self.assertIn(field, payload)
+
+    def test_patch_writes_drifted_depends_on_that_check_rejects(self) -> None:
+        result = self.run_cli(
+            "patch",
+            "--file",
+            str(self.card),
+            "--set",
+            'depends_on=["STORY-00"]',
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        result = self.run_cli("check", *self.common_args())
+        self.assertEqual(1, result.returncode)
+        self.assertIn("depends_on 必须与", result.stderr)
 
     def test_key_decision_requires_an_owner_marker(self) -> None:
         text = self.story.read_text(encoding="utf-8").replace(

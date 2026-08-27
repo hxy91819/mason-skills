@@ -3,9 +3,9 @@
   "routing": {
     "worker": {
       "default": [
-        { "agent": "codexl" },
-        { "agent": "codex" },
         { "agent": "codexp" },
+        { "agent": "codex" },
+        { "agent": "codexl" },
         { "agent": "kiro" }
       ],
       "frontend": [
@@ -60,42 +60,6 @@
         "routine": "high",
         "standard": "high",
         "complex": "xhigh",
-        "critical": "xhigh"
-      }
-    },
-    {
-      "name": "codex-worker",
-      "match": {
-        "agent": "codex"
-      },
-      "effort_by_difficulty": {
-        "routine": "medium",
-        "standard": "high",
-        "complex": "high",
-        "critical": "xhigh"
-      }
-    },
-    {
-      "name": "codexl-worker",
-      "match": {
-        "agent": "codexl"
-      },
-      "effort_by_difficulty": {
-        "routine": "medium",
-        "standard": "high",
-        "complex": "high",
-        "critical": "xhigh"
-      }
-    },
-    {
-      "name": "codexp-worker",
-      "match": {
-        "agent": "codexp"
-      },
-      "effort_by_difficulty": {
-        "routine": "medium",
-        "standard": "high",
-        "complex": "high",
         "critical": "xhigh"
       }
     },
