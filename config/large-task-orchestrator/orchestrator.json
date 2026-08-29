@@ -39,6 +39,45 @@
   },
   "profiles": [
     {
+      "name": "codexp-worker",
+      "match": {
+        "role": "worker",
+        "agent": "codexp"
+      },
+      "effort_by_difficulty": {
+        "routine": "low",
+        "standard": "medium",
+        "complex": "high",
+        "critical": "max"
+      }
+    },
+    {
+      "name": "codex-worker",
+      "match": {
+        "role": "worker",
+        "agent": "codex"
+      },
+      "effort_by_difficulty": {
+        "routine": "low",
+        "standard": "medium",
+        "complex": "high",
+        "critical": "max"
+      }
+    },
+    {
+      "name": "codexl-worker",
+      "match": {
+        "role": "worker",
+        "agent": "codexl"
+      },
+      "effort_by_difficulty": {
+        "routine": "low",
+        "standard": "medium",
+        "complex": "high",
+        "critical": "max"
+      }
+    },
+    {
       "name": "kimi-worker",
       "match": {
         "agent": "kimi"

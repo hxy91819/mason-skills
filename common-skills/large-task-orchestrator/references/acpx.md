@@ -27,6 +27,14 @@ Session lifecycle verbs do not share the prompt option shape: close a named sess
 
 Resolve the role profile before session creation. Select an advertised model. Apply effort only when the handshake or a validated startup argument explicitly supports it; otherwise keep the adapter default, record `effort=default`, and continue. Never guess option names or synthesize model IDs after a rejected setting.
 
+Current `codex-acp` exposes model and effort as separate config options. For a registered Codex candidate such as `codex`, `codexp`, or `codexl`, apply the resolved profile after `sessions new` and the baseline `sessions show`, before the first prompt:
+
+```bash
+acpx --cwd <repo> <agent> set reasoning_effort <resolved-effort> -s <role-session>
+```
+
+Continue with that effort only after the command reports `config set: reasoning_effort=<resolved-effort>`. If the option or value is rejected, record `effort=default` and dispatch without trying aliases such as `thought_level` or a synthesized `<model>[<effort>]` ID. Reapply the newly resolved effort when a replacement attempt changes candidate, model, or difficulty.
+
 ## Dispatch a wave
 
 Submit one complete worker or validator prompt immediately after the single preflight, with the resolved provider sandbox and non-interactive permission behavior:
