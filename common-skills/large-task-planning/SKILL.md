@@ -24,10 +24,11 @@ JSON 字段、模板和命令细节见 [`agent-schema.md`](agent-schema.md)。�
 
 ### 目标稳定，计划可变
 
-把会改变用户拿到或必须运维的产品形态视为重大决策，包括发布物数量与组成、
+把会改变用户拿到或必须运维的产品形态视为用户边界决策，包括发布物数量与组成、
 主产物能否独立使用、安装与离线边界、兼容与迁移、支持环境、安全边界、外部依赖、
-运维责任和显著成本。Agent 为每项重大决策写出选择、建议与所得代价，直接标记
-`owner=user`：这些决定与黄金验收共同构成 Goal 边界。
+运维责任和显著成本。Agent 只能提出这类选择并记录代价；用户提供或确认后才标记
+`owner=user`。在这些边界以内，方案、Story 拆分、执行顺序、工具和可逆实现取舍属于
+Agent 决策，标记 `owner=agent`，不逐项请求用户确认。两类记录与黄金验收共同构成 Goal 边界。
 
 用户提供或确认黄金验收后，规划结束时不得再询问是否开始执行。写计划的 Agent 与执行计划的
 Agent 可以不是同一会话，项目进展的“可领取”就是开工信号。Epic、Story、依赖和技术路径是
@@ -38,9 +39,10 @@ Epic 的 `goal_version` 跟踪目标与黄金验收契约；仅在它们变化�
 `intent_version` 跟踪该执行单元的人读意图；调整 Story 范围或验收时递增。单纯更新状态、证据、
 实现步骤或依赖阻塞不递增版本。
 
-只有缺失某个决定就无法写出安全计划时才暂停提问，在当前对话中解决后继续；
+只有缺失某个用户边界决定就无法写出安全计划时才暂停提问，在当前对话中解决后继续；
 确实无法关闭的用 `owner=pending` 和 `pending_decisions` 登记，对应执行卡保持
-blocked。带着未关闭的待决项结束规划等于把决策推给执行会话，不允许。
+blocked。带着未关闭的待决项结束规划等于把决策推给执行会话，不允许。Agent 方案决策
+可以在规划或执行中产生，但必须记录证据、取舍和影响，不得伪装成用户确认。
 
 开始执行后，Agent 以黄金验收而不是初版计划判断是否完成。边界内的新事实直接回写全盘计划并继续；
 真正改变 Goal、黄金判据或产品、发布、运维形态时，暂停受影响工作，把完整影响汇入修订提案，
@@ -176,21 +178,22 @@ language: <与 Epic 相同的 BCP-47 标签>
 
 存在重大决策时，`key-decisions` 必填，按 1、2、3 连续编号，每项单独写清选择、Agent 建议与结果影响。每项前加决定者语义标记：
 
-- `<!-- large-task-planning:decision owner=user -->`：计划落盘即视为授权，默认都用这个。
-- `<!-- large-task-planning:decision owner=pending -->`：仅当缺失该决定无法形成安全计划时临时使用；规划结束前必须在对话中关闭并改为 user，不得留到执行阶段。
+- `<!-- large-task-planning:decision owner=user -->`：用户给出或明确确认的 Goal、产品、发布或运维边界。
+- `<!-- large-task-planning:decision owner=agent -->`：Agent 在上述边界内作出的方案或实现决策；记录即可，不代表用户授权扩展边界。
+- `<!-- large-task-planning:decision owner=pending -->`：缺少用户边界决定，执行卡必须保持 blocked，规划结束前关闭为 user。
 
 生成每项重大决策时使用以下格式；解释文字必须使用目标语言：
 
 ```markdown
-<!-- large-task-planning:decision owner=<user|pending> -->
-1. **<已选择或待确认的产品决定>。**
-   - <Agent 建议，以及用户采纳或否决的结果>。
-   - <用户所得、用户动作和主要代价>。
+<!-- large-task-planning:decision owner=<user|agent|pending> -->
+1. **<已选择或待确认的边界或方案决定>。**
+   - 依据与建议：<事实、Agent 判断；owner=user 时注明用户确认结果>。
+   - 结果与影响：<用户所得、实现代价、回退方式或待确认问题>。
 ```
 
-`owner=pending` 只允许出现在规划会话尚未结束时的例外场景，对应执行卡必须保持 `blocked`，并在 blocker 中指向人读决策；规划结束前全部关闭为 `owner=user`，之后才能领取 Story。默认路径没有这一步：决策随计划直接写成 `owner=user`。执行卡的 `decision_boundary` 必须回指关键决定，并说明 Agent 可自行处理的实现取舍；不得首次引入改变产品或发布形态的选择。
+`owner=pending` 只允许出现在规划会话尚未结束时的例外场景，对应执行卡必须保持 `blocked`，并在 blocker 中指向人读决策；规划结束前全部关闭为 `owner=user`，之后才能领取 Story。`owner=agent` 不需要用户逐项确认，但执行卡的 `decision_boundary` 必须回指用户边界，并说明 Agent 可自行处理的实现取舍；不得用 Agent 决策首次引入改变产品或发布形态的选择。
 
-愿景、范围、关键决策和验收标准属于人确认的意图。Agent 可用 `patch` 更新执行卡的 status、owner、blocker 和清单；修改人确认意图前必须获得当前任务的明确授权，并递增 `intent_version`。
+愿景、用户边界决策和验收标准属于人确认的意图；Agent 方案决策属于可追溯的执行假设。Agent 可用 `patch` 更新执行卡的 status、owner、blocker 和清单；修改人确认意图前必须获得当前任务的明确授权，并递增 `intent_version`。
 
 用脚本创建执行卡：
 
@@ -259,7 +262,7 @@ python3 <skill-dir>/scripts/epic_story.py patch \
 
 从项目进展的“可领取”项选择最能降低 Goal 风险的 Story；通常是第一个可领取项，若新证据改变优先级则先调整计划。用 `status --json` 取执行卡路径，只加载该 Story、对应 JSON 及 `authoritative_inputs` 直接引用的共享资料。先执行 `claim_checks`，再用 `patch` 更新 `status`、`owner`、`status_updated`、`refreshed` 和 `code_baseline`；确认 `goal_version`、intent_version、黄金案例映射、代码入口和前置交接一致后，才能设置 `in_progress`。随后保存首次失败、修复根因并从统一入口复验；满足全部执行清单和人读验收标准后 `patch` 为 `done`，再运行 `render`，更新证据并提交推送，执行会话到此停止。
 
-领取和交接都要复核新事实是否仍在 Goal 和决策边界内。边界内的实现取舍与计划调整由 Agent 自行完成，不再请求用户确认。计划调整时先保留已完成证据和稳定 Story ID；用插入 Story 承接新增工作，或重写尚未开始的 Story，并让最终验收 Story 继续位于依赖链末端。若新事实使 Goal、黄金判据或产品、发布、运维形态失效，暂停受影响工作并请求用户修订目标。
+领取和交接都要复核新事实是否仍在 Goal 和用户边界内。边界内的实现取舍与计划调整由 Agent 自行完成，不再请求用户确认，并将选择、证据、影响记录为 `owner=agent`。计划调整时先保留已完成证据和稳定 Story ID；用插入 Story 承接新增工作，或重写尚未开始的 Story，调整范围或验收时递增其 `intent_version`，并让最终验收 Story 继续位于依赖链末端。若新事实使 Goal、黄金判据或产品、发布、运维形态失效，暂停受影响工作并请求用户修订目标。
 
 最终黄金验收失败时先保留失败证据并判断根因：环境或 fixture 错误则修复验收条件；既定边界内的实现缺陷则在最终 Story 前插入修复 Story；Goal 或产品边界错误则请求用户修订。修复后先重跑失败案例，再在同一 acceptance commit 上重跑全部黄金案例。全部案例同时通过前，最终 Story 和 Epic 都不能为 done；不得为了变绿而降低、删除或改写黄金判据。
 

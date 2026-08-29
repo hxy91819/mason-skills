@@ -760,6 +760,12 @@ flowchart LR
         self.assertEqual(1, result.returncode)
         self.assertIn("存在 pending 关键决策时 status 必须为 blocked", result.stderr)
 
+    def test_agent_owned_key_decision_is_valid(self) -> None:
+        text = self.story.read_text(encoding="utf-8").replace("owner=user", "owner=agent")
+        self.story.write_text(text, encoding="utf-8")
+        result = self.run_cli("check", *self.common_args())
+        self.assertEqual(0, result.returncode, result.stderr)
+
     def test_human_documents_reject_dynamic_status_fields(self) -> None:
         self.story.write_text(
             self.story.read_text(encoding="utf-8").replace("gate: G1", "status: todo\ngate: G1"),

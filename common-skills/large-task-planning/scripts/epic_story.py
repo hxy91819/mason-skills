@@ -122,7 +122,7 @@ SECTION_MARKER_RE = re.compile(
     re.MULTILINE,
 )
 DECISION_MARKER_RE = re.compile(
-    r"^<!--\s*large-task-planning:decision\s+owner=(user|pending)\s*-->[ \t]*\n"
+    r"^<!--\s*large-task-planning:decision\s+owner=(user|agent|pending)\s*-->[ \t]*\n"
     r"^([1-9]\d*)\.\s+.+?(?=^<!--\s*large-task-planning:decision\s+owner=|"
     r"^<!--\s*large-task-planning:(?!decision\s+owner=)|\Z)",
     re.MULTILINE | re.DOTALL,
@@ -550,7 +550,7 @@ def _validate_global_design(epic: WorkItem, errors: List[str]) -> None:
 
 
 def _validate_key_decisions(story: WorkItem, card: AgentCard, errors: List[str]) -> None:
-    """确保人读决策可追溯到用户确认与 Agent 建议。"""
+    """确保人读决策可追溯到用户边界或 Agent 方案判断。"""
     section = _section(story.body, "key-decisions").strip()
     if not section:
         return
@@ -566,7 +566,7 @@ def _validate_key_decisions(story: WorkItem, card: AgentCard, errors: List[str])
     markers = tuple(DECISION_MARKER_RE.finditer(section))
     if len(markers) != len(plain_decisions):
         errors.append(
-            f"{story.path}: 每项关键决策必须紧接在 <!-- large-task-planning:decision owner=user|pending --> 后"
+            f"{story.path}: 每项关键决策必须紧接在 <!-- large-task-planning:decision owner=user|agent|pending --> 后"
         )
     has_pending = any(marker.group(1) == "pending" for marker in markers)
     if has_pending and card.status != "blocked":
