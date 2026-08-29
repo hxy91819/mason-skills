@@ -12,6 +12,7 @@ Turn technical design content into vivid, interactive single-file HTML pages tha
 1. **Interaction first** — Not static document prettification; use interaction so readers can explore technical concepts hands-on
 2. **Single-file, open directly** — Inline CSS/JS; complex diagrams may use Mermaid via CDN (see chart selection and security below)
 3. **Serves understanding** — Every interaction and animation must serve the goal of helping readers understand
+4. **Fixed identity, free layout** — Color and font tokens are the shared visual identity (use them consistently); page structure, section composition, and layout are designed fresh for each document's content
 
 ## Workflow
 
@@ -30,7 +31,7 @@ Read the user's technical design document and identify information types:
 
 ### Step 2: Choose visualization + interactive components
 
-For each content block, pick the best component and interaction:
+The table below is a menu of proven options, not an assignment — combine entries, adapt them, or invent components not listed here. The deciding criterion is always "does this help the reader understand", not table coverage.
 
 | Information type | Recommended component | Interaction |
 |------------------|----------------------|-------------|
@@ -57,7 +58,7 @@ If output includes Mermaid, **read** `references/mermaid_security.md` **first**,
 
 ### Mermaid layout: default to vertical
 
-Use `flowchart TB` (top-to-bottom) by default for any `flowchart` / `graph` diagram. The page is capped at 1100px and many readers view on laptops or split-screen, so `LR` / `RL` diagrams quickly overflow into horizontal scroll or shrink to unreadable size.
+Use `flowchart TB` (top-to-bottom) by default for any `flowchart` / `graph` diagram. The default page width is ~1100px and many readers view on laptops or split-screen, so `LR` / `RL` diagrams quickly overflow into horizontal scroll or shrink to unreadable size.
 
 Pick `LR` only when **both** are true:
 
@@ -68,12 +69,10 @@ If a vertical diagram gets too tall, prefer `subgraph` grouping or splitting int
 
 ### Step 4: Load design system
 
-Read `references/design_system.md` for:
+Read `references/design_system.md`. It has two layers:
 
-- CSS variables (colors / fonts / spacing)
-- Page skeleton HTML
-- Typography hierarchy
-- Responsive breakpoints
+- **Fixed identity** — CSS color variables and font roles. Always use these tokens; they keep every generated page visually consistent.
+- **Adjustable defaults** — spacing scale, radii, max-width, page skeleton, breakpoints. Starting points only: restructure the layout (sidebar layouts, full-width sections, multi-column grids, etc.) whenever the content calls for it.
 
 ### Chart selection (brief)
 
@@ -83,7 +82,7 @@ Read `references/design_system.md` for:
 
 ### Step 5: Load component templates
 
-Read `references/component_patterns.md` for full HTML + CSS + JS templates for chosen components (§7 Mermaid includes safe `initialize` template).
+Read `references/component_patterns.md` for reference implementations (HTML + CSS + JS) of the chosen components. Treat them as adaptable starting points — restyle, recombine, or replace them as the layout demands (§7 Mermaid includes the safe `initialize` template, which is NOT optional).
 
 ### Step 6: Assemble output
 
@@ -94,22 +93,11 @@ Combine components into a complete single-file HTML:
 - Complex relationship diagrams via Mermaid (CDN + safe `mermaid.initialize`); simple interactive diagrams inline SVG
 - Responsive layout for mobile
 
-## Page structure template
+## Page composition
 
-Recommended sections for a standard technical design HTML:
+There is no fixed page skeleton. Compose sections from the information types found in Step 1: each block becomes a section sized and ordered by its importance to understanding, not by a template. A comparison-only doc might be one interactive table; a deep algorithm doc might lead with the parameter explorer and skip the architecture diagram entirely.
 
-```
-1. Header    — Title + eyebrow type label + one-line summary
-2. Summary   — 4-cell key metric bar (e.g. est. effort, services involved...)
-3. Architecture / overview — Mermaid system diagram (core, largest visual)
-4. Mechanism diagram — Interactive concept explanation (sliders/buttons to explore)
-5. Option comparison — Table with good/bad coloring
-6. Implementation plan — Timeline + milestones + collapsible code
-7. Risk matrix — HIGH/MED/LOW color codes
-8. Open questions — Pending decisions (optional)
-```
-
-Not every design needs all sections — pick based on content.
+One common shape, for full design docs only: open with a summary metric bar, then the core architecture diagram, then mechanism/comparison/plan/risks as present. Treat this as a frequent outcome of content analysis, not a required structure.
 
 ## Interaction design guide
 
@@ -137,7 +125,7 @@ Generated HTML must satisfy:
 4. Mobile usable (at least single-column fallback)
 5. Mermaid container scrolls horizontally; hand-written SVG uses viewBox for scaling
 6. Code panels dark background + syntax highlighting
-7. Page max-width ≤ 1100px
+7. Page width fits the content — ~1100px is the default for readability on laptops/split-screen; wider or narrower layouts are fine as long as they stay responsive with no unintended horizontal overflow
 8. **Mermaid security gate passes** (see below)
 
 ### Mermaid security gate (required when using Mermaid)
@@ -228,4 +216,4 @@ mcporter call playwright.browser_evaluate function="() => ({...})"
 
 ## Reference example
 
-`assets/example_output.html` is a complete cache system design HTML output with interactive architecture diagram, slider demo, option comparison, etc. Use it as the quality bar for output.
+`assets/example_output.html` is a complete cache system design HTML output with interactive architecture diagram, slider demo, option comparison, etc. Use it as the quality bar for output — its specific layout is one instance of the design system, not the required shape.

@@ -1,6 +1,6 @@
 # Component Template Library
 
-Each component provides complete HTML + CSS + JS code that can be copied and combined directly.
+Reference implementations (HTML + CSS + JS) for common interactive components. They are starting points, not mandatory markup: restyle the layout, recombine pieces, or invent new components as the content demands — what these patterns really teach is how each interaction is wired (slider → SVG update, tab switching, step-highlight state). Keep the design tokens (`design_system.md`) when restyling.
 
 ---
 

@@ -9,7 +9,7 @@ Given a technical spec or design doc (markdown, notes, or inline text), the agen
 - Architecture and flow diagrams (Mermaid-first)
 - Interactive SVG demos (sliders, step-by-step highlights, tab panels)
 - Comparison tables, timelines, risk matrices, and summary metric bars
-- A consistent visual design system (warm palette, responsive layout)
+- A fixed visual identity (warm palette, typography tokens) with layout and structure designed per document
 
 The goal is not pretty static docs — it is **interaction that helps people grasp the design**.
 
@@ -29,10 +29,10 @@ Example prompts: *"Turn this design doc into interactive HTML"*, *"Create an arc
 | Step | Action |
 |------|--------|
 | 1. Analyze | Identify content types: architecture, algorithms, comparisons, data flows, milestones, risks, metrics |
-| 2. Pick components | Map each section to Mermaid, SVG, tables, tabs, or timelines |
+| 2. Pick components | Choose from proven components (Mermaid, SVG, tables, tabs, timelines) or invent new ones |
 | 3. Security | Load Mermaid sandbox rules before writing any diagram config |
-| 4. Design | Apply tokens and layout from `references/design_system.md` |
-| 5. Templates | Pull HTML/CSS/JS patterns from `references/component_patterns.md` |
+| 4. Design | Apply fixed color/font tokens from `references/design_system.md`; layout is free |
+| 5. Templates | Adapt reference implementations from `references/component_patterns.md` |
 | 6. Assemble | Combine into one file with inline styles and scripts |
 | 7. Validate | Run Mermaid security gate + Playwright QA (zero console errors) |
 
@@ -43,8 +43,8 @@ tech-doc-html/
 ├── SKILL.md                              # Agent instructions
 ├── assets/example_output.html            # Reference output (cache system design)
 ├── references/
-│   ├── design_system.md                  # CSS variables, typography, page skeleton
-│   ├── component_patterns.md             # Reusable HTML/CSS/JS templates
+│   ├── design_system.md                  # Color/font identity (fixed) + layout defaults (adjustable)
+│   ├── component_patterns.md             # Reference HTML/CSS/JS implementations to adapt
 │   └── mermaid_security.md               # Sandbox config and diagram rules
 └── scripts/
     ├── security/

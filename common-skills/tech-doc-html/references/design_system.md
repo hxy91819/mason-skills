@@ -1,6 +1,9 @@
 # Design System
 
-Extracted design system for direct copy into HTML files.
+Design tokens and starting layout for generated HTML pages, in two layers:
+
+- **Fixed identity** — the color palette and font roles below. Always use these tokens; they are the shared visual identity across all generated pages.
+- **Adjustable defaults** — spacing scale, radii, max-width, page skeleton, breakpoints. These are sensible starting points, not constraints: restructure layouts freely (sidebar layouts, full-width sections, multi-column grids) whenever the content calls for it, while keeping the fixed tokens.
 
 ## CSS variables
 
@@ -166,7 +169,9 @@ box-shadow: 0 10px 30px rgba(20, 20, 19, 0.10);
 }
 ```
 
-## Page skeleton
+## Page skeleton (starting point)
+
+A minimal working skeleton. Restructure it freely — sticky sidebars, full-width diagram sections, multi-column grids are all fine — as long as the fixed tokens are used and the result stays responsive.
 
 ```html
 <!doctype html>
@@ -232,7 +237,7 @@ box-shadow: 0 10px 30px rgba(20, 20, 19, 0.10);
 
 ## Mermaid
 
-Security: `references/mermaid_security.md`. **Layout — vertical by default:** use `flowchart TB` (top-to-bottom). The page max-width is 1100px and many readers are on laptops/split-screen, so `LR` diagrams quickly overflow into horizontal scroll or shrink to unreadable. Choose `LR` only when the flow is genuinely left-to-right (pipeline stages, request/response timeline) **and** stays compact (typically ≤4 nodes in one chain, short labels, no fan-out). When a vertical diagram grows too tall, prefer `subgraph` grouping or splitting into multiple diagrams over flipping to `LR`. Call chains → `sequenceDiagram`.
+Security: `references/mermaid_security.md`. **Layout — vertical by default:** use `flowchart TB` (top-to-bottom). The default page width is ~1100px and many readers are on laptops/split-screen, so `LR` diagrams quickly overflow into horizontal scroll or shrink to unreadable. Choose `LR` only when the flow is genuinely left-to-right (pipeline stages, request/response timeline) **and** stays compact (typically ≤4 nodes in one chain, short labels, no fan-out). When a vertical diagram grows too tall, prefer `subgraph` grouping or splitting into multiple diagrams over flipping to `LR`. Call chains → `sequenceDiagram`.
 
 ```css
 .diagram {

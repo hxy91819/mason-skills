@@ -1,0 +1,7 @@
+interface:
+  display_name: "Tech Doc HTML"
+  short_description: "Generate interactive single-file HTML from technical design docs"
+  default_prompt: "Use $tech-doc-html to turn this technical design document into an interactive HTML page."
+
+policy:
+  allow_implicit_invocation: true
