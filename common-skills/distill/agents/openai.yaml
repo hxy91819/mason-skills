@@ -1,7 +1,7 @@
 interface:
   display_name: "Distill"
-  short_description: "从会话证据沉淀可复用的项目、工具与验证流程改进方案"
-  default_prompt: "Use $distill to review this session or a bounded periodic window and propose evidence-backed harness or project-knowledge improvements."
+  short_description: "复盘会话证据，重点审计 Skills、AGENTS.md 与项目知识"
+  default_prompt: "Use $distill to review this session or a bounded periodic window, explicitly audit repository Skills and AGENTS.md as harness surfaces, and propose evidence-backed improvements."
 
 policy:
   allow_implicit_invocation: false

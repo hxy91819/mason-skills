@@ -107,7 +107,7 @@ ln -s /path/to/mason-skills/common-skills/worktree-cleanup ~/.agents/skills/work
 | [ask-oracle](common-skills/ask-oracle/) | Produces a concise brief containing the original request and all decision-relevant context, reserving technical judgment for an expert oracle. |
 | [article-polish](common-skills/article-polish/) | Article polishing with quick / normal / refined modes. Derivative work based on [baoyu-translate](https://github.com/JimLiu/baoyu-skills/tree/main/skills/baoyu-translate). |
 | [article-workflow](common-skills/article-workflow/) | A phased article optimization workflow with 13 skills — from brief generation through final publication. See [workflow README](common-skills/article-workflow/README.md) for phase order and usage. |
-| [distill](common-skills/distill/) | Reviews one session or a bounded periodic cross-session window for evidence-backed harness and project-knowledge improvements, treating user corrections and verified recurring patterns as first-class signals while pruning stale, conflicting, or ineffective guidance. |
+| [distill](common-skills/distill/) | Reviews one session or a bounded periodic cross-session window for evidence-backed harness and project-knowledge improvements, explicitly auditing repository Skills and AGENTS.md instructions for design and usability problems. |
 | [large-task-planning](common-skills/large-task-planning/) | Builds an executable Epic/Story portal: human Markdown intent, script-owned Agent JSON, and a generated status dashboard. Explicit invocation only. |
 | [mermaid-lint](common-skills/mermaid-lint/) | Validates and fixes mermaid diagrams in markdown. Renders every block against the real mermaid renderer and reports all failures in one pass. Original skill design. |
 | [open-source-contribution](common-skills/open-source-contribution/) | Open-source contribution hygiene: identity verification, privacy scanning, Git history cleanup, installer hardening, autoreview, and safe push/PR validation. |
@@ -159,15 +159,17 @@ In review mode it merges semantically equivalent signals across distinct tasks, 
 whether earlier improvements worked or regressed, and discloses evidence coverage without
 claiming access to unavailable conversation history.
 
-Before adding guidance, it audits existing rules and project documentation for staleness,
-duplication, conflicts, incorrect claims, deterministic replacements, misplaced detail,
-and discoverability from the next relevant task. Cross-session signal tables stay
-temporary: the skill creates no learning ledger or recurring report, and routes only the
-confirmed durable result to its authoritative source. It presents up to eight changes or
-questions per message as a category-based frontier, with no total cap on candidates or
-rounds, then applies the confirmed set behind one approval gate. Periodic reviews use a
-user-local, repository-specific checkpoint to avoid re-reading covered sessions by
-default; the manager may reopen earlier evidence when it is useful.
+Before adding guidance, it explicitly audits the applicable `AGENTS.md` chain and the
+repository's Skill catalog as harness surfaces. It checks ownership and coverage,
+invocation policy, reachability, usability, coherence, and observed effectiveness, while
+also pruning stale, duplicate, conflicting, or misplaced rules and project documentation.
+Cross-session signal tables stay temporary: the skill creates no learning ledger or
+recurring report, and routes only the confirmed durable result to its authoritative
+source. It presents up to eight changes or questions per message as a category-based
+frontier, with no total cap on candidates or rounds, then applies the confirmed set behind
+one approval gate. Periodic reviews use a user-local, repository-specific checkpoint to
+avoid re-reading covered sessions by default; the manager may reopen earlier evidence when
+it is useful.
 
 ### large-task-planning
 

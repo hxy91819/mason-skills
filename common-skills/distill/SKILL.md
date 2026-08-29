@@ -1,16 +1,17 @@
 ---
 name: distill
-description: Review the current conversation or a bounded set of recent sessions as a harness and project-knowledge retrospective, then prune or strengthen the specs, documentation, decisions, context, instructions, tools, checks, workflows, and environment that shape future human and agent work. Use only when a user or scheduler explicitly invokes $distill after substantial agent work, debugging, retries, user corrections, or skill execution, or for a periodic or milestone review.
+description: Review the current conversation or a bounded set of recent sessions as a harness and project-knowledge retrospective, with an explicit audit of repository Skills and AGENTS.md instructions, then prune or strengthen the surfaces that shape future human and agent work. Use only when a user or scheduler explicitly invokes $distill after substantial agent work, debugging, retries, user corrections, or skill execution, or for a periodic or milestone review.
 disable-model-invocation: true
 ---
 
 # Distill Session Evidence into the Harness and Project Knowledge
 
 Turn session evidence into the smallest verified harness and project-knowledge changes
-that make future work more reliable. The harness includes intent and specs, context and
-instructions, skills, tools and scripts, environment and permissions, and verification
-and evals. Project knowledge includes the durable documentation and decision rationale
-that give humans and agents an accurate global view of the project.
+that make future work more reliable. The harness includes intent and specs, the applicable
+`AGENTS.md` instruction chain, repository Skills and their invocation metadata, tools and
+scripts, environment and permissions, and verification and evals. Project knowledge
+includes the durable documentation and decision rationale that give humans and agents an
+accurate global view of the project.
 
 Follow all four phases. Phase 3 is the single approval gate: confirmation of the proposed
 candidate set authorizes its smallest in-scope edits. Ask again only for a materially
@@ -46,7 +47,10 @@ Reconstruct the complete session trajectory:
   conclusion separate from the ordinary error, failed command, or retry that exposed it.
 - Successful shortcuts worth making repeatable
 - User interaction friction, including avoidable questions or excessive output
-- Every executed skill, from instruction loading through validation and handoff
+- Every repository instruction or Skill that shaped the work, from `AGENTS.md` discovery
+  and Skill selection through instruction loading, execution, validation, and handoff.
+  Record missed or surprising invocation, unclear steps, ignored guidance, workarounds,
+  and places where the user had to compensate for the harness.
 - Every durable product or technical decision made or clarified by the user, including
   its rationale, constraints, rejected alternatives when they prevent future confusion,
   and affected project concepts
@@ -72,9 +76,11 @@ or tool evidence.
 ## Phase 2: Audit and Route
 
 Audit two required lanes before proposing additions: the applicable harness and the
-project documentation touched by the session's concepts or decisions. A lane may produce
-no candidate only after its relevant sources of truth have been inspected. Apply this
-table to every existing rule, mechanism, or document in scope:
+project documentation touched by the session's concepts or decisions. The harness lane
+must include the repository's agent-instruction and Skill surfaces; they are not optional
+documentation. A lane may produce no candidate only after its relevant sources of truth
+have been inspected. Apply this table to every existing rule, mechanism, or document in
+scope:
 
 | State | Action |
 |---|---|
@@ -190,6 +196,41 @@ closest reliable layer:
 | Check must apply to every change | Run the same local verifier from pre-commit and existing CI |
 | Environment, access, or consequence risk | Reproducible environment, permission boundary, or approval control |
 | Promising but unverified change | Falsifiable eval with a predicted outcome |
+
+#### Agent instructions and Skills
+
+Always inspect the applicable `AGENTS.md` chain and inventory the repository-owned Skills,
+including their names, descriptions, invocation policies, and visible relationships.
+Deep-read every Skill that was invoked, edited, referenced, expected to trigger, or plausibly
+overlaps a surviving signal. In review mode, also deep-read the remaining repository Skills
+in deterministic batches when the stated scope is a repository harness review; disclose
+any portion not inspected rather than implying full coverage.
+
+Audit this surface as a system, not only as prose files:
+
+- **Coverage:** Does each recurring job or judgment have one clear owner, and are there
+  gaps, duplicate Skills, or overlapping responsibilities that leave routing ambiguous?
+- **Invocation:** Do names, descriptions, explicit-only markers, `agents/openai.yaml`, and
+  user-facing invocation examples agree with the workflow's actual risk and intended use?
+- **Reachability:** Will the applicable `AGENTS.md` pointer or Skill description cause the
+  right instructions to be loaded before the relevant decision? Are references and
+  dependencies reachable without relying on hidden repository knowledge?
+- **Usability:** Are branches, approval gates, completion criteria, failure handling, and
+  handoff outcomes clear enough to execute without avoidable questions, retries, or user
+  correction? Treat a repeated workaround as evidence about the interface, not merely the
+  operator.
+- **Coherence:** Do repository instructions, Skill instructions, scripts, validators, and
+  actual host behavior reinforce one authoritative workflow, or conflict, duplicate, and
+  cache facts that belong elsewhere?
+- **Effectiveness:** Where comparable evidence exists, did the instruction or Skill change
+  the task path as intended? Distinguish a design defect from incorrect execution, missing
+  host capability, and absence of a comparable opportunity.
+
+Do not require a session failure before reporting a mechanically demonstrable Skill or
+instruction defect, such as conflicting invocation policy, a broken pointer, an impossible
+completion criterion, or two Skills claiming the same trigger. Carry subjective usability
+concerns without task evidence as hypotheses and propose a forward test when current
+inspection cannot settle them.
 
 CI is an execution venue, not the sole implementation of a rule. Keep one source for each
 meaning. Let the environment state facts that are cheap to inspect; prose should carry
