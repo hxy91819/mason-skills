@@ -6,7 +6,9 @@ Use this branch when ACPX is the selected control surface.
 
 Resolve the selected route from `acpx config show`, then use `sessions new` for the first candidate. ACPX has no `preflight` verb: fresh session creation is the single handshake and capability check. On resume, inspect the recorded session and use `sessions ensure` only for that exact session. Inspect later candidates only after this one is unavailable, incompatible, or quota-exhausted; do not probe the whole fallback chain up front.
 
-Kiro supports ACPX named sessions and advertises its available models during the ACP handshake. Read the recorded session's model list and choose by Story risk, validator cost, and quota; do not cache a model list in the plan or assume Kiro's current default remains stable.
+Kiro supports ACPX named sessions and advertises its available models during the ACP handshake. Treat the inherited `HOME` and provider profile as part of the candidate identity: changing `HOME`, partially symlinking a profile, or replacing its config can change Kiro authentication, backend selection, and the advertised model catalog. Preflight and dispatch under the same environment that the configured route will actually inherit. An isolated-home result proves only that isolated profile; it cannot disqualify the real route unless that is the route's intended environment.
+
+Read the exact handshake's model list and choose by Story risk, validator cost, and quota; do not cache a model list in the plan or assume Kiro's current default remains stable. A model rejected because it was not advertised is a route/profile mismatch, not provider or quota exhaustion. Re-resolve against that handshake instead of probing model names learned from another HOME or session.
 
 An orchestration candidate is not an ACPX agent merely because a same-named shell wrapper launches a coding CLI. Use a custom candidate only when `acpx config show` resolves it to an ACP-compatible stdio adapter and its preflight succeeds. An ordinary interactive CLI wrapper does not qualify.
 
@@ -54,6 +56,8 @@ Use persistent named sessions for worker fixes and validator rechecks of the sam
 ## Observe and recover
 
 Use `status`, `sessions show`, and `sessions history` for the exact agent, repository, and session name. Parse JSON events and the final result block; also inspect the repository because output alone cannot prove changes landed.
+
+When `session/new` succeeds but the first prompt returns an immediate dispatch failure before any tool call or workspace effect, keep the Story unchanged and classify the failure before falling back. Run one minimal no-tool prompt with the exact configured command and actual dispatch environment, then compare its current and advertised models with the failed handshake. Success there identifies a harness/profile mismatch; the same failure there makes the candidate unavailable. This diagnostic is recovery-only—do not add a synthetic prompt to every healthy preflight or contaminate a fresh Story session.
 
 A client timeout or incomplete final result does not prove the named session is idle, even when the wrapper exits successfully. Inspect that exact session; if its prompt is still running, cancel it and confirm it is idle before sending a retry. Otherwise the retry only queues behind the stalled prompt.
 

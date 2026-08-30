@@ -8,7 +8,9 @@ disable-model-invocation: true
 
 把大型工程作为一个可持续推进的 Goal：先锁定目标与黄金验收契约，再用独立 Epic、少量结果型 Story、简洁的人读一览和脚本维护的 Agent JSON 推进。Story 是 Agent 的单会话工程单元；计划是当前证据下的建议路径，可以围绕不变目标持续调整。
 
-JSON 字段、模板和命令细节见 [`agent-schema.md`](agent-schema.md)。可重复示例提示词与触发脚本见 [`examples/token-login/`](examples/token-login/)。
+JSON 字段、模板和命令细节见 [`agent-schema.md`](agent-schema.md)。可重复示例提示词与触发脚本见 [`examples/token-login/`](examples/token-login/)。维护与 orchestration 共享的职责边界、状态契约或闭环语义时，先读[联合核心设计](../../docs/large-task-system-design.md)；普通规划任务不加载它。
+
+复盘或修订曾由 orchestrator 执行的计划时，先用 sibling `large-task-orchestrator/scripts/orchestration_history.py show` 读取 `<repository>/.local/large-task-orchestrator/run-history.json`。只把其中带分母的近期模式和 `plan_ref` 当作分析入口；当前计划、Git 和验收证据仍决定事实，history 缺失不构成 blocker。
 
 ## 1. 锁定 Goal 与事实
 

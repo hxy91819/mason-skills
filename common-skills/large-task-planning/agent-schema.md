@@ -150,3 +150,7 @@ python3 scripts/epic_story.py write --file topic/agent/STORY-01-标题.json --fr
 ```
 
 `agent/*.md` 不再合法。若旧项目仍有 Markdown 执行卡或风险登记，先按本契约写成 JSON，用 `write` 落入 `agent/`，再删除对应 `.md`。证据文件放 `agent/evidence/`，不走本契约。
+
+## 本地运行历史不属于 Agent JSON
+
+Orchestrator 的滚动运行历史固定在 `<repository>/.local/large-task-orchestrator/run-history.json`，只由 sibling `large-task-orchestrator/scripts/orchestration_history.py` 写入。它不进入 `agent/`，不参与 readiness、render 或 check，也不替代执行卡、风险登记、Git 和验收证据。复盘时先从 history 的 `plan_ref` 回到本契约中的权威文档；history 缺失或写入失败不能改变计划状态。

@@ -25,7 +25,9 @@ Each candidate contains:
 - `model_contains`: optional case-insensitive substring that the advertised model ID must contain.
 - `reason`: optional operator-facing rationale for a non-obvious routing constraint; it does not affect matching.
 
-Walk the selected array in order. A candidate becomes eligible only after its adapter, authentication, configured model, and required capability pass preflight. On quota exhaustion or unavailability, preserve the attempt evidence and advance to the next candidate. Exhausting the array blocks the Story.
+Walk the selected array in order. A candidate becomes eligible only after its adapter, authentication, configured model, and required capability pass preflight. The inherited process environment is part of that candidate even though it is not duplicated in this schema: validate the exact `acpx_command` under the same `HOME` and provider profile that dispatch will use. Do not substitute a temporary HOME and generalize its authentication or model catalog to the configured route.
+
+For a Kiro `acpx_command` that pins `--model` or `--effort`, verify those flags through native help and then verify the resulting ACP session, not just process startup. The session's current or advertised model must satisfy `model_contains`; a model list from another Kiro HOME/profile is not evidence for this candidate. On quota exhaustion or unavailability, preserve the attempt evidence and advance to the next candidate. Exhausting the array blocks the Story.
 
 ## Effort profiles
 

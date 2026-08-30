@@ -8,6 +8,8 @@ disable-model-invocation: true
 
 Use the agent that invoked this Skill as the orchestrator. Run all Story implementation and validation through external agents controlled by ACPX or Herdr.
 
+When maintaining the responsibility boundary, state contract, or lifecycle shared with `large-task-planning`, read [the joint core design](../../docs/large-task-system-design.md). Ordinary missions do not load it.
+
 ## Roles
 
 - **Orchestrator:** the current agent. Own plan state, dependency waves, routing, dispatch, handoffs, integration, and user decisions. Stay on the control plane instead of implementing Stories or using Codex collaboration subagents.
@@ -68,9 +70,19 @@ Create the file only at the first qualifying event. Append one compact JSON obje
 
 Do not record routine successful dispatches, ordinary progress messages, full transcripts, diffs, requirements, test logs, or facts already authoritative in the plan. Keep each entry under 1200 UTF-8 bytes with only `time`, `run_id`, `event`, `story`, `session`, up to three short `facts`, `decision`, `next`, and `plan_ref`; omit unused fields and all secrets. Use no more than one checkpoint per Story phase. When a run approaches 30 entries, append one consolidation entry and continue only for new blockers or materially changed recovery actions.
 
-The notebook is recovery evidence, never a status source. If an event changes readiness, dependencies, acceptance, sequence, or user decisions, update the execution card, risk register, or authorized plan first and let the notebook point to that record. On resume, read the plan first, then only the latest relevant notebook entries, then reconcile actual agent sessions and Git state.
+The notebook is recovery evidence, never a status source. If an event changes readiness, dependencies, acceptance, sequence, or user decisions, update the execution card, risk register, or authorized plan first and let the notebook point to that record. On resume, read the plan first, run the rolling-history `show` flow below, then read only notebook entries matching the affected run/event before reconciling actual agent sessions and Git state.
 
 Before dispatch and again before integration, read applicable `AGENTS.md` files and inspect the current branch, `git status --short`, and `git worktree list`. Treat unrelated changes as concurrent work and preserve them.
+
+## Keep one rolling run history
+
+Use `<repository>/.local/large-task-orchestrator/run-history.json` as the single discoverable retrospective cache for this checkout. It is local, Git-ignored evidence for later analysis, not plan state and not a cross-machine audit log. Maintain it only with [`scripts/orchestration_history.py`](scripts/orchestration_history.py); run `--help` for the full command contract.
+
+At mission start, call `start` with a stable `run_id` and repository-relative `plan_ref`. Around every worker or validator turn, call `attempt start` after resolving the actual session/route and `attempt finish` immediately after the fixed worker status or validator conclusion; use the unique session name as `attempt_id` and pass the actual provider session identifier with `--session`. The script owns timestamps, durations, aggregation, idempotence, locking, and rolling retention. Use `event` only for a real plan change, a blocked episode, or a mechanical Git checkpoint. Do not copy prompts, replies, diffs, test logs, or plan rationale into history.
+
+After the final push, call `finish --outcome delivered`; the script must prove the real upstream ref equals `HEAD`. Use `abandoned` only when the mission will not resume. A resumable blocker remains an active run and gets a `blocked` event. If any history command fails, warn with the exact error and continue from the authoritative plan; never change Story state, retry a delivery, overwrite a damaged history file, or fabricate a missing success record merely to make telemetry complete.
+
+On resume or retrospective review, read the plan first, then run `show`, then follow the returned `plan_ref` and recent hotspot signals. Read notebook entries only for the matching exceptional event. Base optimization proposals on explicit numerators, denominators, and plan/Git evidence; route each accepted change to the planning contract, orchestration route/lifecycle, or test harness that owns it.
 
 ## Select the control surface
 
@@ -183,3 +195,7 @@ Checkpoint commits stay local during execution. After every Story card is `done`
 Once the card, checks, commit, and push already satisfy the completion contract, do not create a follow-up commit solely to enrich optional orchestration metadata. Preserve the successful terminal state and report any non-authoritative recovery detail from the local notebook instead.
 
 Claim successful completion only when every Story card is `done`, combined integration checks pass, the intended repository changes are pushed, and the plan records worker and validator sessions, evidence, quota handoffs, delivery state, and remaining risks. Otherwise report the mission as blocked or partially delivered with its exact reason.
+
+## Regression-test orchestration changes
+
+When maintaining this Skill, its ACPX lifecycle assumptions, or its route configuration, read [the maintainer black-box regression reference](references/maintainer-testing.md). Do not run the live harness during an ordinary Story mission.

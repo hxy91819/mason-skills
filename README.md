@@ -182,6 +182,8 @@ It is manually invoked so ordinary tasks stay lightweight.
 
 The token-login prompt and runner live in
 [`common-skills/large-task-planning/examples/token-login/`](common-skills/large-task-planning/examples/token-login/).
+The planning Skill and its execution counterpart, `large-task-orchestrator`, share a
+[core system design](docs/large-task-system-design.md).
 The latest generated portal is [`docs/largeplan-example/`](docs/largeplan-example/).
 
 ### mermaid-lint
