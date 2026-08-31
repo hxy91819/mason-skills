@@ -34,6 +34,8 @@ Append the candidate's configured `native_args` after `--` only when the install
 
 The agent name remains dedicated to one Story and one role. Worker and validator always use different panes and names. A replacement worker receives a new pane/name and attempt number for the same Story; never reuse a live agent name for different work.
 
+For a validator, the native pane/agent capability must be read-only while still allowing terminal `execute` for `openspec validate`, `git status`, `git diff --check`, and targeted tests. A capability that only permits file reads is insufficient; if Herdr cannot prove this boundary, do not start the validator and return to ACPX or fail closed. The ACPX JSON policy in the sibling reference does not configure Herdr.
+
 ## Dispatch and monitor a wave
 
 Send the complete role prompt through `herdr agent prompt`. To fan out, submit prompts to all ready idle workers without waiting for each to finish, then monitor them by unique name with `herdr agent wait`, `herdr agent get`, and `herdr agent read`. Start each validator only after its worker settles at `worker_done`.

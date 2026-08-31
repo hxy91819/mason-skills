@@ -1,10 +1,13 @@
 ---
 name: large-task-orchestrator
-description: Persistently orchestrate an existing large task plan with external worker and validator agents, one Story per session.
+description: Persistently orchestrate an existing large task plan with external worker and validator agents, one Story per session, using a fixed read/search/execute validator permission contract.
 disable-model-invocation: true
 ---
 
 # Large Task Orchestrator
+
+这是流程类 Skill，仅在用户显式调用时运行：Codex、Pi、OpenCode 使用
+`$large-task-orchestrator`，Kimi 使用 `/skill:large-task-orchestrator`。
 
 Use the agent that invoked this Skill as the orchestrator. Run all Story implementation and validation through external agents controlled by ACPX or Herdr.
 
@@ -17,6 +20,8 @@ When maintaining the responsibility boundary, state contract, or lifecycle share
 - **Validator:** a separate external leaf agent and session for the same Story. Check completion, report evidence to the orchestrator, and never implement fixes.
 
 Workers and validators do not start other agents, edit the large task plan, or push repository changes.
+
+**Hard gate — validator contract:** Before any validator session is created, resumed, or prompted, load and verify [`references/validator-permission-policy.json`](references/validator-permission-policy.json) and pass `--permission-policy <absolute-skill-dir>/references/validator-permission-policy.json --non-interactive-permissions fail`. The contract auto-approves `read`/`search`/`execute` and denies editing; `execute` is required for validation commands. A validator is not ready with `--approve-reads`, a missing policy, or an unverified read-only sandbox.
 
 ## Drive the mission autonomously
 
@@ -86,7 +91,7 @@ On resume or retrospective review, read the plan first, then run `show`, then fo
 
 ## Select the control surface
 
-- Prefer ACPX for headless, persistent, structured orchestration. When using it, follow the short path in [references/acpx.md](references/acpx.md): select one candidate, run one preflight, create/ensure one session, and dispatch. Read recovery guidance only when recovery is needed.
+- Prefer ACPX for headless, persistent, structured orchestration. When using it, follow the short path in [references/acpx.md](references/acpx.md): select one candidate, use one bounded ACP handshake as the preflight, create/ensure one session, and dispatch. Read recovery guidance only when recovery is needed.
 - Use Herdr when `HERDR_ENV=1` and visible terminal panes are useful or requested. Read [references/herdr.md](references/herdr.md) before using it.
 - If neither surface is usable, report the missing capability instead of substituting built-in subagents.
 
@@ -98,28 +103,38 @@ Use existing worktrees when the plan assigns them. Never create, switch, clean, 
 
 ## Route external roles
 
-Before creating any worker or validator session, read [references/orchestration-config.md](references/orchestration-config.md) and resolve the external configuration. Use the `frontend` worker route for a frontend-dominant Story and the `default` worker route otherwise; use the validator's `default` route for the validation gate. For mixed Stories, classify by the highest-risk portion; split only when the plan preserves independent acceptance and ownership.
+Read [references/orchestration-config.md](references/orchestration-config.md) and run its resolver before each first external dispatch, every orchestrator resume, and every route switch. Treat only that command's merged `config` as routing input. A successful gate has `ok=true` and reports both `sources.user` and `sources.project`, including an `absent` project source; until then, do not create, ensure, or prompt a worker or validator session.
 
-Walk the selected candidate array lazily. Preflight and use the first candidate; advance only when it is unavailable, incompatible, or quota-exhausted. If no candidate remains, block the Story with the exact routing reason instead of inventing a fallback.
+Use the `frontend` worker route for a frontend-dominant Story and the `default` worker route otherwise; use the validator's `default` route for the validation gate. For mixed Stories, classify by the highest-risk portion; split only when the plan preserves independent acceptance and ownership. Walk the selected candidate array lazily. Create one fresh session for the first candidate and use its bounded ACP initialize/session handshake as the preflight; advance only when it is unavailable, incompatible, or quota-exhausted. If no candidate remains, block the Story with the exact routing reason instead of inventing a fallback.
 
-Classify the Story's difficulty and select the matching configured effort profile when one exists. Treat the adapter's advertised model and effort options as authoritative. If effort is unsupported, use the adapter default without probing alternatives. Record the resolved role, route, candidate, model, effort, and configuration sources in the execution-card handoff.
+Classify the Story's difficulty and select the matching configured effort profile when one exists. Treat the adapter's advertised model and effort options as authoritative. If effort is unsupported, use the adapter default without probing alternatives. Record the resolved role, route, candidate, model, effort, and both reported configuration sources in the execution-card handoff.
+
+Resolve the role's permission contract before creating or reusing a session. The ACPX validator contract is fixed in [references/acpx.md](references/acpx.md) and [references/validator-permission-policy.json](references/validator-permission-policy.json); route configuration may choose the provider, but it may not weaken this contract. A validator's “read-only” boundary still needs `execute` for `openspec validate`, `git status`, `git diff --check`, and targeted tests. When Herdr is selected, express the same authority boundary through its native read-only sandbox (the JSON policy is ACPX-only). Record the policy path, SHA-256, and effective sandbox evidence in the execution-card handoff.
+
+If the fixed policy is missing, unreadable, or altered, fail closed before creating or prompting a validator session. Never silently fall back to `--approve-reads`, `--approve-all`, or an interactive permission prompt.
 
 ## Dispatch a worker
 
 ### ACPX golden path
 
-For a normal first dispatch, use this exact sequence after reading the current Story and route:
+For a normal first dispatch, use this exact sequence after reading the current Story and route. Resolve `<role-permission-flags>` before the first command and reuse the same policy for `sessions new`/`ensure` and the prompt. This placeholder is role-bound, not a free-form guess: a validator always uses the checked-in policy file below; a worker may use only a provider-specific policy justified by independently enforced sandbox evidence. If either contract cannot be proved, fail closed.
 
 ```bash
-acpx --cwd <repo> <agent> sessions new --name <role-session>
-acpx --cwd <repo> <agent> sessions show <role-session>
+acpx --cwd <repo> --timeout <preflight-timeout-seconds> <role-permission-flags> --non-interactive-permissions fail <agent> sessions new --name <role-session>
+acpx --cwd <repo> --timeout <preflight-timeout-seconds> <agent> sessions show <role-session>
 acpx --cwd <repo> <agent> set reasoning_effort <resolved-effort> -s <role-session>
-acpx --cwd <repo> <resolved-permission-flags> --non-interactive-permissions fail --format json --json-strict <agent> -s <role-session> --file <prompt-path>
+acpx_exit=0
+acpx --cwd <repo> <role-permission-flags> --non-interactive-permissions fail --format json --json-strict <agent> prompt -s <role-session> --file <prompt-path> > <repo>/.local/large-task-orchestrator/<role-session>.ndjson || acpx_exit=$?
+python3 <skill-dir>/scripts/read_acpx_result.py --stream <repo>/.local/large-task-orchestrator/<role-session>.ndjson --expect worker --session <baseline-provider-session-id> --acpx-exit "$acpx_exit"
 ```
 
 Run the `set reasoning_effort` line only when the selected profile resolves an effort and the Codex adapter advertises that option; otherwise omit it and record `effort=default`. Require its `config set: reasoning_effort=<resolved-effort>` confirmation before dispatch.
 
-`acpx` has no `preflight` subcommand. `sessions new` is the fresh-session handshake and bootstrap for first dispatch; run `sessions show` immediately after it and record the provider session identifier, agent, cwd, effective permission flags, and sandbox/capability fingerprint as the baseline before sending any prompt. On resume, run `sessions show <role-session>` first and compare all of those fields. Use `sessions ensure` only when the exact session and capability fingerprint are present and resumable; immediately run `sessions show` again and compare before prompting. If the session is missing, closed, mismatched, or changed during ensure, quarantine/reconcile the workspace and create a new attempt with the prior handoff instead of silently replaying under the same attempt. After every strict-JSON prompt, read the provider `agentSessionId` (or equivalent advertised identifier) and compare it with the baseline; a changed or missing identifier is a continuity failure. Quarantine and reconcile all workspace side effects from that prompt before any validator or retry, then create a new attempt; do not accept its work. Resolve `<resolved-permission-flags>` before dispatch: automatic approval (including `--approve-all`) is valid only when the selected provider sandbox independently enforces the Story's repository, command, and network scope, and that evidence is recorded. ACPX permission policies match tools, not reliable file paths, command arguments, or network destinations; they are not a Story boundary. Otherwise choose a route with enforceable isolation or let the worker fail closed under `--non-interactive-permissions fail`; never present a broad tool approval as least-permissive Story isolation. If the handshake advertises no effort option, use the adapter default and dispatch.
+A prompt's event stream is NDJSON, so redirect it to that Git-ignored path and read the result with [`scripts/read_acpx_result.py`](scripts/read_acpx_result.py); run `--help` for its contract. Preserve the ACPX process exit code and pass it as `--acpx-exit` when available. Exit code 0 means the turn ended cleanly, the provider session stayed continuous, and the expected role contract validated — including a trusted `blocked`, `failed`, or `quota_exhausted` worker report you route on. Any non-zero ACPX exit makes the stream untrusted even if a conclusion appears; the reader reports `acpx-exit-nonzero` and supplies `failure.classification`, `turn.error`, `permissions`, `tool_calls`, and `warnings` as recovery evidence. For a validator, `failure.classification=permission_policy_mismatch` is a policy-recovery signal, never a validator conclusion or quota result. The reader judges the stream only; inspect the repository separately because output alone cannot prove changes landed.
+
+`acpx` has no `preflight` subcommand. `sessions new` is the fresh-session handshake and bootstrap for first dispatch; run it with a bounded timeout, then run `sessions show` immediately and record the provider session identifier, agent, cwd, effective permission flags, and sandbox/capability fingerprint as the baseline before sending any prompt. For a custom `acpx_command`, pass the exact command unchanged to ACPX. Do not append `--help` or `--version` to a long-running ACP stdio adapter: many such adapters treat those tokens as application arguments and wait for ACP stdin instead of exiting, so this is neither a valid capability check nor a safe timeout boundary. A separately documented, terminating native help/version command may be checked only as an optional diagnostic with its own short timeout; it never replaces the ACP handshake. On resume, run `sessions show <role-session>` first and compare all of those fields. Use `sessions ensure` only when the exact session, permission contract, and capability fingerprint are present and resumable; immediately run `sessions show` again and compare before prompting. If the session is missing, closed, mismatched, or changed during ensure, quarantine/reconcile the workspace and create a new attempt with the prior handoff instead of silently replaying under the same attempt. After every strict-JSON prompt, pass the baseline provider session identifier to the reader as `--session`; a `session.continuity` of `mismatch` is a continuity failure. Quarantine and reconcile all workspace side effects from that prompt before any validator or retry, then create a new attempt; do not accept its work. Resolve `<role-permission-flags>` before dispatch: automatic approval (including `--approve-all`) is valid only when the selected provider sandbox independently enforces the Story's repository, command, and network scope, and that evidence is recorded. ACPX permission policies match tools, not reliable file paths, command arguments, or network destinations; they are not a Story boundary. Otherwise choose a route with enforceable isolation or let the worker fail closed under `--non-interactive-permissions fail`; never present a broad tool approval as least-permissive Story isolation. If the handshake advertises no effort option, use the adapter default and dispatch.
+
+For the validator, “read-only” describes its authority, not an absence of command execution: `openspec validate`, `git status`, `git diff --check`, and targeted tests are ACPX `execute` requests. Use the exact policy in [references/validator-permission-policy.json](references/validator-permission-policy.json), including `read`, `search`, and `execute` in `autoApprove`, the edit-related kinds in `autoDeny`, and `defaultAction: deny`; never substitute `--approve-reads`. Apply the policy before `sessions new` or `sessions ensure` and repeat it on every prompt. Automatic `execute` approval requires independently enforced read-only repository/command sandbox evidence; ACPX's tool-kind policy alone cannot provide that boundary.
 
 Create a fresh worker session whose unique name contains the mission/run, Story ID, `worker`, and attempt number. Never reuse a worker session from a completed Story.
 
@@ -147,7 +162,7 @@ Require the worker's final response to end with this strict JSON block:
 }
 ```
 
-`status` is `worker_done`, `blocked`, `failed`, or `quota_exhausted`. If the block is absent or invalid, ask the same worker session to emit a corrected block. A worker report leaves the execution card `in_progress`; only the validator gate can move it to `done`.
+`status` is `worker_done`, `blocked`, `failed`, or `quota_exhausted`. When the reader reports `report-missing` or `report-invalid`, ask the same worker session to emit a corrected block. A worker report leaves the execution card `in_progress`; only the validator gate can move it to `done`.
 
 ## Run the lightweight validation gate
 
@@ -155,7 +170,7 @@ After `worker_done`, create a separate validator session dedicated to that Story
 
 Explicitly invoke the sibling `$story-direction-review` Skill in the validator prompt and follow its fixed output contract. Resolve its `SKILL.md` from this Skill's sibling directory and include that absolute path in the prompt because an external agent's Skill registry may differ from the orchestrator's. Give it the Epic, Story, execution-card handoff, worker evidence, current diff, and remaining Story map. It checks goal direction, acceptance coverage, major omissions, and whether the next Story remains valid. Do not substitute a broad review, `autoreview`, architecture audit, style sweep, or refactor pass unless the plan explicitly requires one.
 
-Grant read and targeted-test authority but no code-editing authority. Route its single conclusion back to the orchestrator:
+Grant the validator read/search/execute authority and deny edit/delete/move/fetch/switch_mode authority with the fixed policy in [references/validator-permission-policy.json](references/validator-permission-policy.json). The validator's ACPX flags are exactly `--permission-policy <absolute-skill-dir>/references/validator-permission-policy.json --non-interactive-permissions fail`; apply them on session creation, `sessions ensure`, and every prompt. `--approve-reads` is not a validator policy: it leaves `execute` requests for an interactive prompt and, together with `--non-interactive-permissions fail`, produces `PERMISSION_PROMPT_UNAVAILABLE` (ACPX exit 5) before any conclusion. Automatic `execute` approval is allowed only when the provider sandbox independently enforces the validator's read-only repository and command boundary; otherwise route to an enforceable adapter or fail closed. Read its stream with `--expect validator`; the reader returns the single conclusion in `report.value.conclusion`. Route that conclusion back to the orchestrator:
 
 - `CONTINUE`: reconcile the evidence, patch the card to `done`, render the dashboard, and release newly claimable Stories without repeating a broad review.
 - `PATCH_PROMPT`: keep the card `in_progress`, send the supplied prompt to the same worker session, then reuse the same validator session for another direction check.
@@ -165,6 +180,11 @@ Grant read and targeted-test authority but no code-editing authority. Route its 
 ## Supervise and recover
 
 Inspect tool state, transcripts, and the working tree before retrying a stalled or failed worker. Treat provider quota, rate-limit, usage-cap, or model-unavailable errors as `quota_exhausted`, distinct from code or test failures:
+
+Treat `PERMISSION_PROMPT_UNAVAILABLE`, `permission prompt unavailable`, or ACPX exit 5 during a validator prompt as `permission_policy_mismatch`, never as a validator conclusion or quota event. Keep the card `in_progress`; inspect the exact session and working tree, confirm the session is idle and no side effect escaped, and compare the dispatched flags with the fixed policy. If the provider's read-only sandbox is independently enforced, use `sessions ensure` (not `sessions new`) for the clean existing session, then resend the unchanged validator prompt once with the fixed policy applied at ensure and prompt, preserving the provider session ID. Record the corrected policy and recovery in the execution card and notebook. If the session identity changed, any workspace side effect exists, or no enforceable read-only sandbox is available, quarantine/reconcile first and create a new attempt or fallback route; do not accept the failed turn.
+If that corrected-policy retry fails again, re-resolve the validator route and create a fresh validator attempt (never a worker session); keep the card `in_progress` until an independent validator conclusion is obtained.
+
+For other worker execution failures (after the validator-policy branch above has been ruled out), use this handoff sequence:
 
 1. Stop assigning new work to that provider for the current wave.
 2. Preserve partial edits and verification evidence.

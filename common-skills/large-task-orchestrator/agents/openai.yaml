@@ -1,6 +1,6 @@
 interface:
   display_name: "Large Task Orchestrator"
   short_description: "持续、自主地编排外部 Agent 执行大型 Story 计划"
-  default_prompt: "Use $large-task-orchestrator to autonomously execute this large task plan through ACPX or Herdr until completion or a genuine blocker."
+  default_prompt: "Use $large-task-orchestrator to autonomously execute this large task plan through ACPX or Herdr until completion or a genuine blocker; apply the fixed validator read/search/execute permission policy."
 policy:
   allow_implicit_invocation: false

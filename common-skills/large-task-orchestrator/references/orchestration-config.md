@@ -1,38 +1,51 @@
 # Orchestration configuration
 
-Use this reference when routing or replacing a worker or validator.
+Use this reference before a first worker/validator dispatch, on orchestrator resume, or when switching routes.
 
 ## Resolve configuration
 
-Load the user configuration, then merge an optional project override:
+Run the deterministic resolver from this Skill; agents do not read or merge orchestration JSON directly:
 
-1. `${XDG_CONFIG_HOME:-$HOME/.config}/mason-skills/large-task-orchestrator/orchestrator.json`
-2. `<repository>/.local/large-task-orchestrator/orchestrator.json`
+```bash
+python3 <skill-directory>/scripts/resolve_orchestration_config.py \
+  --repository <absolute-repository-root>
+```
 
-The project file wins. Keep its exact path local and untracked through `.git/info/exclude` when needed. Validate each file before merging. A malformed file, unknown schema version, duplicate profile name, missing required route, or invalid candidate blocks dispatch for the affected role; report the path and field instead of using an implicit route.
+The resolver is the runtime source of truth. It always checks these exact locations in order and accepts no path override:
 
-The document has `version: 1`, a `routing` object, and a `profiles` array. A project route replaces the complete user route at the same `routing.<role>.<name>` key; profiles merge by `name`.
+1. `${XDG_CONFIG_HOME:-$HOME/.config}/mason-skills/large-task-orchestrator/orchestrator.json` — required user configuration.
+2. `<repository>/.local/large-task-orchestrator/orchestrator.json` — optional project override; keep it local and untracked through `.git/info/exclude` when needed.
 
-## Routing
+Proceed only when exit code is zero, `ok=true`, and `sources.user` plus `sources.project` each report their fixed path and status. A missing project file is a successful `absent` source. Any other read, JSON, schema, route, candidate, profile, or merged-required-route error fails closed and names its source path. Without a successful two-source report, create, ensure, and prompt no external session. Invoke the resolver again on every orchestrator resume and route switch; never reuse a prior merged result across either boundary.
 
-`routing.worker.default` and `routing.validator.default` are required non-empty candidate arrays. `routing.worker.frontend` is optional and replaces the worker default for frontend-dominant Stories when present.
+The successful `config` is the only routing/profile input. A project `routing.<role>.<name>` replaces that entire user candidate array. Profiles merge by `name`: project definitions replace same-named user definitions and have selection priority over user profiles. Do not reproduce this merge in prompts or host-specific configuration readers.
 
-Each candidate contains:
+## Version 1 schema
+
+Each present file is one object with exactly `version`, `routing`, and `profiles`. `version` is integer `1`. `routing` may contain partial overrides, but the merged result must contain non-empty `routing.worker.default` and `routing.validator.default` arrays. Supported route keys are:
+
+- `routing.worker.default`
+- optional `routing.worker.frontend`
+- `routing.validator.default`
+
+Every route is a non-empty candidate array. Each candidate has exactly these supported fields:
 
 - `agent`: required ACPX agent name or Herdr kind.
 - `acpx_command`: optional complete ACP-compatible command passed as one `--agent` value instead of the registered name.
-- `native_args`: optional argument array appended when Herdr starts the configured `agent` kind.
+- `native_args`: optional string array appended when Herdr starts the configured `agent` kind.
 - `model_contains`: optional case-insensitive substring that the advertised model ID must contain.
 - `reason`: optional operator-facing rationale for a non-obvious routing constraint; it does not affect matching.
 
-Walk the selected array in order. A candidate becomes eligible only after its adapter, authentication, configured model, and required capability pass preflight. The inherited process environment is part of that candidate even though it is not duplicated in this schema: validate the exact `acpx_command` under the same `HOME` and provider profile that dispatch will use. Do not substitute a temporary HOME and generalize its authentication or model catalog to the configured route.
+`profiles` is an array whose `name` values are unique within a source. A profile has required `name` and `match`, plus optional `effort_by_difficulty`. `match` requires `agent` and may include `role` (`worker` or `validator`) and `model_contains`. The effort map may contain `routine`, `standard`, `complex`, and `critical`; omitted keys leave the adapter default unchanged. Profiles without an effort map are valid. Unknown fields, roles, routes, and difficulty keys are errors.
 
-For a Kiro `acpx_command` that pins `--model` or `--effort`, verify those flags through native help and then verify the resulting ACP session, not just process startup. The session's current or advertised model must satisfy `model_contains`; a model list from another Kiro HOME/profile is not evidence for this candidate. On quota exhaustion or unavailability, preserve the attempt evidence and advance to the next candidate. Exhausting the array blocks the Story.
+Permission is a role contract, not a routing preference. The orchestrator must not let user/project JSON weaken the validator boundary: every ACPX validator uses [the fixed read/search/execute policy](validator-permission-policy.json), while a Herdr validator expresses the same boundary through its native sandbox. A worker's write authority remains dependent on independently enforced sandbox evidence. Do not add `--approve-reads` or `--approve-all` to a validator route; select the provider first, then apply the role policy at session creation/ensure and prompt.
 
-## Effort profiles
+## Use the resolved route
 
-Each profile contains a unique `name`, `match.agent`, optional `match.role`, optional `match.model_contains`, and optional `effort_by_difficulty`. `match.role` is `worker` or `validator`. The effort map may use `routine`, `standard`, `complex`, and `critical`; a missing key leaves the adapter default unchanged. Profiles without an effort map are valid.
+Walk the selected candidate array in order. A candidate becomes eligible only after its adapter, authentication, configured model, and required capability pass a bounded ACP initialize/session handshake. The inherited process environment is part of that candidate even though it is not duplicated in the schema: start the exact `acpx_command` through ACPX `sessions new` under the same `HOME` and provider profile that dispatch will use. Do not append `--help` or `--version` to a long-running stdio adapter; many adapters wait for ACP stdin instead of terminating. An isolated or substituted HOME does not establish authentication or model availability for the resolved route.
 
-Choose the matching profile with the most match fields; when specificity ties, the project profile wins and then earlier array order wins. Classify difficulty from ambiguity, cross-module breadth, correctness risk, and cost of failure: `routine` is bounded mechanical work, `standard` is ordinary implementation, `complex` requires substantial reasoning or integration, and `critical` risks data, security, compatibility, or the remaining plan.
+For a Kiro `acpx_command` that pins `--model` or `--effort`, verify those flags through the resulting ACP session and its advertised configuration, not just process startup. A separately documented, terminating native help/version command may be run as optional bounded diagnostics, but it is not the route gate. The session's current or advertised model must satisfy `model_contains`. On quota exhaustion or unavailability, preserve the attempt evidence, rerun the resolver for the route switch, and advance to the next candidate. Exhausting the array blocks the Story.
+
+Choose the matching profile with the most match fields; when specificity ties, use the resolver's array order. Classify difficulty from ambiguity, cross-module breadth, correctness risk, and cost of failure: `routine` is bounded mechanical work, `standard` is ordinary implementation, `complex` requires substantial reasoning or integration, and `critical` risks data, security, compatibility, or the remaining plan.
 
 Apply a configured effort only when the adapter advertises it or the candidate pins the same value in validated native startup arguments. Otherwise keep the adapter default and record `effort=default`; do not try alternate option names or synthesized model IDs. Re-resolve routing and effort when switching agent or model; never inherit either from the prior attempt.

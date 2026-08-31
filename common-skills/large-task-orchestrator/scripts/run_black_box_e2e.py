@@ -3,7 +3,7 @@
 
 脚本定义：复制固定单 Story 夹具到系统临时目录，用本地 bare remote 隔离交付，
 并让一次性外部 orchestrator Agent 仅凭 Skill 与原始任务完成实现和独立验证。
-参数定义：默认 orchestrator=kiro、worker=codex、validator 跟随 worker；只有 --live
+参数定义：默认 orchestrator=kiro、worker=codexp、validator 跟随 worker；只有 --live
 会调用真实 Agent，--validate-fixture 只校验本地夹具，--dry-run 只展示输入和命令。
 输出定义：stdout 返回人读摘要或 JSON；--output-dir 可归档事件和检查结果；成功时
 默认删除临时仓库，失败时保留并打印路径。退出码 0=通过，1=行为/清理失败，2=参数或环境错误。
@@ -21,6 +21,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -29,6 +30,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
+from urllib.parse import quote
 
 
 SCRIPT_PATH = Path(__file__).resolve()
@@ -46,6 +48,22 @@ EXPECTED_PROMPT = (
 EXPECTED_GREETING = b"hello from orchestrated worker\n"
 AGENT_TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 EFFORT_TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+CODEX_PATH_PREFIX = "CODEX_PATH="
+CODEX_ACP_TOKEN = re.compile(
+    r"^@agentclientprotocol/codex-acp"
+    r"(?:@[~^]?[vV]?[0-9]+(?:\.(?:[0-9]+|[xX*])){0,2}"
+    r"(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)?$"
+)
+ENV_ASSIGNMENT_TOKEN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$", re.DOTALL)
+SUPPORTED_ENV_COMMAND = "/usr/bin/env"
+SUPPORTED_ADAPTER_RUNNER = "npx"
+SUPPORTED_ENV_ASSIGNMENTS = frozenset({"CODEX_HOME", "CODEX_PATH"})
+SUPPORTED_NPX_PREFIXES = ((), ("-y",), ("--yes",))
+LAUNCHER_DIRECTORY_MODE = 0o700
+LAUNCHER_MODE = 0o500
+PROJECT_CONFIG_MODE = 0o600
+DEFAULT_COMMAND_TIMEOUT = 120.0
+OUTER_COMMAND_GRACE_SECONDS = 60.0
 REQUIRED_FIXTURE_PATHS = (
     "AGENTS.md",
     "README.md",
@@ -78,9 +96,25 @@ class Workspace:
 
 
 @dataclass(frozen=True)
+class FileWitness:
+    path: Path
+    mode: int
+    sha256: str
+    content: bytes
+
+
+@dataclass(frozen=True)
 class ExpectedAgent:
     logical_name: str
-    argv: tuple[str, ...] | None
+    base_argv: tuple[str, ...]
+    argv: tuple[str, ...]
+    launcher: FileWitness
+
+
+@dataclass(frozen=True)
+class HarnessIntegrity:
+    launcher_directory: Path
+    project_config: FileWitness
 
 
 @dataclass(frozen=True)
@@ -118,8 +152,8 @@ def usage() -> str:
 
 选项:
   --orchestrator-agent <name>  外层 ACPX Agent，默认 kiro。
-  --worker-agent <name>        项目 worker 路由，默认 codex。
-  --validator-agent <name>     项目 validator 路由，默认与 worker 相同。
+  --worker-agent <name>        注册的 codex-acp worker argv alias，默认 codexp。
+  --validator-agent <name>     注册的 codex-acp validator argv alias，默认与 worker 相同。
   --worker-effort <value>      worker difficulty profile 的 effort，默认 high。
   --validator-effort <value>   validator difficulty profile 的 effort，默认 low。
   --timeout <seconds>          外层 Agent 总超时，默认 1800。
@@ -133,8 +167,9 @@ def usage() -> str:
 
 输出:
   live 成功必须同时证明：固定 prompt 未被扩写、Story/Epic done、fixture 检查通过、
-  本地提交已 push、worker/validator 为不同 session、provider ID 连续且无 prompt 后
-  session/new 或任何 session/resume。测试 session 会 close 并删除精确 ACPX 本地记录。
+  本地提交已 push、worker/validator 为不同 session、provider ID 连续、session 没有
+  prompt 后 new/resume、实际 argv 精确匹配预先构造的 final argv，并且两 launcher 与
+  project config 的路径、模式、内容和 SHA-256 在 outer 返回后未漂移。
 
 退出码:
   0  所选模式通过。
@@ -160,7 +195,7 @@ def build_parser() -> argparse.ArgumentParser:
     modes.add_argument("--validate-fixture", action="store_true", help="只校验本地夹具")
     modes.add_argument("--live", action="store_true", help="调用真实 Agent 完整运行")
     parser.add_argument("--orchestrator-agent", default="kiro")
-    parser.add_argument("--worker-agent", default="codex")
+    parser.add_argument("--worker-agent", default="codexp")
     parser.add_argument("--validator-agent")
     parser.add_argument("--worker-effort", default="high")
     parser.add_argument("--validator-effort", default="low")
@@ -187,15 +222,22 @@ def run_command(
     cwd: Path,
     check: bool = True,
     env: dict[str, str] | None = None,
+    timeout: float = DEFAULT_COMMAND_TIMEOUT,
 ) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
-        [str(part) for part in command],
-        cwd=cwd,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            [str(part) for part in command],
+            cwd=cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise HarnessError(
+            f"命令超时 timeout={timeout}s: {command_text(command)}"
+        ) from error
     if check and result.returncode != 0:
         raise HarnessError(
             f"命令失败 exit={result.returncode}: {command_text(command)}\n"
@@ -279,43 +321,273 @@ def validate_skill_binding(args: argparse.Namespace) -> Path:
     return registry.resolve()
 
 
-def configured_agent_argv(entry: Any) -> tuple[str, ...] | None:
-    if not isinstance(entry, dict):
-        return None
-    argv = entry.get("argv")
-    if isinstance(argv, list) and argv and all(isinstance(item, str) for item in argv):
-        return tuple(argv)
-    command = entry.get("command")
-    args = entry.get("args", [])
-    if isinstance(command, str) and command and isinstance(args, list) and all(
-        isinstance(item, str) for item in args
+def sha256_bytes(content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()
+
+
+def trusted_npx_path() -> Path:
+    trusted_runner_text = shutil.which(SUPPORTED_ADAPTER_RUNNER)
+    if trusted_runner_text is None:
+        raise HarnessEnvironmentError(
+            f"真实继承环境找不到 {SUPPORTED_ADAPTER_RUNNER}，无法绑定 adapter runner"
+        )
+    if not isinstance(trusted_runner_text, str) or not trusted_runner_text:
+        raise HarnessEnvironmentError(
+            f"真实继承环境解析出的 npx 不是非空字符串: {trusted_runner_text!r}"
+        )
+    trusted_runner = Path(trusted_runner_text)
+    if not trusted_runner_text.isprintable():
+        raise HarnessEnvironmentError(
+            f"真实继承环境解析出的 npx 含控制字符: {trusted_runner_text!r}"
+        )
+    if not trusted_runner.is_absolute():
+        raise HarnessEnvironmentError(
+            f"真实继承环境解析出的 npx 不是绝对路径: {trusted_runner}"
+        )
+    try:
+        metadata = trusted_runner.stat()
+    except OSError as error:
+        raise HarnessEnvironmentError(
+            f"真实继承环境解析出的 npx 无法检查: {trusted_runner}: {error}"
+        ) from error
+    if not stat.S_ISREG(metadata.st_mode) or not os.access(trusted_runner, os.X_OK):
+        raise HarnessEnvironmentError(
+            f"真实继承环境解析出的 npx 必须是可执行普通文件: {trusted_runner}"
+        )
+    return trusted_runner
+
+
+def validated_codex_route_tokens(
+    base: tuple[str, ...], logical_name: str
+) -> tuple[int, int, Path]:
+    if not base:
+        raise HarnessEnvironmentError(
+            f"ACPX agent {logical_name!r} 的 structured argv 不能为空"
+        )
+    for index, token in enumerate(base):
+        if not isinstance(token, str) or not token:
+            raise HarnessEnvironmentError(
+                f"ACPX agent {logical_name!r} 的 argv[{index}] 必须是非空字符串"
+            )
+        if not token.isprintable():
+            raise HarnessEnvironmentError(
+                f"ACPX agent {logical_name!r} 的 argv[{index}] 含控制字符；"
+                "拒绝换行、NUL 等不可打印字符"
+            )
+    adapter_tokens = [item for item in base if CODEX_ACP_TOKEN.fullmatch(item)]
+    if len(adapter_tokens) != 1:
+        raise HarnessEnvironmentError(
+            f"ACPX agent {logical_name!r} 必须恰好包含一个 codex-acp adapter token；"
+            f"实际={len(adapter_tokens)}；非 codex-acp live route fail closed，"
+            "因为 harness 无法独立构造安全 launcher"
+        )
+    codex_path_tokens = [item for item in base if item.startswith(CODEX_PATH_PREFIX)]
+    if len(codex_path_tokens) != 1:
+        raise HarnessEnvironmentError(
+            f"ACPX agent {logical_name!r} 必须恰好包含一个 CODEX_PATH token；"
+            f"实际={len(codex_path_tokens)}"
+        )
+    codex_path_text = codex_path_tokens[0][len(CODEX_PATH_PREFIX) :]
+    codex_path = Path(codex_path_text)
+    if not codex_path.is_absolute():
+        raise HarnessEnvironmentError(
+            f"ACPX agent {logical_name!r} 的 CODEX_PATH 必须是绝对路径: {codex_path_text!r}"
+        )
+    try:
+        metadata = codex_path.stat()
+    except OSError as error:
+        raise HarnessEnvironmentError(
+            f"ACPX agent {logical_name!r} 的 CODEX_PATH 无法检查: {codex_path}: {error}"
+        ) from error
+    if not stat.S_ISREG(metadata.st_mode):
+        raise HarnessEnvironmentError(
+            f"ACPX agent {logical_name!r} 的 CODEX_PATH 必须指向普通文件: {codex_path}"
+        )
+    if not os.access(codex_path, os.X_OK):
+        raise HarnessEnvironmentError(
+            f"ACPX agent {logical_name!r} 的 CODEX_PATH 不可执行: {codex_path}"
+        )
+
+    if base[0] != SUPPORTED_ENV_COMMAND:
+        raise HarnessEnvironmentError(
+            f"ACPX agent {logical_name!r} 不是受支持命令形状；"
+            f"必须由 {SUPPORTED_ENV_COMMAND} 直接应用环境赋值并启动 codex-acp adapter"
+        )
+    utility_index = next(
+        (
+            index
+            for index, token in enumerate(base[1:], start=1)
+            if not ENV_ASSIGNMENT_TOKEN.fullmatch(token)
+        ),
+        len(base),
+    )
+    assignment_tokens = list(base[1:utility_index])
+    assignment_names = [token.split("=", 1)[0] for token in assignment_tokens]
+    unsupported = sorted(set(assignment_names) - SUPPORTED_ENV_ASSIGNMENTS)
+    if unsupported:
+        raise HarnessEnvironmentError(
+            f"ACPX agent {logical_name!r} 包含不安全 env 赋值 {unsupported}；"
+            "仅允许 CODEX_HOME 和 CODEX_PATH，拒绝 PATH/Node/npm/loader 注入"
+        )
+    codex_path_index = base.index(codex_path_tokens[0])
+    if not assignment_names:
+        raise HarnessEnvironmentError(
+            f"ACPX agent {logical_name!r} 的 CODEX_PATH 必须是 env 启动环境赋值"
+        )
+    expected_assignment_names = (
+        ["CODEX_PATH"]
+        if assignment_names[0] == "CODEX_PATH"
+        else ["CODEX_HOME", "CODEX_PATH"]
+    )
+    if assignment_names != expected_assignment_names:
+        if len(assignment_names) != len(set(assignment_names)):
+            detail = "env 赋值名称必须唯一"
+        else:
+            detail = "env 赋值必须是连续的可选 CODEX_HOME 后接必需 CODEX_PATH"
+        raise HarnessEnvironmentError(f"ACPX agent {logical_name!r} 的 {detail}")
+    if not 1 <= codex_path_index < utility_index:
+        raise HarnessEnvironmentError(
+            f"ACPX agent {logical_name!r} 的 CODEX_PATH 必须是 env 启动环境赋值"
+        )
+    if utility_index >= len(base):
+        raise HarnessEnvironmentError(
+            f"ACPX agent {logical_name!r} 缺少受支持的 npx runner"
+        )
+    trusted_runner = trusted_npx_path()
+    runner_token = base[utility_index]
+    if runner_token != SUPPORTED_ADAPTER_RUNNER:
+        runner = Path(runner_token)
+        if not runner.is_absolute():
+            raise HarnessEnvironmentError(
+                f"ACPX agent {logical_name!r} 的 runner 只允许字面 npx 或当前可信"
+                f"绝对路径 {trusted_runner}；实际={runner_token!r}"
+            )
+        if runner != trusted_runner:
+            raise HarnessEnvironmentError(
+                f"ACPX agent {logical_name!r} 的 runner 必须等于当前可信 npx 路径 "
+                f"{trusted_runner}；实际={runner}"
+            )
+    adapter_index = base.index(adapter_tokens[0])
+    npx_prefix = base[utility_index + 1 : adapter_index]
+    if (
+        adapter_index <= utility_index
+        or tuple(npx_prefix) not in SUPPORTED_NPX_PREFIXES
     ):
-        return tuple([*shlex.split(command), *args])
-    return None
+        raise HarnessEnvironmentError(
+            f"ACPX agent {logical_name!r} 的 codex-acp adapter 必须是 npx 的"
+            "首个位置参数；仅允许可选的 -y/--yes 前缀"
+        )
+    trailing_assignments = [
+        (index, token)
+        for index, token in enumerate(
+            base[utility_index + 1 :], start=utility_index + 1
+        )
+        if ENV_ASSIGNMENT_TOKEN.fullmatch(token)
+    ]
+    if trailing_assignments:
+        index, token = trailing_assignments[0]
+        raise HarnessEnvironmentError(
+            f"ACPX agent {logical_name!r} 的 runner 后不得包含 env 赋值 "
+            f"argv[{index}]={token.split('=', 1)[0]!r}"
+        )
+    if adapter_index != len(base) - 1:
+        raise HarnessEnvironmentError(
+            f"ACPX agent {logical_name!r} 的 codex-acp adapter 必须是 runner 的"
+            "最后一个参数；拒绝未验证的 adapter 尾参以保持 launcher capability boundary"
+        )
+    return codex_path_index, utility_index, trusted_runner
 
 
-def supported_builtin(agent: str) -> bool:
-    return agent in {"codex", "kiro", "claude", "pi", "kimi"}
+def registered_codex_base_argv(entry: Any, logical_name: str) -> tuple[str, ...]:
+    if not isinstance(entry, dict):
+        raise HarnessEnvironmentError(
+            f"ACPX agent {logical_name!r} 必须是已注册的 structured argv alias；"
+            "非 codex-acp live route 无法独立构造安全 launcher"
+        )
+    argv = entry.get("argv")
+    if (
+        not isinstance(argv, list)
+        or not argv
+        or not all(isinstance(item, str) and item for item in argv)
+    ):
+        raise HarnessEnvironmentError(
+            f"ACPX agent {logical_name!r} 必须提供非空 structured argv；"
+            "command/builtin route 无法独立构造安全 launcher"
+        )
+    base = tuple(argv)
+    validated_codex_route_tokens(base, logical_name)
+    return base
+
+
+def launcher_content(role: str, codex_path: Path) -> bytes:
+    if role == "worker":
+        policy = (
+            "--sandbox workspace-write "
+            "--config sandbox_workspace_write.network_access=false"
+        )
+    elif role == "validator":
+        policy = "--sandbox read-only"
+    else:
+        raise HarnessEnvironmentError(f"未知 launcher role: {role}")
+    return (
+        f'#!/bin/sh\nset -eu\nexec {shlex.quote(str(codex_path))} {policy} "$@"\n'
+    ).encode("utf-8")
 
 
 def agent_argv_matches(expected: ExpectedAgent, actual: tuple[str, ...]) -> bool:
-    if expected.argv is not None:
-        return actual == expected.argv
-    if expected.logical_name == "kiro":
-        return actual[:2] == ("kiro-cli-chat", "acp")
-    if expected.logical_name == "codex":
-        return (
-            len(actual) >= 3
-            and actual[:2] == ("npx", "-y")
-            and actual[2].startswith("@agentclientprotocol/codex-acp")
+    return actual == expected.argv
+
+
+def create_role_launcher(
+    workspace: Workspace, role: str, base_argv: tuple[str, ...]
+) -> tuple[FileWitness, tuple[str, ...]]:
+    directory = workspace.root / "capability-launchers"
+    try:
+        metadata = directory.lstat()
+    except FileNotFoundError:
+        directory.mkdir(mode=LAUNCHER_DIRECTORY_MODE)
+        metadata = directory.lstat()
+    except OSError as error:
+        raise HarnessEnvironmentError(
+            f"无法检查 launcher 目录 {directory}: {error}"
+        ) from error
+    if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        raise HarnessEnvironmentError(f"launcher 路径不是普通目录: {directory}")
+    directory.chmod(LAUNCHER_DIRECTORY_MODE)
+    metadata = directory.lstat()
+    if stat.S_IMODE(metadata.st_mode) != LAUNCHER_DIRECTORY_MODE:
+        raise HarnessEnvironmentError(f"launcher 目录模式必须是 0700: {directory}")
+    repository = workspace.repository.resolve()
+    resolved_directory = directory.resolve()
+    if resolved_directory == repository or repository in resolved_directory.parents:
+        raise HarnessEnvironmentError(
+            "capability-launchers 必须位于 fixture repository 外"
         )
-    if expected.logical_name == "claude":
-        return any(item.startswith("@agentclientprotocol/claude-agent-acp") for item in actual)
-    if expected.logical_name == "pi":
-        return len(actual) >= 2 and actual[0] == "npx" and "pi-acp" in actual[1:]
-    if expected.logical_name == "kimi":
-        return actual[:2] == ("kimi", "acp")
-    return False
+
+    codex_path_index, runner_index, trusted_runner = validated_codex_route_tokens(
+        base_argv, role
+    )
+    codex_path = Path(base_argv[codex_path_index][len(CODEX_PATH_PREFIX) :])
+    content = launcher_content(role, codex_path)
+    path = directory / f"codex-{role}"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags, LAUNCHER_MODE)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except OSError as error:
+        raise HarnessEnvironmentError(
+            f"无法创建 {role} launcher {path}: {error}"
+        ) from error
+    path.chmod(LAUNCHER_MODE)
+    witness = FileWitness(path, LAUNCHER_MODE, sha256_bytes(content), content)
+    final = list(base_argv)
+    final[codex_path_index] = f"{CODEX_PATH_PREFIX}{path}"
+    final[runner_index] = str(trusted_runner)
+    return witness, tuple(final)
 
 
 def resolve_expected_agents(
@@ -340,20 +612,20 @@ def resolve_expected_agents(
     try:
         config = json.loads(result.stdout)
     except json.JSONDecodeError as error:
-        raise HarnessEnvironmentError(f"acpx config show 不是合法 JSON: {error}") from error
+        raise HarnessEnvironmentError(
+            f"acpx config show 不是合法 JSON: {error}"
+        ) from error
     configured = config.get("agents", {}) if isinstance(config, dict) else {}
+    if not isinstance(configured, dict):
+        raise HarnessEnvironmentError("acpx config show 的 agents 必须是对象")
     expected: dict[str, ExpectedAgent] = {}
     for role, logical_name in (
         ("worker", args.worker_agent),
         ("validator", args.validator_agent),
     ):
-        argv = configured_agent_argv(configured.get(logical_name))
-        if argv is None and not supported_builtin(logical_name):
-            raise HarnessEnvironmentError(
-                f"无法核验 ACPX agent {logical_name!r} 的精确命令；"
-                "请在 acpx config 中把它定义为 argv alias"
-            )
-        expected[role] = ExpectedAgent(logical_name, argv)
+        base = registered_codex_base_argv(configured.get(logical_name), logical_name)
+        launcher, final = create_role_launcher(workspace, role, base)
+        expected[role] = ExpectedAgent(logical_name, base, final, launcher)
     return expected
 
 
@@ -370,12 +642,28 @@ def profile(name: str, role: str, agent: str, effort: str) -> dict[str, Any]:
     }
 
 
-def build_project_config(args: argparse.Namespace) -> dict[str, Any]:
+def build_project_config(
+    args: argparse.Namespace, expected_agents: dict[str, ExpectedAgent]
+) -> dict[str, Any]:
     return {
         "version": 1,
         "routing": {
-            "worker": {"default": [{"agent": args.worker_agent}]},
-            "validator": {"default": [{"agent": args.validator_agent}]},
+            "worker": {
+                "default": [
+                    {
+                        "agent": args.worker_agent,
+                        "acpx_command": command_text(expected_agents["worker"].argv),
+                    }
+                ]
+            },
+            "validator": {
+                "default": [
+                    {
+                        "agent": args.validator_agent,
+                        "acpx_command": command_text(expected_agents["validator"].argv),
+                    }
+                ]
+            },
         },
         "profiles": [
             profile("e2e-worker", "worker", args.worker_agent, args.worker_effort),
@@ -435,13 +723,6 @@ def prepare_workspace(root: Path, args: argparse.Namespace) -> Workspace:
     with exclude.open("a", encoding="utf-8") as handle:
         handle.write(".local/\n")
 
-    project_config = repository / ".local" / "large-task-orchestrator" / "orchestrator.json"
-    project_config.parent.mkdir(parents=True)
-    project_config.write_text(
-        json.dumps(build_project_config(args), ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-
     paths = planning_paths(repository)
     run_command(
         planning_command(repository, "render", "--dashboard", str(paths["dashboard"])),
@@ -465,8 +746,12 @@ def prepare_workspace(root: Path, args: argparse.Namespace) -> Workspace:
     run_command(
         [git, "add", "AGENTS.md", "README.md", "check.sh", "docs"], cwd=repository
     )
-    run_command([git, "commit", "-m", "test: initialize black-box fixture"], cwd=repository)
-    initial_commit = run_command([git, "rev-parse", "HEAD"], cwd=repository).stdout.strip()
+    run_command(
+        [git, "commit", "-m", "test: initialize black-box fixture"], cwd=repository
+    )
+    initial_commit = run_command(
+        [git, "rev-parse", "HEAD"], cwd=repository
+    ).stdout.strip()
     run_command([git, "init", "--bare", str(remote)], cwd=root)
     run_command([git, "remote", "add", "origin", str(remote)], cwd=repository)
     run_command([git, "push", "-u", "origin", "main"], cwd=repository)
@@ -475,11 +760,352 @@ def prepare_workspace(root: Path, args: argparse.Namespace) -> Workspace:
     return Workspace(root, repository, remote, evidence, initial_commit)
 
 
-def snapshot_session_records() -> set[Path]:
-    sessions = Path.home() / ".acpx" / "sessions"
-    if not sessions.is_dir():
+def install_project_config(
+    workspace: Workspace,
+    args: argparse.Namespace,
+    expected_agents: dict[str, ExpectedAgent],
+) -> HarnessIntegrity:
+    config = build_project_config(args, expected_agents)
+    content = (json.dumps(config, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    path = (
+        workspace.repository
+        / ".local"
+        / "large-task-orchestrator"
+        / "orchestrator.json"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags, PROJECT_CONFIG_MODE)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except OSError as error:
+        raise HarnessEnvironmentError(
+            f"无法创建 project orchestrator config {path}: {error}"
+        ) from error
+    path.chmod(PROJECT_CONFIG_MODE)
+    witness = FileWitness(path, PROJECT_CONFIG_MODE, sha256_bytes(content), content)
+    route_evidence = {
+        role: {
+            "logical_name": expected.logical_name,
+            "base_argv": list(expected.base_argv),
+            "final_argv": list(expected.argv),
+            "launcher_path": str(expected.launcher.path),
+            "launcher_mode": f"{expected.launcher.mode:04o}",
+            "launcher_sha256": expected.launcher.sha256,
+        }
+        for role, expected in expected_agents.items()
+    }
+    route_evidence["project_config"] = {
+        "path": str(path),
+        "mode": f"{witness.mode:04o}",
+        "sha256": witness.sha256,
+    }
+    (workspace.evidence / "safe-routes.json").write_text(
+        json.dumps(route_evidence, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return HarnessIntegrity(workspace.root / "capability-launchers", witness)
+
+
+def verify_file_witness(witness: FileWitness, label: str) -> None:
+    try:
+        metadata = witness.path.lstat()
+    except OSError as error:
+        raise HarnessError(
+            f"{label} 路径漂移或缺失: {witness.path}: {error}"
+        ) from error
+    if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        raise HarnessError(f"{label} 必须仍为普通非 symlink 文件: {witness.path}")
+    actual_mode = stat.S_IMODE(metadata.st_mode)
+    if actual_mode != witness.mode:
+        raise HarnessError(
+            f"{label} mode 漂移: expected={witness.mode:04o} actual={actual_mode:04o}"
+        )
+    try:
+        content = witness.path.read_bytes()
+    except OSError as error:
+        raise HarnessError(f"{label} 内容无法复核: {witness.path}: {error}") from error
+    actual_hash = sha256_bytes(content)
+    if content != witness.content or actual_hash != witness.sha256:
+        raise HarnessError(
+            f"{label} content/hash 漂移: expected={witness.sha256} actual={actual_hash}"
+        )
+
+
+def verify_no_symlink_components(base: Path, path: Path, label: str) -> None:
+    try:
+        relative = path.relative_to(base)
+    except ValueError as error:
+        raise HarnessError(f"{label} 不在固定 base 下: {path}") from error
+    current = base
+    for component in relative.parts[:-1]:
+        current = current / component
+        try:
+            metadata = current.lstat()
+        except OSError as error:
+            raise HarnessError(f"{label} 父路径缺失: {current}: {error}") from error
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise HarnessError(f"{label} 父路径发生 symlink/type 漂移: {current}")
+
+
+def verify_harness_integrity(
+    workspace: Workspace,
+    expected_agents: dict[str, ExpectedAgent],
+    integrity: HarnessIntegrity,
+) -> None:
+    expected_directory = workspace.root / "capability-launchers"
+    if integrity.launcher_directory != expected_directory:
+        raise HarnessError("launcher directory path 漂移")
+    try:
+        directory_metadata = expected_directory.lstat()
+    except OSError as error:
+        raise HarnessError(f"launcher directory 缺失: {error}") from error
+    if not stat.S_ISDIR(directory_metadata.st_mode) or stat.S_ISLNK(
+        directory_metadata.st_mode
+    ):
+        raise HarnessError("launcher directory 必须仍为普通非 symlink 目录")
+    if stat.S_IMODE(directory_metadata.st_mode) != LAUNCHER_DIRECTORY_MODE:
+        raise HarnessError("launcher directory mode 漂移；expected=0700")
+    repository = workspace.repository.resolve()
+    if (
+        expected_directory.resolve() == repository
+        or repository in expected_directory.resolve().parents
+    ):
+        raise HarnessError("launcher directory 漂移到 fixture repository 内")
+    for role in ("worker", "validator"):
+        expected_path = expected_directory / f"codex-{role}"
+        if expected_agents[role].launcher.path != expected_path:
+            raise HarnessError(f"{role} launcher path 漂移")
+        verify_file_witness(expected_agents[role].launcher, f"{role} launcher")
+    expected_config_path = (
+        workspace.repository
+        / ".local"
+        / "large-task-orchestrator"
+        / "orchestrator.json"
+    )
+    if integrity.project_config.path != expected_config_path:
+        raise HarnessError("project orchestrator config path 漂移")
+    verify_no_symlink_components(
+        workspace.repository,
+        integrity.project_config.path,
+        "project orchestrator config",
+    )
+    verify_file_witness(integrity.project_config, "project orchestrator config")
+
+
+def sessions_directory() -> Path:
+    """Return the host ACPX session directory without accepting a caller path."""
+    return Path.home() / ".acpx" / "sessions"
+
+
+def confined_path_under(
+    base_raw: Path, path: Path, *, allow_missing: bool = False
+) -> Path | None:
+    """Resolve an artifact only when every path component stays under ``base``."""
+    try:
+        base_metadata = base_raw.lstat()
+    except OSError:
+        return None
+    if stat.S_ISLNK(base_metadata.st_mode) or not stat.S_ISDIR(base_metadata.st_mode):
+        return None
+    base = base_raw.resolve()
+    candidate = path.expanduser()
+    if not candidate.is_absolute():
+        candidate = base / candidate
+    try:
+        resolved = candidate.resolve(strict=False)
+        relative = resolved.relative_to(base)
+    except (OSError, ValueError):
+        return None
+    if not relative.parts:
+        return None
+
+    current = base
+    for component in relative.parts[:-1]:
+        current = current / component
+        try:
+            metadata = current.lstat()
+        except OSError:
+            return None
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            return None
+
+    try:
+        metadata = resolved.lstat()
+    except FileNotFoundError:
+        return resolved if allow_missing else None
+    except OSError:
+        return None
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        return None
+    return resolved
+
+
+def confined_session_path(path: Path, *, allow_missing: bool = False) -> Path | None:
+    """Resolve a host ACPX artifact only when it stays in sessions/."""
+    return confined_path_under(sessions_directory(), path, allow_missing=allow_missing)
+
+
+def encoded_session_id(record_id: str) -> str:
+    # Match JavaScript encodeURIComponent while keeping the result a single
+    # filename component.  In particular, never leave '/' available to a glob.
+    return quote(record_id, safe="-_.!~*'()")
+
+
+def is_host_sessions_directory(path: Path) -> bool:
+    try:
+        return path.expanduser().resolve(strict=False) == sessions_directory().resolve(
+            strict=False
+        )
+    except OSError:
+        return False
+
+
+def is_host_session_record(path: Path) -> bool:
+    candidate = path.expanduser()
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    try:
+        return candidate.parent.resolve(strict=False) == sessions_directory().resolve(
+            strict=False
+        )
+    except OSError:
+        return False
+
+
+def is_session_stream_name(record_id: str, name: str) -> bool:
+    prefix = encoded_session_id(record_id)
+    return re.fullmatch(
+        rf"{re.escape(prefix)}\.stream(?:\.\d+)?\.ndjson", name
+    ) is not None
+
+
+def session_stream_paths(record_id: str, base: Path | None = None) -> set[Path]:
+    """Enumerate only ACPX stream filenames for one exact encoded record ID."""
+    stream_base = (base or sessions_directory()).expanduser()
+    if not stream_base.is_dir() or stream_base.is_symlink():
         return set()
-    return {path.resolve() for path in sessions.glob("*.json") if path.is_file()}
+    paths: set[Path] = set()
+    try:
+        entries = tuple(stream_base.iterdir())
+    except OSError:
+        return set()
+    for entry in entries:
+        if not is_session_stream_name(record_id, entry.name):
+            continue
+        confined = confined_path_under(stream_base, entry)
+        if confined is not None:
+            paths.add(confined)
+    return paths
+
+
+def session_artifact_paths(record: SessionEvidence, session_dir: Path) -> set[Path]:
+    """Build a fixed, confined set of record/stream files for cleanup."""
+    paths: set[Path] = set()
+    safe_record = confined_session_path(record.record_path)
+    expected_record = f"{encoded_session_id(record.record_id)}.json"
+    if safe_record is not None and (
+        not is_host_session_record(record.record_path)
+        or safe_record.name == expected_record
+    ):
+        paths.add(safe_record)
+    paths.update(session_stream_paths(record.record_id))
+    encoded = encoded_session_id(record.record_id)
+    stream_lock = confined_session_path(session_dir / f"{encoded}.stream.lock")
+    if stream_lock is not None:
+        paths.add(stream_lock)
+    for event_path in record.event_paths:
+        safe_event = confined_session_path(event_path)
+        if safe_event is not None and (
+            not is_host_sessions_directory(session_dir)
+            or is_session_stream_name(record.record_id, safe_event.name)
+        ):
+            paths.add(safe_event)
+    return paths
+
+
+def queue_artifact_paths(queue_dir: Path, queue_key: str) -> set[Path]:
+    """Enumerate only fixed-key queue artifacts, including safe tombstones."""
+    if not queue_dir.is_dir() or queue_dir.is_symlink():
+        return set()
+    pattern = re.compile(
+        rf"^{re.escape(queue_key)}\.(?:lock|sock)(?:\.[A-Za-z0-9._-]+)*$"
+    )
+    paths: set[Path] = set()
+    try:
+        entries = tuple(queue_dir.iterdir())
+    except OSError:
+        return set()
+    for entry in entries:
+        if not pattern.fullmatch(entry.name):
+            continue
+        try:
+            metadata = entry.lstat()
+        except OSError:
+            continue
+        if stat.S_ISLNK(metadata.st_mode) or not (
+            stat.S_ISREG(metadata.st_mode) or stat.S_ISSOCK(metadata.st_mode)
+        ):
+            continue
+        # Keep the lexical directory entry. Resolving here adds another
+        # filesystem lookup and widens a rename/symlink race window; cleanup
+        # lstat/unlinks this exact entry instead.
+        paths.add(entry)
+    return paths
+
+
+def queue_socket_base_directory() -> Path | None:
+    if os.name == "nt":
+        return None
+    home_hash = hashlib.sha256(str(Path.home()).encode()).hexdigest()[:10]
+    return Path("/tmp") / f"acpx-{home_hash}"
+
+
+def queue_socket_artifact_paths(socket_dir: Path, queue_key: str) -> set[Path]:
+    """Enumerate this session's generation-scoped Unix queue sockets."""
+    if not socket_dir.is_dir() or socket_dir.is_symlink():
+        return set()
+    pattern = re.compile(rf"^{re.escape(queue_key)}(?:-[A-Za-z0-9]+)?\.sock$")
+    paths: set[Path] = set()
+    try:
+        entries = tuple(socket_dir.iterdir())
+    except OSError:
+        return set()
+    for entry in entries:
+        if not pattern.fullmatch(entry.name):
+            continue
+        try:
+            metadata = entry.lstat()
+        except OSError:
+            continue
+        if stat.S_ISLNK(metadata.st_mode) or not (
+            stat.S_ISREG(metadata.st_mode) or stat.S_ISSOCK(metadata.st_mode)
+        ):
+            continue
+        paths.add(entry)
+    return paths
+
+
+def snapshot_session_records() -> set[Path]:
+    sessions = sessions_directory()
+    if not sessions.is_dir() or sessions.is_symlink():
+        return set()
+    records: set[Path] = set()
+    try:
+        entries = tuple(sessions.iterdir())
+    except OSError:
+        return set()
+    for path in entries:
+        if not path.name.endswith(".json"):
+            continue
+        confined = confined_session_path(path)
+        if confined is not None:
+            records.add(confined)
+    return records
 
 
 def first_string(payload: dict[str, Any], *keys: str) -> str:
@@ -507,20 +1133,39 @@ def record_identity(record: dict[str, Any]) -> tuple[str, str]:
     )
 
 
-def record_event_paths(record: dict[str, Any], record_id: str) -> tuple[Path, ...]:
+def record_event_paths(
+    record: dict[str, Any], record_id: str, base: Path | None = None
+) -> tuple[Path, ...]:
+    """Return event files confined to the record's directory.
+
+    ``base`` is the directory containing the record being inspected.  Live
+    records come from the host ACPX sessions directory; using the record's
+    parent here also keeps synthetic/unit-test records readable without
+    weakening cleanup, which applies the stricter host-sessions boundary.
+    """
+    stream_base = base or sessions_directory()
     paths: set[Path] = set()
     event_log = record.get("event_log")
     if isinstance(event_log, dict):
         active = event_log.get("active_path")
         if isinstance(active, str) and active:
-            paths.add(Path(active))
-    sessions = Path.home() / ".acpx" / "sessions"
-    if sessions.is_dir():
-        paths.update(path for path in sessions.glob(f"{record_id}*.ndjson") if path.is_file())
-    return tuple(sorted(path.resolve() for path in paths if path.is_file()))
+            confined = confined_path_under(stream_base, Path(active))
+            if confined is not None:
+                if is_host_sessions_directory(stream_base) and not is_session_stream_name(
+                    record_id, confined.name
+                ):
+                    raise HarnessError(
+                        f"session {record_id} event_log.active_path 不匹配其 stream 文件名: "
+                        f"{confined}"
+                    )
+                paths.add(confined)
+    paths.update(session_stream_paths(record_id, stream_base))
+    return tuple(sorted(paths))
 
 
-def collect_protocol_events(value: Any, output: list[tuple[str, dict[str, Any]]]) -> None:
+def collect_protocol_events(
+    value: Any, output: list[tuple[str, dict[str, Any]]]
+) -> None:
     if isinstance(value, dict):
         method = value.get("method")
         if isinstance(method, str):
@@ -533,16 +1178,26 @@ def collect_protocol_events(value: Any, output: list[tuple[str, dict[str, Any]]]
             collect_protocol_events(child, output)
 
 
-def read_protocol_events(paths: Sequence[Path]) -> list[tuple[str, dict[str, Any]]]:
+def read_protocol_events(
+    paths: Sequence[Path], base: Path | None = None
+) -> list[tuple[str, dict[str, Any]]]:
+    stream_base = base or sessions_directory()
     events: list[tuple[str, dict[str, Any]]] = []
     for path in paths:
-        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        confined = confined_path_under(stream_base, path)
+        if confined is None:
+            raise HarnessError(f"event stream 不在受信任的 session 目录: {path}")
+        for line_number, line in enumerate(
+            confined.read_text(encoding="utf-8").splitlines(), 1
+        ):
             if not line.strip():
                 continue
             try:
                 payload = json.loads(line)
             except json.JSONDecodeError as error:
-                raise HarnessError(f"{path}:{line_number} 不是合法 NDJSON: {error}") from error
+                raise HarnessError(
+                    f"{confined}:{line_number} 不是合法 NDJSON: {error}"
+                ) from error
             collect_protocol_events(payload, events)
     return events
 
@@ -565,26 +1220,68 @@ def basic_session(
     cwd = first_string(record, "cwd")
     if not record_id or not provider_id or not name or not cwd:
         raise HarnessError(f"session record 缺少身份字段: {path}")
+    if is_host_session_record(path):
+        expected_name = f"{encoded_session_id(record_id)}.json"
+        if path.name != expected_name:
+            raise HarnessError(
+                f"session record filename 与 acpx_record_id 不匹配: "
+                f"expected={expected_name} actual={path.name}"
+            )
     role = infer_role(name)
-    if role == "unknown":
+    if role == "unknown" and validate_route:
         raise HarnessError(f"无法从 session name 判定 worker/validator: {name}")
     expected_agents: dict[str, ExpectedAgent] = getattr(args, "expected_agents", {})
     expected = expected_agents.get(role)
-    agent = expected.logical_name if expected is not None else (
-        args.worker_agent if role == "worker" else args.validator_agent
-    )
+    if expected is not None:
+        agent = expected.logical_name
+    elif role == "worker":
+        agent = args.worker_agent
+    elif role == "validator":
+        agent = args.validator_agent
+    else:
+        agent = first_string(record, "agent") or "unknown"
     agent_command = first_string(record, "agent_command", "agentCommand")
-    raw_argv = record.get("agent_argv", record.get("agentArgv"))
-    agent_argv = (
-        tuple(raw_argv)
-        if isinstance(raw_argv, list) and all(isinstance(item, str) for item in raw_argv)
-        else tuple(shlex.split(agent_command)) if agent_command else ()
+    snake_argv = record.get("agent_argv")
+    camel_argv = record.get("agentArgv")
+    if "agent_argv" in record and "agentArgv" in record and snake_argv != camel_argv:
+        raise HarnessError(f"session {name} 的 agent_argv/agentArgv 字段冲突")
+    raw_argv = snake_argv if "agent_argv" in record else camel_argv
+    valid_persisted_argv = (
+        isinstance(raw_argv, list)
+        and bool(raw_argv)
+        and all(isinstance(item, str) and item for item in raw_argv)
     )
-    if validate_route and expected is not None and not agent_argv_matches(expected, agent_argv):
+    if validate_route and not valid_persisted_argv:
+        raise HarnessError(
+            f"session {name} route validation 要求 persisted agent_argv/agentArgv "
+            "为非空字符串数组"
+        )
+    if valid_persisted_argv:
+        agent_argv = tuple(raw_argv)
+    elif not validate_route and agent_command:
+        agent_argv = tuple(shlex.split(agent_command))
+    else:
+        agent_argv = ()
+    if (
+        validate_route
+        and expected is not None
+        and not agent_argv_matches(expected, agent_argv)
+    ):
         raise HarnessError(
             f"session {name} route mismatch: expected={expected.logical_name} "
             f"actual={list(agent_argv)}"
         )
+    if validate_route and agent_command and valid_persisted_argv:
+        try:
+            command_argv = tuple(shlex.split(agent_command))
+        except ValueError as error:
+            raise HarnessError(
+                f"session {name} 的 agent_command 不是可解析的 argv: {error}"
+            ) from error
+        if command_argv != agent_argv:
+            raise HarnessError(
+                f"session {name} 的 agent_command 与 persisted agent_argv 不一致"
+            )
     return SessionEvidence(
         path,
         record_id,
@@ -597,7 +1294,7 @@ def basic_session(
         0,
         0,
         0,
-        record_event_paths(record, record_id),
+        record_event_paths(record, record_id, path.parent),
     )
 
 
@@ -616,8 +1313,10 @@ def inspect_session(path: Path, args: argparse.Namespace) -> SessionEvidence:
     session = basic_session(path, args)
     if not session.event_paths:
         raise HarnessError(f"session {session.name} 没有 event stream")
-    events = read_protocol_events(session.event_paths)
-    prompt_indexes = [index for index, event in enumerate(events) if event[0] == "session/prompt"]
+    events = read_protocol_events(session.event_paths, session.record_path.parent)
+    prompt_indexes = [
+        index for index, event in enumerate(events) if event[0] == "session/prompt"
+    ]
     if not prompt_indexes:
         raise HarnessError(f"session {session.name} 没有 session/prompt 证据")
     for index in prompt_indexes:
@@ -629,7 +1328,9 @@ def inspect_session(path: Path, args: argparse.Namespace) -> SessionEvidence:
             )
     first_prompt = min(prompt_indexes)
     new_after_prompt = sum(
-        1 for index, event in enumerate(events) if event[0] == "session/new" and index > first_prompt
+        1
+        for index, event in enumerate(events)
+        if event[0] == "session/new" and index > first_prompt
     )
     resume_count = sum(1 for event in events if event[0] == "session/resume")
     if new_after_prompt or resume_count:
@@ -659,7 +1360,9 @@ def discover_test_sessions(
             f"需要独立 worker 和 validator session；实际 worker={len(workers)}, "
             f"validator={len(validators)}"
         )
-    if {item.provider_id for item in workers} & {item.provider_id for item in validators}:
+    if {item.provider_id for item in workers} & {
+        item.provider_id for item in validators
+    }:
         raise HarnessError("worker 与 validator 复用了 provider session")
     return evidence
 
@@ -687,7 +1390,9 @@ def verify_run_history(
         run for run in show_payload.get("runs", []) if run.get("outcome") == "delivered"
     ]
     if len(delivered) != 1:
-        raise HarnessError(f"运行历史必须有且仅有一个 delivered run；实际={len(delivered)}")
+        raise HarnessError(
+            f"运行历史必须有且仅有一个 delivered run；实际={len(delivered)}"
+        )
     run = delivered[0]
     metrics = run.get("metrics", {})
     if metrics.get("by_role", {}).get("worker", 0) < 1:
@@ -717,25 +1422,37 @@ def verify_run_history(
     detail_payload = json.loads(detail.stdout)
     events = detail_payload.get("run", {}).get("recent_events", [])
     start_events = [event for event in events if event.get("event") == "attempt-start"]
-    finish_events = [event for event in events if event.get("event") == "attempt-finish"]
+    finish_events = [
+        event for event in events if event.get("event") == "attempt-finish"
+    ]
     actual_name_counts = Counter(session.name for session in sessions)
     if any(count != 1 for count in actual_name_counts.values()):
         raise HarnessError("实际 session name 不唯一，无法建立 history 关联")
     start_name_counts = Counter(event.get("attempt_id") for event in start_events)
     finish_name_counts = Counter(event.get("attempt_id") for event in finish_events)
-    if start_name_counts != actual_name_counts or finish_name_counts != actual_name_counts:
+    if (
+        start_name_counts != actual_name_counts
+        or finish_name_counts != actual_name_counts
+    ):
         raise HarnessError("运行历史 attempt 多重集与实际 session 多重集不完全一致")
     expected_roles = {
         role: sum(session.role == role for session in sessions)
         for role in ("worker", "validator")
     }
-    if metrics.get("attempts") != len(sessions) or metrics.get("by_role") != expected_roles:
+    if (
+        metrics.get("attempts") != len(sessions)
+        or metrics.get("by_role") != expected_roles
+    ):
         raise HarnessError("运行历史 attempt 汇总分母与实际 sessions 不一致")
     if sum(metrics.get("by_outcome", {}).values()) != len(sessions):
         raise HarnessError("运行历史 outcome 汇总分母与实际 sessions 不一致")
     for session in sessions:
-        starts = [event for event in start_events if event.get("attempt_id") == session.name]
-        finishes = [event for event in finish_events if event.get("attempt_id") == session.name]
+        starts = [
+            event for event in start_events if event.get("attempt_id") == session.name
+        ]
+        finishes = [
+            event for event in finish_events if event.get("attempt_id") == session.name
+        ]
         for event in (starts[0], finishes[0]):
             if event.get("role") != session.role or event.get("agent") != session.agent:
                 raise HarnessError(f"运行历史 session role/agent 漂移: {session.name}")
@@ -757,9 +1474,48 @@ def verify_run_history(
     }
 
 
+def verify_fixture_path(
+    path: Path, repository: Path, label: str, *, directory: bool = False
+) -> None:
+    """Require fixture inputs to be local, non-symlink paths before reading/running."""
+    try:
+        relative = path.relative_to(repository)
+    except ValueError as error:
+        raise HarnessError(f"{label} 不在 fixture repository 内: {path}") from error
+    current = repository
+    for component in relative.parts[:-1]:
+        current = current / component
+        try:
+            metadata = current.lstat()
+        except OSError as error:
+            raise HarnessError(f"{label} 父路径缺失: {current}: {error}") from error
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise HarnessError(f"{label} 父路径发生 symlink/type 漂移: {current}")
+    try:
+        metadata = path.lstat()
+    except OSError as error:
+        raise HarnessError(f"{label} 缺失或无法检查: {path}: {error}") from error
+    expected = stat.S_ISDIR if directory else stat.S_ISREG
+    if stat.S_ISLNK(metadata.st_mode) or not expected(metadata.st_mode):
+        kind = "目录" if directory else "普通非 symlink 文件"
+        raise HarnessError(f"{label} 必须是本地{kind}: {path}")
+
+
 def verify_delivery(workspace: Workspace) -> dict[str, Any]:
     repository = workspace.repository
     paths = planning_paths(repository)
+    verify_fixture_path(repository / "greeting.txt", repository, "greeting.txt")
+    verify_fixture_path(repository / "check.sh", repository, "check.sh")
+    verify_fixture_path(paths["epic"], repository, "epic plan")
+    verify_fixture_path(paths["stories"], repository, "stories directory", directory=True)
+    verify_fixture_path(
+        paths["stories"] / "Story-01-创建并验证问候文件.md",
+        repository,
+        "Story-01 plan",
+    )
+    verify_fixture_path(paths["overview"], repository, "plan overview")
+    verify_fixture_path(paths["dashboard"], repository, "plan dashboard")
+    verify_fixture_path(paths["card"], repository, "execution card")
     if (repository / "greeting.txt").read_bytes() != EXPECTED_GREETING:
         raise HarnessError("greeting.txt 内容或结尾换行不符合 fixture oracle")
     check = run_command(["./check.sh"], cwd=repository)
@@ -884,14 +1640,16 @@ def snapshot_session_evidence(
     destination = workspace.evidence / "sessions"
     destination.mkdir(exist_ok=True)
     for session in sessions:
-        target = destination / f"{session.role}-{session.record_id}"
+        target = destination / f"{session.role}-{quote(session.record_id, safe='')}"
         target.mkdir(exist_ok=True)
         try:
-            if session.record_path.is_file():
-                shutil.copy2(session.record_path, target / "record.json")
+            safe_record = confined_session_path(session.record_path)
+            if safe_record is not None:
+                shutil.copy2(safe_record, target / "record.json")
             for index, path in enumerate(session.event_paths, 1):
-                if path.is_file():
-                    shutil.copy2(path, target / f"event-{index}.ndjson")
+                safe_event = confined_session_path(path)
+                if safe_event is not None:
+                    shutil.copy2(safe_event, target / f"event-{index}.ndjson")
             (target / "identity.json").write_text(
                 json.dumps(
                     {
@@ -921,15 +1679,25 @@ def cleanup_test_sessions(
     before: set[Path],
 ) -> list[str]:
     errors: list[str] = []
-    session_dir = Path.home() / ".acpx" / "sessions"
+    session_dir = sessions_directory()
     queue_dir = Path.home() / ".acpx" / "queues"
+    socket_dir = queue_socket_base_directory()
     for session in sessions:
         session_errors: list[str] = []
+        safe_record_path = confined_session_path(session.record_path)
         try:
-            record = load_record(session.record_path) if session.record_path.is_file() else {}
+            record = (
+                load_record(safe_record_path)
+                if safe_record_path is not None
+                else {}
+            )
         except HarnessError as error:
             record = {}
             session_errors.append(str(error))
+        if safe_record_path is None:
+            session_errors.append(
+                f"record path 不在受信任的 ACPX sessions 目录: {session.record_path}"
+            )
         pids: set[int] = set()
         record_pid = record.get("pid")
         if isinstance(record_pid, int) and record_pid > 0:
@@ -963,6 +1731,7 @@ def cleanup_test_sessions(
                     ],
                     cwd=workspace.repository,
                     check=False,
+                    timeout=150.0,
                 )
                 if close.returncode != 0:
                     session_errors.append(
@@ -975,14 +1744,17 @@ def cleanup_test_sessions(
         if remaining:
             session_errors.append(f"进程未退出: {sorted(remaining)}")
         if not session_errors:
-            paths = set(session_dir.glob(f"{session.record_id}*"))
-            paths.update(session.event_paths)
-            if queue_dir.is_dir():
-                paths.update(queue_dir.glob(f"{queue_key}*"))
+            paths = session_artifact_paths(session, session_dir)
+            paths.update(queue_artifact_paths(queue_dir, queue_key))
+            if socket_dir is not None:
+                paths.update(queue_socket_artifact_paths(socket_dir, queue_key))
             for path in paths:
                 try:
-                    if path.is_file() or path.is_socket():
+                    metadata = path.lstat()
+                    if stat.S_ISREG(metadata.st_mode) or stat.S_ISSOCK(metadata.st_mode):
                         path.unlink(missing_ok=True)
+                    elif stat.S_ISLNK(metadata.st_mode):
+                        session_errors.append(f"拒绝删除 symlink artifact: {path}")
                 except OSError as error:
                     session_errors.append(f"unlink {path}: {error}")
         if session_errors:
@@ -1005,16 +1777,30 @@ def cleanup_test_sessions(
     return errors
 
 
-def archive_evidence(workspace: Workspace, output_dir: Path, summary: dict[str, Any]) -> Path:
+def archive_evidence(
+    workspace: Workspace, output_dir: Path, summary: dict[str, Any]
+) -> Path:
     run_id = summary["run_id"]
     destination = output_dir.expanduser().resolve() / run_id
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists():
         raise HarnessError(f"归档目录已存在: {destination}")
-    shutil.copytree(workspace.evidence, destination)
+    destination.mkdir(mode=0o700)
+    shutil.copytree(workspace.evidence, destination, dirs_exist_ok=True)
     (destination / "summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
+    for path in sorted(destination.rglob("*"), key=lambda item: len(item.parts)):
+        metadata = path.lstat()
+        if stat.S_ISLNK(metadata.st_mode):
+            raise HarnessError(f"归档中拒绝 symlink: {path}")
+        if stat.S_ISDIR(metadata.st_mode):
+            path.chmod(0o700)
+        elif stat.S_ISREG(metadata.st_mode):
+            path.chmod(0o600)
+        else:
+            raise HarnessError(f"归档包含不支持的文件类型: {path}")
+    destination.chmod(0o700)
     return destination
 
 
@@ -1043,45 +1829,73 @@ def build_outer_command(
 
 
 def verify_outer_prompt(ndjson: str) -> None:
-    actual: str | None = None
+    prompts: list[list[Any]] = []
     for line_number, line in enumerate(ndjson.splitlines(), 1):
         if not line.strip():
             continue
         try:
             event = json.loads(line)
         except json.JSONDecodeError as error:
-            raise HarnessError(f"outer NDJSON 第 {line_number} 行非法: {error}") from error
+            raise HarnessError(
+                f"outer NDJSON 第 {line_number} 行非法: {error}"
+            ) from error
         if event.get("method") != "session/prompt":
             continue
         params = event.get("params")
         prompt = params.get("prompt") if isinstance(params, dict) else None
         if not isinstance(prompt, list):
-            continue
-        chunks = [
-            item.get("text", "")
-            for item in prompt
-            if isinstance(item, dict) and item.get("type") == "text"
-        ]
-        actual = "".join(chunk for chunk in chunks if isinstance(chunk, str))
-        break
-    if actual is None:
-        raise HarnessError("outer ACPX 输出缺少 session/prompt 请求")
+            prompts.append([])
+        else:
+            prompts.append(prompt)
+    if len(prompts) != 1:
+        raise HarnessError(
+            f"outer ACPX 必须恰好发送一次 session/prompt；实际={len(prompts)}"
+        )
+    prompt = prompts[0]
+    if len(prompt) != 1 or not isinstance(prompt[0], dict):
+        raise HarnessError("outer session/prompt 只允许一个纯 text 内容块")
+    item = prompt[0]
+    if set(item) != {"type", "text"} or item.get("type") != "text":
+        raise HarnessError("outer session/prompt 只允许一个纯 text 内容块")
+    actual = item.get("text")
+    if not isinstance(actual, str):
+        raise HarnessError("outer session/prompt 的 text 必须是字符串")
     if actual.rstrip("\n") != EXPECTED_PROMPT.rstrip("\n"):
         raise HarnessError("实际下发给 orchestrator 的 prompt 与固定纯净 prompt 不一致")
 
 
 def dry_run(args: argparse.Namespace) -> dict[str, Any]:
     validate_static_inputs()
-    config = build_project_config(args)
     command = build_outer_command(
         args, Path("<temp-repository>"), Path("<prompt.sent.txt>"), "acpx"
     )
     return {
         "mode": "dry-run",
         "prompt": EXPECTED_PROMPT,
-        "project_config": config,
+        "route_preflight": {
+            "uses_bounded_acp_session_handshake": True,
+            "rejects_raw_adapter_help_preflight": True,
+            "requires_registered_structured_argv": True,
+            "requires_codex_acp_adapter": True,
+            "requires_exactly_one_absolute_executable_regular_codex_path": True,
+            "accepted_registered_runner_tokens": [
+                "npx",
+                "<shutil.which('npx') absolute path>",
+            ],
+            "final_runner_token": "<shutil.which('npx') absolute path>",
+            "requires_persisted_nonempty_string_agent_argv": True,
+            "allowed_alias_environment": ["CODEX_HOME", "CODEX_PATH"],
+            "alias_assignments_contiguous": True,
+            "alias_assignment_order": ["CODEX_HOME?", "CODEX_PATH"],
+            "reject_trailing_env_assignments": True,
+            "reject_trailing_adapter_arguments": True,
+            "reject_control_characters": True,
+            "launchers": "<workspace>/capability-launchers/{codex-worker,codex-validator}",
+            "project_config": "<repository>/.local/large-task-orchestrator/orchestrator.json",
+        },
         "command": command,
         "inherits_home": True,
+        "inherits_codex_home": True,
         "calls_real_agents": False,
     }
 
@@ -1129,13 +1943,24 @@ def live_run(args: argparse.Namespace) -> dict[str, Any]:
     try:
         workspace = prepare_workspace(root, args)
         args.expected_agents = resolve_expected_agents(args, workspace, acpx)
+        integrity = install_project_config(workspace, args, args.expected_agents)
         summary["expected_agents"] = {
             role: {
                 "logical_name": expected.logical_name,
-                "argv": list(expected.argv) if expected.argv is not None else None,
+                "base_argv": list(expected.base_argv),
+                "final_argv": list(expected.argv),
+                "launcher_path": str(expected.launcher.path),
+                "launcher_mode": f"{expected.launcher.mode:04o}",
+                "launcher_sha256": expected.launcher.sha256,
             }
             for role, expected in args.expected_agents.items()
         }
+        summary["project_config"] = {
+            "path": str(integrity.project_config.path),
+            "mode": f"{integrity.project_config.mode:04o}",
+            "sha256": integrity.project_config.sha256,
+        }
+        summary["inherits_codex_home"] = True
         prompt_path = workspace.evidence / "prompt.sent.txt"
         prompt_path.write_text(EXPECTED_PROMPT, encoding="utf-8")
         before = snapshot_session_records()
@@ -1144,7 +1969,13 @@ def live_run(args: argparse.Namespace) -> dict[str, Any]:
         (workspace.evidence / "command.txt").write_text(
             command_text(command) + "\n", encoding="utf-8"
         )
-        result = run_command(command, cwd=workspace.repository, check=False, env=os.environ.copy())
+        result = run_command(
+            command,
+            cwd=workspace.repository,
+            check=False,
+            env=os.environ.copy(),
+            timeout=float(args.timeout) + OUTER_COMMAND_GRACE_SECONDS,
+        )
         (workspace.evidence / "orchestrator.ndjson").write_text(
             result.stdout, encoding="utf-8"
         )
@@ -1152,6 +1983,8 @@ def live_run(args: argparse.Namespace) -> dict[str, Any]:
             result.stderr, encoding="utf-8"
         )
         summary["orchestrator_exit"] = result.returncode
+        verify_harness_integrity(workspace, args.expected_agents, integrity)
+        summary["harness_integrity_rechecked"] = True
         if result.returncode != 0:
             raise HarnessError(
                 f"orchestrator ACPX exit={result.returncode}; "
@@ -1184,7 +2017,9 @@ def live_run(args: argparse.Namespace) -> dict[str, Any]:
             for item in sessions
         ]
         summary["result"] = "passed"
-    except Exception as error:  # cleanup and evidence preservation are shared by every failure
+    except (
+        Exception
+    ) as error:  # cleanup and evidence preservation are shared by every failure
         failure = error
         summary["result"] = "failed"
         summary["error"] = str(error)
