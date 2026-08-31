@@ -1,0 +1,7 @@
+interface:
+  display_name: "PPT Visual Review"
+  short_description: "逐页做 PPT 版式视觉验收，统一间隔并出改前改后对比报告"
+  default_prompt: "Use $ppt-visual-review to audit this deck's layout rhythm page by page, fix the spacing, and produce a before/after HTML report."
+
+policy:
+  allow_implicit_invocation: false
