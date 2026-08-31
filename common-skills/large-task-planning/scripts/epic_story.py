@@ -207,6 +207,7 @@ GOLDEN_CASE_FIELDS = (
     "evidence",
     "pass_condition",
 )
+GOLDEN_PROVENANCE = ("agent-drafted", "user-provided", "user-confirmed")
 RISK_LIST_FIELDS = ("pending_decisions", "watch_items")
 RISK_SECTION_FIELDS = {
     "planning-pending": "pending_decisions",
@@ -790,8 +791,8 @@ def validate_golden_document(
     elif goal_version is not None and version != goal_version:
         errors.append(f"{path}: goal_version 必须与 Epic 一致")
     _validate_iso_date(path, "updated", data.get("updated", ""), errors)
-    if data.get("provenance") not in {"user-provided", "user-confirmed"}:
-        errors.append(f"{path}: provenance 必须是 user-provided 或 user-confirmed")
+    if data.get("provenance") not in set(GOLDEN_PROVENANCE):
+        errors.append(f"{path}: provenance 必须是 {' 或 '.join(GOLDEN_PROVENANCE)}")
     cases = data.get("cases")
     if not isinstance(cases, list) or not cases:
         errors.append(f"{path}: cases 必须是非空对象数组")
@@ -1682,11 +1683,11 @@ def template_golden(epic_id: str) -> Dict[str, object]:
         "epic": epic_id,
         "goal_version": 1,
         "updated": date.today().isoformat(),
-        "provenance": "user-provided",
+        "provenance": "agent-drafted",
         "cases": [
             {
                 "id": "GC-01",
-                "title": "待填写的用户黄金案例",
+                "title": "待填写的黄金案例",
                 "fixture": ["写明可复现的环境、账号、版本和固定输入。"],
                 "interaction": ["按顺序写用户操作或逐轮对话。"],
                 "oracle": ["写明已知正确结果及其权威依据。"],

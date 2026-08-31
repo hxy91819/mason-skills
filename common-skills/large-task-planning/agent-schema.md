@@ -12,7 +12,7 @@ Epic 还必须有正整数 `goal_version`，并与 `agent/黄金验收.json` 一
 
 ## 黄金验收 `golden-acceptance`
 
-路径固定为 `agent/黄金验收.json`。它保存用户提供或确认的完成边界，不保存执行结果：
+路径固定为 `agent/黄金验收.json`。它保存 Goal 的完成边界，不保存执行结果：
 
 ```json
 {
@@ -21,7 +21,7 @@ Epic 还必须有正整数 `goal_version`，并与 `agent/黄金验收.json` 一
   "epic": "EPIC-NAME",
   "goal_version": 1,
   "updated": "2026-08-26",
-  "provenance": "user-provided",
+  "provenance": "agent-drafted",
   "cases": [
     {
       "id": "GC-01",
@@ -37,7 +37,8 @@ Epic 还必须有正整数 `goal_version`，并与 `agent/黄金验收.json` 一
 }
 ```
 
-`provenance` 只能是 `user-provided` 或 `user-confirmed`。每个案例必须有唯一 `GC-NN`；
+`provenance` 是 `agent-drafted`、`user-provided` 或 `user-confirmed`，只记录判据来源，三者都可直接执行。
+每个案例必须有唯一 `GC-NN`；
 `fixture`、`interaction`、`oracle` 和 `evidence` 都是非空字符串数组，`required_paths` 可以为空。
 没有已知正确结果的输入不能放入 `oracle`。在线日志、数据库或外部系统会漂移时，在 fixture
 中固定快照、版本或有效验收窗口。

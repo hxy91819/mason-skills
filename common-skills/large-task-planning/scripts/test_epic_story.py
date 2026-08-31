@@ -510,11 +510,26 @@ language: zh-Hans
         self.assertEqual(1, result.returncode)
         self.assertIn("缺少语义章节 manual-acceptance", result.stderr)
 
-    def test_goal_requires_user_golden_acceptance_contract(self) -> None:
+    def test_goal_requires_golden_acceptance_contract(self) -> None:
         self.agent.joinpath("黄金验收.json").unlink()
         result = self.run_cli("check", *self.common_args())
         self.assertEqual(1, result.returncode)
         self.assertIn("黄金验收.json", result.stderr)
+
+    def test_goal_accepts_agent_drafted_golden_acceptance(self) -> None:
+        data = self.read_json(self.agent / "黄金验收.json")
+        data["provenance"] = "agent-drafted"
+        self.write_json(self.agent / "黄金验收.json", data)
+        result = self.run_cli("check", *self.common_args())
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_goal_rejects_unknown_golden_provenance(self) -> None:
+        data = self.read_json(self.agent / "黄金验收.json")
+        data["provenance"] = "guessed"
+        self.write_json(self.agent / "黄金验收.json", data)
+        result = self.run_cli("check", *self.common_args())
+        self.assertEqual(1, result.returncode)
+        self.assertIn("provenance 必须是", result.stderr)
 
     def test_template_golden_acceptance_is_valid(self) -> None:
         result = self.run_cli(

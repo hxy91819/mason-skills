@@ -18,11 +18,11 @@ JSON 字段、模板和命令细节见 [`agent-schema.md`](agent-schema.md)。�
 2. 检查主仓及相关 submodule 的 branch、`git status --short`、`git worktree list` 和基线 commit。
 3. 分开记录事实、判断、假设、非目标和真正改变方案的待决策项。
 4. 盘点消费者、接口、数据、后台任务、副作用、部署、测试和安全环境。
-5. 请用户提供能代表 Goal 完成的真实案例、正确结果依据和必要能力路径；把它们整理为 `agent/黄金验收.json`。用户只需提供业务样例，Agent 负责结构化，但不得自行发明正确答案。
+5. 直接写出能代表 Goal 完成的真实案例、正确结果依据和必要能力路径，整理为 `agent/黄金验收.json`。用户给了业务样例就以样例为准；没有样例时，Agent 从需求描述、规格文档、现有实现和真实数据推导，并让每条 `oracle` 指向它的权威依据。
 
 每个黄金案例同时记录可复现前提、连续交互、结果判据和证据。用户可见结果与必须经过的知识库、仓库、日志、数据库等路径分开记录；没有稳定 oracle 的演示输入不是黄金案例。真实在线数据可能漂移时，固定可回放快照或明确验收窗口。
 
-完成标准：目标、黄金案例、兼容边界、基线、不可触碰对象和决策项均可追溯。缺少用户提供或确认的黄金案例时，Goal 保持 blocked，不进入自主执行。
+完成标准：目标、黄金案例、兼容边界、基线、不可触碰对象和决策项均可追溯。黄金案例缺少稳定 oracle 或可追溯依据时，Goal 保持 blocked，不进入自主执行。
 
 ### 目标稳定，计划可变
 
@@ -32,7 +32,7 @@ JSON 字段、模板和命令细节见 [`agent-schema.md`](agent-schema.md)。�
 `owner=user`。在这些边界以内，方案、Story 拆分、执行顺序、工具和可逆实现取舍属于
 Agent 决策，标记 `owner=agent`，不逐项请求用户确认。两类记录与黄金验收共同构成 Goal 边界。
 
-用户提供或确认黄金验收后，规划结束时不得再询问是否开始执行。写计划的 Agent 与执行计划的
+黄金验收落盘后，规划一次生成完整计划并直接交付，不再询问是否开始执行。写计划的 Agent 与执行计划的
 Agent 可以不是同一会话，项目进展的“可领取”就是开工信号。Epic、Story、依赖和技术路径是
 当前工作假设；新证据表明路径低效、错误或缺漏时，Agent 在 Goal 与重大决策边界内自行重排、
 插入、合并或重写后续计划，并刷新执行卡。只有目标、黄金验收或产品、发布、运维形态变化才需要用户决定。
@@ -61,7 +61,7 @@ blocked。带着未关闭的待决项结束规划等于把决策推给执行会�
 | `项目进展.md` | 脚本从 Agent JSON 生成的人读全盘 | 3000 |
 | `stories/Story-NN[.M]-*.md` | 愿景、范围、重大决策、验收标准 | 2200 |
 | `agent/STORY-NN[.M]-*.json` | Story 动态状态唯一源 | 一卡一 Story |
-| `agent/黄金验收.json` | 用户提供或确认的 Goal 黄金案例与 oracle | 一 Goal 一份 |
+| `agent/黄金验收.json` | Goal 的黄金案例、oracle 与判据来源 | 一 Goal 一份 |
 | `agent/风险与阻塞.json` | 规划待决与后续关注 | 最多 6 项 |
 | 其他 `agent/*.json` | 按需加载的矩阵、门禁、契约和共享协议 | 一文一主题 |
 | `agent/evidence/*` | 证据产物，不经脚本规范化 | 按证据本身 |
@@ -137,7 +137,7 @@ Epic 按共同业务目标或发布边界组织，不按数据库、API、测试
 
 `coverage` 只列结果级覆盖项，例如一个领域、一次全量验收或一次切换；详细接口和场景继续由 Agent 矩阵维护。每项必须由一张执行卡通过 `owns` 唯一主责，其他执行卡可用 `verifies` 声明复核，避免遗漏和重复归属。
 
-用脚本创建黄金验收契约，再以用户原始样例填充：
+用脚本创建黄金验收契约，再填入案例；有用户原始样例时优先使用：
 
 ```bash
 python3 <skill-dir>/scripts/epic_story.py template golden-acceptance \
@@ -145,8 +145,9 @@ python3 <skill-dir>/scripts/epic_story.py template golden-acceptance \
 ```
 
 每个案例必须有唯一 `GC-NN`、可复现 fixture、逐轮 interaction、已知正确结果 `oracle`、
-可选必经路径 `required_paths`、可保存证据和二元 `pass_condition`。`provenance` 只能是
-`user-provided` 或 `user-confirmed`；Agent 草拟但尚未由用户确认的内容不能解除 Goal 阻塞。
+可选必经路径 `required_paths`、可保存证据和二元 `pass_condition`。`provenance` 只记录判据来源，
+三个取值都可直接执行：Agent 自行推导写 `agent-drafted`，用户给出样例写 `user-provided`，
+用户复核后写 `user-confirmed`。
 
 ## 4. 拆结果型 Story
 
@@ -221,7 +222,7 @@ python3 <skill-dir>/scripts/epic_story.py template risk-register \
 
 对需要基线控制的工程，分别记录不可变行为参考、可运行测试资产、持续开发的 live head 和本轮 acceptance commit。可观察增量同步更新范围、场景、目标实现和受影响证据；Schema、认证或破坏性协议变化形成 blocker。
 
-开工前做二元 readiness 判断：`ready` 表示 Goal、黄金验收和当前可执行计划已落盘且自洽，Agent 能只凭 Story、已刷新执行卡及其直接引用继续推进；`blocked` 表示仍缺用户提供或确认的黄金案例、存在未关闭的 Goal 决策，或仍让 Agent 自行发明产品与验收边界。缺失 oracle、`goal_version` 漂移、未清空 `pending_decisions`、覆盖项无人主责或权威资料冲突时保持 blocked。后续计划尚会调整不构成 blocker。
+开工前做二元 readiness 判断：`ready` 表示 Goal、黄金验收和当前可执行计划已落盘且自洽，Agent 能只凭 Story、已刷新执行卡及其直接引用继续推进；`blocked` 表示黄金案例缺少稳定 oracle 或可追溯依据、存在未关闭的 Goal 决策，或仍让 Agent 自行决定产品与发布形态。缺失 oracle、`goal_version` 漂移、未清空 `pending_decisions`、覆盖项无人主责或权威资料冲突时保持 blocked。后续计划尚会调整不构成 blocker。
 
 重大决策没有记录到 `key-decisions`，或只存在于代码和测试中时，同样必须保持
 `blocked`。已完成实现不能替代决策记录，也不能作为解除阻塞的依据。

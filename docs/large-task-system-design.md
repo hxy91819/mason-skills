@@ -39,7 +39,7 @@ Orchestrator 负责边界、状态和整合，把实现交给 fresh worker sessi
 
 ## 端到端闭环
 
-1. Planning 把用户确认的 Goal 和黄金案例写成可领取计划。
+1. Planning 把 Goal 和黄金案例一次写成可领取计划；黄金案例可由 Agent 依据权威资料推导，用户样例优先。
 2. Orchestrator 根据依赖和写入冲突选择一个或一组 ready Story，并记录领取状态。
 3. Worker 在单一 Story session 中实现并给出可观察证据；修复仍留在同一 Story 边界。
 4. 独立 Validator 对不变的验收契约判断继续、补丁、插入 Story 或重规划。
