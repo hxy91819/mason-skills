@@ -32,6 +32,7 @@ Do not require autoreview for a change whose entire diff is prose-only internal 
   priorities. Treat helper output at the configured threshold as the review
   result; do not drop in-threshold findings just because they are not P0.
 - Treat review output as advisory. Never blindly apply it.
+- Close the feedback loop: after verifying findings, record each accepted/rejected decision with `--record-dispositions` (see Review History And Retrospective) so reviewer quality is measurable over time.
 - Verify every finding by reading the real code path and adjacent files.
 - Read dependency docs/source/types when the finding depends on external behavior.
 - Reject unrealistic edge cases, speculative risks, unrelated rewrites, and fixes that over-complicate the codebase.
@@ -483,13 +484,32 @@ The helper:
 - runs Pi `v0.79.0+` from neutral temporary directories with `--no-approve`, `--no-session`, disabled Pi context/resource loading, and `--no-tools` because its built-in read tools are not repository-confined; when a `--fallback-model`/`AUTOREVIEW_PI_FALLBACK_MODEL` is set and the primary run fails with a provider-availability error, retries once with the fallback model
 - prints `review still running: <engine> elapsed=<seconds>s pid=<pid>` to stderr at long-running intervals while waiting for the selected review engine, unless streamed output or compact Codex activity has been visible recently
 - prints `autoreview clean: no accepted/actionable findings reported` when the selected review command exits 0
+- records one review-history entry per (run, reviewer) in a git-ignored local cache under `AUTOREVIEW_STATE_DIR` (default `~/.cache/autoreview/run-history.json`): engine, model, thinking, fallback usage, duration, outcome, and each finding's stable id, priority, category, and location — never prompts, bodies, diffs, or logs; `--history-summary` aggregates acceptance rates and retrospective hooks, and `--record-dispositions --run-id <id> --disposition <finding-id>=accepted|rejected[:reason]` records the main agent's per-finding decisions
 - exits nonzero when accepted/actionable findings are present
+
+## Review History And Retrospective
+
+The helper records a minimal, git-ignored local history (mirroring the large-task-orchestrator pattern): one entry per (run, reviewer) with engine, model, thinking, fallback usage, duration, outcome, and per-finding ids. Prompts, finding bodies, diffs, and logs are never recorded; recording failures never change the review result.
+
+After verifying findings, record the main agent's decisions so future retrospectives can measure reviewer quality:
+
+```bash
+python3 "$AUTOREVIEW" --record-dispositions \
+  --run-id 20260902T121310Z-376faf \
+  --disposition "aae57af1d9=accepted:real traversal bug" \
+  --disposition "b7c3d2e1f0=rejected:speculative, path already guarded"
+```
+
+- The run id is printed as `history run: <id>` at review start; finding ids appear as `[P1:<id>]` in the report.
+- Record every accepted finding and every rejected finding with a brief reason; re-recording a finding id overwrites its earlier decision.
+- When choosing or re-confirming a reviewer (engine, model, thinking), read `--history-summary` first: acceptance rate, fallback frequency, and average duration per `engine|model|thinking` are the selection signals; hooks flag low-acceptance reviewers and frequently-falling-back primaries.
+- History lives in `AUTOREVIEW_STATE_DIR` (default `~/.cache/autoreview`), stays outside the reviewed repository, is never committed, and keeps only the last 200 runs plus fixed-dimension rollups.
 
 ## Final Report
 
 Include:
 
-- review command used
+- review command used and the history run id
 - tests/proof run
 - findings accepted/rejected, briefly why
 - the clean review result from the final helper/review run, or why a remaining finding was consciously rejected

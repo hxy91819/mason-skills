@@ -10203,6 +10203,7 @@ def run_codex(args: argparse.Namespace, repo: Path, prompt: str) -> str:
                     and codex_model_access_failure(result, model)
                 ):
                     primary_failure = result
+                    _FALLBACK_TRIGGERED.add(reviewer_label(args))
                     print(
                         f"codex model {model} is unavailable for this account; retrying with {models[1]}",
                         file=sys.stderr,
@@ -10594,6 +10595,7 @@ def run_pi(args: argparse.Namespace, repo: Path, prompt: str) -> str:
             return result.stdout
         if index == 0 and len(models) > 1 and pi_access_failure(result):
             primary_failure = result
+            _FALLBACK_TRIGGERED.add(reviewer_label(args))
             print(
                 f"pi model {model or '(provider default)'} is unavailable; retrying with {models[1]}",
                 file=sys.stderr,
@@ -11982,8 +11984,9 @@ def print_report(report: dict[str, Any], *, label: str = "autoreview") -> None:
         )
     for finding in findings:
         loc = finding["code_location"]
+        finding_tag = finding.get("id") or "untracked"
         print(
-            f"[{finding['priority']}] "
+            f"[{finding['priority']}:{finding_tag}] "
             f"{display_escape(finding['title'], 140)}"
         )
         print(f"{display_escape(loc['file_path'], 500)}:{loc['line']}")
@@ -12194,6 +12197,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--self-test-config-defaults", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--self-test-fallback-scope", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--self-test-pi-fallback", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--self-test-history", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--history-summary",
+        action="store_true",
+        help="Print aggregated review history (reviewer stats, recent runs, retrospective hooks) without running a review.",
+    )
+    parser.add_argument("--history-last", type=int, default=10, help="Recent runs listed by --history-summary (default 10).")
+    parser.add_argument(
+        "--record-dispositions",
+        action="store_true",
+        help="Record accepted/rejected decisions for a previous review run; requires --run-id and repeatable --disposition.",
+    )
+    parser.add_argument("--run-id", help="Run id from 'review history recorded:' output for --record-dispositions.")
+    parser.add_argument(
+        "--disposition",
+        action="append",
+        metavar="FINDING_ID=accepted|rejected[:reason]",
+        help="Disposition to record with --record-dispositions; repeatable.",
+    )
     parser.add_argument("--self-test-engine-isolation", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--self-test-json-array-parser", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--self-test-heartbeat-metrics", action="store_true", help=argparse.SUPPRESS)
@@ -12384,7 +12406,8 @@ def reviewer_args(args: argparse.Namespace) -> list[argparse.Namespace]:
 
 
 def reviewer_label(args: argparse.Namespace) -> str:
-    parts = [args.engine]
+    # getattr 兜底：run_codex/run_pi 的 fallback 标记也可能遇到测试构造的最小 Namespace。
+    parts = [getattr(args, "engine", "unknown")]
     if args.model:
         parts.append(f"model={args.model}")
     if getattr(args, "fallback_model", None):
@@ -12403,24 +12426,32 @@ def run_reviewer(
     input_truncated: bool = False,
 ) -> dict[str, Any]:
     ensure_reviewer_input_complete(args, input_truncated)
+    started = time.monotonic()
+    report: dict[str, Any] | None = None
     attempts = 3 if args.engine == "cursor" else 1
-    for attempt in range(1, attempts + 1):
-        raw = run_engine(args, repo, prompt)
-        try:
-            report = extract_json(raw)
-            validate_report(report, repo, changed_paths, required)
-            filter_findings_by_priority(report, args.max_priority)
-            return report
-        except SystemExit as exc:
-            if attempt >= attempts or not is_structured_output_failure(str(exc)):
-                raise
-            print(
-                "retrying "
-                f"{args.engine} structured output validation after attempt "
-                f"{attempt}: {display_escape(exc, 4000, multiline=True)}",
-                file=sys.stderr,
-            )
-    raise SystemExit(f"{args.engine} structured output validation failed after {attempts} attempts")
+    try:
+        for attempt in range(1, attempts + 1):
+            raw = run_engine(args, repo, prompt)
+            try:
+                report = extract_json(raw)
+                validate_report(report, repo, changed_paths, required)
+                filter_findings_by_priority(report, args.max_priority)
+                annotate_finding_ids(report)
+                return report
+            except SystemExit as exc:
+                if attempt >= attempts or not is_structured_output_failure(str(exc)):
+                    raise
+                print(
+                    "retrying "
+                    f"{args.engine} structured output validation after attempt "
+                    f"{attempt}: {display_escape(exc, 4000, multiline=True)}",
+                    file=sys.stderr,
+                )
+        raise SystemExit(f"{args.engine} structured output validation failed after {attempts} attempts")
+    finally:
+        # 历史记录只在拿到完整报告时累积；失败路径不入库，避免半截数据。
+        if report is not None:
+            accumulate_reviewer_run(args, report, time.monotonic() - started, input_truncated)
 
 
 def merge_panel_reports(reports: list[tuple[str, dict[str, Any]]]) -> dict[str, Any]:
@@ -12867,12 +12898,139 @@ print(json.dumps({"type": "result", "result": json.dumps(report), "session_id": 
     print("self-test pi fallback: ok")
 
 
+def self_test_history() -> None:
+    with tempfile.TemporaryDirectory(prefix="autoreview-history-test.") as tempdir:
+        root = Path(tempdir)
+        history_path = root / "run-history.json"
+
+        # finding id 稳定性：同字段同 id，跨进程可引用。
+        finding = {
+            "title": "Command injection in upload path",
+            "category": "security",
+            "code_location": {"file_path": "src/up.js", "line": 12},
+        }
+        if finding_id(finding) != finding_id(dict(finding)):
+            raise SystemExit("self-test history failed: finding id unstable")
+
+        # 滚动：溢出 run 折入 rollup，runs 上限固定。
+        history = {"version": HISTORY_VERSION, "rollup": {}, "runs": []}
+        for index in range(HISTORY_MAX_RUNS + 50):
+            history["runs"].append(
+                {
+                    "run_id": f"r{index}",
+                    "recorded_at": "2026-01-01T00:00:00Z",
+                    "label": "pi model=zai/glm-5.3-flash thinking=max",
+                    "engine": "pi",
+                    "model": "zai/glm-5.3-flash",
+                    "thinking": "max",
+                    "fallback_model": None,
+                    "fallback_triggered": index % 10 == 0,
+                    "repo_name": "demo",
+                    "branch": "main",
+                    "head": "a1b2c3d",
+                    "mode": "local",
+                    "ref": None,
+                    "max_priority": "P1",
+                    "passes": 1,
+                    "input_truncated": False,
+                    "duration_seconds": 10.0,
+                    "outcome": "findings" if index % 2 else "clean",
+                    "overall_incorrect": False,
+                    "findings": [
+                        {
+                            "id": f"f{index}",
+                            "priority": "P1",
+                            "category": "bug",
+                            "title": f"issue {index}",
+                            "file_path": "a.js",
+                            "line": 1,
+                            "confidence": 0.9,
+                        }
+                    ],
+                    "dispositions": [],
+                }
+            )
+        save_history(history_path, history)
+        stored = load_history(history_path)
+        if len(stored["runs"]) != HISTORY_MAX_RUNS:
+            raise SystemExit(f"self-test history failed: rolling kept {len(stored['runs'])} runs")
+        rollup = stored["rollup"][rollup_key("pi", "zai/glm-5.3-flash", "max")]
+        if rollup["runs"] != 50 or rollup["findings"] != 50 or rollup["duration_seconds"] != 500.0:
+            raise SystemExit(f"self-test history failed: rollup mismatch {rollup}")
+        if rollup["fallback_triggered"] != 5:
+            raise SystemExit("self-test history failed: fallback rollup mismatch")
+
+        # disposition：更新 run 记录 + rollup 计数，未知 id 拒绝。
+        target_run = stored["runs"][-1]
+        target_finding_id = target_run["findings"][0]["id"]
+        original_state_dir = apply_dispositions.__globals__["autoreview_state_dir"]
+        apply_dispositions.__globals__["autoreview_state_dir"] = lambda repo: root  # type: ignore[attr-defined]
+        try:
+            apply_dispositions(
+                root,
+                target_run["run_id"],
+                [
+                    {"id": target_finding_id, "decision": "accepted", "reason": "real bug"},
+                ],
+            )
+            rejected = False
+            try:
+                apply_dispositions(root, target_run["run_id"], [{"id": "nope", "decision": "accepted", "reason": ""}])
+            except SystemExit as exc:
+                rejected = "not part of run" in str(exc)
+            if not rejected:
+                raise SystemExit("self-test history failed: unknown finding id accepted")
+        finally:
+            apply_dispositions.__globals__["autoreview_state_dir"] = original_state_dir  # type: ignore[attr-defined]
+        stored = load_history(history_path)
+        patched = next(run for run in stored["runs"] if run["run_id"] == target_run["run_id"])
+        if len(patched["dispositions"]) != 1:
+            raise SystemExit("self-test history failed: dispositions not stored")
+        # run 仍在 runs 窗口内时 rollup 不重复计数：滚动归档时才折入。
+        rollup = stored["rollup"].get(rollup_key("pi", "zai/glm-5.3-flash", "max"), empty_rollup())
+        if rollup["accepted"] != 0 or rollup["rejected"] != 0:
+            raise SystemExit("self-test history failed: disposition leaked into live rollup")
+        # 模拟归档：带 dispositions 的 run 滚出窗口，指标折入 rollup。
+        stored["runs"] = [run for run in stored["runs"] if run["run_id"] != target_run["run_id"]]
+        fold_run_into_rollup(stored["rollup"], patched)
+        save_history(history_path, stored)
+        archived = load_history(history_path)
+        rollup = archived["rollup"][rollup_key("pi", "zai/glm-5.3-flash", "max")]
+        if rollup["accepted"] != 1 or rollup["runs"] != 51:
+            raise SystemExit("self-test history failed: disposition not folded into rollup")
+
+        # summary：含 reviewer 统计与复盘 hook。
+        text = history_summary_text(stored, 5)
+        for needle in (
+            "reviewer stats",
+            "zai/glm-5.3-flash",
+            "recent 5 run(s)",
+            "retrospective hooks",
+        ):
+            if needle not in text:
+                raise SystemExit(f"self-test history failed: summary missing {needle!r}")
+
+        # disposition 解析：合法与非法 token。
+        parsed = parse_disposition_tokens(["f1=accepted", "f2=rejected:misread diff"])
+        if parsed[0]["decision"] != "accepted" or parsed[1]["reason"] != "misread diff":
+            raise SystemExit("self-test history failed: disposition parsing mismatch")
+        bad = False
+        try:
+            parse_disposition_tokens(["f1=maybe"])
+        except SystemExit:
+            bad = True
+        if not bad:
+            raise SystemExit("self-test history failed: invalid decision accepted")
+    print("self-test history: ok")
+
+
 def self_test() -> int:
     self_test_opencode_jsonl_parser()
     self_test_opencode_isolation()
     self_test_config_defaults()
     self_test_fallback_scope()
     self_test_pi_fallback()
+    self_test_history()
     self_test_heartbeat_metrics()
     self_test_json_array_parser()
     return self_test_engine_isolation()
@@ -12922,6 +13080,334 @@ def atomic_write_text(path: Path, content: str) -> None:
         temporary_path.unlink(missing_ok=True)
 
 
+# ---------------------------------------------------------------------------
+# Review history and retrospective.
+#
+# Mirrors the large-task-orchestrator pattern: a small, git-ignored local
+# cache of minimal run facts, maintained only by code, used for later
+# retrospective analysis and reviewer selection. Findings keep title,
+# location, priority, and confidence; bodies, prompts, diffs, and logs are
+# never recorded. Recording is best-effort: history failures must never
+# change the review result.
+# ---------------------------------------------------------------------------
+HISTORY_VERSION = 1
+HISTORY_MAX_RUNS = 200
+HISTORY_DISPOSITIONS = ("accepted", "rejected")
+_CURRENT_RUN_ID: str | None = None
+_RUN_ACCUMULATOR: dict[tuple[str, str], dict[str, Any]] = {}
+_FALLBACK_TRIGGERED: set[str] = set()
+
+
+def finding_id(finding: dict[str, Any]) -> str:
+    """Stable short id from the fields a disposition needs to reference."""
+    location = finding["code_location"]
+    basis = (
+        f"{finding['title']}|{finding['category']}|"
+        f"{location['file_path']}|{location['line']}"
+    )
+    return hashlib.sha1(basis.encode("utf-8")).hexdigest()[:10]
+
+
+def annotate_finding_ids(report: dict[str, Any]) -> None:
+    for finding in report["findings"]:
+        finding.setdefault("id", finding_id(finding))
+
+
+def finding_merge_key(finding: dict[str, Any]) -> tuple[str, str, int, str]:
+    location = finding["code_location"]
+    return (
+        " ".join(finding["title"].lower().split()),
+        finding["category"],
+        location["line"],
+        location["file_path"],
+    )
+
+
+def accumulate_reviewer_run(
+    args: argparse.Namespace,
+    report: dict[str, Any],
+    duration_seconds: float,
+    input_truncated: bool,
+) -> None:
+    if not _CURRENT_RUN_ID:
+        return
+    label = reviewer_label(args)
+    key = (_CURRENT_RUN_ID, label)
+    entry = _RUN_ACCUMULATOR.get(key)
+    if entry is None:
+        entry = {
+            "engine": args.engine,
+            "model": args.model,
+            "thinking": args.thinking,
+            "fallback_model": getattr(args, "fallback_model", None),
+            "fallback_triggered": label in _FALLBACK_TRIGGERED,
+            "findings": [],
+            "seen": set(),
+            "duration_seconds": 0.0,
+            "passes": 0,
+            "max_priority": args.max_priority,
+            "input_truncated": input_truncated,
+            "overall_incorrect": False,
+        }
+        _RUN_ACCUMULATOR[key] = entry
+    for finding in report["findings"]:
+        merge_key = finding_merge_key(finding)
+        if merge_key in entry["seen"]:
+            continue
+        entry["seen"].add(merge_key)
+        location = finding["code_location"]
+        entry["findings"].append(
+            {
+                "id": finding.get("id") or finding_id(finding),
+                "priority": finding["priority"],
+                "category": finding["category"],
+                "title": finding["title"],
+                "file_path": location["file_path"],
+                "line": location["line"],
+                "confidence": finding["confidence"],
+            }
+        )
+    entry["duration_seconds"] += duration_seconds
+    entry["passes"] += 1
+    if report.get("overall_correctness") == "patch is incorrect":
+        entry["overall_incorrect"] = True
+
+
+def rollup_key(engine: str, model: str | None, thinking: str | None) -> str:
+    return f"{engine}|{model or '(default)'}|{thinking or '(none)'}"
+
+
+def empty_rollup() -> dict[str, Any]:
+    return {
+        "runs": 0,
+        "findings": 0,
+        "accepted": 0,
+        "rejected": 0,
+        "duration_seconds": 0.0,
+        "fallback_triggered": 0,
+    }
+
+
+def load_history(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {"version": HISTORY_VERSION, "rollup": {}, "runs": []}
+    try:
+        history = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        # A corrupt cache is disposable: start over rather than fail the review.
+        return {"version": HISTORY_VERSION, "rollup": {}, "runs": []}
+    if not isinstance(history, dict) or history.get("version") != HISTORY_VERSION:
+        return {"version": HISTORY_VERSION, "rollup": {}, "runs": []}
+    history.setdefault("rollup", {})
+    history.setdefault("runs", [])
+    return history
+
+
+def fold_run_into_rollup(rollup: dict[str, Any], run: dict[str, Any]) -> None:
+    key = rollup_key(run["engine"], run.get("model"), run.get("thinking"))
+    bucket = rollup.setdefault(key, empty_rollup())
+    dispositions = run.get("dispositions") or []
+    bucket["runs"] += 1
+    bucket["findings"] += len(run.get("findings") or [])
+    bucket["accepted"] += sum(1 for d in dispositions if d["decision"] == "accepted")
+    bucket["rejected"] += sum(1 for d in dispositions if d["decision"] == "rejected")
+    bucket["duration_seconds"] += run.get("duration_seconds") or 0.0
+    bucket["fallback_triggered"] += 1 if run.get("fallback_triggered") else 0
+
+
+def save_history(path: Path, history: dict[str, Any]) -> None:
+    """Persist with rolling: oldest runs fold into fixed-dimension rollup."""
+    runs = history["runs"]
+    if len(runs) > HISTORY_MAX_RUNS:
+        overflow, runs[:] = runs[:-HISTORY_MAX_RUNS], runs[-HISTORY_MAX_RUNS:]
+        for run in overflow:
+            fold_run_into_rollup(history["rollup"], run)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(path, json.dumps(history, indent=2, ensure_ascii=False) + "\n")
+
+
+def history_file(repo: Path) -> Path:
+    return autoreview_state_dir(repo) / "run-history.json"
+
+
+def build_history_run(
+    repo: Path,
+    mode: str,
+    ref: str | None,
+    label: str,
+    entry: dict[str, Any],
+) -> dict[str, Any]:
+    branch = current_branch(repo)
+    try:
+        head = git(repo, "rev-parse", "--short", "HEAD", check=False).strip() or None
+    except SystemExit:
+        head = None
+    findings = entry["findings"]
+    return {
+        "run_id": _CURRENT_RUN_ID,
+        "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "label": label,
+        "engine": entry["engine"],
+        "model": entry["model"],
+        "thinking": entry["thinking"],
+        "fallback_model": entry["fallback_model"],
+        "fallback_triggered": label in _FALLBACK_TRIGGERED,
+        "repo_name": repo.name,
+        "branch": branch,
+        "head": head,
+        "mode": mode,
+        "ref": ref,
+        "max_priority": entry["max_priority"],
+        "passes": entry["passes"],
+        "input_truncated": entry["input_truncated"],
+        "duration_seconds": round(entry["duration_seconds"], 1),
+        "outcome": "findings" if findings or entry["overall_incorrect"] else "clean",
+        "overall_incorrect": entry["overall_incorrect"],
+        "findings": findings,
+        "dispositions": [],
+    }
+
+
+def flush_review_history(
+    repo: Path,
+    mode: str,
+    ref: str | None,
+) -> None:
+    """Write one history record per (run, reviewer); never raises."""
+    global _CURRENT_RUN_ID
+    if not _CURRENT_RUN_ID or not _RUN_ACCUMULATOR:
+        return
+    try:
+        path = history_file(repo)
+        history = load_history(path)
+        existing = {(run["run_id"], run["label"]) for run in history["runs"]}
+        for (run_id, label), entry in sorted(_RUN_ACCUMULATOR.items()):
+            if (run_id, label) in existing:
+                continue
+            history["runs"].append(build_history_run(repo, mode, ref, label, entry))
+        save_history(path, history)
+        print(f"review history recorded: {path}")
+    except Exception as exc:  # noqa: BLE001 - history must never break the review
+        print(f"review history recording failed: {display_escape(str(exc), 200)}", file=sys.stderr)
+    finally:
+        _CURRENT_RUN_ID = None
+        _RUN_ACCUMULATOR.clear()
+
+
+def parse_disposition_tokens(tokens: list[str]) -> list[dict[str, str]]:
+    parsed: list[dict[str, str]] = []
+    for token in tokens:
+        head, separator, tail = token.partition("=")
+        finding_id_value = head.strip()
+        if not separator or not finding_id_value:
+            raise SystemExit(
+                f"invalid --disposition {token!r}; use FINDING_ID=accepted|rejected[:reason]"
+            )
+        decision, _, reason = tail.partition(":")
+        decision = decision.strip().lower()
+        if decision not in HISTORY_DISPOSITIONS:
+            raise SystemExit(
+                f"invalid decision in --disposition {token!r}; use accepted or rejected"
+            )
+        parsed.append(
+            {
+                "id": finding_id_value,
+                "decision": decision,
+                "reason": reason.strip() or ("" if decision == "accepted" else "rejected without reason"),
+            }
+        )
+    return parsed
+
+
+def apply_dispositions(
+    repo: Path,
+    run_id: str,
+    dispositions: list[dict[str, str]],
+) -> dict[str, Any]:
+    path = history_file(repo)
+    history = load_history(path)
+    run = next((item for item in history["runs"] if item["run_id"] == run_id), None)
+    if run is None:
+        raise SystemExit(
+            f"run not found in review history: {run_id} ({path}); "
+            "runs roll off after 200 entries"
+        )
+    known_ids = {finding["id"] for finding in run.get("findings") or []}
+    recorded = run.setdefault("dispositions", [])
+    for item in dispositions:
+        if item["id"] not in known_ids:
+            raise SystemExit(
+                f"finding {item['id']!r} is not part of run {run_id}; "
+                "check the id shown in the review report"
+            )
+        recorded[:] = [entry for entry in recorded if entry["id"] != item["id"]]
+        recorded.append(item)
+    # rollup 只在滚动归档时由 fold_run_into_rollup 累计：run 还在 runs 里时
+    # summary 直接从 runs 读 dispositions，两边都算会双计。
+    save_history(path, history)
+    return run
+
+
+def history_summary_text(history: dict[str, Any], last: int) -> str:
+    """Aggregated per-reviewer stats plus deterministic retrospective hooks."""
+    lines: list[str] = []
+    buckets: dict[str, dict[str, Any]] = {}
+    for run in history["runs"]:
+        key = rollup_key(run["engine"], run.get("model"), run.get("thinking"))
+        bucket = buckets.setdefault(key, empty_rollup())
+        dispositions = run.get("dispositions") or []
+        bucket["runs"] += 1
+        bucket["findings"] += len(run.get("findings") or [])
+        bucket["accepted"] += sum(1 for d in dispositions if d["decision"] == "accepted")
+        bucket["rejected"] += sum(1 for d in dispositions if d["decision"] == "rejected")
+        bucket["duration_seconds"] += run.get("duration_seconds") or 0.0
+        bucket["fallback_triggered"] += 1 if run.get("fallback_triggered") else 0
+    for key, bucket in history["rollup"].items():
+        target = buckets.setdefault(key, empty_rollup())
+        for field, value in bucket.items():
+            target[field] = target.get(field, 0) + value
+    lines.append(f"review history: {len(history['runs'])} recent run(s)"
+                 f" (+{sum(b['runs'] for b in history['rollup'].values())} rolled up)")
+    if not buckets:
+        lines.append("(no history yet)")
+        return "\n".join(lines)
+    lines.append("")
+    lines.append("reviewer stats (recent runs + rollup):")
+    lines.append(
+        "  engine|model|thinking            runs findings accepted rejected accept-rate avg-s fallback"
+    )
+    for key, bucket in sorted(buckets.items()):
+        decided = bucket["accepted"] + bucket["rejected"]
+        rate = f"{bucket['accepted'] / decided:.0%}" if decided else "n/a"
+        avg = bucket["duration_seconds"] / bucket["runs"] if bucket["runs"] else 0.0
+        lines.append(
+            f"  {key:<32} {bucket['runs']:>4} {bucket['findings']:>8} "
+            f"{bucket['accepted']:>8} {bucket['rejected']:>8} {rate:>11} "
+            f"{avg:>5.0f} {bucket['fallback_triggered']:>7}"
+        )
+    recent = history["runs"][-last:]
+    if recent:
+        lines.append("")
+        lines.append(f"recent {len(recent)} run(s):")
+        for run in recent:
+            dispositions = run.get("dispositions") or []
+            marked = ", ".join(f"{d['id']}:{d['decision']}" for d in dispositions) or "-"
+            lines.append(
+                f"  {run['run_id']} {run['label']} -> {run['outcome']} "
+                f"findings={len(run.get('findings') or [])} "
+                f"dispositions=[{marked}]"
+            )
+    lines.append("")
+    lines.append("retrospective hooks:")
+    for key, bucket in sorted(buckets.items()):
+        decided = bucket["accepted"] + bucket["rejected"]
+        if decided >= 5 and bucket["accepted"] / decided < 0.3:
+            lines.append(f"  - {key}: acceptance rate below 30% over {decided} dispositions; compare models")
+        if bucket["runs"] >= 3 and bucket["fallback_triggered"] / bucket["runs"] >= 0.3:
+            lines.append(f"  - {key}: fallback triggered in {bucket['fallback_triggered']}/{bucket['runs']} runs; check primary availability")
+    return "\n".join(lines)
+
+
 def main() -> int:
     args = parse_args()
     if args.self_test:
@@ -12947,6 +13433,21 @@ def main() -> int:
         return 0
     if args.self_test_pi_fallback:
         self_test_pi_fallback()
+        return 0
+    if args.self_test_history:
+        self_test_history()
+        return 0
+    if args.history_summary:
+        print(history_summary_text(load_history(history_file(repo_root())), max(args.history_last, 0)))
+        return 0
+    if args.record_dispositions:
+        if not args.run_id:
+            raise SystemExit("--record-dispositions requires --run-id")
+        if not args.disposition:
+            raise SystemExit("--record-dispositions requires at least one --disposition")
+        run = apply_dispositions(repo_root(), args.run_id, parse_disposition_tokens(args.disposition))
+        marked = ", ".join(f"{d['id']}:{d['decision']}" for d in run["dispositions"])
+        print(f"dispositions recorded for {args.run_id}: [{marked}]")
         return 0
     if args.self_test_heartbeat_metrics:
         self_test_heartbeat_metrics()
@@ -12989,6 +13490,12 @@ def main() -> int:
         print(f"ref: {display_ref}")
     if args.dry_run:
         return 0
+
+    global _CURRENT_RUN_ID
+    _CURRENT_RUN_ID = (
+        f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{os.urandom(3).hex()}"
+    )
+    print(f"history run: {_CURRENT_RUN_ID}")
 
     review_source_snapshot = source_tree_snapshot(repo)
     known_secret_fragments: set[str] = set()
@@ -13083,6 +13590,7 @@ def main() -> int:
             label += " chunked"
     finally:
         tests_status = finish_parallel_tests(*tests_proc) if tests_proc else 0
+        flush_review_history(repo, target, target_ref)
 
     source_changed_during_review = source_tree_snapshot(repo) != review_source_snapshot
     if source_changed_during_review:
