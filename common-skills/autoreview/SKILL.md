@@ -41,7 +41,7 @@ Do not require autoreview for a change whose entire diff is prose-only internal 
 - Keep going until structured review returns no accepted/actionable findings only while the work remains inside the authorized architectural and task scope.
 - If a review-triggered fix changes code, rerun focused tests and rerun the structured review helper.
 - For security-audit suppression changes, verify accepted findings remain auditable: suppressed findings stay in structured output, active output keeps an unsuppressible suppression notice, and aggregate findings cannot hide unrelated active risk.
-- Never switch or override the requested review engine/model except for the documented Codex Sol-to-Terra account-access fallback, and except a recorded Codex usage-limit cooldown. Capacity and unrelated failures keep the same engine/model. A Codex usage-limit failure records a fixed cooldown (default 1 hour, `AUTOREVIEW_CODEX_COOLDOWN_HOURS`) and later runs skip Codex in favor of Claude instead of waiting on reset. Do not retry Codex during that window. `--ignore-codex-cooldown` forces Codex.
+- Never switch or override the requested review engine/model except for the documented Codex Sol-to-Terra account-access fallback, the documented pi access-only fallback-model retry, and a recorded Codex usage-limit cooldown. Capacity and unrelated failures keep the same engine/model. A Codex usage-limit failure records a fixed cooldown (default 1 hour, `AUTOREVIEW_CODEX_COOLDOWN_HOURS`) and later runs skip Codex in favor of Claude instead of waiting on reset. Do not retry Codex during that window. `--ignore-codex-cooldown` forces Codex.
 - Be patient with large bundles. Structured review can take up to 30 minutes while the model call is active, especially with Codex tools or web search.
 - Treat heartbeat lines like `review still running: ... elapsed=... pid=...` as healthy progress, not a hang. Let the helper continue while heartbeats are advancing. Pass `--stream-engine-output` when live engine text is useful; Codex and Claude filter tool/file chatter, other runnable engines pass raw output through.
 - Do not kill a review just because it has been quiet for 2-5 minutes, or because it is still running under the 30-minute window. Inspect the process only after missing multiple expected heartbeats, after 30 minutes, or after an obviously failed subprocess; prefer letting the same helper command finish.
@@ -333,6 +333,11 @@ CLI flags and environment variables override these defaults. Claude inherits the
 
 Claude also supports `--fallback-model a,b` for availability-based fallback chains ([model-config](https://code.claude.com/docs/en/model-config)). Current Claude docs note that auth, billing, rate-limit, request-size, and transport errors do not trigger fallback, and the changelog documents interactive-session support in `v2.1.166`.
 
+Pi supports an access-only fallback: when the primary run exits nonzero with a provider-availability failure (transport errors, auth, rate limit, model not found, 4xx/5xx status lines), the helper retries once with `--fallback-model` (or `AUTOREVIEW_PI_FALLBACK_MODEL`). Review-content failures never trigger fallback; if the fallback run also fails, both errors are reported.
+
+# Pi with provider fallback, e.g. z.ai primary and Ollama Cloud backup
+"$AUTOREVIEW" --engine pi --model zai/glm-5.3-flash --fallback-model pi=ollama-cloud/glm-5.3-flash:cloud
+
 [OpenAI's model guidance](https://developers.openai.com/api/docs/guides/latest-model) identifies Sol as the GPT-5.6 frontier-capability route and documents `max` support. Autoreview keeps `high` as its default; use `max` only for the hardest quality-first reviews after comparing its latency and cost with `xhigh` on representative changes.
 
 Examples matching current `main` behavior:
@@ -372,12 +377,14 @@ loader such as an untracked `.envrc`; the helper does not write a config file.
 
 A complete personal default-harness switch is plain env, no code changes. For
 example, to make Pi on `zai/glm-5.3-flash` with `max` thinking the default
-harness:
+harness, falling back to the Ollama Cloud copy of the same model when z.ai is
+unavailable:
 
 ```bash
 export AUTOREVIEW_ENGINE=pi
 export AUTOREVIEW_PI_MODEL=zai/glm-5.3-flash
 export AUTOREVIEW_PI_THINKING=max
+export AUTOREVIEW_PI_FALLBACK_MODEL=ollama-cloud/glm-5.3-flash:cloud
 ```
 
 CLI flags still win over these variables, so a one-off
@@ -390,7 +397,7 @@ default without editing it.
 | `AUTOREVIEW_MODEL`                 | Override the built-in default `--model` for all engines                                                                          |
 | `AUTOREVIEW_THINKING`              | Default `--thinking` for all engines                                                                                             |
 | `AUTOREVIEW_MAX_PRIORITY`          | Default `--max-priority` (`P0`–`P3`). Built-in default is `P0` when unset                                                        |
-| `AUTOREVIEW_FALLBACK_MODEL`        | Default Claude `--fallback-model` chain                                                                                          |
+| `AUTOREVIEW_FALLBACK_MODEL`        | Default `--fallback-model` chain for Claude/pi reviewers                                                                         |
 | `AUTOREVIEW_<ENGINE>_MODEL`        | Per-engine model override, for example `AUTOREVIEW_CODEX_MODEL=gpt-5.6-sol`                                                      |
 | `AUTOREVIEW_<ENGINE>_THINKING`     | Per-engine thinking override                                                                                                     |
 | `AUTOREVIEW_CODEX_CONFIG`          | Safe Codex model/response tuning overrides, semicolon-separated, e.g. `service_tier="fast"`; capability-bearing keys fail closed |
@@ -399,9 +406,10 @@ default without editing it.
 | `AUTOREVIEW_IGNORE_CODEX_COOLDOWN` | Set to `1` to invoke Codex even during a recorded usage-limit cooldown                                                               |
 | `AUTOREVIEW_STATE_DIR`             | Directory for helper state such as the Codex cooldown file; must stay outside the reviewed repository                                |
 | `AUTOREVIEW_CLAUDE_FALLBACK_MODEL` | Claude-only fallback chain                                                                                                       |
+| `AUTOREVIEW_PI_FALLBACK_MODEL`     | Pi-only access-failure fallback model                                                                                            |
 | `AUTOREVIEW_PROVIDER_ENV_ALLOW`    | Comma-separated custom Pi/OpenCode credential variable names; names must end in a recognized credential suffix                   |
 
-Codex maps thinking to `model_reasoning_effort`. Claude maps thinking to `--effort`. Pi maps thinking to `--thinking`; when a fresh native session already reports `max`, omit the flag to keep that default. ACPX `pi-acp` may expose a smaller `thought_level` set, so do not infer its default from native Pi. Only Claude accepts `--fallback-model`; global CLI/env fallback requires at least one Claude reviewer, and engine-specific fallback overrides require that reviewer to be selected. Non-Claude fallback overrides, including `AUTOREVIEW_<NONCLAUDE>_FALLBACK_MODEL`, fail closed instead of being silently ignored.
+Codex maps thinking to `model_reasoning_effort`. Claude maps thinking to `--effort`. Pi maps thinking to `--thinking`; when a fresh native session already reports `max`, omit the flag to keep that default. ACPX `pi-acp` may expose a smaller `thought_level` set, so do not infer its default from native Pi. Claude and pi accept `--fallback-model`; global CLI/env fallback requires at least one Claude or pi reviewer, and engine-specific fallback overrides require that reviewer to be selected. Fallback overrides for other engines, including `AUTOREVIEW_CODEX_FALLBACK_MODEL`, fail closed instead of being silently ignored.
 
 ## Review engine isolation
 
@@ -466,13 +474,13 @@ The helper:
 - writes only to stdout unless `--output`, `--json-output`, or live streamed engine stderr is set
 - supports `--dry-run`, `--parallel-tests`, `--parallel-tests-shell`, `--prompt`, repo-relative `--prompt-file`, repo-relative `--dataset`, `--no-tools`, `--no-web-search`, repeatable Codex-only safe model/response tuning with `--codex-config key=value`, Codex-only `--codex-speed fast|flex|default`, and commit refs
 - supports `--stream-engine-output` or `AUTOREVIEW_STREAM_ENGINE_OUTPUT=1` for live engine text while preserving structured validation; Codex and Claude hide tool/file event details, emit compact activity summaries, and report usage at turn completion
-- supports opt-in review panels with `--panel` / `--reviewers`, plus per-engine `--model`, `--thinking`, and Claude `--fallback-model`
+- supports opt-in review panels with `--panel` / `--reviewers`, plus per-engine `--model`, `--thinking`, and Claude/pi `--fallback-model`
 - uses built-in defaults `codex=gpt-5.6-sol` with `high` reasoning and an access-only `gpt-5.6-terra` retry; Claude inherits the current Claude Code model and effort unless `--model`/`--thinking` or env overrides are set; honors `AUTOREVIEW_MODEL`, `AUTOREVIEW_THINKING`, `AUTOREVIEW_MAX_PRIORITY`, `AUTOREVIEW_FALLBACK_MODEL`, and per-engine `AUTOREVIEW_<ENGINE>_MODEL` / `AUTOREVIEW_<ENGINE>_THINKING` environment overrides when CLI flags are omitted
 - after a Codex usage-limit failure, records a fixed cooldown (default 1 hour) outside the reviewed repository and skips Codex on later runs, switching a Codex-only review to Claude; `--ignore-codex-cooldown` or `AUTOREVIEW_IGNORE_CODEX_COOLDOWN=1` forces Codex
 - gives Codex the bundle in an empty workspace with web search available; Claude receives the bundle plus WebSearch by default and optional domain-constrained WebFetch, and Pi receives the bundle with no tools
 - runs Claude with `--safe-mode` (`v2.1.169+`), `--setting-sources user`, MCP and auto-memory disabled, no filesystem/shell tools, an empty external workspace, and `--fallback-model` when set; omits `--model`/`--effort` by default so user Claude Code model selection still applies
 - refuses Droid, Copilot, Cursor, and OpenCode reviews until their CLIs expose the required project, filesystem, and network isolation
-- runs Pi `v0.79.0+` from neutral temporary directories with `--no-approve`, `--no-session`, disabled Pi context/resource loading, and `--no-tools` because its built-in read tools are not repository-confined
+- runs Pi `v0.79.0+` from neutral temporary directories with `--no-approve`, `--no-session`, disabled Pi context/resource loading, and `--no-tools` because its built-in read tools are not repository-confined; when a `--fallback-model`/`AUTOREVIEW_PI_FALLBACK_MODEL` is set and the primary run fails with a provider-availability error, retries once with the fallback model
 - prints `review still running: <engine> elapsed=<seconds>s pid=<pid>` to stderr at long-running intervals while waiting for the selected review engine, unless streamed output or compact Codex activity has been visible recently
 - prints `autoreview clean: no accepted/actionable findings reported` when the selected review command exits 0
 - exits nonzero when accepted/actionable findings are present

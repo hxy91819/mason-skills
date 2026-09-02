@@ -34,6 +34,10 @@ ENGINES = ("codex", "claude", "droid", "copilot", "pi", "opencode", "cursor")
 ENGINE_ALIASES = {"cursor-agent": "cursor"}
 ENGINE_CHOICES = (*ENGINES, *ENGINE_ALIASES)
 ALL_REVIEWERS = ("codex", "claude", "pi")
+# Access-only fallback chains: claude passes --fallback-model to its CLI; pi
+# retries once in-helper when the provider/model is unavailable.
+FALLBACK_SUPPORTED_ENGINES = {"claude", "pi"}
+FALLBACK_SUPPORTED_LABEL = "claude and pi"
 SAFE_GIT_CONFIG_ARGS = (
     "-c",
     "core.fsmonitor=false",
@@ -10509,40 +10513,101 @@ def run_cursor(args: argparse.Namespace, repo: Path, prompt: str) -> str:
     )
 
 
+# Pi failures are classified only after a nonzero exit, so broad markers cost
+# at worst one bounded fallback retry that then reports both errors.
+PI_ACCESS_FAILURE_MARKERS = (
+    # Node/undici transport failures
+    "fetch failed",
+    "econnrefused",
+    "econnreset",
+    "enotfound",
+    "etimedout",
+    "eai_again",
+    "und_err_connect_timeout",
+    # Local model/provider resolution (observed pi CLI wording)
+    "not found. use --list-models",
+    "does not exist",
+    "no such model",
+    "unknown model",
+    # Provider auth, rate-limit, and 4xx/5xx responses
+    "unexpected status",
+    "unauthorized",
+    "forbidden",
+    "api key",
+    "rate limit",
+    "quota",
+    "overloaded",
+    "bad gateway",
+    "service unavailable",
+    "internal server error",
+    "timed out",
+    "timeout",
+)
+PI_ACCESS_FAILURE_STATUS_LINE = re.compile(r"(?m)^\d{3}: ")
+
+
+def pi_access_failure(result: subprocess.CompletedProcess[str]) -> bool:
+    haystack = f"{result.stderr or ''}\n{result.stdout or ''}".lower()
+    if PI_ACCESS_FAILURE_STATUS_LINE.search(haystack):
+        return True
+    return any(marker in haystack for marker in PI_ACCESS_FAILURE_MARKERS)
+
+
 def run_pi(args: argparse.Namespace, repo: Path, prompt: str) -> str:
     pi_bin = ensure_pi_isolation_supported(args, repo)
-    cmd = [
-        pi_bin,
-        "--print",
-        *pi_review_isolation_flags(),
-    ]
-    if args.model:
-        cmd.extend(["--model", args.model])
-    if args.thinking:
-        cmd.extend(["--thinking", args.thinking])
-    # Pi's built-in read tools accept absolute paths and have no repository
-    # confinement, so an untrusted review prompt must never receive them.
-    cmd.append("--no-tools")
-    with tempfile.TemporaryDirectory(
-        prefix="autoreview-pi-run.",
-        dir=safe_temp_root(repo),
-    ) as tempdir:
-        result = run_with_heartbeat(
-            cmd,
-            Path(tempdir),
-            input_text=prompt,
-            label="pi",
-            stream_output=args.stream_engine_output,
-            resolve_root=repo,
-            env=safe_engine_env(
-                repo,
-                [Path(cmd[0]).parent],
-                engine="pi",
-            ),
-        )
-    if result.returncode != 0:
-        raise SystemExit(f"pi engine failed ({result.returncode})\n{result.stderr or result.stdout}")
-    return result.stdout
+    models = [args.model]
+    fallback_model = getattr(args, "fallback_model", None)
+    if fallback_model and fallback_model != args.model:
+        models.append(fallback_model)
+    primary_failure: subprocess.CompletedProcess[str] | None = None
+    for index, model in enumerate(models):
+        cmd = [
+            pi_bin,
+            "--print",
+            *pi_review_isolation_flags(),
+        ]
+        if model:
+            cmd.extend(["--model", model])
+        if args.thinking:
+            cmd.extend(["--thinking", args.thinking])
+        # Pi's built-in read tools accept absolute paths and have no repository
+        # confinement, so an untrusted review prompt must never receive them.
+        cmd.append("--no-tools")
+        with tempfile.TemporaryDirectory(
+            prefix="autoreview-pi-run.",
+            dir=safe_temp_root(repo),
+        ) as tempdir:
+            result = run_with_heartbeat(
+                cmd,
+                Path(tempdir),
+                input_text=prompt,
+                label="pi",
+                stream_output=args.stream_engine_output,
+                resolve_root=repo,
+                env=safe_engine_env(
+                    repo,
+                    [Path(cmd[0]).parent],
+                    engine="pi",
+                ),
+            )
+        if result.returncode == 0:
+            return result.stdout
+        if index == 0 and len(models) > 1 and pi_access_failure(result):
+            primary_failure = result
+            print(
+                f"pi model {model or '(provider default)'} is unavailable; retrying with {models[1]}",
+                file=sys.stderr,
+            )
+            continue
+        detail = result.stderr or result.stdout
+        if primary_failure is not None:
+            primary_detail = primary_failure.stderr or primary_failure.stdout
+            raise SystemExit(
+                f"pi engine failed with primary model ({primary_failure.returncode})\n{primary_detail}\n"
+                f"pi fallback model failed ({result.returncode})\n{detail}"
+            )
+        raise SystemExit(f"pi engine failed ({result.returncode})\n{detail}")
+    raise AssertionError("unreachable")
 
 
 class CodexStreamDisplay:
@@ -12040,7 +12105,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fallback-model",
         action="append",
-        help="Claude fallback model chain for all reviewers or claude=a,b. Repeatable.",
+        help="Fallback model for all reviewers or engine=<model> (claude supports a,b chains; pi retries once on provider access failures). Repeatable.",
     )
     parser.add_argument("--allow-partial-panel", action="store_true", help="Continue panel output when one reviewer fails.")
     parser.add_argument("--codex-bin", default=os.environ.get("CODEX_BIN", "codex"))
@@ -12128,6 +12193,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--self-test-config-defaults", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--self-test-fallback-scope", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--self-test-pi-fallback", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--self-test-engine-isolation", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--self-test-json-array-parser", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--self-test-heartbeat-metrics", action="store_true", help=argparse.SUPPRESS)
@@ -12247,12 +12313,18 @@ def reviewer_args(args: argparse.Namespace) -> list[argparse.Namespace]:
     if unused_fallback_engines:
         engine_list = ", ".join(sorted(unused_fallback_engines))
         raise SystemExit(f"--fallback-model specified for unselected reviewer: {engine_list}")
-    selected_non_claude_fallback = sorted(engine for engine in fallback_engines if engine != "claude")
-    if selected_non_claude_fallback:
-        engine_list = ", ".join(selected_non_claude_fallback)
-        raise SystemExit(f"--fallback-model is only supported for claude, not {engine_list}")
-    if (global_fallback or env_global_fallback) and "claude" not in selected_engines:
-        raise SystemExit("--fallback-model is only supported for claude; no claude reviewer selected")
+    selected_unsupported_fallback = sorted(
+        engine for engine in fallback_engines if engine not in FALLBACK_SUPPORTED_ENGINES
+    )
+    if selected_unsupported_fallback:
+        engine_list = ", ".join(selected_unsupported_fallback)
+        raise SystemExit(
+            f"--fallback-model is only supported for {FALLBACK_SUPPORTED_LABEL}, not {engine_list}"
+        )
+    if (global_fallback or env_global_fallback) and not (FALLBACK_SUPPORTED_ENGINES & selected_engines):
+        raise SystemExit(
+            f"--fallback-model is only supported for {FALLBACK_SUPPORTED_LABEL}; no supported reviewer selected"
+        )
     if getattr(args, "codex_config", None) and "codex" not in selected_engines:
         raise SystemExit("--codex-config is only supported for codex; no codex reviewer selected")
     if getattr(args, "codex_speed", None) and "codex" not in selected_engines:
@@ -12281,6 +12353,13 @@ def reviewer_args(args: argparse.Namespace) -> list[argparse.Namespace]:
             or DEFAULT_THINKING_BY_ENGINE.get(engine)
         )
         if engine == "claude":
+            fallback_model = (
+                fallback_by_engine.get(engine)
+                or global_fallback
+                or env_fallback_by_engine.get(engine)
+                or env_global_fallback
+            )
+        elif engine == "pi":
             fallback_model = (
                 fallback_by_engine.get(engine)
                 or global_fallback
@@ -12606,6 +12685,7 @@ def self_test_fallback_scope() -> None:
         "AUTOREVIEW_CODEX_MODEL",
         "AUTOREVIEW_CLAUDE_FALLBACK_MODEL",
         "AUTOREVIEW_CODEX_FALLBACK_MODEL",
+        "AUTOREVIEW_PI_FALLBACK_MODEL",
     ]
     with preserve_env(keys):
         for key in keys:
@@ -12630,7 +12710,7 @@ def self_test_fallback_scope() -> None:
             reviewer_args(reviewer_test_args(engine="codex"))
             raise SystemExit("self-test fallback scope failed: env global fallback without Claude should be rejected")
         except SystemExit as exc:
-            if "no claude reviewer selected" not in str(exc):
+            if "no supported reviewer selected" not in str(exc):
                 raise
         cli_global = reviewer_args(reviewer_test_args(engine="claude", fallback_model=["cli-global"]))[0]
         if cli_global.fallback_model != "cli-global":
@@ -12649,7 +12729,7 @@ def self_test_fallback_scope() -> None:
             reviewer_args(reviewer_test_args(engine="codex", fallback_model=["cli-global"]))
             raise SystemExit("self-test fallback scope failed: global fallback without Claude should be rejected")
         except SystemExit as exc:
-            if "no claude reviewer selected" not in str(exc):
+            if "no supported reviewer selected" not in str(exc):
                 raise
         try:
             reviewer_args(reviewer_test_args(engine="codex", fallback_model=["claude=cli-claude"]))
@@ -12687,9 +12767,104 @@ def self_test_fallback_scope() -> None:
             reviewer_args(reviewer_test_args(engine="codex"))
             raise SystemExit("self-test fallback scope failed: AUTOREVIEW_CODEX_FALLBACK_MODEL should be rejected")
         except SystemExit as exc:
-            if "only supported for claude" not in str(exc):
+            if "only supported for claude and pi" not in str(exc):
                 raise
+        os.environ.pop("AUTOREVIEW_FALLBACK_MODEL")
+        os.environ.pop("AUTOREVIEW_CODEX_FALLBACK_MODEL")
+        os.environ["AUTOREVIEW_PI_FALLBACK_MODEL"] = "env-pi-fallback"
+        pi_env = reviewer_args(reviewer_test_args(engine="pi"))[0]
+        if pi_env.fallback_model != "env-pi-fallback":
+            raise SystemExit(f"self-test fallback scope failed: env pi fallback={pi_env.fallback_model!r}")
+        cli_pi = reviewer_args(reviewer_test_args(engine="pi", fallback_model=["pi=cli-pi"]))[0]
+        if cli_pi.fallback_model != "cli-pi":
+            raise SystemExit(f"self-test fallback scope failed: CLI pi fallback={cli_pi.fallback_model!r}")
+        os.environ["AUTOREVIEW_FALLBACK_MODEL"] = "env-global-fallback"
+        panel = reviewer_args(reviewer_test_args(reviewers="codex,pi", fallback_model=["cli-global"]))
+        panel_codex = next(r for r in panel if r.engine == "codex")
+        panel_pi = next(r for r in panel if r.engine == "pi")
+        if panel_codex.fallback_model != "gpt-5.6-terra" or panel_pi.fallback_model != "cli-global":
+            raise SystemExit("self-test fallback scope failed: CLI global fallback should apply to pi panel reviewers")
     print("self-test fallback scope: ok")
+
+
+def self_test_pi_fallback() -> None:
+    script = '''#!/usr/bin/env python3
+import json, os, sys
+
+argv = sys.argv[1:]
+log = os.environ.get("AUTOREVIEW_FAKE_LOG")
+if log and "--print" in argv:
+    with open(log, "a") as handle:
+        handle.write(json.dumps(argv) + "\\n")
+
+if "--version" in argv:
+    print("pi 0.84.4")
+    sys.exit(0)
+if "--help" in argv:
+    print("--print --no-approve --no-session --no-context-files --no-extensions --no-skills --no-prompt-templates --no-themes --no-tools --thinking --model")
+    sys.exit(0)
+
+mode = os.environ.get("AUTOREVIEW_FAKE_MODE", "access")
+if "zai/glm-5.3-flash" in argv:
+    if mode == "crash":
+        print("engine exploded for unrelated reasons", file=sys.stderr)
+        sys.exit(3)
+    print('400: {"code":"1214","message":"modelCode: does not exist"}', file=sys.stderr)
+    sys.exit(1)
+
+report = {
+    "findings": [],
+    "overall_correctness": "patch is correct",
+    "overall_explanation": "fake pi fallback clean",
+    "overall_confidence": 0.99,
+}
+print(json.dumps({"type": "result", "result": json.dumps(report), "session_id": "s", "request_id": "r", "usage": {"inputTokens": 1, "outputTokens": 2}}))
+'''
+    with tempfile.TemporaryDirectory(prefix="autoreview-pi-fallback-test.") as tempdir:
+        root = Path(tempdir)
+        repo = root / "repo"
+        repo.mkdir()
+        pi_bin = write_executable(root / "pi", script)
+        log_path = root / "pi-invocations.jsonl"
+        os.environ["AUTOREVIEW_FAKE_LOG"] = str(log_path)
+        try:
+            args = reviewer_test_args(
+                engine="pi",
+                model=["zai/glm-5.3-flash"],
+                thinking=["max"],
+                fallback_model=["pi=ollama-cloud/glm-5.3-flash:cloud"],
+                pi_bin=str(pi_bin),
+                stream_engine_output=False,
+            )
+            reviewer = reviewer_args(args)[0]
+            output = run_engine(reviewer, repo, "review prompt")
+            invocations = [json.loads(line) for line in log_path.read_text().splitlines()]
+            if len(invocations) != 2:
+                raise SystemExit(f"self-test pi fallback failed: expected 2 invocations, got {len(invocations)}")
+            if invocations[0][invocations[0].index("--model") + 1] != "zai/glm-5.3-flash":
+                raise SystemExit("self-test pi fallback failed: primary model not attempted first")
+            if invocations[1][invocations[1].index("--model") + 1] != "ollama-cloud/glm-5.3-flash:cloud":
+                raise SystemExit("self-test pi fallback failed: fallback model not retried")
+            if invocations[1][invocations[1].index("--thinking") + 1] != "max":
+                raise SystemExit("self-test pi fallback failed: fallback invocation lost thinking level")
+            if "fake pi fallback clean" not in output:
+                raise SystemExit("self-test pi fallback failed: fallback output not returned")
+            log_path.unlink()
+            os.environ["AUTOREVIEW_FAKE_MODE"] = "crash"
+            crashed = False
+            try:
+                run_engine(reviewer, repo, "review prompt")
+            except SystemExit as exc:
+                crashed = "unrelated reasons" in str(exc) and "fallback model failed" not in str(exc)
+            if not crashed:
+                raise SystemExit("self-test pi fallback failed: non-access failure should not retry fallback")
+            invocations = [json.loads(line) for line in log_path.read_text().splitlines()]
+            if len(invocations) != 1:
+                raise SystemExit(f"self-test pi fallback failed: non-access failure invoked pi {len(invocations)} times")
+        finally:
+            os.environ.pop("AUTOREVIEW_FAKE_LOG", None)
+            os.environ.pop("AUTOREVIEW_FAKE_MODE", None)
+    print("self-test pi fallback: ok")
 
 
 def self_test() -> int:
@@ -12697,6 +12872,7 @@ def self_test() -> int:
     self_test_opencode_isolation()
     self_test_config_defaults()
     self_test_fallback_scope()
+    self_test_pi_fallback()
     self_test_heartbeat_metrics()
     self_test_json_array_parser()
     return self_test_engine_isolation()
@@ -12768,6 +12944,9 @@ def main() -> int:
         return 0
     if args.self_test_fallback_scope:
         self_test_fallback_scope()
+        return 0
+    if args.self_test_pi_fallback:
+        self_test_pi_fallback()
         return 0
     if args.self_test_heartbeat_metrics:
         self_test_heartbeat_metrics()
