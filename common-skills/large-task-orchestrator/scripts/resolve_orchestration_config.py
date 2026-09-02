@@ -36,6 +36,7 @@ CANDIDATE_FIELDS = {
     "native_args",
     "model_contains",
     "model_preference",
+    "max_difficulty",
     "reason",
 }
 PROFILE_FIELDS = {"name", "match", "effort_by_difficulty"}
@@ -271,6 +272,11 @@ def _validate_candidate(value: Any, path: Path, field: str) -> dict[str, Any]:
             _error(path, f"{field}.native_args", "must be an array")
         for index, argument in enumerate(native_args):
             _string(argument, path, f"{field}.native_args[{index}]")
+    if "max_difficulty" in value:
+        ceiling_field = f"{field}.max_difficulty"
+        ceiling = _string(value["max_difficulty"], path, ceiling_field)
+        if ceiling not in DIFFICULTIES:
+            _error(path, ceiling_field, f"must be one of {sorted(DIFFICULTIES)}")
     return value
 
 

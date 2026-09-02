@@ -258,6 +258,30 @@ class ResolveOrchestrationConfigTest(unittest.TestCase):
         self.assertIn("routing.validator.default[0]", result.stderr)
         self.assertIn("unknown fields", result.stderr)
 
+    def test_max_difficulty_ceiling_is_preserved(self) -> None:
+        config = self.base_config()
+        config["routing"]["worker"]["default"][0]["max_difficulty"] = "standard"
+        self.write_json(self.user_path, config)
+
+        _, result = self.run_cli()
+
+        self.assertEqual(
+            result["config"]["routing"]["worker"]["default"],
+            [{"agent": "codex", "max_difficulty": "standard"}],
+        )
+
+    def test_unknown_max_difficulty_is_rejected_with_field_path(self) -> None:
+        config = self.base_config()
+        config["routing"]["worker"]["default"][0]["max_difficulty"] = "extreme"
+        self.write_json(self.user_path, config)
+
+        result, payload = self.run_cli(expected=1)
+
+        self.assertEqual(payload, {})
+        self.assertIn(str(self.user_path), result.stderr)
+        self.assertIn("routing.worker.default[0].max_difficulty", result.stderr)
+        self.assertIn("must be one of", result.stderr)
+
     def test_non_string_profile_role_is_rejected_cleanly(self) -> None:
         config = self.base_config()
         config["profiles"][0]["match"]["role"] = []

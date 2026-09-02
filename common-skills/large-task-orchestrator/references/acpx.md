@@ -90,6 +90,18 @@ The JSON stream may still contain `session/request_permission` events for reques
 
 If the policy file is missing, unreadable, or does not have exactly the contract above, fail closed before creating or prompting a validator session; do not silently fall back to `--approve-reads`, `--approve-all`, or an interactive permission prompt.
 
+### Agents that reach the shell through ACP `terminal/create`
+
+Some adapters (for example `codebuddy --acp`) expose shell access as the ACP `terminal/create` method rather than a permission-gated tool call. ACPX gates that method by permission mode alone (observed in ACPX 0.13.1), so:
+
+- `--approve-all` runs the command.
+- `--approve-reads`, and any `--permission-policy` — including one whose `autoApprove` lists `execute` — leave it on the interactive prompt. A headless run then returns ACPX exit 5 `Permission prompt unavailable in non-interactive mode`, and every worker command fails with `Internal error`.
+
+Route such an adapter accordingly:
+
+- **Worker:** dispatch with `--approve-all` once the operator has accepted blanket approval for that agent in this repository. Record the approval decision, the effective flags, and the sandbox limits that bound it with the session baseline.
+- **Validator:** keep such an adapter out of validator routes. Its `execute` requests cannot be granted by the fixed policy, and `--approve-all` would grant the edit authority the validator contract forbids. Validate through adapters that request permission as tool calls.
+
 Prompt text may instead arrive on stdin. Use the host's parallel command surface to start independent Story invocations concurrently. ACPX queueing is per session; `--no-wait` queues follow-ups to an already busy session and is not a substitute for separate parallel Story sessions.
 
 Apply the least-permissive ACP permission policy that permits the role's authorized operations. Workers may receive bounded write authority; validators receive read/search/execute authority without code-editing authority through the fixed policy above. Do not use `--approve-all` unless the user's authority and repository policy justify it.
