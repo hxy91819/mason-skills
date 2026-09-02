@@ -11,7 +11,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>界面文案审查 · {{target}}</title>
+<title>内容审查 · {{target}}</title>
 <style>
   :root {
     --bg: #f6f7f9;
@@ -73,13 +73,14 @@
   .noshot { margin: 14px 0 0; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 8px; font-size: 13px; color: var(--muted); }
   .overview { display: grid; gap: 16px; }
   .overview figure { margin: 0; }
+  .text-evidence { white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
 </style>
 </head>
 <body>
 <main>
 
-  <h1>界面文案审查 · {{target}}</h1>
-  <p class="sub">审查视角：产品体验 · 只读，未修改任何被审文件 · 状态 {{clean|有待修项}} · {{date}}</p>
+  <h1>内容审查 · {{target}}</h1>
+  <p class="sub">审查模式：{{文本模式|网站模式}} · 审查视角：产品体验 · 只读，未修改任何被审文件 · 状态 {{clean|有待修项}} · {{date}}</p>
 
   <h2>受众与决策</h2>
   <div class="card audience">
@@ -99,17 +100,22 @@
     <span class="pill">待确认 <b>{{n}}</b></span>
   </div>
 
-  <h2>采集到的界面</h2>
-  <!-- 每个真实渲染并截图的界面一张全景图，用 annotate-shot.py 的 overview 产物 -->
+  <h2>证据与覆盖范围</h2>
+  <!-- 网站模式：每个真实渲染并截图的界面一张全景图，用 annotate-shot.py 的 overview 产物。文本模式删除此 overview。 -->
   <div class="overview">
     <figure class="shot">
       <img alt="{{界面名}} 全景" src="{{overview data URI}}">
       <figcaption>{{界面名}} · {{URL 或路径}} · {{视口}} · {{采集时间}}</figcaption>
     </figure>
   </div>
-  <!-- 有采集不到的范围时保留这一段，逐条写清范围与原因；全部采集到则整段删除 -->
+  <!-- 文本模式：删除上面的 overview，改为列出每个文件的用途、覆盖行数、行号范围和未覆盖原因。 -->
+  <div class="card text-evidence">
+    <strong>文本证据</strong>
+    {{文件路径 · 用途 · 覆盖行数与行号范围 · 生成/引用来源}}
+  </div>
+  <!-- 网站模式有采集不到的范围时保留；文本模式删除此段。 -->
   <div class="noshot">
-    <strong>采集不到的范围：</strong>{{哪些界面或状态没采到，各自的原因}}
+    <strong>未覆盖范围：</strong>{{网站中哪些界面或状态没采到，各自的原因；文本中哪些行/分支未读到及原因}}
   </div>
 
   <h2>阻断</h2>
@@ -127,13 +133,14 @@
       <div class="side before"><div class="lbl">现状</div><div class="txt">{{原文}}</div></div>
       <div class="side after"><div class="lbl">建议</div><div class="txt">{{可直接替换的完整文案，或 <span class="drop">删除，不替换</span> / <span class="drop">降级到 tooltip</span>}}</div></div>
     </div>
-    <!-- 渲染面 finding 必须有这张标注图；红框圈住被判定的原文 -->
+    <!-- 网站模式的渲染面 finding 必须有这张标注图；红框圈住被判定的原文。 -->
     <figure class="shot">
       <img alt="{{原文}} 在真实界面中的位置" src="{{annotate-shot.py 产出的 data URI}}">
       <figcaption>{{它在界面里的位置与占比，例如「首屏标题正下方，页面第二行」}}</figcaption>
     </figure>
-    <!-- 纯代码轨 finding 用这一段替换上面的 figure，写明为什么没有截图 -->
+    <!-- 网站模式的纯代码轨 finding 用这一段替换上面的 figure，写明为什么没有截图。 -->
     <div class="noshot">未截图：{{原因，如 该界面需要 IOA 鉴权，本次采集不到}}</div>
+    <!-- 文本模式删除上面的 figure/noshot，改为：<div class="text-evidence">原文位置：{{file:line}} · 上下文：{{...}}</div> -->
   </div>
   <!-- /REPEAT -->
 

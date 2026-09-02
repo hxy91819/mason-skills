@@ -1,7 +1,7 @@
 interface:
   display_name: "Spec Leak Review"
-  short_description: "从产品体验视角审查界面文案，找出需求文本外泄"
-  default_prompt: "Use $spec-leak-review to review a screen's copy and displayed elements for spec leak and produce an HTML report."
+  short_description: "审查网站界面或任意文本中的 spec leak 与提示词残留"
+  default_prompt: "Use $spec-leak-review to review a website screen or text files for spec leak and prompt residue, then produce an HTML report."
 
 policy:
   allow_implicit_invocation: false
