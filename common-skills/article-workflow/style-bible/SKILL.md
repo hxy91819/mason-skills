@@ -1,10 +1,12 @@
 ---
 name: article-workflow-style-bible
-description: Article phased optimization workflow Phase 5.0: Distill a style bible from the main draft and the author's existing judgments, serving as the constraint baseline for subsequent polish rounds. Use when the user asks to create a style bible, generate a style bible, style fingerprint, Phase 5.0, or generate `.article-workflow/style-bible.md` from `.article-workflow/04.5-main-draft/main-draft.md` and `.article-workflow/brief.md`.
-priority: P2
+description: "Article phased optimization workflow Phase 5.0: Distill a style bible from the main draft and the author's existing judgments, serving as the constraint baseline for subsequent polish rounds. Use when the user asks to create a style bible, generate a style bible, style fingerprint, Phase 5.0, or generate `.article-workflow/style-bible.md` from `.article-workflow/04.5-main-draft/main-draft.md` and `.article-workflow/brief.md`."
+disable-model-invocation: true
 ---
 
 # Article Workflow Style Bible
+
+这是流程类 Skill，默认仅在用户显式调用 `$article-workflow-style-bible` 时运行。
 
 This is Phase 5.0 of the `article-workflow-*` skill series.
 

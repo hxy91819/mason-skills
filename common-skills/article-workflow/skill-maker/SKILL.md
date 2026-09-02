@@ -1,10 +1,12 @@
 ---
 name: article-workflow-skill-maker
-description: Meta skill for turning a manually executed article workflow phase into a reusable `article-workflow-*` skill. Use when the user says they manually followed the article optimization workflow overview, adjusted through conversation, checked the result, and now wants to summarize the current session into a workflow skill.
-priority: P2
+description: "Meta skill for turning a manually executed article workflow phase into a reusable `article-workflow-*` skill. Use when the user says they manually followed the article optimization workflow overview, adjusted through conversation, checked the result, and now wants to summarize the current session into a workflow skill."
+disable-model-invocation: true
 ---
 
 # Article Workflow Skill Maker
+
+这是流程类 Skill，默认仅在用户显式调用 `$article-workflow-skill-maker` 时运行。
 
 This is a meta skill for the `article-workflow-*` series. It does not directly optimize articles; instead, it distills a manually executed, conversation-adjusted, and result-verified article workflow phase into a reusable skill.
 
@@ -52,11 +54,13 @@ Create or update:
 
 ```text
 ../<phase-name>/SKILL.md
+../<phase-name>/agents/openai.yaml
 ```
 
 The new skill must include:
 
-- frontmatter: `name`, `description`, optional `priority`
+- frontmatter: `name`, quoted `description`, and `disable-model-invocation: true`
+- `agents/openai.yaml` with `policy.allow_implicit_invocation: false` and a `$skill-name` default prompt
 - Trigger scenarios
 - Input and output
 - Core principles
@@ -205,11 +209,13 @@ After completion, check:
 ```markdown
 ---
 name: article-workflow-<phase-name>
-description: <Phase N: what it does. Use when...>
-priority: P2
+description: "Phase N: what it does. Use when..."
+disable-model-invocation: true
 ---
 
 # Article Workflow <Phase Name>
+
+这是流程类 Skill，默认仅在用户显式调用 `$article-workflow-<phase-name>` 时运行。
 
 This is Phase N of the `article-workflow-*` series.
 

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Article Workflow Style Bible"
+  short_description: "从主稿提炼可复用文风约束"
+  default_prompt: "Use $article-workflow-style-bible to distill a style bible from the article's main draft."
+
+policy:
+  allow_implicit_invocation: false

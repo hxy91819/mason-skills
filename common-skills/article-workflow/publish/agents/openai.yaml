@@ -1,0 +1,7 @@
+interface:
+  display_name: "Article Workflow Publish"
+  short_description: "将终稿同步到发布渠道"
+  default_prompt: "Use $article-workflow-publish to sync the confirmed final draft to its publishing channels."
+
+policy:
+  allow_implicit_invocation: false

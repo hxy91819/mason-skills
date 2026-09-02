@@ -107,7 +107,7 @@ Read [references/orchestration-config.md](references/orchestration-config.md) an
 
 Use the `frontend` worker route for a frontend-dominant Story and the `default` worker route otherwise; use the validator's `default` route for the validation gate. For mixed Stories, classify by the highest-risk portion; split only when the plan preserves independent acceptance and ownership. Walk the selected candidate array lazily. Create one fresh session for the first candidate and use its bounded ACP initialize/session handshake as the preflight; advance only when it is unavailable, incompatible, or quota-exhausted. If no candidate remains, block the Story with the exact routing reason instead of inventing a fallback.
 
-Classify the Story's difficulty and select the matching configured effort profile when one exists. Treat the adapter's advertised model and effort options as authoritative. If effort is unsupported, use the adapter default without probing alternatives. Record the resolved role, route, candidate, model, effort, and both reported configuration sources in the execution-card handoff.
+Classify the Story's difficulty and select the matching configured effort profile when one exists. A candidate's optional `model_preference` is a recommendation: apply it through the adapter's advertised model config before the first prompt and record the model actually selected. If the provider cannot honor that preference, continue with its supported default; a validator's model identity never invalidates an otherwise valid independent review. Treat legacy `model_contains` on a validator as the same non-blocking preference; reserve strict model gating for a worker capability that genuinely depends on it. Apply the abstract effort through the adapter-specific config option advertised by the handshake (Codex `reasoning_effort`, Pi ACP `thought_level`, or a validated native startup flag); if no such option/value is advertised, use the adapter default without trying aliases. Record the resolved role, route, candidate, model, effort, effort config ID, and both reported configuration sources in the execution-card handoff. For the tested Pi mapping and its `max` limitation in `pi-acp`, read [the Pi effort investigation](references/pi-effort.md).
 
 Resolve the role's permission contract before creating or reusing a session. The ACPX validator contract is fixed in [references/acpx.md](references/acpx.md) and [references/validator-permission-policy.json](references/validator-permission-policy.json); route configuration may choose the provider, but it may not weaken this contract. A validator's “read-only” boundary still needs `execute` for `openspec validate`, `git status`, `git diff --check`, and targeted tests. When Herdr is selected, express the same authority boundary through its native read-only sandbox (the JSON policy is ACPX-only). Record the policy path, SHA-256, and effective sandbox evidence in the execution-card handoff.
 
@@ -122,13 +122,16 @@ For a normal first dispatch, use this exact sequence after reading the current S
 ```bash
 acpx --cwd <repo> --timeout <preflight-timeout-seconds> <role-permission-flags> --non-interactive-permissions fail <agent> sessions new --name <role-session>
 acpx --cwd <repo> --timeout <preflight-timeout-seconds> <agent> sessions show <role-session>
-acpx --cwd <repo> <agent> set reasoning_effort <resolved-effort> -s <role-session>
+# only when the candidate declares model_preference and the handshake advertises model
+acpx --cwd <repo> <agent> set model <model-preference> -s <role-session>
+# only when the handshake advertises <effort-config-id> and <resolved-effort>
+acpx --cwd <repo> <agent> set <effort-config-id> <resolved-effort> -s <role-session>
 acpx_exit=0
 acpx --cwd <repo> <role-permission-flags> --non-interactive-permissions fail --format json --json-strict <agent> prompt -s <role-session> --file <prompt-path> > <repo>/.local/large-task-orchestrator/<role-session>.ndjson || acpx_exit=$?
 python3 <skill-dir>/scripts/read_acpx_result.py --stream <repo>/.local/large-task-orchestrator/<role-session>.ndjson --expect worker --session <baseline-provider-session-id> --acpx-exit "$acpx_exit"
 ```
 
-Run the `set reasoning_effort` line only when the selected profile resolves an effort and the Codex adapter advertises that option; otherwise omit it and record `effort=default`. Require its `config set: reasoning_effort=<resolved-effort>` confirmation before dispatch.
+Run the model line only when `model_preference` exists and the handshake advertises the `model` option; require `model set: <model-preference>` (or equivalent) before dispatch. A profile may intentionally accept the adapter default; in that case omit the effort line and record `effort=default` plus any observed default. Otherwise run the effort line only when the selected profile resolves an effort and the handshake advertises the selected `<effort-config-id>` and value. Codex uses `reasoning_effort`; Pi ACP uses `thought_level` (not `reasoning_effort`) and the currently advertised values stop at `xhigh`. A candidate that pins a validated native startup flag does not also need an ACP `set` call. Require the matching `config set: <effort-config-id>=<resolved-effort>` confirmation before dispatch. If the option/value is rejected, omit the setting, record `effort=default` and the rejection evidence, and dispatch without probing aliases or synthesizing model IDs.
 
 A prompt's event stream is NDJSON, so redirect it to that Git-ignored path and read the result with [`scripts/read_acpx_result.py`](scripts/read_acpx_result.py); run `--help` for its contract. Preserve the ACPX process exit code and pass it as `--acpx-exit` when available. Exit code 0 means the turn ended cleanly, the provider session stayed continuous, and the expected role contract validated — including a trusted `blocked`, `failed`, or `quota_exhausted` worker report you route on. Any non-zero ACPX exit makes the stream untrusted even if a conclusion appears; the reader reports `acpx-exit-nonzero` and supplies `failure.classification`, `turn.error`, `permissions`, `tool_calls`, and `warnings` as recovery evidence. For a validator, `failure.classification=permission_policy_mismatch` is a policy-recovery signal, never a validator conclusion or quota result. The reader judges the stream only; inspect the repository separately because output alone cannot prove changes landed.
 
@@ -166,7 +169,14 @@ Require the worker's final response to end with this strict JSON block:
 
 ## Run the lightweight validation gate
 
-After `worker_done`, create a separate validator session dedicated to that Story using the resolved validator route. Keep the card `in_progress` and record the validator role/session in its existing handoff data.
+After `worker_done`, create a separate validator session dedicated to that Story using the resolved validator route. Keep the card `in_progress` and record the validator role/session in its existing handoff data. The validator gate is the independent review contract and its observable conclusion; do not reject a review because the provider used a different model than the recommendation.
+
+Apply the same model-then-effort sequence from the ACPX golden path to the validator
+session before its first prompt when the profile requests an override. For Pi this
+means `set thought_level` (not `reasoning_effort`); for Codex use `set
+reasoning_effort`. If the profile accepts the adapter default, omit the setting and
+record any observed default. A rejected or unadvertised setting falls back to the
+adapter default with evidence, without alias probing.
 
 Explicitly invoke the sibling `$story-direction-review` Skill in the validator prompt and follow its fixed output contract. Resolve its `SKILL.md` from this Skill's sibling directory and include that absolute path in the prompt because an external agent's Skill registry may differ from the orchestrator's. Give it the Epic, Story, execution-card handoff, worker evidence, current diff, and remaining Story map. It checks goal direction, acceptance coverage, major omissions, and whether the next Story remains valid. Do not substitute a broad review, `autoreview`, architecture audit, style sweep, or refactor pass unless the plan explicitly requires one.
 

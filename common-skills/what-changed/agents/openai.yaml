@@ -1,0 +1,7 @@
+interface:
+  display_name: "What Changed"
+  short_description: "用平实语言说明上一轮、diff 或 PR 改了什么"
+  default_prompt: "Use $what-changed to explain what the last turn, the current diff, or the current PR changed and why."
+
+policy:
+  allow_implicit_invocation: true

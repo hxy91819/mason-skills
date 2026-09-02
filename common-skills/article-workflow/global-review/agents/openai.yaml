@@ -1,0 +1,7 @@
+interface:
+  display_name: "Article Workflow Global Review"
+  short_description: "审查全文连贯性与重复内容"
+  default_prompt: "Use $article-workflow-global-review to review the article's whole-article coherence."
+
+policy:
+  allow_implicit_invocation: false

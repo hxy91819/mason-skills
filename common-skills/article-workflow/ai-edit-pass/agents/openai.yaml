@@ -1,0 +1,7 @@
+interface:
+  display_name: "Article Workflow AI Edit Pass"
+  short_description: "按作者确认意见执行文章编辑阶段"
+  default_prompt: "Use $article-workflow-ai-edit-pass to execute the author's confirmed article edits."
+
+policy:
+  allow_implicit_invocation: false

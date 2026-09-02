@@ -1,10 +1,12 @@
 ---
 name: article-workflow-polish
-description: Article multi-phase optimization workflow Phase 5: round-by-round polish. Under the constraint of preserving personal style, iteratively polish the main draft expression across rounds (5.1 trim redundancy → 5.2 adjust rhythm → 5.3 unify terminology). Use when the user asks to execute Phase 5, round-by-round polish, polish, language polish, or generate `.article-workflow/05-polish-rounds/` from `.article-workflow/04.5-main-draft/main-draft.md` and `.article-workflow/style-bible.md`.
-priority: P2
+description: "Article multi-phase optimization workflow Phase 5: round-by-round polish. Under the constraint of preserving personal style, iteratively polish the main draft expression across rounds (5.1 trim redundancy → 5.2 adjust rhythm → 5.3 unify terminology). Use when the user asks to execute Phase 5, round-by-round polish, polish, language polish, or generate `.article-workflow/05-polish-rounds/` from `.article-workflow/04.5-main-draft/main-draft.md` and `.article-workflow/style-bible.md`."
+disable-model-invocation: true
 ---
 
 # Article Workflow Polish
+
+这是流程类 Skill，默认仅在用户显式调用 `$article-workflow-polish` 时运行。
 
 This is Phase 5 of the `article-workflow-*` skill series, corresponding to the "round-by-round polish" step of the article optimization workflow.
 

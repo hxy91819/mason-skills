@@ -6,6 +6,8 @@ disable-model-invocation: true
 
 # Auto Review
 
+这是流程类 Skill，默认仅在用户显式调用 `$autoreview` 时运行。
+
 Run the bundled structured review helper as a closeout check. This is code review, not Guardian `auto_review` approval routing.
 
 Codex review is the default when no engine is set. It uses `gpt-5.6-sol` with `high` reasoning by default, then retries once with `gpt-5.6-terra` only when the account cannot access Sol. Claude review is optional and inherits the current Claude Code model and effort unless `--model` or `--thinking` is set.
@@ -325,7 +327,7 @@ CLI flags and environment variables override these defaults. Claude inherits the
 | **claude**          | `claude --model X`         | `claude-fable-5`, `claude-opus-4-8`, `claude-sonnet-4-6`, `claude-haiku-4-5` | `--effort Y`                  | `low`, `medium`, `high`, `xhigh`, `max`                    |
 | **droid**           | currently refused          | Factory model IDs                                                            | `-r, --reasoning-effort Y`    | `off`, `none`, `low`, `medium`, `high`, `xhigh`, `max`     |
 | **copilot**         | currently refused          | Copilot model aliases                                                        | not supported                 | n/a                                                        |
-| **pi**              | `pi --model X`             | `anthropic/claude-sonnet-4`, `openai/gpt-4o`                                 | `--thinking Y`                | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`         |
+| **pi**              | `pi --model X`             | `zai/glm-5.3-flash`, `anthropic/claude-sonnet-4`, `openai/gpt-4o`              | `--thinking Y`                | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`   |
 | **cursor**          | currently refused          | Cursor model aliases                                                         | not supported                 | n/a                                                        |
 | **opencode**        | currently refused          | OpenCode provider/model IDs                                                  | not supported                 | n/a                                                        |
 
@@ -384,7 +386,7 @@ loader such as an untracked `.envrc`; the helper does not write a config file.
 | `AUTOREVIEW_CLAUDE_FALLBACK_MODEL` | Claude-only fallback chain                                                                                                       |
 | `AUTOREVIEW_PROVIDER_ENV_ALLOW`    | Comma-separated custom Pi/OpenCode credential variable names; names must end in a recognized credential suffix                   |
 
-Codex maps thinking to `model_reasoning_effort`. Claude maps thinking to `--effort`. Pi maps thinking to `--thinking`. Only Claude accepts `--fallback-model`; global CLI/env fallback requires at least one Claude reviewer, and engine-specific fallback overrides require that reviewer to be selected. Non-Claude fallback overrides, including `AUTOREVIEW_<NONCLAUDE>_FALLBACK_MODEL`, fail closed instead of being silently ignored.
+Codex maps thinking to `model_reasoning_effort`. Claude maps thinking to `--effort`. Pi maps thinking to `--thinking`; when a fresh native session already reports `max`, omit the flag to keep that default. ACPX `pi-acp` may expose a smaller `thought_level` set, so do not infer its default from native Pi. Only Claude accepts `--fallback-model`; global CLI/env fallback requires at least one Claude reviewer, and engine-specific fallback overrides require that reviewer to be selected. Non-Claude fallback overrides, including `AUTOREVIEW_<NONCLAUDE>_FALLBACK_MODEL`, fail closed instead of being silently ignored.
 
 ## Review engine isolation
 

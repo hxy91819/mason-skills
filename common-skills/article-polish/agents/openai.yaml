@@ -1,0 +1,10 @@
+interface:
+  display_name: "Article Polish"
+  short_description: "按 quick/normal/refined 三档润色与改写文章"
+  default_prompt: "Use $article-polish to polish or rewrite the requested article."
+
+# 混合型：核心是低风险的写作润色，但首次运行有 BLOCKING 的 AskUserQuestion 偏好设置
+# 并写出 EXTEND.md。按 AGENTS.md「无法明确分类取流程类保守默认值」定为仅显式触发；
+# SKILL.md 同步保留 disable-model-invocation，避免不同宿主采用相反默认。
+policy:
+  allow_implicit_invocation: false

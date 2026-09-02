@@ -8,7 +8,7 @@ Use the route selected by the deterministic orchestration resolver; then use `ac
 
 Kiro supports ACPX named sessions and advertises its available models during the ACP handshake. Treat the inherited `HOME` and provider profile as part of the candidate identity: changing `HOME`, partially symlinking a profile, or replacing its config can change Kiro authentication, backend selection, and the advertised model catalog. Preflight and dispatch under the same environment that the configured route will actually inherit. An isolated-home result proves only that isolated profile; it cannot disqualify the real route unless that is the route's intended environment.
 
-Read the exact handshake's model list and choose by Story risk, validator cost, and quota; do not cache a model list in the plan or assume Kiro's current default remains stable. A model rejected because it was not advertised is a route/profile mismatch, not provider or quota exhaustion. Re-resolve against that handshake instead of probing model names learned from another HOME or session.
+Read the exact handshake's model list and apply any configured `model_preference` during session setup, before the first prompt; do not cache a model list in the plan or assume Kiro's current default remains stable. A preference that cannot be honored is recorded as evidence, not treated as a validator failure. `model_contains` remains strict only for workers whose capability depends on that model; on validators it is a non-blocking legacy preference. Re-resolve a route only when such a strict worker requirement fails; never probe model names learned from another HOME or session.
 
 An orchestration candidate is not an ACPX agent merely because a same-named shell wrapper launches a coding CLI. Use a custom candidate only when `acpx config show` resolves it to an ACP-compatible stdio adapter and its ACP initialize/session handshake succeeds. An ordinary interactive CLI wrapper does not qualify.
 
@@ -27,7 +27,15 @@ On orchestrator resume, run `sessions show <role-session>` and compare the recor
 
 Session lifecycle verbs do not share the prompt option shape: close a named session with `sessions close <role-session>`, not `sessions close -s <role-session>`. Check the installed command help before applying prompt-style flags to another verb.
 
-Resolve the role profile before session creation. Select an advertised model. Apply effort only when the handshake or a validated startup argument explicitly supports it; otherwise keep the adapter default, record `effort=default`, and continue. Never guess option names or synthesize model IDs after a rejected setting.
+Resolve the role profile before session creation. Apply any model preference or explicit model setting through the advertised `model` config option before the first prompt, then record the advertised/current model as session evidence. A validator review remains eligible when the provider uses a different model than either configured model field. If the profile intentionally accepts the adapter default, omit an effort setting and record `effort=default` plus any observed default. Otherwise apply the resolved effort through the advertised adapter config ID: Codex ACP uses `reasoning_effort`; Pi ACP uses `thought_level`; a Kiro candidate may use a validated native `--effort` startup flag. If no option/value is advertised, keep the adapter default, record `effort=default`, and continue. Never guess option names or synthesize model IDs after a rejected setting.
+
+When a candidate has `model_preference`, set it before effort and before the first prompt:
+
+```bash
+acpx --cwd <repo> <agent> set model <model-preference> -s <role-session>
+```
+
+Require `model set: <model-preference>` (or an equivalent adapter confirmation). If a validator cannot honor the recommendation, record the actual model and continue; only a worker capability that declares a strict `model_contains` dependency may make a mismatch a routing failure.
 
 Current `codex-acp` exposes model and effort as separate config options. For a registered Codex candidate such as `codex`, `codexp`, or `codexl`, apply the resolved profile after `sessions new` and the baseline `sessions show`, before the first prompt:
 
@@ -35,7 +43,7 @@ Current `codex-acp` exposes model and effort as separate config options. For a r
 acpx --cwd <repo> <agent> set reasoning_effort <resolved-effort> -s <role-session>
 ```
 
-Continue with that effort only after the command reports `config set: reasoning_effort=<resolved-effort>`. If the option or value is rejected, record `effort=default` and dispatch without trying aliases such as `thought_level` or a synthesized `<model>[<effort>]` ID. Reapply the newly resolved effort when a replacement attempt changes candidate, model, or difficulty.
+Continue with that effort only after the command reports `config set: reasoning_effort=<resolved-effort>`. For Pi ACP, use the same command shape with `thought_level`; `pi-acp@0.0.33` advertises `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`, so a requested `max` is not accepted through this adapter even though the native Pi RPC/CLI supports it. If the profile accepts the adapter default, omit this command; a native Pi installation whose fresh session reports `max` can therefore keep that default. If the option or value is rejected, record `effort=default` and dispatch without trying aliases or a synthesized `<model>[<effort>]` ID. Reapply the newly resolved model and effort when a replacement attempt changes candidate, model, or difficulty.
 
 ## Dispatch a wave
 

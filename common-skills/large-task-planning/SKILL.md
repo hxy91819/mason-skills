@@ -6,6 +6,8 @@ disable-model-invocation: true
 
 # Large Task Planning
 
+这是流程类 Skill，默认仅在用户显式调用 `$large-task-planning` 时运行。
+
 把大型工程作为一个可持续推进的 Goal：先锁定目标与黄金验收契约，再用独立 Epic、少量结果型 Story、简洁的人读一览和脚本维护的 Agent JSON 推进。Story 是 Agent 的单会话工程单元；计划是当前证据下的建议路径，可以围绕不变目标持续调整。
 
 JSON 字段、模板和命令细节见 [`agent-schema.md`](agent-schema.md)。可重复示例提示词与触发脚本见 [`examples/token-login/`](examples/token-login/)。维护与 orchestration 共享的职责边界、状态契约或闭环语义时，先读[联合核心设计](../../docs/large-task-system-design.md)；普通规划任务不加载它。
@@ -125,7 +127,7 @@ language: <BCP-47，例如 zh-Hans、zh-Hant 或 en>
 
 `global-design` 是整个 Epic 唯一的方案源。先识别 Epic 内各个独立能力流，再分别用普通语言说明最终产品形态和端到端路径。不同参与者、生命周期或系统边界的能力各用一张最小图；不要因为它们属于同一 Epic，就增加不存在的箭头、顺序或依赖。共享组件可以在多张图中重复作为上下文，只有真实的数据流或部署依赖才能连线。
 
-每张图展示一个能力的系统边界、主要数据或请求流、组件职责和必要的部署或分发关系；不放文件级实现、命令或动态版本。图使用 Mermaid `flowchart`/`sequenceDiagram` 或 fenced `text` 框图，并用粗体短句标明对应能力。使用 Mermaid 时按 `mermaid-lint` 的安全基线编写，并用真实渲染器校验。
+每张图展示一个能力的系统边界、主要数据或请求流、组件职责和必要的部署或分发关系；不放文件级实现、命令或动态版本。图使用 Mermaid `flowchart`/`sequenceDiagram` 或 fenced `text` 框图，并用粗体短句标明对应能力。Mermaid 默认采用纵向布局：`flowchart` 使用 `TD`/`TB`，让阶段、依赖和反馈从上到下阅读；`sequenceDiagram` 保持参与者交互按时间自上而下展开。只有当节点或参与者过多、纵向布局会明显破坏可读性时才使用横向布局，并在图旁简要说明原因。使用 Mermaid 时按 `mermaid-lint` 的安全基线编写，并用真实渲染器校验。
 
 Epic 按共同业务目标或发布边界组织，不按数据库、API、测试等技术层拆。一个 Epic 可以包含多个独立交付结果；图应保留这些结果的独立性。方向已验证且多个 Epic 会反复修改同一核心组件时，优先合并为一个较大 Epic；只有风险边界、反馈窗口或独立价值确实不同才拆分。
 

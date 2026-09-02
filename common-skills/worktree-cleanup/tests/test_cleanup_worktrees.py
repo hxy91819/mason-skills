@@ -410,7 +410,7 @@ else:
         self.assertIn("ignored_roots_deleted_count: 51", rendered)
         self.assertIn("ignored_roots_deleted_sample_truncated: yes", rendered)
 
-    def test_git_guard_task_authorization_is_used_when_available(self) -> None:
+    def test_git_guard_user_authorization_is_used(self) -> None:
         _, report = self.audit()
         token = self.approval_for(report, self.worktree)
         git_wrapper = self.fake_bin / "git"
@@ -419,12 +419,13 @@ else:
 import os
 import sys
 
-if sys.argv[1:] == ["--wrapper-help"]:
-    print("--task-authorized=<reason>")
+args = sys.argv[1:]
+if args[:1] == ["--wrapper-help"]:
+    print("--user-approved=<reason>")
     sys.exit(0)
-if len(sys.argv) > 1 and sys.argv[1].startswith("--task-authorized="):
-    os.execv("/usr/bin/git", ["git", *sys.argv[2:]])
-os.execv("/usr/bin/git", ["git", *sys.argv[1:]])
+if args and args[0].startswith("--user-approved="):
+    os.execv("/usr/bin/git", ["git", *args[1:]])
+os.execv("/usr/bin/git", ["git", *args])
 """,
             encoding="utf-8",
         )
@@ -449,10 +450,13 @@ os.execv("/usr/bin/git", ["git", *sys.argv[1:]])
 import os
 import sys
 
-if sys.argv[1:3] == ["worktree", "remove"] and sys.argv[3].endswith("task-123"):
+args = sys.argv[1:]
+if args and args[0].startswith("--user-approved="):
+    args = args[1:]
+if args[:2] == ["worktree", "remove"] and args[2].endswith("task-123"):
     print("simulated worktree guard", file=sys.stderr)
     sys.exit(77)
-os.execv("/usr/bin/git", ["git", *sys.argv[1:]])
+os.execv("/usr/bin/git", ["git", *args])
 """,
             encoding="utf-8",
         )

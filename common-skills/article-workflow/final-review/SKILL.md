@@ -1,10 +1,12 @@
 ---
 name: article-workflow-final-review
-description: Phase 6 of the article staged optimization workflow: Final refinement and reader testing. Use when the user asks to execute Phase 6, final review, final refinement, pre-publish check, insert illustrations, or generate `.article-workflow/06-final-review/final.md` and `.article-workflow/06-final-review/06-final-review.md` from `polished-draft.md`, `style-bible.md`, and optional visual plan assets.
-priority: P2
+description: "Phase 6 of the article staged optimization workflow: Final refinement and reader testing. Use when the user asks to execute Phase 6, final review, final refinement, pre-publish check, insert illustrations, or generate `.article-workflow/06-final-review/final.md` and `.article-workflow/06-final-review/06-final-review.md` from `polished-draft.md`, `style-bible.md`, and optional visual plan assets."
+disable-model-invocation: true
 ---
 
 # Article Workflow Final Review
+
+这是流程类 Skill，默认仅在用户显式调用 `$article-workflow-final-review` 时运行。
 
 This is Phase 6 of the `article-workflow-*` skill series, corresponding to "Final Refinement and Reader Testing" in the article optimization workflow overview.
 

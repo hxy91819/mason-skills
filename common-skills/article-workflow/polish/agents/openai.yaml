@@ -1,0 +1,7 @@
+interface:
+  display_name: "Article Workflow Polish"
+  short_description: "按轮次润色文章表达并保留文风"
+  default_prompt: "Use $article-workflow-polish to polish the article in confirmed rounds while preserving its voice."
+
+policy:
+  allow_implicit_invocation: false

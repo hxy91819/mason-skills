@@ -35,6 +35,7 @@ CANDIDATE_FIELDS = {
     "acpx_command",
     "native_args",
     "model_contains",
+    "model_preference",
     "reason",
 }
 PROFILE_FIELDS = {"name", "match", "effort_by_difficulty"}
@@ -261,7 +262,7 @@ def _validate_candidate(value: Any, path: Path, field: str) -> dict[str, Any]:
         _error(path, field, "must be an object")
     _exact_fields(value, CANDIDATE_FIELDS, path, field, required={"agent"})
     _string(value["agent"], path, f"{field}.agent", token=True)
-    for name in ("acpx_command", "model_contains", "reason"):
+    for name in ("acpx_command", "model_contains", "model_preference", "reason"):
         if name in value:
             _string(value[name], path, f"{field}.{name}")
     if "native_args" in value:

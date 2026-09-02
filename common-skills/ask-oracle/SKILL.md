@@ -6,6 +6,8 @@ disable-model-invocation: true
 
 # Ask Oracle
 
+这是流程类 Skill，默认仅在用户显式调用 `$ask-oracle` 时运行。
+
 Act only as a seeker: frame the problem, supply the decision context, and ask the oracle to provide the technical judgment. The brief must contain no agent-authored solution, recommendation, preference, or ranked options.
 
 ## Process

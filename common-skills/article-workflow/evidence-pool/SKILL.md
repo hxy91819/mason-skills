@@ -1,10 +1,12 @@
 ---
 name: article-workflow-evidence-pool
-description: Phase 2 of the article stage-by-stage optimization workflow: Fact-checking & Evidence Pool. Use when the user asks to execute Phase 2, fact-checking, evidence pool, fact-check, or generate `.article-workflow/02-evidence-pool/` from `.article-workflow/brief.md`, `00-cleaned-sources/`, `01-section-reviews/` and `sources/references/`.
-priority: P2
+description: "Phase 2 of the article stage-by-stage optimization workflow: Fact-checking & Evidence Pool. Use when the user asks to execute Phase 2, fact-checking, evidence pool, fact-check, or generate `.article-workflow/02-evidence-pool/` from `.article-workflow/brief.md`, `00-cleaned-sources/`, `01-section-reviews/` and `sources/references/`."
+disable-model-invocation: true
 ---
 
 # Article Workflow Evidence Pool
+
+这是流程类 Skill，默认仅在用户显式调用 `$article-workflow-evidence-pool` 时运行。
 
 This is Phase 2 of the `article-workflow-*` skill series, corresponding to "Fact-checking & Evidence Pool" in the article optimization workflow.
 

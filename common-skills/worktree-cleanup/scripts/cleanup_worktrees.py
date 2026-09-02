@@ -863,9 +863,9 @@ def revalidate_local_state(entry: dict[str, Any], repo_root: Path) -> str | None
     return None
 
 
-def git_supports_task_authorization(repo_root: Path) -> bool:
+def git_supports_user_approval(repo_root: Path) -> bool:
     result = run_command(["git", "--wrapper-help"], cwd=repo_root, check=False)
-    return result.returncode == 0 and "--task-authorized" in result.stdout
+    return result.returncode == 0 and "--user-approved" in result.stdout
 
 
 def apply_candidates(summary: dict[str, Any], approved_tokens: list[str]) -> None:
@@ -905,7 +905,7 @@ def apply_candidates(summary: dict[str, Any], approved_tokens: list[str]) -> Non
     batch_root.chmod(0o700)
     summary["backup_root"] = str(batch_root)
     manifest_path = batch_root / "manifest.json"
-    guard_supports_task_authorization = git_supports_task_authorization(
+    guard_supports_user_approval = git_supports_user_approval(
         Path(summary["common_repo_root"])
     )
 
@@ -977,11 +977,14 @@ def apply_candidates(summary: dict[str, Any], approved_tokens: list[str]) -> Non
             fail_candidate(state_error)
             continue
 
+        # 单级授权：wrapper 唯一的授权参数是 --user-approved。脚本已预先验证
+        # 目标干净且远端可证明，reason 记录该预检结论供审计；wrapper 不在时
+        # 直接用普通 git（探测见 git_supports_user_approval）。
         remove_args = ["git"]
-        if guard_supports_task_authorization:
+        if guard_supports_user_approval:
             remove_args.append(
-                "--task-authorized="
-                f"$worktree-cleanup approval {candidate['approval_token'][:12]} "
+                "--user-approved="
+                f"worktree-cleanup approval {candidate['approval_token'][:12]} "
                 "for a clean remotely durable worktree"
             )
         remove_args.extend(["worktree", "remove", str(worktree_path)])

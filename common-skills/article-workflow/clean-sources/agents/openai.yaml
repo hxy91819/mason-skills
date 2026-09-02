@@ -1,0 +1,7 @@
+interface:
+  display_name: "Article Workflow Clean Sources"
+  short_description: "清理口述稿转写错误"
+  default_prompt: "Use $article-workflow-clean-sources to clean the article's oral-draft sources."
+
+policy:
+  allow_implicit_invocation: false

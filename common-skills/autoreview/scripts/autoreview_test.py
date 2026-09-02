@@ -359,6 +359,15 @@ class AutoreviewCompatibilityTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             namespace["parse_args"](["--engine", "cursor"])
 
+    def test_pi_max_thinking_is_accepted(self) -> None:
+        with mock.patch.object(
+            sys,
+            "argv",
+            ["autoreview", "--engine", "pi", "--thinking", "max"],
+        ):
+            args = AUTOREVIEW.reviewer_args(AUTOREVIEW.parse_args())[0]
+        self.assertEqual(args.thinking, "max")
+
     def test_cursor_agent_bin_cli_alias(self) -> None:
         with mock.patch.object(
             sys,

@@ -1,10 +1,12 @@
 ---
 name: article-workflow-brief
-description: Article phased optimization workflow Phase 0: Generate an editorial Brief from oral drafts, outlines, and reference materials. Use when the user asks to create/update an article brief, editorial Brief, article brief, or mentions `.article-workflow/brief.md`, oral draft, outline, or article workflow Phase 0. Reads `.article-workflow/sources/outline.md` and `.article-workflow/sources/oral-draft/`, asks author decisions through dialog, and writes the final `.article-workflow/brief.md`.
-priority: P2
+description: "Article phased optimization workflow Phase 0: Generate an editorial Brief from oral drafts, outlines, and reference materials. Use when the user asks to create/update an article brief, editorial Brief, article brief, or mentions `.article-workflow/brief.md`, oral draft, outline, or article workflow Phase 0. Reads `.article-workflow/sources/outline.md` and `.article-workflow/sources/oral-draft/`, asks author decisions through dialog, and writes the final `.article-workflow/brief.md`."
+disable-model-invocation: true
 ---
 
 # Article Workflow Brief
+
+这是流程类 Skill，默认仅在用户显式调用 `$article-workflow-brief` 时运行。
 
 This is the first step in the `article-workflow-*` skill series, corresponding to Phase 0 of the article optimization workflow.
 

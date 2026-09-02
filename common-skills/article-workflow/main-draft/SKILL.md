@@ -1,10 +1,12 @@
 ---
 name: article-workflow-main-draft
-description: Phase 4.5 of the article phased optimization workflow: Integrate main draft. Use when the user asks to execute Phase 4.5, integrate main draft, combine into a continuous article, main draft, or generate `.article-workflow/04.5-main-draft/` from `brief.md`, `03.5-ai-edit-pass/revised-sources/` (or `00-cleaned-sources/`), `02-evidence-pool/`, `04-global-review/global-review.md`.
-priority: P2
+description: "Phase 4.5 of the article phased optimization workflow: Integrate main draft. Use when the user asks to execute Phase 4.5, integrate main draft, combine into a continuous article, main draft, or generate `.article-workflow/04.5-main-draft/` from `brief.md`, `03.5-ai-edit-pass/revised-sources/` (or `00-cleaned-sources/`), `02-evidence-pool/`, `04-global-review/global-review.md`."
+disable-model-invocation: true
 ---
 
 # Article Workflow Main Draft
+
+这是流程类 Skill，默认仅在用户显式调用 `$article-workflow-main-draft` 时运行。
 
 This is Phase 4.5 of the `article-workflow-*` skill series, corresponding to "Integrate Main Draft" in the article optimization workflow overview.
 

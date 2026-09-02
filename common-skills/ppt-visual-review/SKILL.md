@@ -6,6 +6,8 @@ disable-model-invocation: true
 
 # PPT Visual Review
 
+这是流程类 Skill，默认仅在用户显式调用 `$ppt-visual-review` 时运行。
+
 对一份 PPT 式 HTML（每页一屏、固定画布）做版式验收：**每一页的节奏是不是同一套**。主审四件事——
 块间**间隔**、页**边距**、区域**留白**、并排列的**对称**。判定以真实渲染的图为准，测量只是线索。
 

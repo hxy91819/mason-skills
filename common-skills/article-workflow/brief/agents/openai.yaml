@@ -1,0 +1,7 @@
+interface:
+  display_name: "Article Workflow Brief"
+  short_description: "从草稿与资料生成编辑 Brief"
+  default_prompt: "Use $article-workflow-brief to create or update the article editorial brief."
+
+policy:
+  allow_implicit_invocation: false

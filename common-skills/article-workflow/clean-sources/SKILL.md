@@ -1,10 +1,12 @@
 ---
 name: article-workflow-clean-sources
-description: Phase 0.5 of the article optimization workflow: clean oral draft transcription errors. Use when the user asks to clean oral drafts, organize oral drafts, execute Phase 0.5, or generate `.article-workflow/00-cleaned-sources/` from `.article-workflow/sources/oral-draft/` using `.article-workflow/brief.md`.
-priority: P2
+description: "Phase 0.5 of the article optimization workflow: clean oral draft transcription errors. Use when the user asks to clean oral drafts, organize oral drafts, execute Phase 0.5, or generate `.article-workflow/00-cleaned-sources/` from `.article-workflow/sources/oral-draft/` using `.article-workflow/brief.md`."
+disable-model-invocation: true
 ---
 
 # Article Workflow Clean Sources
+
+这是流程类 Skill，默认仅在用户显式调用 `$article-workflow-clean-sources` 时运行。
 
 This is Phase 0.5 of the `article-workflow-*` skill series, corresponding to "oral draft cleaning" in the article optimization workflow overview.
 

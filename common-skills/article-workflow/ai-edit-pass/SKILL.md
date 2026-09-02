@@ -1,10 +1,12 @@
 ---
 name: article-workflow-ai-edit-pass
-description: Article phased optimization workflow Phase 3.5: AI executes edits based on confirmed feedback. Use when the user asks to execute Phase 3.5, AI edit pass, edit based on confirmed feedback, or generate `.article-workflow/03.5-ai-edit-pass/` from `brief.md`, `00-cleaned-sources/`, `01-section-reviews/`, `02-evidence-pool/`.
-priority: P2
+description: "Article phased optimization workflow Phase 3.5: AI executes edits based on confirmed feedback. Use when the user asks to execute Phase 3.5, AI edit pass, edit based on confirmed feedback, or generate `.article-workflow/03.5-ai-edit-pass/` from `brief.md`, `00-cleaned-sources/`, `01-section-reviews/`, `02-evidence-pool/`."
+disable-model-invocation: true
 ---
 
 # Article Workflow AI Edit Pass
+
+这是流程类 Skill，默认仅在用户显式调用 `$article-workflow-ai-edit-pass` 时运行。
 
 This is Phase 3.5 of the `article-workflow-*` skill series, corresponding to "AI executes edits based on confirmed feedback" in the article optimization workflow.
 

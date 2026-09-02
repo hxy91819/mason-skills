@@ -1,0 +1,7 @@
+interface:
+  display_name: "Article Workflow Visual Plan"
+  short_description: "规划文章插图与视觉辅助"
+  default_prompt: "Use $article-workflow-visual-plan to plan the article's illustrations and visual aids."
+
+policy:
+  allow_implicit_invocation: false

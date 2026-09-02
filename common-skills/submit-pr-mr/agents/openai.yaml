@@ -1,0 +1,7 @@
+interface:
+  display_name: "Submit PR/MR"
+  short_description: "按仓库规则与四要素规范提交 MR/PR"
+  default_prompt: "Use $submit-pr-mr to prepare this MR/PR description and submit it following the repository's rules."
+
+policy:
+  allow_implicit_invocation: false

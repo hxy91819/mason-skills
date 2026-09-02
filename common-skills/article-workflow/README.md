@@ -58,15 +58,19 @@ Phase 8    publish                  Sync final draft to publishing channels
 
 ### Invoke a single phase
 
-Tell the agent which phase you want to run. Each skill's `description` field lists its trigger phrases:
+Each phase is an explicit-only workflow Skill. On Codex, Pi, and OpenCode invoke it with
+`$skill-name` (for example `$article-workflow-section-review`); on Kimi use
+`/skill:skill-name`. The `description` field lists each Skill's trigger phrases:
 
 ```
-/run Phase 1 section review
+$article-workflow-section-review
 ```
 
 ### Run the full workflow
 
-Start from Phase 0 and proceed in order. After each phase, review the outputs before moving to the next one.
+Invoke each selected phase explicitly in order, starting from Phase 0; explicit-only
+means phases are not chained or executed automatically. After each phase, review the
+outputs before moving to the next one.
 
 ### Skip phases
 
@@ -104,7 +108,8 @@ Copy the entire `article-workflow/` directory into your skills location:
 - **Personal** — `~/.cursor/skills/article-workflow/`
 - **Project** — `.cursor/skills/article-workflow/`
 
-Each subdirectory contains its own `SKILL.md` and is discovered automatically.
+Each subdirectory contains its own `SKILL.md` and can be discovered by the host; the
+phase Skills remain explicit-only and run only after their `$skill-name` invocation.
 
 ## License
 

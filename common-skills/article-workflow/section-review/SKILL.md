@@ -1,10 +1,12 @@
 ---
 name: article-workflow-section-review
-description: Phase 1 of the article staged optimization workflow: section-by-section narrative review. Use when the user asks to execute Phase 1, section-by-section narrative review, section review, or generate `.article-workflow/01-section-reviews/` from `.article-workflow/brief.md` and `.article-workflow/00-cleaned-sources/`.
-priority: P2
+description: "Phase 1 of the article staged optimization workflow: section-by-section narrative review. Use when the user asks to execute Phase 1, section-by-section narrative review, section review, or generate `.article-workflow/01-section-reviews/` from `.article-workflow/brief.md` and `.article-workflow/00-cleaned-sources/`."
+disable-model-invocation: true
 ---
 
 # Article Workflow Section Review
+
+这是流程类 Skill，默认仅在用户显式调用 `$article-workflow-section-review` 时运行。
 
 This is Phase 1 of the `article-workflow-*` skill series, corresponding to "Section-by-Section Narrative Review" in the article optimization workflow.
 

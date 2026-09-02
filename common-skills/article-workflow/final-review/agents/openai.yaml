@@ -1,0 +1,7 @@
+interface:
+  display_name: "Article Workflow Final Review"
+  short_description: "做发布前终审与读者测试"
+  default_prompt: "Use $article-workflow-final-review to run the article's final review and reader test."
+
+policy:
+  allow_implicit_invocation: false

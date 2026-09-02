@@ -1,7 +1,6 @@
 ---
 name: what-changed
 description: 用平实语言说明上一轮、当前 diff 或当前 PR/MR 改了什么、为什么这样改。
-disable-model-invocation: true
 ---
 
 # What Changed

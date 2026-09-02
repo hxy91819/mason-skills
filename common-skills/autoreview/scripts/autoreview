@@ -811,7 +811,7 @@ THINKING_LEVELS_BY_ENGINE = {
     "claude": {"low", "medium", "high", "xhigh", "max"},
     "droid": {"off", "none", "low", "medium", "high", "xhigh", "max"},
     "copilot": set(),
-    "pi": {"off", "minimal", "low", "medium", "high", "xhigh"},
+    "pi": {"off", "minimal", "low", "medium", "high", "xhigh", "max"},
     "opencode": {"minimal", "low", "medium", "high", "max"},
     "cursor": set(),
 }
@@ -12036,7 +12036,7 @@ def parse_args() -> argparse.Namespace:
         action="append",
         help="Model for all reviewers or engine=model. Repeatable. Defaults: codex=gpt-5.6-sol with an access-only gpt-5.6-terra retry. Claude inherits the current Claude Code model unless this flag or AUTOREVIEW_CLAUDE_MODEL is set.",
     )
-    parser.add_argument("--thinking", action="append", help="Thinking/effort for all reviewers or engine=level. Repeatable. Codex: none, minimal, low, medium, high, xhigh, max. Claude: low, medium, high, xhigh, max. Droid: off, none, low, medium, high. Pi: off, minimal, low, medium, high, xhigh. OpenCode: minimal, low, medium, high, max. Cursor: none.")
+    parser.add_argument("--thinking", action="append", help="Thinking/effort for all reviewers or engine=level. Repeatable. Codex: none, minimal, low, medium, high, xhigh, max. Claude: low, medium, high, xhigh, max. Droid: off, none, low, medium, high, xhigh, max. Pi: off, minimal, low, medium, high, xhigh, max. OpenCode: minimal, low, medium, high, max. Cursor: none.")
     parser.add_argument(
         "--fallback-model",
         action="append",

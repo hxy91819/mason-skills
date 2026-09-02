@@ -3,35 +3,33 @@
   "routing": {
     "worker": {
       "default": [
-        { "agent": "codexp" },
-        { "agent": "codex" },
-        { "agent": "codexl" },
-        { "agent": "kiro" }
+        { "agent": "codexp", "model_preference": "gpt-5.6-sol" },
+        { "agent": "codex", "model_preference": "gpt-5.6-sol" },
+        { "agent": "codexl", "model_preference": "gpt-5.6-sol" },
+        { "agent": "kiro", "model_preference": "gpt-5.6-sol" }
       ],
       "frontend": [
         { "agent": "kimi" },
-        { "agent": "codexl" },
-        { "agent": "codex" },
-        { "agent": "codexp" },
-        { "agent": "kiro" }
+        { "agent": "codexl", "model_preference": "gpt-5.6-sol" },
+        { "agent": "codex", "model_preference": "gpt-5.6-sol" },
+        { "agent": "codexp", "model_preference": "gpt-5.6-sol" },
+        { "agent": "kiro", "model_preference": "gpt-5.6-sol" }
       ]
     },
     "validator": {
       "default": [
         {
           "agent": "pi",
-          "model_contains": "deepseek-v4-flash"
+          "model_preference": "zai/glm-5.3-flash"
         },
         {
           "agent": "kiro",
-          "acpx_command": "kiro-cli-chat acp --model gpt-5.6-luna --effort xhigh",
+          "acpx_command": "kiro-cli-chat acp --effort xhigh",
           "native_args": [
-            "--model",
-            "gpt-5.6-luna",
             "--effort",
             "xhigh"
           ],
-          "model_contains": "luna",
+          "model_preference": "gpt-5.6-luna",
           "reason": "Luna keeps lightweight validation focused; the default Sol tends to broaden review scope."
         }
       ]
@@ -80,6 +78,7 @@
     {
       "name": "kimi-worker",
       "match": {
+        "role": "worker",
         "agent": "kimi"
       },
       "effort_by_difficulty": {
@@ -90,10 +89,10 @@
       }
     },
     {
-      "name": "pi-deepseek-v4-flash",
+      "name": "pi-validator",
       "match": {
-        "agent": "pi",
-        "model_contains": "deepseek-v4-flash"
+        "role": "validator",
+        "agent": "pi"
       },
       "effort_by_difficulty": {
         "routine": "high",
@@ -105,6 +104,7 @@
     {
       "name": "kiro-worker",
       "match": {
+        "role": "worker",
         "agent": "kiro"
       },
       "effort_by_difficulty": {
@@ -118,8 +118,7 @@
       "name": "kiro-luna-validator",
       "match": {
         "role": "validator",
-        "agent": "kiro",
-        "model_contains": "luna"
+        "agent": "kiro"
       },
       "effort_by_difficulty": {
         "routine": "xhigh",

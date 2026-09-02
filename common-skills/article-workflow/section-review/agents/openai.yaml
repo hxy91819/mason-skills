@@ -1,0 +1,7 @@
+interface:
+  display_name: "Article Workflow Section Review"
+  short_description: "逐节审查文章叙事与材料选择"
+  default_prompt: "Use $article-workflow-section-review to review the article section by section."
+
+policy:
+  allow_implicit_invocation: false

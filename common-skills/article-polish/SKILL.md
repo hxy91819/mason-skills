@@ -1,7 +1,7 @@
 ---
 name: article-polish
 description: Polishes and improves article writing with three modes - quick (direct polish), normal (analyze then polish), and refined (analyze, polish, review, finalize). Supports custom style preferences, target audience tuning, and writing goals via EXTEND.md. Use when the user asks to polish, rewrite, improve, condense, expand, or refine articles and writing.
-version: 1.2.0
+disable-model-invocation: true
 metadata:
   openclaw:
     homepage: https://github.com/JimLiu/baoyu-skills/tree/main/skills/baoyu-translate
@@ -12,6 +12,8 @@ metadata:
 ---
 
 # Article Polish
+
+这是混合型 Skill，默认仅在用户显式调用 `$article-polish` 时运行。
 
 Three-mode writing improvement skill: **quick** for direct polishing, **normal** for analysis-informed improvement, **refined** for full publication-quality workflow with review and finalization.
 

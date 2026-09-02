@@ -1,10 +1,12 @@
 ---
 name: article-workflow-publish
-description: Article phased optimization workflow Phase 8: sync final.md to publishing channels (internal wiki / WeChat Official Account / Zhihu, etc.). Use when the user asks to publish to internal wiki, sync to channels, sync final changes, channel adaptation, publish, sync-publish, or mentions `.article-workflow/08-publish/` image-map.json. Generates `.article-workflow/08-publish/<channel>/<channel>-meta.md` and `<channel>-body.md` from `06-final-review/final.md` plus image mapping, runs machine lint, then LLM layer scan (report only, no draft modifications).
-priority: P2
+description: "Article phased optimization workflow Phase 8: sync final.md to publishing channels (internal wiki / WeChat Official Account / Zhihu, etc.). Use when the user asks to publish to internal wiki, sync to channels, sync final changes, channel adaptation, publish, sync-publish, or mentions `.article-workflow/08-publish/` image-map.json. Generates `.article-workflow/08-publish/{channel}/{channel}-meta.md` and `{channel}-body.md` from `06-final-review/final.md` plus image mapping, runs machine lint, then LLM layer scan (report only, no draft modifications)."
+disable-model-invocation: true
 ---
 
 # Article Workflow Publish
+
+这是流程类 Skill，默认仅在用户显式调用 `$article-workflow-publish` 时运行。
 
 This is Phase 8 of the `article-workflow-*` series, corresponding to "Channel Publishing & Syncing" in the article optimization workflow.
 

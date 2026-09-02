@@ -43,9 +43,9 @@ class SharedWorktreeGuardTest(unittest.TestCase):
         self.assertEqual(result.returncode, 77)
         self.assertTrue(self.worktree.exists())
 
-    def test_task_authorization_removes_a_clean_registered_worktree(self) -> None:
+    def test_user_authorization_removes_a_clean_registered_worktree(self) -> None:
         result = self.guard(
-            "--task-authorized=the user asked to clean this verified obsolete worktree",
+            "--user-approved=the user asked to clean this verified obsolete worktree",
             "worktree",
             "remove",
             str(self.worktree),
@@ -54,25 +54,17 @@ class SharedWorktreeGuardTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(self.worktree.exists())
 
-    def test_task_authorization_keeps_a_dirty_worktree_blocked(self) -> None:
-        (self.worktree / "untracked.txt").write_text("keep\n", encoding="utf-8")
+    def test_user_authorization_requires_a_reason(self) -> None:
+        result = self.guard("--user-approved", "worktree", "remove", str(self.worktree))
 
-        result = self.guard(
-            "--task-authorized=the user asked to clean this verified obsolete worktree",
-            "worktree",
-            "remove",
-            str(self.worktree),
-        )
-
-        self.assertEqual(result.returncode, 77)
+        self.assertEqual(result.returncode, 64)
         self.assertTrue(self.worktree.exists())
 
-    def test_task_authorization_rejects_force_removal(self) -> None:
+    def test_task_authorized_flag_is_no_longer_accepted(self) -> None:
         result = self.guard(
             "--task-authorized=the user asked to clean this verified obsolete worktree",
             "worktree",
             "remove",
-            "--force",
             str(self.worktree),
         )
 

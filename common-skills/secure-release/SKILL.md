@@ -1,9 +1,12 @@
 ---
 name: secure-release
 description: Design, integrate, migrate, and verify fail-closed software release pipelines with immutable source identity, one hashed artifact set, least privilege, OIDC publication, registry smoke tests, and GitHub Release readback. Use when creating or reviewing release automation for npm or when evaluating adapters for PyPI, Cargo, Go/GitHub binaries, or containers; only the bundled npm adapter is currently implemented.
+disable-model-invocation: true
 ---
 
 # Secure Release
+
+这是流程类 Skill，默认仅在用户显式调用 `$secure-release` 时运行。
 
 Keep the agent-facing integration workflow separate from the runtime release
 components. A target repository's CI must work after this skill is removed.

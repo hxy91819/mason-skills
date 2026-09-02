@@ -1,0 +1,7 @@
+interface:
+  display_name: "Article Workflow Main Draft"
+  short_description: "按确认决策整合连续主稿"
+  default_prompt: "Use $article-workflow-main-draft to integrate the confirmed article structure into a main draft."
+
+policy:
+  allow_implicit_invocation: false

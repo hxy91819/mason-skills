@@ -1,0 +1,7 @@
+interface:
+  display_name: "Article Workflow Evidence Pool"
+  short_description: "核查事实并整理可验证证据"
+  default_prompt: "Use $article-workflow-evidence-pool to build a verifiable evidence pool for the article."
+
+policy:
+  allow_implicit_invocation: false

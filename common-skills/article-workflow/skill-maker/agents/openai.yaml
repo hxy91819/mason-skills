@@ -1,0 +1,7 @@
+interface:
+  display_name: "Article Workflow Skill Maker"
+  short_description: "把已验证的文章阶段沉淀成 Skill"
+  default_prompt: "Use $article-workflow-skill-maker to turn the verified article phase into a reusable skill."
+
+policy:
+  allow_implicit_invocation: false

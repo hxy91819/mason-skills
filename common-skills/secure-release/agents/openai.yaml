@@ -2,3 +2,6 @@ interface:
   display_name: "Secure Release"
   short_description: "Integrate fail-closed, attestable release pipelines"
   default_prompt: "Use $secure-release to migrate this repository to a fail-closed release pipeline."
+
+policy:
+  allow_implicit_invocation: false

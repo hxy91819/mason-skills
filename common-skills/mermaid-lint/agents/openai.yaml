@@ -1,0 +1,7 @@
+interface:
+  display_name: "Mermaid Lint"
+  short_description: "用真实渲染器校验并修复 Markdown 里的 Mermaid 图"
+  default_prompt: "Use $mermaid-lint to validate and fix the Mermaid diagrams in the requested files."
+
+policy:
+  allow_implicit_invocation: true

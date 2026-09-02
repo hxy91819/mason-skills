@@ -214,7 +214,7 @@ class ResolveOrchestrationConfigTest(unittest.TestCase):
                     "default": [
                         {
                             "agent": "codexp",
-                            "model_contains": "gpt-5.6",
+                            "model_preference": "gpt-5.6",
                         }
                     ]
                 },
@@ -237,7 +237,7 @@ class ResolveOrchestrationConfigTest(unittest.TestCase):
         )
         self.assertEqual(
             config["routing"]["validator"]["default"],
-            [{"agent": "codexp", "model_contains": "gpt-5.6"}],
+            [{"agent": "codexp", "model_preference": "gpt-5.6"}],
         )
         self.assertEqual(
             [item["name"] for item in config["profiles"]],
@@ -268,7 +268,6 @@ class ResolveOrchestrationConfigTest(unittest.TestCase):
         self.assertEqual(payload, {})
         self.assertIn("profiles[0].match.role", result.stderr)
         self.assertIn("must be worker or validator", result.stderr)
-
 
 if __name__ == "__main__":
     unittest.main()
