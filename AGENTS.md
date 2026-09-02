@@ -23,6 +23,17 @@
 3. 向用户报告：skill 名称、分类、默认策略、判断依据、配置文件，以及显式触发时的 `$skill-name` 用法；若采用保守默认，还要说明如何请求改为允许隐式触发。
 4. 用 skill validator、YAML 解析和 `git diff --check` 验证；若配置或分类与用户明确要求冲突，以用户要求为准并在报告中说明。
 
+## Skill 清单维护
+
+`config/skill-symlinks.yaml` 是本仓库推荐 user-scope 软链的单一事实源：记录哪些 skill 推荐软链到全局（`~/.agents/skills`）。其他电脑拉取本仓库后，依据它即可复现同一套 skill 配置，无需口口相传。
+
+- 在 `common-skills/` 新增 skill 且用户要求软链到 user scope 时，必须同步登记清单：
+  `python3 common-skills/skill-manifest-sync/scripts/sync_skill_symlinks.py --mode register --skill <name> [--note "..."]`
+- 删除或重命名 skill 时用 `--mode remove --skill <name>` 同步清单，避免留下悬空条目。
+- 交付涉及 skill 增删的改动前，跑一次 `--mode check` 确认清单与本机实际软链一致。
+- 本机同步入口是 `$skill-manifest-sync`：`--mode check` 预览、`--mode apply` 执行。apply 对「指向本仓库但不在清单里」的软链逐个提示删除；用户明确说保留时写入本机白名单 `~/.agents/skill-sync-whitelist.yaml`。白名单属于本机环境偏好，不提交 Git，也不得加进仓库的 `.gitignore` 之外的任何清单文件。
+- 脚本只管理直接指向本仓库的软链：真实目录和经其他工作区中转的链接一律不碰，冲突只报告。
+
 ## 强制收尾动作
 
 当前任务的改动完成且验证通过后，必须立即完成交付闭环；未完成闭环不得宣称任务完成：

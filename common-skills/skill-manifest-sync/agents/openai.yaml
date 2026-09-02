@@ -1,0 +1,7 @@
+interface:
+  display_name: "Skill Manifest Sync"
+  short_description: "按仓库清单同步本机 user-scope skill 软链"
+  default_prompt: "Use $skill-manifest-sync to sync user-scope skill symlinks per config/skill-symlinks.yaml."
+
+policy:
+  allow_implicit_invocation: false
