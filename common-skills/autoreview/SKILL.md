@@ -10,7 +10,7 @@ disable-model-invocation: true
 
 Run the bundled structured review helper as a closeout check. This is code review, not Guardian `auto_review` approval routing.
 
-Codex review is the default when no engine is set. It uses `gpt-5.6-sol` with `high` reasoning by default, then retries once with `gpt-5.6-terra` only when the account cannot access Sol. Claude review is optional and inherits the current Claude Code model and effort unless `--model` or `--thinking` is set.
+Codex review is the built-in default when no engine is set; `AUTOREVIEW_ENGINE` changes that default (see Environment defaults). The built-in Codex default uses `gpt-5.6-sol` with `high` reasoning, then retries once with `gpt-5.6-terra` only when the account cannot access Sol. Claude review is optional and inherits the current Claude Code model and effort unless `--model` or `--thinking` is set.
 
 For user-visible behavior, pair autoreview with `behavior-validator`. Autoreview is source-aware and judges the change bundle; behavior validation is source-blind and judges the running product or tool against a behavior contract. A clean autoreview is not proof that a UI, CLI, API, or generated artifact works from the user's perspective.
 
@@ -370,8 +370,23 @@ Store persistent personal defaults in your shell startup file or launcher
 environment. For repository-local defaults, use an existing local environment
 loader such as an untracked `.envrc`; the helper does not write a config file.
 
+A complete personal default-harness switch is plain env, no code changes. For
+example, to make Pi on `zai/glm-5.3-flash` with `max` thinking the default
+harness:
+
+```bash
+export AUTOREVIEW_ENGINE=pi
+export AUTOREVIEW_PI_MODEL=zai/glm-5.3-flash
+export AUTOREVIEW_PI_THINKING=max
+```
+
+CLI flags still win over these variables, so a one-off
+`--engine codex --model gpt-5.6-sol --thinking high` overrides the personal
+default without editing it.
+
 | Variable                           | Purpose                                                                                                                          |
 | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `AUTOREVIEW_ENGINE`                | Default engine when `--engine` is omitted; built-in default is `codex`                                                            |
 | `AUTOREVIEW_MODEL`                 | Override the built-in default `--model` for all engines                                                                          |
 | `AUTOREVIEW_THINKING`              | Default `--thinking` for all engines                                                                                             |
 | `AUTOREVIEW_MAX_PRIORITY`          | Default `--max-priority` (`P0`–`P3`). Built-in default is `P0` when unset                                                        |
