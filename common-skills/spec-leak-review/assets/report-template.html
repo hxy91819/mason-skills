@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<!--
+  Spec Leak Review 报告骨架。
+  渲染规则：
+  - 替换所有 {{...}} 占位符；标记 REPEAT 的块按 finding 数量复制。
+  - severity class 取 blocking | should | optional，同时决定角标文字。
+  - 没有 finding 的严重度分组整段删除；待确认清单为空时删除该 section。
+  - 不留任何 {{...}} 或 REPEAT 注释在成品里。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>界面文案审查 · {{target}}</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --card: #fff;
+    --line: #e4e6eb;
+    --text: #1a1d21;
+    --muted: #6b7280;
+    --blocking: #d92d20;
+    --should: #d97706;
+    --optional: #2563eb;
+    --ok: #059669;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px 20px 80px;
+    background: var(--bg); color: var(--text);
+    font: 15px/1.65 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  main { max-width: 940px; margin: 0 auto; }
+  h1 { font-size: 24px; margin: 0 0 6px; }
+  h2 { font-size: 18px; margin: 40px 0 14px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+  .sub { color: var(--muted); font-size: 13px; margin: 0 0 28px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; margin-bottom: 14px; }
+  .audience dl { display: grid; grid-template-columns: 120px 1fr; gap: 8px 16px; margin: 0; }
+  .audience dt { color: var(--muted); font-size: 13px; }
+  .audience dd { margin: 0; }
+  .counts { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 8px; }
+  .pill { border: 1px solid var(--line); border-radius: 999px; padding: 5px 14px; font-size: 13px; background: var(--card); }
+  .pill b { font-variant-numeric: tabular-nums; }
+  .finding { border-left: 4px solid var(--line); }
+  .finding.blocking { border-left-color: var(--blocking); }
+  .finding.should { border-left-color: var(--should); }
+  .finding.optional { border-left-color: var(--optional); }
+  .fhead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+  .tag { font-size: 12px; padding: 2px 9px; border-radius: 5px; background: #eef0f3; color: var(--muted); }
+  .finding.blocking .tag.sev { background: #fdecea; color: var(--blocking); }
+  .finding.should .tag.sev { background: #fdf3e3; color: var(--should); }
+  .finding.optional .tag.sev { background: #eaf1fd; color: var(--optional); }
+  .loc { margin-left: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); }
+  .why { margin: 0 0 14px; }
+  .diff { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 700px) { .diff { grid-template-columns: 1fr; } .audience dl { grid-template-columns: 1fr; gap: 2px 0; } }
+  .side { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+  .side .lbl { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  .before { background: #fff8f7; }
+  .after { background: #f4fbf7; }
+  .before .txt { text-decoration: line-through; text-decoration-color: #e9a19b; }
+  .drop { color: var(--muted); font-style: italic; }
+  ol.pending { padding-left: 22px; }
+  ol.pending li { margin-bottom: 8px; }
+  .final { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 20px 22px; }
+  .final h3 { font-size: 14px; margin: 20px 0 6px; color: var(--muted); font-weight: 600; }
+  .final h3:first-child { margin-top: 0; }
+  .final p { margin: 0 0 4px; }
+  .clean { border-left: 4px solid var(--ok); }
+  figure.shot { margin: 14px 0 0; }
+  figure.shot img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+  figure.shot figcaption { margin-top: 6px; font-size: 12px; color: var(--muted); }
+  .noshot { margin: 14px 0 0; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 8px; font-size: 13px; color: var(--muted); }
+  .overview { display: grid; gap: 16px; }
+  .overview figure { margin: 0; }
+</style>
+</head>
+<body>
+<main>
+
+  <h1>界面文案审查 · {{target}}</h1>
+  <p class="sub">审查视角：产品体验 · 只读，未修改任何被审文件 · 状态 {{clean|有待修项}} · {{date}}</p>
+
+  <h2>受众与决策</h2>
+  <div class="card audience">
+    <dl>
+      <dt>谁会打开</dt><dd>{{audience}}</dd>
+      <dt>带什么疑问</dt><dd>{{question}}</dd>
+      <dt>看完要做什么</dt><dd>{{decision}}</dd>
+      <dt>证据来源</dt><dd>{{截图 / 代码路径 / 用户说明}}</dd>
+    </dl>
+  </div>
+
+  <div class="counts">
+    <span class="pill">盘点元素 <b>{{n}}</b></span>
+    <span class="pill">阻断 <b>{{n}}</b></span>
+    <span class="pill">应改 <b>{{n}}</b></span>
+    <span class="pill">可选 <b>{{n}}</b></span>
+    <span class="pill">待确认 <b>{{n}}</b></span>
+  </div>
+
+  <h2>采集到的界面</h2>
+  <!-- 每个真实渲染并截图的界面一张全景图，用 annotate-shot.py 的 overview 产物 -->
+  <div class="overview">
+    <figure class="shot">
+      <img alt="{{界面名}} 全景" src="{{overview data URI}}">
+      <figcaption>{{界面名}} · {{URL 或路径}} · {{视口}} · {{采集时间}}</figcaption>
+    </figure>
+  </div>
+  <!-- 有采集不到的范围时保留这一段，逐条写清范围与原因；全部采集到则整段删除 -->
+  <div class="noshot">
+    <strong>采集不到的范围：</strong>{{哪些界面或状态没采到，各自的原因}}
+  </div>
+
+  <h2>阻断</h2>
+  <!-- REPEAT: 每条 finding 一个 .finding，severity class 与 .tag.sev 文字对应分组 -->
+  <div class="card finding blocking">
+    <div class="fhead">
+      <strong>{{元素位置，如「数据接入与运行状态」副标题}}</strong>
+      <span class="tag sev">阻断</span>
+      <span class="tag">{{类型，如 否定式免责}}</span>
+      <span class="tag">{{结论：改写 / 降级 / 删除}}</span>
+      <span class="loc">{{file:line 或 运行时数据}}</span>
+    </div>
+    <p class="why">{{为什么这个受众不需要它——落到受众带来的疑问和要做的决定上}}</p>
+    <div class="diff">
+      <div class="side before"><div class="lbl">现状</div><div class="txt">{{原文}}</div></div>
+      <div class="side after"><div class="lbl">建议</div><div class="txt">{{可直接替换的完整文案，或 <span class="drop">删除，不替换</span> / <span class="drop">降级到 tooltip</span>}}</div></div>
+    </div>
+    <!-- 渲染面 finding 必须有这张标注图；红框圈住被判定的原文 -->
+    <figure class="shot">
+      <img alt="{{原文}} 在真实界面中的位置" src="{{annotate-shot.py 产出的 data URI}}">
+      <figcaption>{{它在界面里的位置与占比，例如「首屏标题正下方，页面第二行」}}</figcaption>
+    </figure>
+    <!-- 纯代码轨 finding 用这一段替换上面的 figure，写明为什么没有截图 -->
+    <div class="noshot">未截图：{{原因，如 该界面需要 IOA 鉴权，本次采集不到}}</div>
+  </div>
+  <!-- /REPEAT -->
+
+  <h2>应改</h2>
+  <!-- REPEAT: class 用 should，.tag.sev 写「应改」 -->
+
+  <h2>可选</h2>
+  <!-- REPEAT: class 用 optional，.tag.sev 写「可选」 -->
+
+  <h2>待确认</h2>
+  <div class="card">
+    <ol class="pending">
+      <!-- REPEAT: 每条写清判不准的原因，以及需要用户回答什么才能定级 -->
+      <li>{{原文}} —— {{为什么判不准，需要确认什么}}</li>
+      <!-- /REPEAT -->
+    </ol>
+  </div>
+
+  <h2>改写后的整页文案</h2>
+  <div class="final">
+    <!-- 按界面实际结构逐段列出改写后文本，删除的元素标注为「删除」，让用户能一眼看到整体效果 -->
+    <h3>{{区块名}}</h3>
+    <p>{{改写后文案}}</p>
+  </div>
+
+</main>
+</body>
+</html>
