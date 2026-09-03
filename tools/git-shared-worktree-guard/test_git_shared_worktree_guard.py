@@ -71,6 +71,14 @@ class SharedWorktreeGuardTest(unittest.TestCase):
         self.assertEqual(result.returncode, 77)
         self.assertTrue(self.worktree.exists())
 
+    def test_rebase_is_not_blocked(self) -> None:
+        (self.root / "new.txt").write_text("content\n", encoding="utf-8")
+        self.git("add", "new.txt")
+        self.git("commit", "-m", "commit for rebase")
+        result = self.guard("rebase", "HEAD~1")
+        self.assertNotEqual(result.returncode, 77)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

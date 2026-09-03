@@ -624,7 +624,7 @@ is_blocked() {
     merge|pull)
       requests_autostash "$@"
       ;;
-    rebase|bisect|sparse-checkout|checkout-index|read-tree)
+    bisect|sparse-checkout|checkout-index|read-tree)
       return 0
       ;;
     branch)
