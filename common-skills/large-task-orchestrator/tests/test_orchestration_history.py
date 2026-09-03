@@ -1,16 +1,27 @@
 from __future__ import annotations
 
+import importlib.util
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 
-SCRIPT = Path(__file__).parents[1] / "scripts" / "orchestration_history.py"
+SKILL_DIR = Path(__file__).parents[1]
+SCRIPT = SKILL_DIR / "scripts" / "orchestration_history.py"
+PLANNING_SCRIPT = SKILL_DIR.parent / "large-task-planning" / "scripts" / "epic_story.py"
+FIXTURE_PLAN = SKILL_DIR / "tests" / "fixtures" / "black-box-e2e" / "repository" / "docs" / "plan"
 HISTORY = Path(".local/large-task-orchestrator/run-history.json")
+CARD_REF = "docs/plan/agent/STORY-01-创建并验证问候文件.json"
+MODULE_SPEC = importlib.util.spec_from_file_location("orchestration_history", SCRIPT)
+assert MODULE_SPEC is not None and MODULE_SPEC.loader is not None
+HISTORY_MODULE = importlib.util.module_from_spec(MODULE_SPEC)
+MODULE_SPEC.loader.exec_module(HISTORY_MODULE)
 
 
 class OrchestrationHistoryTest(unittest.TestCase):
@@ -24,8 +35,24 @@ class OrchestrationHistoryTest(unittest.TestCase):
         self.git("config", "user.email", "history@example.invalid")
         (self.repository / "README.md").write_text("fixture\n", encoding="utf-8")
         plan = self.repository / "docs" / "plan"
-        (plan / "agent").mkdir(parents=True)
-        (plan / "agent" / "STORY-01.json").write_text("{}\n", encoding="utf-8")
+        shutil.copytree(FIXTURE_PLAN, plan)
+        rendered = subprocess.run(
+            [
+                sys.executable,
+                str(PLANNING_SCRIPT),
+                "render",
+                "--epic",
+                str(plan / "epics" / "EPIC-FORWARD.md"),
+                "--stories-dir",
+                str(plan / "stories"),
+                "--dashboard",
+                str(plan / "项目进展.md"),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(rendered.returncode, 0, rendered.stderr)
         self.git("add", "README.md", "docs")
         self.git("commit", "-m", "test: initialize history fixture")
         exclude = self.repository / ".git" / "info" / "exclude"
@@ -84,6 +111,54 @@ class OrchestrationHistoryTest(unittest.TestCase):
             at,
         )
 
+    def delivery_args(self) -> tuple[str, ...]:
+        return (
+            "--epic",
+            "docs/plan/epics/EPIC-FORWARD.md",
+            "--stories-dir",
+            "docs/plan/stories",
+            "--overview",
+            "docs/plan/README.md",
+            "--dashboard",
+            "docs/plan/项目进展.md",
+        )
+
+    def complete_plan(self) -> None:
+        card_path = self.repository / CARD_REF
+        card = json.loads(card_path.read_text(encoding="utf-8"))
+        card["status"] = "done"
+        card["owner"] = "Orchestrator"
+        card["blocker"] = "无"
+        card["refreshed"] = "2026-08-30"
+        card["code_baseline"] = self.git("rev-parse", "HEAD").stdout.strip()
+        card["checklist"] = [
+            {"done": True, "text": item["text"]} for item in card["checklist"]
+        ]
+        card["verification"] = "GC-01：通过；证据已保存。validator=CONTINUE。"
+        card["handoff"] = "全部验收完成，等待交付。"
+        card_path.write_text(
+            json.dumps(card, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        plan = self.repository / "docs" / "plan"
+        rendered = subprocess.run(
+            [
+                sys.executable,
+                str(PLANNING_SCRIPT),
+                "render",
+                "--epic",
+                str(plan / "epics" / "EPIC-FORWARD.md"),
+                "--stories-dir",
+                str(plan / "stories"),
+                "--dashboard",
+                str(plan / "项目进展.md"),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(rendered.returncode, 0, rendered.stderr)
+
     def test_start_and_attempt_retries_are_idempotent(self) -> None:
         self.start()
         _, repeated_start = self.run_cli(
@@ -117,7 +192,7 @@ class OrchestrationHistoryTest(unittest.TestCase):
             "--effort",
             "high",
             "--plan-ref",
-            "docs/plan/agent/STORY-01.json",
+            CARD_REF,
             "--at",
             "2026-08-30T00:01:00Z",
         )
@@ -182,7 +257,7 @@ class OrchestrationHistoryTest(unittest.TestCase):
                 "--reason",
                 "environment",
                 "--plan-ref",
-                "docs/plan/agent/STORY-01.json",
+                CARD_REF,
                 "--at",
                 f"2026-08-30T00:{index + 2:02d}:00Z",
             )
@@ -338,7 +413,7 @@ class OrchestrationHistoryTest(unittest.TestCase):
         self.assertEqual(run["active_attempts"], [])
         self.assertEqual(run["metrics"]["by_reason"], {"abandoned": 1})
 
-    def test_delivered_requires_real_remote_head_equality(self) -> None:
+    def test_delivered_requires_complete_tracked_plan_and_real_remote_head(self) -> None:
         remote = self.root / "origin.git"
         subprocess.run(
             ["git", "init", "--bare", str(remote)],
@@ -350,27 +425,169 @@ class OrchestrationHistoryTest(unittest.TestCase):
         self.git("push", "-u", "origin", "main")
         self.start()
 
-        (self.repository / "delivery.txt").write_text("delivered\n", encoding="utf-8")
-        self.git("add", "delivery.txt")
-        self.git("commit", "-m", "feat: local delivery")
-        result, _ = self.run_cli(
+        incomplete, _ = self.run_cli(
             "finish",
             "--run-id",
             "run-1",
             "--outcome",
             "delivered",
+            *self.delivery_args(),
             expected=1,
         )
-        self.assertIn("尚未到达真实远端", result.stderr)
+        self.assertIn("仍有未完成 Story: STORY-01", incomplete.stderr)
+
+        (self.repository / "delivery.txt").write_text("delivered\n", encoding="utf-8")
+        self.complete_plan()
+        self.git("add", "delivery.txt", "docs/plan")
+        self.git("commit", "-m", "feat: local delivery")
+        unpushed, _ = self.run_cli(
+            "finish",
+            "--run-id",
+            "run-1",
+            "--outcome",
+            "delivered",
+            *self.delivery_args(),
+            expected=1,
+        )
+        self.assertIn("尚未到达真实远端", unpushed.stderr)
 
         self.git("push")
         _, finished = self.run_cli(
-            "finish", "--run-id", "run-1", "--outcome", "delivered"
+            "finish",
+            "--run-id",
+            "run-1",
+            "--outcome",
+            "delivered",
+            *self.delivery_args(),
         )
         self.assertTrue(finished["delivery"]["pushed"])
         self.assertEqual(
             finished["delivery"]["head"], finished["delivery"]["remote_head"]
         )
+
+    def test_delivered_rejects_uncommitted_or_untracked_plan_state(self) -> None:
+        remote = self.root / "origin.git"
+        subprocess.run(
+            ["git", "init", "--bare", str(remote)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.git("remote", "add", "origin", str(remote))
+        self.git("push", "-u", "origin", "main")
+        self.start()
+        self.complete_plan()
+
+        dirty, _ = self.run_cli(
+            "finish",
+            "--run-id",
+            "run-1",
+            "--outcome",
+            "delivered",
+            *self.delivery_args(),
+            expected=1,
+        )
+        self.assertIn("计划目录仍有未提交变更", dirty.stderr)
+
+        self.git("add", "docs/plan")
+        self.git("commit", "-m", "docs: complete plan")
+        self.git("push")
+        evidence = self.repository / "docs" / "plan" / "agent" / "evidence"
+        evidence.mkdir()
+        (evidence / "untracked.txt").write_text("local evidence\n", encoding="utf-8")
+        untracked, _ = self.run_cli(
+            "finish",
+            "--run-id",
+            "run-1",
+            "--outcome",
+            "delivered",
+            *self.delivery_args(),
+            expected=1,
+        )
+        self.assertIn("计划目录仍有未提交变更", untracked.stderr)
+
+    def test_delivered_rejects_tracked_plan_input_symlinks(self) -> None:
+        remote = self.root / "origin.git"
+        subprocess.run(
+            ["git", "init", "--bare", str(remote)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.git("remote", "add", "origin", str(remote))
+        self.git("push", "-u", "origin", "main")
+        self.start()
+        self.complete_plan()
+
+        golden = self.repository / "docs" / "plan" / "agent" / "黄金验收.json"
+        outside = self.root / "outside-golden.json"
+        outside.write_bytes(golden.read_bytes())
+        golden.unlink()
+        golden.symlink_to(outside)
+        self.git("add", "docs/plan")
+        self.git("commit", "-m", "test: link golden plan outside repository")
+        self.git("push")
+        external_link, _ = self.run_cli(
+            "finish",
+            "--run-id",
+            "run-1",
+            "--outcome",
+            "delivered",
+            *self.delivery_args(),
+            expected=1,
+        )
+        self.assertIn("普通非 symlink 文件", external_link.stderr)
+
+        shared = self.repository / "shared-golden.json"
+        shared.write_bytes(outside.read_bytes())
+        golden.unlink()
+        golden.symlink_to(shared)
+        self.git("add", "docs/plan", "shared-golden.json")
+        self.git("commit", "-m", "test: link golden plan inside repository")
+        self.git("push")
+        internal_link, _ = self.run_cli(
+            "finish",
+            "--run-id",
+            "run-1",
+            "--outcome",
+            "delivered",
+            *self.delivery_args(),
+            expected=1,
+        )
+        self.assertIn("普通非 symlink 文件", internal_link.stderr)
+
+    def test_delivery_detects_head_drift_during_remote_lookup(self) -> None:
+        original_head = "a" * 40
+        moved_head = "b" * 40
+        original = {
+            "head": original_head,
+            "branch": "main",
+            "upstream": {"remote": "origin", "ref": "refs/heads/main"},
+        }
+        moved = {**original, "head": moved_head}
+        remote = subprocess.CompletedProcess(
+            args=["git", "ls-remote"],
+            returncode=0,
+            stdout=f"{original_head}\trefs/heads/main\n",
+            stderr="",
+        )
+        with (
+            mock.patch.object(
+                HISTORY_MODULE,
+                "_git_local_facts",
+                side_effect=[original, moved],
+            ),
+            mock.patch.object(HISTORY_MODULE, "_run_git", return_value=remote),
+            self.assertRaisesRegex(
+                HISTORY_MODULE.HistoryError,
+                "查询远端交付事实期间",
+            ),
+        ):
+            HISTORY_MODULE._git_delivery_facts(
+                self.repository,
+                original,
+                original_head,
+            )
 
     def test_show_exposes_deterministic_review_focus(self) -> None:
         self.start()

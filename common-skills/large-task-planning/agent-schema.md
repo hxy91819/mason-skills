@@ -95,6 +95,14 @@ Epic 还必须有正整数 `goal_version`，并与 `agent/黄金验收.json` 一
 及证据位置，并以该卡的 `code_baseline` 作为同一轮全量验收的 acceptance commit。案例失败后，
 保留失败证据并在它之前插入修复 Story；修复后重跑失败案例，再重跑全部案例。
 
+最后收口时运行只读完成门禁；普通 `check` 允许执行中的计划通过，不能代替此命令：
+
+```bash
+python3 scripts/epic_story.py completion-check \
+  --epic topic/epics/EPIC-ID.md --stories-dir topic/stories \
+  --overview topic/README.md --dashboard topic/项目进展.md
+```
+
 创建：
 
 ```bash

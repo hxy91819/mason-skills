@@ -85,7 +85,7 @@ Use `<repository>/.local/large-task-orchestrator/run-history.json` as the single
 
 At mission start, call `start` with a stable `run_id` and repository-relative `plan_ref`. Around every worker or validator turn, call `attempt start` after resolving the actual session/route and `attempt finish` immediately after the fixed worker status or validator conclusion; use the unique session name as `attempt_id` and pass the actual provider session identifier with `--session`. The script owns timestamps, durations, aggregation, idempotence, locking, and rolling retention. Use `event` only for a real plan change, a blocked episode, or a mechanical Git checkpoint. Do not copy prompts, replies, diffs, test logs, or plan rationale into history.
 
-After the final push, call `finish --outcome delivered`; the script must prove the real upstream ref equals `HEAD`. Use `abandoned` only when the mission will not resume. A resumable blocker remains an active run and gets a `blocked` event. If any history command fails, warn with the exact error and continue from the authoritative plan; never change Story state, retry a delivery, overwrite a damaged history file, or fabricate a missing success record merely to make telemetry complete.
+After the final push, call `finish --outcome delivered` with repository-relative `--epic`, `--stories-dir`, `--overview`, and `--dashboard`. The script runs the sibling planning `completion-check`, requires every checked plan input to be a tracked regular non-symlink file with no pending change in the plan directory, rejects active attempts, and proves the real upstream ref equals `HEAD`. A successful push by itself is never a delivered mission. Use `abandoned` only when the mission will not resume. A resumable blocker remains an active run and gets a `blocked` event. If any history command fails, warn with the exact error and continue from the authoritative plan; never change Story state, retry a delivery, overwrite a damaged history file, or fabricate a missing success record merely to make telemetry complete.
 
 On resume or retrospective review, read the plan first, then run `show`, then follow the returned `plan_ref` and recent hotspot signals. Read notebook entries only for the matching exceptional event. Base optimization proposals on explicit numerators, denominators, and plan/Git evidence; route each accepted change to the planning contract, orchestration route/lifecycle, or test harness that owns it.
 
@@ -220,11 +220,19 @@ Checkpoint commits stay local during execution. After every Story card is `done`
 2. If validated task changes remain uncommitted, commit only those changes using the Story, wave, or integration checkpoint rule above. Do not amend or rewrite existing commits unless explicitly authorized.
 3. Push the current branch directly to its configured upstream without asking for another confirmation. If no upstream exists and exactly one suitable remote is unambiguous, set the upstream while pushing the current branch.
 4. Never force-push, push tags, push another branch, bypass hooks, or choose among ambiguous remotes. Treat authentication, protected-branch, non-fast-forward, ambiguous-remote, and inseparable-unrelated-commit failures as blockers instead of expanding scope.
-5. Record the pushed commit SHA, remote, branch, and push result in the execution card's existing `handoff` or `verification` string. Do not put command-result objects in `verifies`; under the sibling planning schema, `verifies` is only a string array of affected test IDs.
+5. Before the final commit, record the acceptance evidence and intended upstream in the execution card's existing `handoff` or `verification` string. Do not write the later push result back into the tracked plan: that would create a new unvalidated, unpushed HEAD. The history delivery record owns the observed local/remote commit equality. Do not put command-result objects in `verifies`; under the sibling planning schema, `verifies` is only a string array of affected test IDs.
+6. Close history only through the mechanical delivery gate:
 
-Once the card, checks, commit, and push already satisfy the completion contract, do not create a follow-up commit solely to enrich optional orchestration metadata. Preserve the successful terminal state and report any non-authoritative recovery detail from the local notebook instead.
+```bash
+python3 <skill-dir>/scripts/orchestration_history.py --repository <repo> finish \
+  --run-id <run-id> --outcome delivered \
+  --epic <topic/epics/EPIC-ID.md> --stories-dir <topic/stories> \
+  --overview <topic/README.md> --dashboard <topic/项目进展.md>
+```
 
-Claim successful completion only when every Story card is `done`, combined integration checks pass, the intended repository changes are pushed, and the plan records worker and validator sessions, evidence, quota handoffs, delivery state, and remaining risks. Otherwise report the mission as blocked or partially delivered with its exact reason.
+Once the card, checks, commit, push, and history delivery gate already satisfy the completion contract, do not create a follow-up commit solely to enrich optional orchestration metadata. Preserve the successful terminal state and report any non-authoritative recovery detail from the local notebook instead.
+
+Claim successful completion only when every Story card is `done`, combined integration checks pass, the intended repository changes are pushed, the plan records worker and validator sessions, evidence, quota handoffs and remaining risks, and the history delivery gate records local/remote commit equality. Otherwise report the mission as blocked or partially delivered with its exact reason.
 
 ## Regression-test orchestration changes
 

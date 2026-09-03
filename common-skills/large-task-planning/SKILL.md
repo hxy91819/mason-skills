@@ -252,6 +252,9 @@ python3 <skill-dir>/scripts/epic_story.py render \
   --dashboard <topic/项目进展.md>
 python3 <skill-dir>/scripts/epic_story.py status \
   --epic <topic/epics/EPIC-ID.md> --stories-dir <topic/stories> --json
+python3 <skill-dir>/scripts/epic_story.py completion-check \
+  --epic <topic/epics/EPIC-ID.md> --stories-dir <topic/stories> \
+  --overview <topic/README.md> --dashboard <topic/项目进展.md>
 python3 <skill-dir>/scripts/epic_story.py write \
   --file <topic/agent/STORY-NN-标题.json> --from card.json
 python3 <skill-dir>/scripts/epic_story.py patch \
@@ -259,7 +262,7 @@ python3 <skill-dir>/scripts/epic_story.py patch \
   --set status=in_progress --set owner=Codex --check-item 1
 ```
 
-脚本检查项目入口、独立 Epic 路径、语义章节与架构图、Story 意图、Agent JSON、依赖、覆盖主责和风险登记。`render` 只在执行卡同步「STORY-XX 未完成」依赖阻塞，然后整份覆盖生成 `项目进展.md`；非依赖性阻塞保持不变。`check` 在生成结果过期、语义章节不合格、Agent 目录残留 Markdown 或风险登记不合格时失败。
+脚本检查项目入口、独立 Epic 路径、语义章节与架构图、Story 意图、Agent JSON、依赖、覆盖主责和风险登记。`render` 只在执行卡同步「STORY-XX 未完成」依赖阻塞，然后整份覆盖生成 `项目进展.md`；非依赖性阻塞保持不变。`check` 在生成结果过期、语义章节不合格、Agent 目录残留 Markdown 或风险登记不合格时失败。`completion-check` 复用这些检查，并且只有全部 Story 为 `done`、最终卡逐项记录所有黄金案例且项目进展最新时才成功；普通 `check` 仍允许执行中的计划通过。
 
 领取、勾选、阻塞和交接都先 `patch` 或 `write`，再 `render`。长字段（`handoff`、`verification`、`technical_plan`）用 `write` 整份替换；短字段和清单用 `patch`。
 
@@ -269,7 +272,7 @@ python3 <skill-dir>/scripts/epic_story.py patch \
 
 领取和交接都要复核新事实是否仍在 Goal 和用户边界内。边界内的实现取舍与计划调整由 Agent 自行完成，不再请求用户确认，并将选择、证据、影响记录为 `owner=agent`。计划调整时先保留已完成证据和稳定 Story ID；用插入 Story 承接新增工作，或重写尚未开始的 Story，调整范围或验收时递增其 `intent_version`，并让最终验收 Story 继续位于依赖链末端。若新事实使 Goal、黄金判据或产品、发布、运维形态失效，暂停受影响工作并请求用户修订目标。
 
-最终黄金验收失败时先保留失败证据并判断根因：环境或 fixture 错误则修复验收条件；既定边界内的实现缺陷则在最终 Story 前插入修复 Story；Goal 或产品边界错误则请求用户修订。修复后先重跑失败案例，再在同一 acceptance commit 上重跑全部黄金案例。全部案例同时通过前，最终 Story 和 Epic 都不能为 done；不得为了变绿而降低、删除或改写黄金判据。
+最终黄金验收失败时先保留失败证据并判断根因：环境或 fixture 错误则修复验收条件；既定边界内的实现缺陷则在最终 Story 前插入修复 Story；Goal 或产品边界错误则请求用户修订。修复后先重跑失败案例，再在同一 acceptance commit 上重跑全部黄金案例。全部案例同时通过前，最终 Story 和 Epic 都不能为 done；不得为了变绿而降低、删除或改写黄金判据。最终提交前必须运行 `completion-check`；它失败时只能报告部分完成或阻塞，不能报告 Goal 完成。
 
 只有用户显式要求方向检查时，才在领取下一 Story 前调用 `$story-direction-review`。方向检查只看结果是否偏航、重大遗漏和新事实对后续计划的影响，不替代代码审查。`INSERT_STORY` 优先使用最近已完成 Story 的插入号；只有主要目标、门禁或假设失效时才使用 `REPLAN`。
 

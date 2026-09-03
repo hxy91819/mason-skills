@@ -74,6 +74,8 @@ History 由 orchestrator 的确定性脚本维护，只保存 attempt 结果、�
 - 跨 Story 整合检查通过，未授权或并发修改未混入交付；
 - 经过验证的提交已到达目标远端，剩余风险和交接可追溯。
 
+普通计划校验允许未完成的工作继续存在，因此不能作为交付证明。收口必须使用 Planning 的完成门禁确认全部 Story、最终黄金案例证据和最新仪表盘，再由 Orchestrator 的交付门禁确认这些计划输入已提交、没有待提交变化且当前 HEAD 与真实 upstream 一致。任一条件失败时，运行历史不得写成 `delivered`。
+
 ## 维护边界
 
 计划产物、schema、readiness 和黄金验收语义由 `large-task-planning` 维护；路由、session 连续性、worker/validator 生命周期、恢复和交付由 `large-task-orchestrator` 维护。跨两者的理由与不变量在本文维护一次，操作细节留在所属 Skill。

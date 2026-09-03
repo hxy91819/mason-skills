@@ -187,6 +187,15 @@ language: zh-Hans
     def common_args(self) -> tuple[str, ...]:
         return ("--epic", str(self.epic), "--stories-dir", str(self.stories))
 
+    def completion_args(self) -> tuple[str, ...]:
+        return (
+            *self.common_args(),
+            "--overview",
+            str(self.overview),
+            "--dashboard",
+            str(self.dashboard),
+        )
+
     def add_story(self, story_id: str, slug: str, dependency: str, coverage: str) -> Path:
         suffix = story_id.removeprefix("STORY-")
         story_name = f"Story-{suffix}-{slug}.md"
@@ -267,6 +276,40 @@ language: zh-Hans
         result = self.run_cli("render", *self.common_args(), "--dashboard", self.dashboard)
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn("| 已完成 | 3/3 | 后续项 |", self.dashboard.read_text(encoding="utf-8"))
+
+    def test_completion_check_requires_every_story_and_current_dashboard(self) -> None:
+        rendered = self.run_cli("render", *self.common_args(), "--dashboard", self.dashboard)
+        self.assertEqual(0, rendered.returncode, rendered.stderr)
+
+        incomplete = self.run_cli("completion-check", *self.completion_args())
+        self.assertEqual(1, incomplete.returncode)
+        self.assertIn("仍有未完成 Story: STORY-01", incomplete.stderr)
+
+        self.mark_done(self.story)
+        data = self.read_json(self.card)
+        data["verification"] = "GC-01：通过；证据位于 agent/evidence/GC-01.txt。"
+        self.write_json(self.card, data)
+        rendered = self.run_cli("render", *self.common_args(), "--dashboard", self.dashboard)
+        self.assertEqual(0, rendered.returncode, rendered.stderr)
+
+        completed = self.run_cli("completion-check", *self.completion_args())
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("golden_cases=1/1", completed.stdout)
+
+        self.dashboard.write_text("过期\n", encoding="utf-8")
+        stale = self.run_cli("completion-check", *self.completion_args())
+        self.assertEqual(1, stale.returncode)
+        self.assertIn("仪表盘已过期", stale.stderr)
+
+    def test_final_golden_evidence_requires_exact_case_id(self) -> None:
+        self.mark_done(self.story)
+        data = self.read_json(self.card)
+        data["verification"] = "GC-010：相似编号不能替代目标案例的证据。"
+        self.write_json(self.card, data)
+
+        result = self.run_cli("check", *self.common_args())
+        self.assertEqual(1, result.returncode)
+        self.assertIn("黄金验收完成证据缺少案例: GC-01", result.stderr)
 
     def test_done_requires_all_todos_checked(self) -> None:
         data = self.read_json(self.card)

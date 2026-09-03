@@ -9,7 +9,7 @@
 每 run 最近 30 个事件，旧 run 只汇入固定维度 rollup。退出码 0=成功，1=历史/Git 事实错误，
 2=参数错误。脚本不保存 prompt、回复、diff、自由文本错误或 remote URL。
 关键设计：完整读改写持有 flock，stable key 重试幂等，同目录 fsync+replace 原子落盘；
-`delivered` 用真实 `git ls-remote` 证明当前 HEAD 已到 upstream。损坏文件原样保留并 fail closed。
+`delivered` 先验证计划完成且计划目录已提交，再用真实 `git ls-remote` 证明当前 HEAD 已到 upstream。损坏文件原样保留并 fail closed。
 """
 
 from __future__ import annotations
@@ -32,6 +32,7 @@ from typing import Any, Iterator, Sequence, cast
 
 
 SCRIPT_PATH = Path(__file__).resolve()
+PLANNING_SCRIPT = SCRIPT_PATH.parents[2] / "large-task-planning" / "scripts" / "epic_story.py"
 HISTORY_RELATIVE = Path(".local/large-task-orchestrator/run-history.json")
 LOCK_RELATIVE = Path(".local/large-task-orchestrator/run-history.lock")
 SCHEMA_VERSION = 1
@@ -108,7 +109,7 @@ def usage() -> str:
   attempt start     用稳定 attempt ID 记录 worker/validator 尝试开始。
   attempt finish    自动计算 duration，并记录固定 outcome/reason。
   event             记录 plan-change、blocked 或机械 checkpoint。
-  finish            结束为 delivered 或 abandoned；delivered 会查询真实远端。
+  finish            结束为 delivered 或 abandoned；delivered 会校验计划并查询真实远端。
   show              输出近期 run、聚合指标、热点和确定性复盘关注点。
   check             只读校验文件 schema、滚动上限和 active 状态。
 
@@ -127,7 +128,9 @@ def usage() -> str:
   python3 {SCRIPT_PATH.name} --repository . attempt finish \\
     --run-id mission-20260830 --attempt-id STORY-01-worker-1 --outcome worker-done
   python3 {SCRIPT_PATH.name} --repository . finish \\
-    --run-id mission-20260830 --outcome delivered
+    --run-id mission-20260830 --outcome delivered \\
+    --epic docs/plan/epics/EPIC-ID.md --stories-dir docs/plan/stories \\
+    --overview docs/plan/README.md --dashboard docs/plan/项目进展.md
   python3 {SCRIPT_PATH.name} --repository . show
 """
 
@@ -183,6 +186,10 @@ def build_parser() -> argparse.ArgumentParser:
     finish.add_argument("--outcome", required=True, choices=TERMINAL_OUTCOMES)
     finish.add_argument("--reason", default="none", choices=REASON_CODES)
     finish.add_argument("--plan-ref")
+    finish.add_argument("--epic", help="delivered 必填：repository 内 Epic 相对路径")
+    finish.add_argument("--stories-dir", help="delivered 必填：repository 内 Story 目录相对路径")
+    finish.add_argument("--overview", help="delivered 必填：repository 内项目入口相对路径")
+    finish.add_argument("--dashboard", help="delivered 必填：repository 内项目进展相对路径")
     finish.add_argument("--at", help="带时区 ISO-8601 时间；默认当前 UTC")
 
     show = commands.add_parser("show", help="输出聚合历史与复盘关注点")
@@ -373,10 +380,135 @@ def _git_local_facts(repository: Path) -> dict[str, Any]:
     return {"head": head, "branch": branch, "upstream": upstream}
 
 
+def _plan_completion_gate(
+    repository: Path,
+    run: dict[str, Any],
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    option_names = ("epic", "stories_dir", "overview", "dashboard")
+    missing = [f"--{name.replace('_', '-')}" for name in option_names if not getattr(args, name)]
+    if missing:
+        raise HistoryError(f"delivered 需要计划完成门禁参数: {', '.join(missing)}")
+    if not PLANNING_SCRIPT.is_file():
+        raise HistoryError(f"找不到 sibling planning 校验脚本: {PLANNING_SCRIPT}")
+
+    relative = {
+        name: normalize_plan_ref(repository, str(getattr(args, name)))
+        for name in option_names
+    }
+    paths = {name: (repository / value).resolve() for name, value in relative.items()}
+    epic = paths["epic"]
+    stories = paths["stories_dir"]
+    overview = paths["overview"]
+    dashboard = paths["dashboard"]
+    if not epic.is_file() or epic.parent.name != "epics":
+        raise HistoryError("--epic 必须是计划根目录 epics/ 下的普通文件")
+    if not stories.is_dir() or stories.name != "stories":
+        raise HistoryError("--stories-dir 必须是计划根目录下的 stories/ 目录")
+    if not overview.is_file() or not dashboard.is_file():
+        raise HistoryError("--overview 和 --dashboard 必须是计划根目录下的普通文件")
+    plan_root = epic.parent.parent
+    if any(path.parent != plan_root for path in (stories, overview, dashboard)):
+        raise HistoryError("Epic、Story、项目入口和 dashboard 必须属于同一个计划根目录")
+    run_plan_ref = (repository / run["plan_ref"]).resolve()
+    if run_plan_ref != plan_root and not run_plan_ref.is_relative_to(plan_root):
+        raise HistoryError("delivered 计划根目录与 run.plan_ref 不一致")
+
+    validated_head = _git_local_facts(repository)["head"]
+    try:
+        checked = subprocess.run(
+            [
+                sys.executable,
+                str(PLANNING_SCRIPT),
+                "completion-check",
+                "--epic",
+                relative["epic"],
+                "--stories-dir",
+                relative["stories_dir"],
+                "--overview",
+                relative["overview"],
+                "--dashboard",
+                relative["dashboard"],
+            ],
+            cwd=repository,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise HistoryError(f"计划完成门禁无法执行: {error}") from error
+    if checked.returncode != 0:
+        detail = (checked.stderr.strip() or checked.stdout.strip() or "无诊断输出")[:2000]
+        raise HistoryError(f"计划完成门禁失败: {detail}")
+
+    agent_dir = plan_root / "agent"
+    if agent_dir.is_symlink() or not agent_dir.is_dir():
+        raise HistoryError("计划 agent/ 必须是本地普通目录，不能是 symlink")
+    critical_paths = [epic, overview, dashboard]
+    critical_paths.extend(sorted(stories.glob("Story-*.md")))
+    critical_paths.extend(sorted(agent_dir.glob("*.json")))
+    unsafe_inputs = [
+        path
+        for path in critical_paths
+        if path.is_symlink()
+        or not path.is_file()
+        or not path.resolve().is_relative_to(plan_root)
+    ]
+    if unsafe_inputs:
+        unsafe_relative = [
+            path.relative_to(repository).as_posix() for path in unsafe_inputs
+        ]
+        raise HistoryError(
+            "计划完成门禁输入必须是计划目录内的普通非 symlink 文件: "
+            + ", ".join(unsafe_relative)
+        )
+    critical_relative = [path.relative_to(repository).as_posix() for path in critical_paths]
+    tracked_result = _run_git(
+        repository,
+        "ls-files",
+        "--cached",
+        "-z",
+        "--",
+        *critical_relative,
+    )
+    tracked = {item for item in tracked_result.stdout.split("\0") if item}
+    untracked_inputs = sorted(set(critical_relative) - tracked)
+    if untracked_inputs:
+        raise HistoryError(
+            "计划完成门禁输入尚未进入当前提交: " + ", ".join(untracked_inputs)
+        )
+    root_relative = plan_root.relative_to(repository).as_posix() or "."
+    status = _run_git(
+        repository,
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+        "--",
+        root_relative,
+    )
+    if status.stdout:
+        raise HistoryError(f"计划目录仍有未提交变更: {root_relative}")
+    if _git_local_facts(repository)["head"] != validated_head:
+        raise HistoryError("计划完成门禁执行期间 Git HEAD 发生变化")
+    return {
+        "root": root_relative,
+        "check": "passed",
+        "tracked_inputs": len(critical_relative),
+        "head": validated_head,
+    }
+
+
 def _git_delivery_facts(
-    repository: Path, baseline: dict[str, Any]
+    repository: Path,
+    baseline: dict[str, Any],
+    expected_head: str,
 ) -> dict[str, Any]:
     local = _git_local_facts(repository)
+    if local["head"] != expected_head:
+        raise HistoryError(
+            f"计划完成门禁后 Git HEAD 发生变化: {expected_head} -> {local['head']}"
+        )
     if local["branch"] != baseline.get("branch"):
         raise HistoryError(
             f"delivered run 的 branch 漂移: {baseline.get('branch')} -> {local['branch']}"
@@ -405,6 +537,9 @@ def _git_delivery_facts(
             f"本地 HEAD 尚未到达真实远端 {remote}/{ref}: "
             f"{local['head']} != {remote_head}"
         )
+    final_local = _git_local_facts(repository)
+    if final_local != local:
+        raise HistoryError("查询远端交付事实期间本地 branch、HEAD 或 upstream 发生变化")
     return {
         "head": local["head"],
         "branch": local["branch"],
@@ -1182,11 +1317,26 @@ def command_finish(repository: Path, args: argparse.Namespace) -> dict[str, Any]
                     consume_attempt_reservation=True,
                 )
                 _finish_attempt(run, attempt, "failed", "abandoned", at)
-        delivery = (
-            _git_delivery_facts(repository, run["baseline"])
-            if args.outcome == "delivered"
-            else {**_git_local_facts(repository), "pushed": False}
-        )
+        plan_gate = None
+        if args.outcome == "delivered":
+            plan_gate = _plan_completion_gate(repository, run, args)
+            delivery = _git_delivery_facts(
+                repository,
+                run["baseline"],
+                str(plan_gate["head"]),
+            )
+            post_delivery_status = _run_git(
+                repository,
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all",
+                "--",
+                str(plan_gate["root"]),
+            )
+            if post_delivery_status.stdout:
+                raise HistoryError("查询远端交付事实期间计划目录发生变化")
+        else:
+            delivery = {**_git_local_facts(repository), "pushed": False}
         run["outcome"] = args.outcome
         run["terminal_reason"] = args.reason
         run["ended_at"] = at
@@ -1211,6 +1361,7 @@ def command_finish(repository: Path, args: argparse.Namespace) -> dict[str, Any]
         run_id=args.run_id,
         outcome=args.outcome,
         delivery=delivery,
+        plan_gate=plan_gate,
         idempotent=False,
     )
 

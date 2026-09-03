@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """校验 Goal、Epic、Story、Agent JSON 状态源及内容预算，并生成或查询项目进展。
 
-参数定义：check/status/render 接收 Epic 文件和 Story 目录；write/patch/template 接收 Agent JSON 路径。
-输出定义：check/status 只读；write/patch 校验后规范化写入 Agent JSON；render 先同步依赖阻塞，再整份生成项目进展。
+参数定义：check/status/render/completion-check 接收 Epic 文件和 Story 目录；write/patch/template 接收 Agent JSON 路径。
+输出定义：check/status/completion-check 只读；write/patch 校验后规范化写入 Agent JSON；render 先同步依赖阻塞，再整份生成项目进展。
 退出码：0 成功，1 文档或仪表盘校验失败，2 I/O 或命令行错误。
 """
 
@@ -1016,6 +1016,14 @@ def sync_dependency_gates(stories: Sequence[WorkItem]) -> Tuple[str, ...]:
     return tuple(changed)
 
 
+def _mentions_stable_id(text: str, stable_id: str) -> bool:
+    """匹配完整稳定 ID，避免 GC-01 被 GC-010 等相似文本误报为证据。"""
+    return re.search(
+        rf"(?<![A-Za-z0-9]){re.escape(stable_id)}(?![A-Za-z0-9])",
+        text,
+    ) is not None
+
+
 def _validate_optional_agent_json(agent_dir: Path, errors: List[str], reserved: Sequence[Path]) -> None:
     reserved_names = {path.name for path in reserved}
     if not agent_dir.is_dir():
@@ -1251,10 +1259,11 @@ def validate_project(epic: WorkItem, stories: Sequence[WorkItem]) -> List[str]:
                     f"{', '.join(unlinked)}"
                 )
             if final_card.status == "done":
+                verification = str(final_card.data.get("verification", ""))
                 missing_evidence = [
                     case_id
                     for case_id in golden_case_ids
-                    if case_id not in str(final_card.data.get("verification", ""))
+                    if not _mentions_stable_id(verification, case_id)
                 ]
                 if missing_evidence:
                     errors.append(
@@ -1437,6 +1446,44 @@ def command_check(args: argparse.Namespace) -> int:
     print(
         f"OK: {epic.item_id}; stories={len(stories)}; "
         f"completed={sum(card.status == 'done' for card in cards.values())}"
+    )
+    return 0
+
+
+def command_completion_check(args: argparse.Namespace) -> int:
+    """只在完整计划、最终验收和人读投影同时收口时返回成功。"""
+    epic, stories = load_project(args.epic, args.stories_dir)
+    if not _validate_or_report(epic, stories):
+        return 1
+    stale = stale_dependency_gates(stories)
+    if stale:
+        print(
+            f"ERROR: 依赖阻塞已过期，请运行 render: {', '.join(stale)}",
+            file=sys.stderr,
+        )
+        return 1
+    overview = args.overview.read_text(encoding="utf-8")
+    if not _report_errors(validate_overview(args.overview, overview)):
+        return 1
+    current = args.dashboard.read_text(encoding="utf-8")
+    expected = dashboard_document(epic, stories, args.dashboard)
+    if not _report_errors(validate_dashboard(args.dashboard, expected, str(epic.metadata["language"]))):
+        return 1
+    if expected != current:
+        print(f"ERROR: 仪表盘已过期，请运行 render: {args.dashboard}", file=sys.stderr)
+        return 1
+
+    cards = _load_agent_cards(stories)
+    unfinished = [story.item_id for story in stories if cards[story.item_id].status != "done"]
+    if unfinished:
+        print(f"ERROR: 仍有未完成 Story: {', '.join(unfinished)}", file=sys.stderr)
+        return 1
+    _, golden = _load_golden_acceptance(stories)
+    cases = golden.get("cases")
+    case_count = len(cases) if isinstance(cases, list) else 0
+    print(
+        f"OK: {epic.item_id}; stories={len(stories)}/{len(stories)}; "
+        f"golden_cases={case_count}/{case_count}"
     )
     return 0
 
@@ -1732,7 +1779,8 @@ def build_parser() -> argparse.ArgumentParser:
         description="校验人读 Epic/Story，并用脚本维护 Agent JSON、生成项目进展。",
         epilog=(
             "输出与退出码:\n"
-            "  check/status 不修改文件；write/patch/template 规范化写入 Agent JSON；\n"
+            "  check/status/completion-check 不修改文件；write/patch/template 规范化写入 Agent JSON；\n"
+            "  completion-check 仅在全部 Story、黄金验收证据和 dashboard 收口时成功；\n"
             "  render 先同步执行卡依赖阻塞，再整份生成 dashboard；错误写入 stderr。\n"
             "  0=成功，1=格式/状态/仪表盘校验失败，2=命令行或 I/O 错误。\n\n"
             "示例:\n"
@@ -1740,6 +1788,8 @@ def build_parser() -> argparse.ArgumentParser:
             "  epic_story.py render --epic topic/epics/EPIC-ID.md --stories-dir topic/stories "
             "--dashboard topic/项目进展.md\n"
             "  epic_story.py status --epic topic/epics/EPIC-ID.md --stories-dir topic/stories --json\n"
+            "  epic_story.py completion-check --epic topic/epics/EPIC-ID.md --stories-dir topic/stories "
+            "--overview topic/README.md --dashboard topic/项目进展.md\n"
             "  epic_story.py template agent-card --story STORY-01 --file topic/agent/STORY-01-标题.json\n"
             "  epic_story.py template golden-acceptance --epic-id EPIC-NAME --file topic/agent/黄金验收.json\n"
             "  epic_story.py write --file topic/agent/STORY-01-标题.json --from card.json\n"
@@ -1759,6 +1809,15 @@ def build_parser() -> argparse.ArgumentParser:
     check.add_argument("--overview", type=Path, help="同时检查人读项目入口的结构和字数")
     check.add_argument("--dashboard", type=Path, help="同时检查自动生成的项目进展是否为最新")
     check.set_defaults(handler=command_check)
+
+    completion = subparsers.add_parser(
+        "completion-check",
+        help="确认全部 Story、黄金验收证据和人读投影已收口",
+    )
+    add_common(completion)
+    completion.add_argument("--overview", type=Path, required=True, help="人读项目入口")
+    completion.add_argument("--dashboard", type=Path, required=True, help="自动生成的项目进展")
+    completion.set_defaults(handler=command_completion_check)
 
     render = subparsers.add_parser("render", help="同步 Agent 依赖阻塞后整份生成项目进展")
     add_common(render)
