@@ -17,6 +17,8 @@ skills:
   note: 按计划持续编排大型任务
 - name: large-task-planning
   note: 大型任务的 Epic/Story/门禁规划
+- name: local-test
+  note: 本地测试与环境启停安全规范
 - name: mermaid-lint
   note: Mermaid 图表的校验与修复
 - name: open-source-contribution
