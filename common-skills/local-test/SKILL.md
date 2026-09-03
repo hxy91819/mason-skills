@@ -47,14 +47,18 @@ description: Set up, run, and cleanly shut down a multi-service local test envir
   - 若为无桌面服务器环境（Server/Cloud VM），前端页面必须通过统一的本地 Nginx 对外暴露。
 * **Nginx 统一反代与密码保护**：
   - 仅允许 Nginx 监听对外端口（如 `18800` 等非敏感放通端口）；
-  - 对外入口必须强制启用统一密码保护（HTTP Basic Auth），拦截一切未经授权的探测；
-  - 前端静态页面/开发服务器与后端 `/api/` 均统一挂载在该 Nginx 下进行反代分发。
+  - 对外入口必须强制启用统一密码保护（HTTP Basic Auth），拦截一切未经授权的探测。
+* **多服务路由命名空间（禁止独占根路径）**：
+  - Nginx 统一反代面向多服务共存设计，**严禁单一服务独占根路径 `/` 或全局 `/api/`**；
+  - 每个服务必须分配清晰的独立业务路由前缀（例如 `/operations/`、`/harness/`）；
+  - 服务内部的前端构建与路由必须适配该 base 前缀（如 Vite `base: '/service-name/'`、React Router `basename`），接口请求统一收敛在 `/service-name/api/`；
+  - 通过各自的独立 location 前缀路由转发，支持同一 Nginx 实例同端口平滑挂载多个微服务与工具，互不干扰。
 
 ## 4. 架构与实现参考
 
 脚本设计应保持精简，重点在于收敛与容错，Agent 可根据具体技术栈自由发挥。
 
-### Nginx 密码保护与统一反代骨架
+### Nginx 多服务统一反代骨架（带命名空间与密码保护）
 
 ```nginx
 events { worker_connections 1024; }
@@ -66,19 +70,22 @@ http {
         auth_basic "Local Dev Area";
         auth_basic_user_file /path/to/dev-htpasswd;
 
-        # 后端 API 反代
-        location /api/ {
+        # 业务服务 A (例如 operations: 前端 Vite + 后端 API)
+        location ^~ /operations/api/ {
             proxy_pass http://127.0.0.1:8001/api/;
             proxy_set_header Host $host;
         }
-
-        # 前端反代 (支持 WebSocket 热重载)
-        location / {
-            proxy_pass http://127.0.0.1:5173;
+        location ^~ /operations/ {
+            proxy_pass http://127.0.0.1:5173/operations/;
             proxy_http_version 1.1;
             proxy_set_header Upgrade $http_upgrade;
             proxy_set_header Connection "upgrade";
         }
+
+        # 业务服务 B (后续其他扩展服务示例)
+        # location ^~ /harness/ {
+        #     proxy_pass http://127.0.0.1:5174/harness/;
+        # }
     }
 }
 ```
