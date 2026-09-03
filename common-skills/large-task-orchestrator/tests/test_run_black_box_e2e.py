@@ -33,18 +33,17 @@ class RunBlackBoxE2ETest(unittest.TestCase):
 
     def test_project_config_has_one_candidate_per_external_role(self) -> None:
         args = argparse.Namespace(
-            worker_agent="codexp",
-            validator_agent="codexp",
+            worker_agent="pi",
+            validator_agent="pi",
             worker_effort="high",
             validator_effort="low",
         )
-        witness = RUNNER.FileWitness(Path("/tmp/launcher"), 0o500, "hash", b"content")
         expected = {
             "worker": RUNNER.ExpectedAgent(
-                "codexp", ("base", "worker"), ("final", "worker"), witness
+                "pi", ("npx", "pi-acp@^0.0.31")
             ),
             "validator": RUNNER.ExpectedAgent(
-                "codexp", ("base", "validator"), ("final", "validator"), witness
+                "pi", ("npx", "pi-acp@^0.0.31")
             ),
         }
 
@@ -52,20 +51,20 @@ class RunBlackBoxE2ETest(unittest.TestCase):
 
         self.assertEqual(
             config["routing"]["worker"]["default"],
-            [{"agent": "codexp", "acpx_command": "final worker"}],
+            [{"agent": "pi"}],
         )
         self.assertEqual(
             config["routing"]["validator"]["default"],
-            [{"agent": "codexp", "acpx_command": "final validator"}],
+            [{"agent": "pi"}],
         )
         self.assertEqual(
-            config["profiles"][0]["match"], {"role": "worker", "agent": "codexp"}
+            config["profiles"][0]["match"], {"role": "worker", "agent": "pi"}
         )
         self.assertEqual(
-            config["profiles"][1]["match"], {"role": "validator", "agent": "codexp"}
+            config["profiles"][1]["match"], {"role": "validator", "agent": "pi"}
         )
 
-    def test_safe_role_launchers_preserve_base_tokens_and_feed_full_commands(
+    def test_registered_argv_passes_through_verbatim_without_launchers(
         self,
     ) -> None:
         from unittest import mock
@@ -76,33 +75,18 @@ class RunBlackBoxE2ETest(unittest.TestCase):
             evidence = root / "evidence"
             repository.mkdir()
             evidence.mkdir()
-            executable = root / "codex"
-            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-            executable.chmod(0o700)
-            trusted_npx = root / "npx"
-            trusted_npx.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-            trusted_npx.chmod(0o700)
             workspace = RUNNER.Workspace(
                 root, repository, root / "origin.git", evidence, "initial"
             )
             args = argparse.Namespace(
-                worker_agent="codexp",
-                validator_agent="codexv",
+                worker_agent="codexl",
+                validator_agent="pi",
                 worker_effort="high",
                 validator_effort="low",
             )
-            worker_base = [
+            registered_argv = [
                 "/usr/bin/env",
-                "CODEX_HOME=/real/profile",
-                f"CODEX_PATH={executable}",
-                "npx",
-                "-y",
-                "@agentclientprotocol/codex-acp@^1.1.5",
-            ]
-            validator_base = [
-                "/usr/bin/env",
-                "CODEX_HOME=/real/profile",
-                f"CODEX_PATH={executable}",
+                "CODEXL_HOME=/root/.codexl",
                 "npx",
                 "-y",
                 "@agentclientprotocol/codex-acp@^1.1.5",
@@ -111,404 +95,70 @@ class RunBlackBoxE2ETest(unittest.TestCase):
                 [],
                 0,
                 json.dumps(
-                    {
-                        "agents": {
-                            "codexp": {"argv": worker_base},
-                            "codexv": {"argv": validator_base},
-                        }
-                    }
+                    {"agents": {"codexl": {"argv": registered_argv}}}
                 ),
                 "",
             )
-            with (
-                mock.patch.object(RUNNER, "run_command", return_value=completed),
-                mock.patch.object(
-                    RUNNER.shutil, "which", return_value=str(trusted_npx)
-                ),
-            ):
+            with mock.patch.object(RUNNER, "run_command", return_value=completed):
                 expected = RUNNER.resolve_expected_agents(
                     args, workspace, "/usr/bin/acpx"
                 )
             integrity = RUNNER.install_project_config(workspace, args, expected)
 
-            self.assertNotEqual(
-                expected["worker"].launcher.path, expected["validator"].launcher.path
-            )
-            for role, base in (("worker", worker_base), ("validator", validator_base)):
-                item = expected[role]
-                self.assertEqual(item.base_argv, tuple(base))
-                changed = [
-                    index
-                    for index, pair in enumerate(zip(item.base_argv, item.argv))
-                    if pair[0] != pair[1]
-                ]
-                self.assertEqual(changed, [2, 3])
-                self.assertEqual(item.argv[3], str(trusted_npx))
-                self.assertEqual(
-                    item.launcher.path.parent, root / "capability-launchers"
-                )
-                self.assertNotIn(repository, item.launcher.path.parents)
-                self.assertFalse(item.launcher.path.is_symlink())
-                self.assertEqual(item.launcher.path.stat().st_mode & 0o777, 0o500)
-            self.assertFalse((root / "capability-launchers").is_symlink())
             self.assertEqual(
-                (root / "capability-launchers").stat().st_mode & 0o777, 0o700
+                expected["worker"].argv, tuple(registered_argv)
             )
-            worker_text = expected["worker"].launcher.path.read_text(encoding="utf-8")
-            validator_text = expected["validator"].launcher.path.read_text(
-                encoding="utf-8"
+            # 内置 pi 不在 acpx config show 中，使用 harness 锁定的适配器 argv。
+            self.assertEqual(
+                expected["validator"].argv, RUNNER.BUILTIN_AGENT_ARGVS["pi"]
             )
-            self.assertIn("--sandbox workspace-write", worker_text)
-            self.assertIn("sandbox_workspace_write.network_access=false", worker_text)
-            self.assertIn("--sandbox read-only", validator_text)
+            self.assertFalse((root / "capability-launchers").exists())
             config = json.loads(integrity.project_config.content)
+            # 位置式 agent 名才会持久化 agent_argv；路由不写 acpx_command。
             self.assertEqual(
-                config["routing"]["worker"]["default"][0]["acpx_command"],
-                RUNNER.command_text(expected["worker"].argv),
+                config["routing"]["worker"]["default"],
+                [{"agent": "codexl"}],
             )
             self.assertEqual(
-                config["routing"]["validator"]["default"][0]["acpx_command"],
-                RUNNER.command_text(expected["validator"].argv),
+                config["routing"]["validator"]["default"],
+                [{"agent": "pi"}],
             )
-            self.assertEqual(config["profiles"][0]["match"]["agent"], "codexp")
-            self.assertEqual(config["profiles"][1]["match"]["agent"], "codexv")
-            RUNNER.verify_harness_integrity(workspace, expected, integrity)
+            self.assertEqual(config["profiles"][0]["match"]["agent"], "codexl")
+            self.assertEqual(config["profiles"][1]["match"]["agent"], "pi")
+            RUNNER.verify_harness_integrity(workspace, integrity)
 
-    def test_registered_codex_alias_rejects_unsafe_base_argv(self) -> None:
-        from unittest import mock
+    def test_validated_registered_argv_rejects_unsafe_shapes(self) -> None:
+        cases = {
+            "command-form": ({"command": "codex-acp"}, "structured argv"),
+            "argv-missing": ({}, "structured argv"),
+            "argv-empty": ({"argv": []}, "structured argv"),
+            "argv-non-string": (
+                {"argv": ["npx", 1]},
+                "structured argv",
+            ),
+            "newline-token": (
+                {"argv": ["npx", "pi-acp\n"]},
+                "含控制字符",
+            ),
+            "nul-token": (
+                {"argv": ["npx", "pi-acp\x00"]},
+                "含控制字符",
+            ),
+        }
+        for name, (entry, message) in cases.items():
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(
+                    RUNNER.HarnessEnvironmentError, message
+                ):
+                    RUNNER.validated_registered_argv(
+                        entry.get("argv"), "alias"
+                    ) if "argv" in entry else RUNNER.validated_registered_argv(
+                        None, "alias"
+                    )
 
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            executable = root / "codex"
-            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-            executable.chmod(0o700)
-            trusted_npx = root / "npx"
-            trusted_npx.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-            trusted_npx.chmod(0o700)
-            untrusted_npx = root / "other" / "npx"
-            untrusted_npx.parent.mkdir()
-            untrusted_npx.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-            untrusted_npx.chmod(0o700)
-            non_executable = root / "not-executable"
-            non_executable.write_text("x", encoding="utf-8")
-            non_executable.chmod(0o600)
-            directory_path = root / "directory"
-            directory_path.mkdir()
-            adapter = "@agentclientprotocol/codex-acp@1.2.3"
-            cases = {
-                "missing": (
-                    ["/usr/bin/env", str(trusted_npx), adapter],
-                    "恰好包含一个 CODEX_PATH",
-                ),
-                "duplicate": (
-                    [
-                        "/usr/bin/env",
-                        f"CODEX_PATH={executable}",
-                        f"CODEX_PATH={executable}",
-                        str(trusted_npx),
-                        adapter,
-                    ],
-                    "恰好包含一个 CODEX_PATH",
-                ),
-                "relative": (
-                    [
-                        "/usr/bin/env",
-                        "CODEX_PATH=bin/codex",
-                        str(trusted_npx),
-                        adapter,
-                    ],
-                    "绝对路径",
-                ),
-                "non-regular": (
-                    [
-                        "/usr/bin/env",
-                        f"CODEX_PATH={directory_path}",
-                        str(trusted_npx),
-                        adapter,
-                    ],
-                    "指向普通文件",
-                ),
-                "non-executable": (
-                    [
-                        "/usr/bin/env",
-                        f"CODEX_PATH={non_executable}",
-                        str(trusted_npx),
-                        adapter,
-                    ],
-                    "不可执行",
-                ),
-                "non-codex-adapter": (
-                    [
-                        "/usr/bin/env",
-                        f"CODEX_PATH={executable}",
-                        str(trusted_npx),
-                        "@agentclientprotocol/claude-agent-acp@1",
-                    ],
-                    "codex-acp adapter",
-                ),
-                "npm-package-redirection": (
-                    [
-                        "/usr/bin/env",
-                        f"CODEX_PATH={executable}",
-                        str(trusted_npx),
-                        "@agentclientprotocol/codex-acp@npm:arbitrary-wrapper",
-                    ],
-                    "codex-acp adapter",
-                ),
-                "duplicate-codex-adapter": (
-                    [
-                        "/usr/bin/env",
-                        f"CODEX_PATH={executable}",
-                        str(trusted_npx),
-                        adapter,
-                        adapter,
-                    ],
-                    "恰好包含一个 codex-acp adapter",
-                ),
-                "decorated-arbitrary-executable": (
-                    ["/bin/true", f"CODEX_PATH={executable}", adapter],
-                    "受支持命令形状",
-                ),
-                "shell-command": (
-                    [
-                        "/usr/bin/env",
-                        f"CODEX_PATH={executable}",
-                        "/bin/sh",
-                        "-c",
-                        "exec arbitrary-wrapper",
-                        adapter,
-                    ],
-                    "当前可信 npx 路径",
-                ),
-                "dynamic-wrapper": (
-                    [
-                        "/usr/bin/env",
-                        f"CODEX_PATH={executable}",
-                        str(untrusted_npx),
-                        adapter,
-                    ],
-                    "当前可信 npx 路径",
-                ),
-                "codex-path-not-an-env-assignment": (
-                    [
-                        "/usr/bin/env",
-                        str(trusted_npx),
-                        f"CODEX_PATH={executable}",
-                        adapter,
-                    ],
-                    "env 启动环境赋值",
-                ),
-                "adapter-not-first-positional": (
-                    [
-                        "/usr/bin/env",
-                        f"CODEX_PATH={executable}",
-                        str(trusted_npx),
-                        "arbitrary-wrapper",
-                        adapter,
-                    ],
-                    "首个位置参数",
-                ),
-                "path-hijack": (
-                    [
-                        "/usr/bin/env",
-                        f"PATH={untrusted_npx.parent}",
-                        f"CODEX_PATH={executable}",
-                        "npx",
-                        "-y",
-                        adapter,
-                    ],
-                    "不安全 env 赋值.*PATH",
-                ),
-                "node-options-injection": (
-                    [
-                        "/usr/bin/env",
-                        "NODE_OPTIONS=--require=/tmp/hostile.js",
-                        f"CODEX_PATH={executable}",
-                        str(trusted_npx),
-                        adapter,
-                    ],
-                    "不安全 env 赋值.*NODE_OPTIONS",
-                ),
-                "npm-environment-injection": (
-                    [
-                        "/usr/bin/env",
-                        "npm_config_registry=https://hostile.invalid",
-                        f"CODEX_PATH={executable}",
-                        str(trusted_npx),
-                        adapter,
-                    ],
-                    "不安全 env 赋值.*npm_config_registry",
-                ),
-                "loader-environment-injection": (
-                    [
-                        "/usr/bin/env",
-                        "LD_PRELOAD=/tmp/hostile.so",
-                        f"CODEX_PATH={executable}",
-                        str(trusted_npx),
-                        adapter,
-                    ],
-                    "不安全 env 赋值.*LD_PRELOAD",
-                ),
-                "node-runner": (
-                    [
-                        "/usr/bin/env",
-                        f"CODEX_PATH={executable}",
-                        "/usr/bin/node",
-                        adapter,
-                    ],
-                    "当前可信 npx 路径",
-                ),
-                "npm-runner": (
-                    [
-                        "/usr/bin/env",
-                        f"CODEX_PATH={executable}",
-                        "npm",
-                        adapter,
-                    ],
-                    "只允许字面 npx",
-                ),
-                "other-relative-runner": (
-                    [
-                        "/usr/bin/env",
-                        f"CODEX_PATH={executable}",
-                        "bin/npx",
-                        adapter,
-                    ],
-                    "只允许字面 npx",
-                ),
-                "untrusted-absolute-runner": (
-                    [
-                        "/usr/bin/env",
-                        f"CODEX_PATH={executable}",
-                        str(untrusted_npx),
-                        adapter,
-                    ],
-                    "当前可信 npx 路径",
-                ),
-                "assignment-after-runner": (
-                    [
-                        "/usr/bin/env",
-                        f"CODEX_PATH={executable}",
-                        "npx",
-                        adapter,
-                        "CODEX_HOME=/late",
-                    ],
-                    "runner 后不得包含 env 赋值",
-                ),
-                "adapter-capability-override": (
-                    [
-                        "/usr/bin/env",
-                        f"CODEX_PATH={executable}",
-                        "npx",
-                        adapter,
-                        "--sandbox",
-                        "danger-full-access",
-                    ],
-                    "adapter 必须是 runner 的最后一个参数",
-                ),
-                "assignment-order": (
-                    [
-                        "/usr/bin/env",
-                        f"CODEX_PATH={executable}",
-                        "CODEX_HOME=/late",
-                        "npx",
-                        adapter,
-                    ],
-                    "连续的可选 CODEX_HOME 后接必需 CODEX_PATH",
-                ),
-                "newline-token": (
-                    [
-                        "/usr/bin/env",
-                        f"CODEX_PATH={executable}",
-                        "npx",
-                        adapter + "\n",
-                    ],
-                    "含控制字符",
-                ),
-                "nul-token": (
-                    [
-                        "/usr/bin/env",
-                        f"CODEX_PATH={executable}",
-                        "npx",
-                        adapter + "\x00",
-                    ],
-                    "含控制字符",
-                ),
-            }
-            with mock.patch.object(
-                RUNNER.shutil, "which", return_value=str(trusted_npx)
-            ):
-                for name, (argv, message) in cases.items():
-                    with self.subTest(name=name):
-                        with self.assertRaisesRegex(
-                            RUNNER.HarnessEnvironmentError, message
-                        ):
-                            RUNNER.registered_codex_base_argv({"argv": argv}, "alias")
-                accepted = [
-                    "/usr/bin/env",
-                    "CODEX_HOME=/real/profile",
-                    f"CODEX_PATH={executable}",
-                    str(trusted_npx),
-                    "-y",
-                    adapter,
-                ]
-                self.assertEqual(
-                    RUNNER.registered_codex_base_argv({"argv": accepted}, "alias"),
-                    tuple(accepted),
-                )
-                real_shape = [
-                    "/usr/bin/env",
-                    "CODEX_HOME=/real/profile",
-                    f"CODEX_PATH={executable}",
-                    "npx",
-                    "-y",
-                    adapter,
-                ]
-                self.assertEqual(
-                    RUNNER.registered_codex_base_argv({"argv": real_shape}, "alias"),
-                    tuple(real_shape),
-                )
-            with self.assertRaisesRegex(
-                RUNNER.HarnessEnvironmentError, "structured argv"
-            ):
-                RUNNER.registered_codex_base_argv({"command": "codex-acp"}, "alias")
-
-    def test_trusted_npx_resolution_fails_closed(self) -> None:
-        from unittest import mock
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            executable = root / "npx"
-            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-            executable.chmod(0o700)
-            non_executable = root / "not-executable"
-            non_executable.write_text("x", encoding="utf-8")
-            non_executable.chmod(0o600)
-            folder = root / "folder"
-            folder.mkdir()
-
-            with mock.patch.object(
-                RUNNER.shutil, "which", return_value=str(executable)
-            ):
-                self.assertEqual(RUNNER.trusted_npx_path(), executable)
-            cases = {
-                "missing": (None, "找不到 npx"),
-                "relative": ("npx", "不是绝对路径"),
-                "non-string": (Path(executable), "不是非空字符串"),
-                "non-executable": (str(non_executable), "必须是可执行普通文件"),
-                "directory": (str(folder), "必须是可执行普通文件"),
-            }
-            for name, (resolved, message) in cases.items():
-                with self.subTest(name=name):
-                    with mock.patch.object(
-                        RUNNER.shutil, "which", return_value=resolved
-                    ):
-                        with self.assertRaisesRegex(
-                            RUNNER.HarnessEnvironmentError, message
-                        ):
-                            RUNNER.trusted_npx_path()
-
-    def test_harness_integrity_rejects_launcher_and_config_drift(self) -> None:
+    def test_resolve_expected_agents_fail_closed_on_unknown_and_builtin_pinned(
+        self,
+    ) -> None:
         from unittest import mock
 
         with tempfile.TemporaryDirectory() as directory:
@@ -517,73 +167,79 @@ class RunBlackBoxE2ETest(unittest.TestCase):
             evidence = root / "evidence"
             repository.mkdir()
             evidence.mkdir()
-            executable = root / "codex"
-            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-            executable.chmod(0o700)
-            trusted_npx = root / "npx"
-            trusted_npx.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-            trusted_npx.chmod(0o700)
             workspace = RUNNER.Workspace(
                 root, repository, root / "origin.git", evidence, "initial"
             )
             args = argparse.Namespace(
-                worker_agent="codexp",
-                validator_agent="codexp",
+                worker_agent="pi",
+                validator_agent="unknown-agent",
                 worker_effort="high",
                 validator_effort="low",
             )
-            base = [
-                "/usr/bin/env",
-                f"CODEX_PATH={executable}",
-                str(trusted_npx),
-                "@agentclientprotocol/codex-acp@1",
-            ]
             completed = subprocess.CompletedProcess(
-                [], 0, json.dumps({"agents": {"codexp": {"argv": base}}}), ""
+                [], 0, json.dumps({"agents": {}}), ""
             )
-            with (
-                mock.patch.object(RUNNER, "run_command", return_value=completed),
-                mock.patch.object(
-                    RUNNER.shutil, "which", return_value=str(trusted_npx)
-                ),
-            ):
+            with mock.patch.object(RUNNER, "run_command", return_value=completed):
+                with self.assertRaisesRegex(
+                    RUNNER.HarnessEnvironmentError, "unknown-agent"
+                ):
+                    RUNNER.resolve_expected_agents(args, workspace, "acpx")
+
+            args.validator_agent = "pi"
+            with mock.patch.object(RUNNER, "run_command", return_value=completed):
+                expected = RUNNER.resolve_expected_agents(args, workspace, "acpx")
+            self.assertEqual(
+                expected["worker"].argv,
+                ("npx", RUNNER.PI_ACP_ADAPTER_SPEC),
+            )
+            self.assertEqual(
+                expected["validator"].argv,
+                ("npx", RUNNER.PI_ACP_ADAPTER_SPEC),
+            )
+
+    def test_harness_integrity_rejects_config_drift(self) -> None:
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository = root / "repository"
+            evidence = root / "evidence"
+            repository.mkdir()
+            evidence.mkdir()
+            workspace = RUNNER.Workspace(
+                root, repository, root / "origin.git", evidence, "initial"
+            )
+            args = argparse.Namespace(
+                worker_agent="pi",
+                validator_agent="pi",
+                worker_effort="high",
+                validator_effort="low",
+            )
+            completed = subprocess.CompletedProcess(
+                [], 0, json.dumps({"agents": {}}), ""
+            )
+            with mock.patch.object(RUNNER, "run_command", return_value=completed):
                 expected = RUNNER.resolve_expected_agents(args, workspace, "acpx")
             integrity = RUNNER.install_project_config(workspace, args, expected)
 
-            worker = expected["worker"].launcher
-            worker.path.chmod(0o700)
-            with self.assertRaisesRegex(RUNNER.HarnessError, "mode 漂移"):
-                RUNNER.verify_harness_integrity(workspace, expected, integrity)
-            worker.path.chmod(0o500)
-
-            worker.path.chmod(0o700)
-            worker.path.write_bytes(worker.content + b"# drift\n")
-            worker.path.chmod(0o500)
-            with self.assertRaisesRegex(RUNNER.HarnessError, "content/hash 漂移"):
-                RUNNER.verify_harness_integrity(workspace, expected, integrity)
-            worker.path.chmod(0o700)
-            worker.path.write_bytes(worker.content)
-            worker.path.chmod(0o500)
-
-            try:
-                worker.path.unlink()
-                worker.path.symlink_to(expected["validator"].launcher.path)
-            except (OSError, NotImplementedError) as error:
-                self.skipTest(f"symlink unavailable: {error}")
-            with self.assertRaisesRegex(RUNNER.HarnessError, "普通非 symlink"):
-                RUNNER.verify_harness_integrity(workspace, expected, integrity)
-            worker.path.unlink()
-            worker.path.write_bytes(worker.content)
-            worker.path.chmod(0o500)
+            RUNNER.verify_harness_integrity(workspace, integrity)
 
             config = integrity.project_config
             config.path.write_bytes(config.content + b" ")
             with self.assertRaisesRegex(RUNNER.HarnessError, "content/hash 漂移"):
-                RUNNER.verify_harness_integrity(workspace, expected, integrity)
+                RUNNER.verify_harness_integrity(workspace, integrity)
             config.path.write_bytes(config.content)
             config.path.chmod(0o644)
             with self.assertRaisesRegex(RUNNER.HarnessError, "mode 漂移"):
-                RUNNER.verify_harness_integrity(workspace, expected, integrity)
+                RUNNER.verify_harness_integrity(workspace, integrity)
+            config.path.chmod(RUNNER.PROJECT_CONFIG_MODE)
+            try:
+                config.path.unlink()
+                config.path.symlink_to(config.path.with_name("elsewhere.json"))
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"symlink unavailable: {error}")
+            with self.assertRaisesRegex(RUNNER.HarnessError, "普通非 symlink"):
+                RUNNER.verify_harness_integrity(workspace, integrity)
 
     def test_verify_fixture_path_rejects_symlink_or_escape(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -639,24 +295,19 @@ class RunBlackBoxE2ETest(unittest.TestCase):
     def test_exact_route_rejects_wrapper_interchange_and_base_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            witness = RUNNER.FileWitness(root / "worker", 0o500, "hash", b"worker")
-            expected = RUNNER.ExpectedAgent(
-                "codexp",
-                ("env", "CODEX_PATH=/real/codex", "codex-acp"),
-                ("env", "CODEX_PATH=/tmp/worker", "codex-acp"),
-                witness,
-            )
+            expected_argv = ("npx", "pi-acp@^0.0.31")
+            expected = RUNNER.ExpectedAgent("pi", expected_argv)
             args = argparse.Namespace(
-                worker_agent="codexp",
-                validator_agent="codexp",
+                worker_agent="pi",
+                validator_agent="pi",
                 expected_agents={"worker": expected},
             )
             variants = {
-                "base-fallback": expected.base_argv,
+                "base-fallback": ("npx", "pi-acp"),
                 "wrapper-interchange": (
-                    "env",
-                    "CODEX_PATH=/tmp/validator",
-                    "codex-acp",
+                    "/usr/bin/env",
+                    "npx",
+                    "pi-acp@^0.0.31",
                 ),
             }
             for name, actual in variants.items():
@@ -683,18 +334,11 @@ class RunBlackBoxE2ETest(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            witness = RUNNER.FileWitness(root / "worker", 0o500, "hash", b"worker")
-            expected_argv = (
-                "/usr/bin/env",
-                "CODEX_PATH=/tmp/worker",
-                "/usr/bin/npx",
-            )
-            expected = RUNNER.ExpectedAgent(
-                "codexp", expected_argv, expected_argv, witness
-            )
+            expected_argv = ("npx", "pi-acp@^0.0.31")
+            expected = RUNNER.ExpectedAgent("pi", expected_argv)
             args = argparse.Namespace(
-                worker_agent="codexp",
-                validator_agent="codexp",
+                worker_agent="pi",
+                validator_agent="pi",
                 expected_agents={"worker": expected},
             )
             cases = {
@@ -739,12 +383,12 @@ class RunBlackBoxE2ETest(unittest.TestCase):
                         "acp_session_id": "provider-target",
                         "cwd": str(root),
                         "name": "run-story-01-worker-target",
-                        "agent_argv": ["codexp"],
+                        "agent_argv": ["pi"],
                     }
                 ),
                 encoding="utf-8",
             )
-            args = argparse.Namespace(worker_agent="codexp", validator_agent="codexp")
+            args = argparse.Namespace(worker_agent="pi", validator_agent="pi")
 
             with mock.patch.object(RUNNER, "sessions_directory", return_value=sessions):
                 with self.assertRaisesRegex(
@@ -781,13 +425,13 @@ class RunBlackBoxE2ETest(unittest.TestCase):
                         "acp_session_id": "provider-source",
                         "cwd": str(root),
                         "name": "run-story-01-worker-source",
-                        "agent_argv": ["codexp"],
+                        "agent_argv": ["pi"],
                         "event_log": {"active_path": str(foreign_stream)},
                     }
                 ),
                 encoding="utf-8",
             )
-            args = argparse.Namespace(worker_agent="codexp", validator_agent="codexp")
+            args = argparse.Namespace(worker_agent="pi", validator_agent="pi")
 
             with mock.patch.object(RUNNER, "sessions_directory", return_value=sessions):
                 with self.assertRaisesRegex(
@@ -819,9 +463,9 @@ class RunBlackBoxE2ETest(unittest.TestCase):
                 "provider-own",
                 "run-worker-own",
                 "worker",
-                "codexp",
-                "codexp",
-                ("codexp",),
+                "pi",
+                "pi",
+                ("pi",),
                 1,
                 0,
                 0,
@@ -852,7 +496,7 @@ class RunBlackBoxE2ETest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            args = argparse.Namespace(worker_agent="codexp", validator_agent="codexp")
+            args = argparse.Namespace(worker_agent="pi", validator_agent="pi")
 
             session = RUNNER.basic_session(record, args, validate_route=False)
 
@@ -877,14 +521,14 @@ class RunBlackBoxE2ETest(unittest.TestCase):
                         "acp_session_id": "provider-closed",
                         "cwd": str(root),
                         "name": "run-story-01-worker-extra",
-                        "agent_argv": ["codexp"],
+                        "agent_argv": ["pi"],
                         "closed": True,
                         "event_log": {"active_path": str(events)},
                     }
                 ),
                 encoding="utf-8",
             )
-            args = argparse.Namespace(worker_agent="codexp", validator_agent="codexp")
+            args = argparse.Namespace(worker_agent="pi", validator_agent="pi")
             with self.assertRaisesRegex(RUNNER.HarnessError, "没有 session/prompt"):
                 RUNNER.inspect_session(record, args)
 
@@ -917,13 +561,13 @@ class RunBlackBoxE2ETest(unittest.TestCase):
                         "acp_session_id": "provider-1",
                         "cwd": str(root),
                         "name": "run-story-01-worker-1",
-                        "agent_argv": ["codexp"],
+                        "agent_argv": ["pi"],
                         "event_log": {"active_path": str(events)},
                     }
                 ),
                 encoding="utf-8",
             )
-            args = argparse.Namespace(worker_agent="codexp", validator_agent="codexp")
+            args = argparse.Namespace(worker_agent="pi", validator_agent="pi")
 
             inspected = RUNNER.inspect_session(record, args)
 
@@ -964,13 +608,13 @@ class RunBlackBoxE2ETest(unittest.TestCase):
                         "acp_session_id": "provider-1",
                         "cwd": str(root),
                         "name": "run-story-01-validator-1",
-                        "agent_argv": ["codexp"],
+                        "agent_argv": ["pi"],
                         "event_log": {"active_path": str(events)},
                     }
                 ),
                 encoding="utf-8",
             )
-            args = argparse.Namespace(worker_agent="codexp", validator_agent="codexp")
+            args = argparse.Namespace(worker_agent="pi", validator_agent="pi")
 
             with self.assertRaisesRegex(RUNNER.HarnessError, "continuity"):
                 RUNNER.inspect_session(record, args)
@@ -1034,17 +678,11 @@ class RunBlackBoxE2ETest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            witness = RUNNER.FileWitness(root / "launcher", 0o500, "hash", b"content")
             args = argparse.Namespace(
-                worker_agent="codexp",
-                validator_agent="codexp",
+                worker_agent="pi",
+                validator_agent="pi",
                 expected_agents={
-                    "worker": RUNNER.ExpectedAgent(
-                        "codexp",
-                        ("base-agent", "acp"),
-                        ("expected-agent", "acp"),
-                        witness,
-                    )
+                    "worker": RUNNER.ExpectedAgent("pi", ("npx", "pi-acp@^0.0.31"))
                 },
             )
 
@@ -1055,7 +693,7 @@ class RunBlackBoxE2ETest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             record = root / "record.json"
-            argv = ["codexp", "--safe"]
+            argv = ["pi", "--safe"]
             record.write_text(
                 json.dumps(
                     {
@@ -1063,13 +701,13 @@ class RunBlackBoxE2ETest(unittest.TestCase):
                         "acp_session_id": "provider-command",
                         "cwd": str(root),
                         "name": "run-story-01-worker-command",
-                        "agent_command": "codexp --different",
+                        "agent_command": "pi --different",
                         "agent_argv": argv,
                     }
                 ),
                 encoding="utf-8",
             )
-            args = argparse.Namespace(worker_agent="codexp", validator_agent="codexp")
+            args = argparse.Namespace(worker_agent="pi", validator_agent="pi")
 
             with self.assertRaisesRegex(
                 RUNNER.HarnessError, "agent_command 与 persisted agent_argv 不一致"
@@ -1087,13 +725,13 @@ class RunBlackBoxE2ETest(unittest.TestCase):
                         "acp_session_id": "provider-fields",
                         "cwd": str(root),
                         "name": "run-story-01-worker-fields",
-                        "agent_argv": ["codexp"],
+                        "agent_argv": ["pi"],
                         "agentArgv": ["other"],
                     }
                 ),
                 encoding="utf-8",
             )
-            args = argparse.Namespace(worker_agent="codexp", validator_agent="codexp")
+            args = argparse.Namespace(worker_agent="pi", validator_agent="pi")
 
             with self.assertRaisesRegex(RUNNER.HarnessError, "字段冲突"):
                 RUNNER.basic_session(record, args)
@@ -1152,9 +790,9 @@ class RunBlackBoxE2ETest(unittest.TestCase):
                     provider_id=f"provider-{role}",
                     name=f"actual-{role}-session",
                     role=role,
-                    agent="codexp",
-                    agent_command="codexp",
-                    agent_argv=("codexp",),
+                    agent="pi",
+                    agent_command="pi",
+                    agent_argv=("pi",),
                     prompt_count=1,
                     new_after_prompt=0,
                     resume_count=0,
@@ -1188,7 +826,7 @@ class RunBlackBoxE2ETest(unittest.TestCase):
                             "event": event_type,
                             "attempt_id": attempt_id,
                             "role": role,
-                            "agent": "codexp",
+                            "agent": "pi",
                             "session": provider,
                         }
                     )
@@ -1227,9 +865,9 @@ class RunBlackBoxE2ETest(unittest.TestCase):
                     provider_id=provider,
                     name=name,
                     role=role,
-                    agent="codexp",
-                    agent_command="codexp",
-                    agent_argv=("codexp",),
+                    agent="pi",
+                    agent_command="pi",
+                    agent_argv=("pi",),
                     prompt_count=1,
                     new_after_prompt=0,
                     resume_count=0,
@@ -1409,14 +1047,9 @@ class RunBlackBoxE2ETest(unittest.TestCase):
                     str(output),
                 ]
             )
-            witness = RUNNER.FileWitness(root / "launcher", 0o500, "hash", b"content")
             expected = {
-                "worker": RUNNER.ExpectedAgent(
-                    "codex", ("base-codex-acp",), ("codex-acp",), witness
-                ),
-                "validator": RUNNER.ExpectedAgent(
-                    "codex", ("base-codex-acp",), ("codex-acp",), witness
-                ),
+                "worker": RUNNER.ExpectedAgent("pi", ("npx", "pi-acp@^0.0.31")),
+                "validator": RUNNER.ExpectedAgent("pi", ("npx", "pi-acp@^0.0.31")),
             }
             outer_event = (
                 json.dumps(
@@ -1517,23 +1150,13 @@ class RunBlackBoxE2ETest(unittest.TestCase):
         self.assertTrue(preflight["uses_bounded_acp_session_handshake"])
         self.assertTrue(preflight["rejects_raw_adapter_help_preflight"])
         self.assertEqual(
-            preflight["accepted_registered_runner_tokens"],
-            ["npx", "<shutil.which('npx') absolute path>"],
+            preflight["builtin_routes"], {"pi": ["npx", RUNNER.PI_ACP_ADAPTER_SPEC]}
         )
-        self.assertEqual(
-            preflight["final_runner_token"],
-            "<shutil.which('npx') absolute path>",
-        )
+        self.assertTrue(preflight["accepts_registered_structured_argv_aliases"])
+        self.assertTrue(preflight["rejects_command_form_and_unknown_builtin"])
         self.assertTrue(preflight["requires_persisted_nonempty_string_agent_argv"])
-        self.assertEqual(
-            preflight["allowed_alias_environment"], ["CODEX_HOME", "CODEX_PATH"]
-        )
-        self.assertTrue(preflight["alias_assignments_contiguous"])
-        self.assertEqual(
-            preflight["alias_assignment_order"], ["CODEX_HOME?", "CODEX_PATH"]
-        )
-        self.assertTrue(preflight["reject_trailing_env_assignments"])
-        self.assertTrue(preflight["reject_trailing_adapter_arguments"])
+        self.assertTrue(preflight["requires_persisted_argv_equal_expected_argv"])
+        self.assertTrue(preflight["constructs_no_sandbox_launcher"])
         self.assertTrue(preflight["reject_control_characters"])
 
     def test_validate_fixture_mode_never_calls_an_agent(self) -> None:

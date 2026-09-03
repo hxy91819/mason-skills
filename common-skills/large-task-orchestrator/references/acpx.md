@@ -37,7 +37,7 @@ acpx --cwd <repo> <agent> set model <model-preference> -s <role-session>
 
 Require `model set: <model-preference>` (or an equivalent adapter confirmation). If a validator cannot honor the recommendation, record the actual model and continue; only a worker capability that declares a strict `model_contains` dependency may make a mismatch a routing failure.
 
-Current `codex-acp` exposes model and effort as separate config options. For a registered Codex candidate such as `codex`, `codexp`, or `codexl`, apply the resolved profile after `sessions new` and the baseline `sessions show`, before the first prompt:
+Current `codex-acp` exposes model and effort as separate config options. For a registered Codex candidate such as `codex` or `codexl`, apply the resolved profile after `sessions new` and the baseline `sessions show`, before the first prompt:
 
 ```bash
 acpx --cwd <repo> <agent> set reasoning_effort <resolved-effort> -s <role-session>

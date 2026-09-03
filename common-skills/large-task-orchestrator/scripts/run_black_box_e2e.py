@@ -3,7 +3,7 @@
 
 脚本定义：复制固定单 Story 夹具到系统临时目录，用本地 bare remote 隔离交付，
 并让一次性外部 orchestrator Agent 仅凭 Skill 与原始任务完成实现和独立验证。
-参数定义：默认 orchestrator=kiro、worker=codexp、validator 跟随 worker；只有 --live
+参数定义：默认 orchestrator=kiro、worker=pi、validator 跟随 worker；只有 --live
 会调用真实 Agent，--validate-fixture 只校验本地夹具，--dry-run 只展示输入和命令。
 输出定义：stdout 返回人读摘要或 JSON；--output-dir 可归档事件和检查结果；成功时
 默认删除临时仓库，失败时保留并打印路径。退出码 0=通过，1=行为/清理失败，2=参数或环境错误。
@@ -48,19 +48,10 @@ EXPECTED_PROMPT = (
 EXPECTED_GREETING = b"hello from orchestrated worker\n"
 AGENT_TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 EFFORT_TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
-CODEX_PATH_PREFIX = "CODEX_PATH="
-CODEX_ACP_TOKEN = re.compile(
-    r"^@agentclientprotocol/codex-acp"
-    r"(?:@[~^]?[vV]?[0-9]+(?:\.(?:[0-9]+|[xX*])){0,2}"
-    r"(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)?$"
-)
-ENV_ASSIGNMENT_TOKEN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$", re.DOTALL)
-SUPPORTED_ENV_COMMAND = "/usr/bin/env"
-SUPPORTED_ADAPTER_RUNNER = "npx"
-SUPPORTED_ENV_ASSIGNMENTS = frozenset({"CODEX_HOME", "CODEX_PATH"})
-SUPPORTED_NPX_PREFIXES = ((), ("-y",), ("--yes",))
-LAUNCHER_DIRECTORY_MODE = 0o700
-LAUNCHER_MODE = 0o500
+# 内置 pi 路由锁定 pi-acp 版本：harness 拥有精确 argv，persisted agent_argv 才能做
+# 精确相等校验；acpx 升级其内置 range 时这里刻意同步 bump，而不是隐式跟随。
+PI_ACP_ADAPTER_SPEC = "pi-acp@^0.0.31"
+BUILTIN_AGENT_ARGVS = {"pi": ("npx", PI_ACP_ADAPTER_SPEC)}
 PROJECT_CONFIG_MODE = 0o600
 DEFAULT_COMMAND_TIMEOUT = 120.0
 OUTER_COMMAND_GRACE_SECONDS = 60.0
@@ -106,14 +97,11 @@ class FileWitness:
 @dataclass(frozen=True)
 class ExpectedAgent:
     logical_name: str
-    base_argv: tuple[str, ...]
     argv: tuple[str, ...]
-    launcher: FileWitness
 
 
 @dataclass(frozen=True)
 class HarnessIntegrity:
-    launcher_directory: Path
     project_config: FileWitness
 
 
@@ -152,8 +140,9 @@ def usage() -> str:
 
 选项:
   --orchestrator-agent <name>  外层 ACPX Agent，默认 kiro。
-  --worker-agent <name>        注册的 codex-acp worker argv alias，默认 codexp。
-  --validator-agent <name>     注册的 codex-acp validator argv alias，默认与 worker 相同。
+  --worker-agent <name>        ACPX worker Agent，默认 pi。非 pi 名称必须是
+                               acpx config show 注册的 structured argv alias。
+  --validator-agent <name>     validator Agent，规则同 worker；默认与 worker 相同。
   --worker-effort <value>      worker difficulty profile 的 effort，默认 high。
   --validator-effort <value>   validator difficulty profile 的 effort，默认 low。
   --timeout <seconds>          外层 Agent 总超时，默认 1800。
@@ -168,8 +157,9 @@ def usage() -> str:
 输出:
   live 成功必须同时证明：固定 prompt 未被扩写、Story/Epic done、fixture 检查通过、
   本地提交已 push、worker/validator 为不同 session、provider ID 连续、session 没有
-  prompt 后 new/resume、实际 argv 精确匹配预先构造的 final argv，并且两 launcher 与
-  project config 的路径、模式、内容和 SHA-256 在 outer 返回后未漂移。
+  prompt 后 new/resume、实际 persisted argv 精确匹配预先解析的 route argv，并且
+  project config 的路径、模式和 SHA-256 在 outer 返回后未漂移。harness 不构造沙箱
+  launcher；角色隔离只来自临时仓库和本地 bare remote。
 
 退出码:
   0  所选模式通过。
@@ -177,9 +167,9 @@ def usage() -> str:
   2  参数非法，或缺少 acpx/git/fixture/HOME 等运行环境。
 
 示例:
-  python3 {SCRIPT_PATH.name} --dry-run --worker-agent codexp --validator-agent codexp
+  python3 {SCRIPT_PATH.name} --dry-run
   python3 {SCRIPT_PATH.name} --validate-fixture
-  python3 {SCRIPT_PATH.name} --live --acknowledge-broad-permissions --worker-agent codexp --validator-agent codexp --timeout 1800
+  python3 {SCRIPT_PATH.name} --live --acknowledge-broad-permissions --worker-agent pi --validator-agent pi --timeout 1800
   python3 {SCRIPT_PATH.name} --live --acknowledge-broad-permissions --output-dir /tmp/lto-e2e-runs --keep-temp
 """
 
@@ -195,7 +185,7 @@ def build_parser() -> argparse.ArgumentParser:
     modes.add_argument("--validate-fixture", action="store_true", help="只校验本地夹具")
     modes.add_argument("--live", action="store_true", help="调用真实 Agent 完整运行")
     parser.add_argument("--orchestrator-agent", default="kiro")
-    parser.add_argument("--worker-agent", default="codexp")
+    parser.add_argument("--worker-agent", default="pi")
     parser.add_argument("--validator-agent")
     parser.add_argument("--worker-effort", default="high")
     parser.add_argument("--validator-effort", default="low")
@@ -325,269 +315,27 @@ def sha256_bytes(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
-def trusted_npx_path() -> Path:
-    trusted_runner_text = shutil.which(SUPPORTED_ADAPTER_RUNNER)
-    if trusted_runner_text is None:
+def validated_registered_argv(entry_argv: Any, logical_name: str) -> tuple[str, ...]:
+    if (
+        not isinstance(entry_argv, list)
+        or not entry_argv
+        or not all(isinstance(item, str) and item for item in entry_argv)
+    ):
         raise HarnessEnvironmentError(
-            f"真实继承环境找不到 {SUPPORTED_ADAPTER_RUNNER}，无法绑定 adapter runner"
+            f"ACPX agent {logical_name!r} 必须提供非空 structured argv；"
+            "command 形态的 alias 无法做精确 argv 校验，live route fail closed"
         )
-    if not isinstance(trusted_runner_text, str) or not trusted_runner_text:
-        raise HarnessEnvironmentError(
-            f"真实继承环境解析出的 npx 不是非空字符串: {trusted_runner_text!r}"
-        )
-    trusted_runner = Path(trusted_runner_text)
-    if not trusted_runner_text.isprintable():
-        raise HarnessEnvironmentError(
-            f"真实继承环境解析出的 npx 含控制字符: {trusted_runner_text!r}"
-        )
-    if not trusted_runner.is_absolute():
-        raise HarnessEnvironmentError(
-            f"真实继承环境解析出的 npx 不是绝对路径: {trusted_runner}"
-        )
-    try:
-        metadata = trusted_runner.stat()
-    except OSError as error:
-        raise HarnessEnvironmentError(
-            f"真实继承环境解析出的 npx 无法检查: {trusted_runner}: {error}"
-        ) from error
-    if not stat.S_ISREG(metadata.st_mode) or not os.access(trusted_runner, os.X_OK):
-        raise HarnessEnvironmentError(
-            f"真实继承环境解析出的 npx 必须是可执行普通文件: {trusted_runner}"
-        )
-    return trusted_runner
-
-
-def validated_codex_route_tokens(
-    base: tuple[str, ...], logical_name: str
-) -> tuple[int, int, Path]:
-    if not base:
-        raise HarnessEnvironmentError(
-            f"ACPX agent {logical_name!r} 的 structured argv 不能为空"
-        )
-    for index, token in enumerate(base):
-        if not isinstance(token, str) or not token:
-            raise HarnessEnvironmentError(
-                f"ACPX agent {logical_name!r} 的 argv[{index}] 必须是非空字符串"
-            )
+    for index, token in enumerate(entry_argv):
         if not token.isprintable():
             raise HarnessEnvironmentError(
                 f"ACPX agent {logical_name!r} 的 argv[{index}] 含控制字符；"
                 "拒绝换行、NUL 等不可打印字符"
             )
-    adapter_tokens = [item for item in base if CODEX_ACP_TOKEN.fullmatch(item)]
-    if len(adapter_tokens) != 1:
-        raise HarnessEnvironmentError(
-            f"ACPX agent {logical_name!r} 必须恰好包含一个 codex-acp adapter token；"
-            f"实际={len(adapter_tokens)}；非 codex-acp live route fail closed，"
-            "因为 harness 无法独立构造安全 launcher"
-        )
-    codex_path_tokens = [item for item in base if item.startswith(CODEX_PATH_PREFIX)]
-    if len(codex_path_tokens) != 1:
-        raise HarnessEnvironmentError(
-            f"ACPX agent {logical_name!r} 必须恰好包含一个 CODEX_PATH token；"
-            f"实际={len(codex_path_tokens)}"
-        )
-    codex_path_text = codex_path_tokens[0][len(CODEX_PATH_PREFIX) :]
-    codex_path = Path(codex_path_text)
-    if not codex_path.is_absolute():
-        raise HarnessEnvironmentError(
-            f"ACPX agent {logical_name!r} 的 CODEX_PATH 必须是绝对路径: {codex_path_text!r}"
-        )
-    try:
-        metadata = codex_path.stat()
-    except OSError as error:
-        raise HarnessEnvironmentError(
-            f"ACPX agent {logical_name!r} 的 CODEX_PATH 无法检查: {codex_path}: {error}"
-        ) from error
-    if not stat.S_ISREG(metadata.st_mode):
-        raise HarnessEnvironmentError(
-            f"ACPX agent {logical_name!r} 的 CODEX_PATH 必须指向普通文件: {codex_path}"
-        )
-    if not os.access(codex_path, os.X_OK):
-        raise HarnessEnvironmentError(
-            f"ACPX agent {logical_name!r} 的 CODEX_PATH 不可执行: {codex_path}"
-        )
-
-    if base[0] != SUPPORTED_ENV_COMMAND:
-        raise HarnessEnvironmentError(
-            f"ACPX agent {logical_name!r} 不是受支持命令形状；"
-            f"必须由 {SUPPORTED_ENV_COMMAND} 直接应用环境赋值并启动 codex-acp adapter"
-        )
-    utility_index = next(
-        (
-            index
-            for index, token in enumerate(base[1:], start=1)
-            if not ENV_ASSIGNMENT_TOKEN.fullmatch(token)
-        ),
-        len(base),
-    )
-    assignment_tokens = list(base[1:utility_index])
-    assignment_names = [token.split("=", 1)[0] for token in assignment_tokens]
-    unsupported = sorted(set(assignment_names) - SUPPORTED_ENV_ASSIGNMENTS)
-    if unsupported:
-        raise HarnessEnvironmentError(
-            f"ACPX agent {logical_name!r} 包含不安全 env 赋值 {unsupported}；"
-            "仅允许 CODEX_HOME 和 CODEX_PATH，拒绝 PATH/Node/npm/loader 注入"
-        )
-    codex_path_index = base.index(codex_path_tokens[0])
-    if not assignment_names:
-        raise HarnessEnvironmentError(
-            f"ACPX agent {logical_name!r} 的 CODEX_PATH 必须是 env 启动环境赋值"
-        )
-    expected_assignment_names = (
-        ["CODEX_PATH"]
-        if assignment_names[0] == "CODEX_PATH"
-        else ["CODEX_HOME", "CODEX_PATH"]
-    )
-    if assignment_names != expected_assignment_names:
-        if len(assignment_names) != len(set(assignment_names)):
-            detail = "env 赋值名称必须唯一"
-        else:
-            detail = "env 赋值必须是连续的可选 CODEX_HOME 后接必需 CODEX_PATH"
-        raise HarnessEnvironmentError(f"ACPX agent {logical_name!r} 的 {detail}")
-    if not 1 <= codex_path_index < utility_index:
-        raise HarnessEnvironmentError(
-            f"ACPX agent {logical_name!r} 的 CODEX_PATH 必须是 env 启动环境赋值"
-        )
-    if utility_index >= len(base):
-        raise HarnessEnvironmentError(
-            f"ACPX agent {logical_name!r} 缺少受支持的 npx runner"
-        )
-    trusted_runner = trusted_npx_path()
-    runner_token = base[utility_index]
-    if runner_token != SUPPORTED_ADAPTER_RUNNER:
-        runner = Path(runner_token)
-        if not runner.is_absolute():
-            raise HarnessEnvironmentError(
-                f"ACPX agent {logical_name!r} 的 runner 只允许字面 npx 或当前可信"
-                f"绝对路径 {trusted_runner}；实际={runner_token!r}"
-            )
-        if runner != trusted_runner:
-            raise HarnessEnvironmentError(
-                f"ACPX agent {logical_name!r} 的 runner 必须等于当前可信 npx 路径 "
-                f"{trusted_runner}；实际={runner}"
-            )
-    adapter_index = base.index(adapter_tokens[0])
-    npx_prefix = base[utility_index + 1 : adapter_index]
-    if (
-        adapter_index <= utility_index
-        or tuple(npx_prefix) not in SUPPORTED_NPX_PREFIXES
-    ):
-        raise HarnessEnvironmentError(
-            f"ACPX agent {logical_name!r} 的 codex-acp adapter 必须是 npx 的"
-            "首个位置参数；仅允许可选的 -y/--yes 前缀"
-        )
-    trailing_assignments = [
-        (index, token)
-        for index, token in enumerate(
-            base[utility_index + 1 :], start=utility_index + 1
-        )
-        if ENV_ASSIGNMENT_TOKEN.fullmatch(token)
-    ]
-    if trailing_assignments:
-        index, token = trailing_assignments[0]
-        raise HarnessEnvironmentError(
-            f"ACPX agent {logical_name!r} 的 runner 后不得包含 env 赋值 "
-            f"argv[{index}]={token.split('=', 1)[0]!r}"
-        )
-    if adapter_index != len(base) - 1:
-        raise HarnessEnvironmentError(
-            f"ACPX agent {logical_name!r} 的 codex-acp adapter 必须是 runner 的"
-            "最后一个参数；拒绝未验证的 adapter 尾参以保持 launcher capability boundary"
-        )
-    return codex_path_index, utility_index, trusted_runner
-
-
-def registered_codex_base_argv(entry: Any, logical_name: str) -> tuple[str, ...]:
-    if not isinstance(entry, dict):
-        raise HarnessEnvironmentError(
-            f"ACPX agent {logical_name!r} 必须是已注册的 structured argv alias；"
-            "非 codex-acp live route 无法独立构造安全 launcher"
-        )
-    argv = entry.get("argv")
-    if (
-        not isinstance(argv, list)
-        or not argv
-        or not all(isinstance(item, str) and item for item in argv)
-    ):
-        raise HarnessEnvironmentError(
-            f"ACPX agent {logical_name!r} 必须提供非空 structured argv；"
-            "command/builtin route 无法独立构造安全 launcher"
-        )
-    base = tuple(argv)
-    validated_codex_route_tokens(base, logical_name)
-    return base
-
-
-def launcher_content(role: str, codex_path: Path) -> bytes:
-    if role == "worker":
-        policy = (
-            "--sandbox workspace-write "
-            "--config sandbox_workspace_write.network_access=false"
-        )
-    elif role == "validator":
-        policy = "--sandbox read-only"
-    else:
-        raise HarnessEnvironmentError(f"未知 launcher role: {role}")
-    return (
-        f'#!/bin/sh\nset -eu\nexec {shlex.quote(str(codex_path))} {policy} "$@"\n'
-    ).encode("utf-8")
+    return tuple(entry_argv)
 
 
 def agent_argv_matches(expected: ExpectedAgent, actual: tuple[str, ...]) -> bool:
     return actual == expected.argv
-
-
-def create_role_launcher(
-    workspace: Workspace, role: str, base_argv: tuple[str, ...]
-) -> tuple[FileWitness, tuple[str, ...]]:
-    directory = workspace.root / "capability-launchers"
-    try:
-        metadata = directory.lstat()
-    except FileNotFoundError:
-        directory.mkdir(mode=LAUNCHER_DIRECTORY_MODE)
-        metadata = directory.lstat()
-    except OSError as error:
-        raise HarnessEnvironmentError(
-            f"无法检查 launcher 目录 {directory}: {error}"
-        ) from error
-    if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
-        raise HarnessEnvironmentError(f"launcher 路径不是普通目录: {directory}")
-    directory.chmod(LAUNCHER_DIRECTORY_MODE)
-    metadata = directory.lstat()
-    if stat.S_IMODE(metadata.st_mode) != LAUNCHER_DIRECTORY_MODE:
-        raise HarnessEnvironmentError(f"launcher 目录模式必须是 0700: {directory}")
-    repository = workspace.repository.resolve()
-    resolved_directory = directory.resolve()
-    if resolved_directory == repository or repository in resolved_directory.parents:
-        raise HarnessEnvironmentError(
-            "capability-launchers 必须位于 fixture repository 外"
-        )
-
-    codex_path_index, runner_index, trusted_runner = validated_codex_route_tokens(
-        base_argv, role
-    )
-    codex_path = Path(base_argv[codex_path_index][len(CODEX_PATH_PREFIX) :])
-    content = launcher_content(role, codex_path)
-    path = directory / f"codex-{role}"
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
-    flags |= getattr(os, "O_NOFOLLOW", 0)
-    try:
-        fd = os.open(path, flags, LAUNCHER_MODE)
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-    except OSError as error:
-        raise HarnessEnvironmentError(
-            f"无法创建 {role} launcher {path}: {error}"
-        ) from error
-    path.chmod(LAUNCHER_MODE)
-    witness = FileWitness(path, LAUNCHER_MODE, sha256_bytes(content), content)
-    final = list(base_argv)
-    final[codex_path_index] = f"{CODEX_PATH_PREFIX}{path}"
-    final[runner_index] = str(trusted_runner)
-    return witness, tuple(final)
 
 
 def resolve_expected_agents(
@@ -623,12 +371,20 @@ def resolve_expected_agents(
         ("worker", args.worker_agent),
         ("validator", args.validator_agent),
     ):
-        base = registered_codex_base_argv(configured.get(logical_name), logical_name)
-        launcher, final = create_role_launcher(workspace, role, base)
-        expected[role] = ExpectedAgent(logical_name, base, final, launcher)
+        entry = configured.get(logical_name)
+        if entry is None and logical_name in BUILTIN_AGENT_ARGVS:
+            # 内置 alias 不会出现在 acpx config show；使用 harness 锁定的适配器 argv。
+            argv = BUILTIN_AGENT_ARGVS[logical_name]
+        elif entry is not None:
+            argv = validated_registered_argv(entry.get("argv"), logical_name)
+        else:
+            raise HarnessEnvironmentError(
+                f"ACPX agent {logical_name!r} 既不是 harness 支持的内置路由，"
+                "也不是 acpx config show 注册的 structured argv alias；"
+                "live route fail closed"
+            )
+        expected[role] = ExpectedAgent(logical_name, argv)
     return expected
-
-
 def profile(name: str, role: str, agent: str, effort: str) -> dict[str, Any]:
     return {
         "name": name,
@@ -645,24 +401,16 @@ def profile(name: str, role: str, agent: str, effort: str) -> dict[str, Any]:
 def build_project_config(
     args: argparse.Namespace, expected_agents: dict[str, ExpectedAgent]
 ) -> dict[str, Any]:
+    # 路由必须用位置式 agent 名：--agent 覆盖形式创建的 session 不持久化 agent_argv，
+    # harness 的 persisted-argv 精确等值校验只有位置式注册/内置 alias 才能满足。
     return {
         "version": 1,
         "routing": {
             "worker": {
-                "default": [
-                    {
-                        "agent": args.worker_agent,
-                        "acpx_command": command_text(expected_agents["worker"].argv),
-                    }
-                ]
+                "default": [{"agent": args.worker_agent}]
             },
             "validator": {
-                "default": [
-                    {
-                        "agent": args.validator_agent,
-                        "acpx_command": command_text(expected_agents["validator"].argv),
-                    }
-                ]
+                "default": [{"agent": args.validator_agent}]
             },
         },
         "profiles": [
@@ -791,11 +539,7 @@ def install_project_config(
     route_evidence = {
         role: {
             "logical_name": expected.logical_name,
-            "base_argv": list(expected.base_argv),
-            "final_argv": list(expected.argv),
-            "launcher_path": str(expected.launcher.path),
-            "launcher_mode": f"{expected.launcher.mode:04o}",
-            "launcher_sha256": expected.launcher.sha256,
+            "argv": list(expected.argv),
         }
         for role, expected in expected_agents.items()
     }
@@ -808,7 +552,7 @@ def install_project_config(
         json.dumps(route_evidence, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    return HarnessIntegrity(workspace.root / "capability-launchers", witness)
+    return HarnessIntegrity(witness)
 
 
 def verify_file_witness(witness: FileWitness, label: str) -> None:
@@ -852,35 +596,7 @@ def verify_no_symlink_components(base: Path, path: Path, label: str) -> None:
             raise HarnessError(f"{label} 父路径发生 symlink/type 漂移: {current}")
 
 
-def verify_harness_integrity(
-    workspace: Workspace,
-    expected_agents: dict[str, ExpectedAgent],
-    integrity: HarnessIntegrity,
-) -> None:
-    expected_directory = workspace.root / "capability-launchers"
-    if integrity.launcher_directory != expected_directory:
-        raise HarnessError("launcher directory path 漂移")
-    try:
-        directory_metadata = expected_directory.lstat()
-    except OSError as error:
-        raise HarnessError(f"launcher directory 缺失: {error}") from error
-    if not stat.S_ISDIR(directory_metadata.st_mode) or stat.S_ISLNK(
-        directory_metadata.st_mode
-    ):
-        raise HarnessError("launcher directory 必须仍为普通非 symlink 目录")
-    if stat.S_IMODE(directory_metadata.st_mode) != LAUNCHER_DIRECTORY_MODE:
-        raise HarnessError("launcher directory mode 漂移；expected=0700")
-    repository = workspace.repository.resolve()
-    if (
-        expected_directory.resolve() == repository
-        or repository in expected_directory.resolve().parents
-    ):
-        raise HarnessError("launcher directory 漂移到 fixture repository 内")
-    for role in ("worker", "validator"):
-        expected_path = expected_directory / f"codex-{role}"
-        if expected_agents[role].launcher.path != expected_path:
-            raise HarnessError(f"{role} launcher path 漂移")
-        verify_file_witness(expected_agents[role].launcher, f"{role} launcher")
+def verify_harness_integrity(workspace: Workspace, integrity: HarnessIntegrity) -> None:
     expected_config_path = (
         workspace.repository
         / ".local"
@@ -1875,27 +1591,17 @@ def dry_run(args: argparse.Namespace) -> dict[str, Any]:
         "route_preflight": {
             "uses_bounded_acp_session_handshake": True,
             "rejects_raw_adapter_help_preflight": True,
-            "requires_registered_structured_argv": True,
-            "requires_codex_acp_adapter": True,
-            "requires_exactly_one_absolute_executable_regular_codex_path": True,
-            "accepted_registered_runner_tokens": [
-                "npx",
-                "<shutil.which('npx') absolute path>",
-            ],
-            "final_runner_token": "<shutil.which('npx') absolute path>",
-            "requires_persisted_nonempty_string_agent_argv": True,
-            "allowed_alias_environment": ["CODEX_HOME", "CODEX_PATH"],
-            "alias_assignments_contiguous": True,
-            "alias_assignment_order": ["CODEX_HOME?", "CODEX_PATH"],
-            "reject_trailing_env_assignments": True,
-            "reject_trailing_adapter_arguments": True,
+            "builtin_routes": {"pi": list(BUILTIN_AGENT_ARGVS["pi"])},
+            "accepts_registered_structured_argv_aliases": True,
+            "rejects_command_form_and_unknown_builtin": True,
             "reject_control_characters": True,
-            "launchers": "<workspace>/capability-launchers/{codex-worker,codex-validator}",
+            "requires_persisted_nonempty_string_agent_argv": True,
+            "requires_persisted_argv_equal_expected_argv": True,
+            "constructs_no_sandbox_launcher": True,
             "project_config": "<repository>/.local/large-task-orchestrator/orchestrator.json",
         },
         "command": command,
         "inherits_home": True,
-        "inherits_codex_home": True,
         "calls_real_agents": False,
     }
 
@@ -1947,11 +1653,7 @@ def live_run(args: argparse.Namespace) -> dict[str, Any]:
         summary["expected_agents"] = {
             role: {
                 "logical_name": expected.logical_name,
-                "base_argv": list(expected.base_argv),
-                "final_argv": list(expected.argv),
-                "launcher_path": str(expected.launcher.path),
-                "launcher_mode": f"{expected.launcher.mode:04o}",
-                "launcher_sha256": expected.launcher.sha256,
+                "argv": list(expected.argv),
             }
             for role, expected in args.expected_agents.items()
         }
@@ -1960,7 +1662,6 @@ def live_run(args: argparse.Namespace) -> dict[str, Any]:
             "mode": f"{integrity.project_config.mode:04o}",
             "sha256": integrity.project_config.sha256,
         }
-        summary["inherits_codex_home"] = True
         prompt_path = workspace.evidence / "prompt.sent.txt"
         prompt_path.write_text(EXPECTED_PROMPT, encoding="utf-8")
         before = snapshot_session_records()
@@ -1983,7 +1684,7 @@ def live_run(args: argparse.Namespace) -> dict[str, Any]:
             result.stderr, encoding="utf-8"
         )
         summary["orchestrator_exit"] = result.returncode
-        verify_harness_integrity(workspace, args.expected_agents, integrity)
+        verify_harness_integrity(workspace, integrity)
         summary["harness_integrity_rechecked"] = True
         if result.returncode != 0:
             raise HarnessError(

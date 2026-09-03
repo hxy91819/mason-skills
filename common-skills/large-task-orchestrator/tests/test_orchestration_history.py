@@ -109,7 +109,7 @@ class OrchestrationHistoryTest(unittest.TestCase):
             "--role",
             "worker",
             "--agent",
-            "codexp",
+            "pi",
             "--route",
             "default",
             "--model",
@@ -145,7 +145,7 @@ class OrchestrationHistoryTest(unittest.TestCase):
         run = self.read_history()["runs"][0]
         self.assertEqual(run["metrics"]["attempts"], 1)
         self.assertEqual(run["metrics"]["attempt_seconds"], 90)
-        self.assertEqual(run["metrics"]["by_agent"], {"codexp": 1})
+        self.assertEqual(run["metrics"]["by_agent"], {"pi": 1})
         self.assertEqual(run["active_attempts"], [])
 
     def test_rollover_preserves_active_attempt_and_aggregate(self) -> None:
@@ -162,7 +162,7 @@ class OrchestrationHistoryTest(unittest.TestCase):
             "--role",
             "worker",
             "--agent",
-            "codexp",
+            "pi",
             "--route",
             "default",
             "--at",
@@ -306,7 +306,7 @@ class OrchestrationHistoryTest(unittest.TestCase):
             "--role",
             "worker",
             "--agent",
-            "codexp",
+            "pi",
             "--route",
             "default",
             "--at",
@@ -386,7 +386,7 @@ class OrchestrationHistoryTest(unittest.TestCase):
             "--role",
             "worker",
             "--agent",
-            "codexp",
+            "pi",
             "--route",
             "default",
         )
@@ -439,7 +439,7 @@ class OrchestrationHistoryTest(unittest.TestCase):
                 "--role",
                 role,
                 "--agent",
-                "codexp",
+                "pi",
                 "--route",
                 "default",
             )
@@ -494,7 +494,7 @@ class OrchestrationHistoryTest(unittest.TestCase):
             "--role",
             "worker",
             "--agent",
-            "codexp",
+            "pi",
             "--route",
             "default",
         )
@@ -539,7 +539,7 @@ class OrchestrationHistoryTest(unittest.TestCase):
             "--role",
             "worker",
             "--agent",
-            "codexp",
+            "pi",
             "--route",
             "default",
         )

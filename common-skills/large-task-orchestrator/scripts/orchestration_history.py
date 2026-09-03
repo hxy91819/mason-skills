@@ -121,8 +121,8 @@ def usage() -> str:
     --run-id mission-20260830 --plan-ref docs/plan
   python3 {SCRIPT_PATH.name} --repository . attempt start \\
     --run-id mission-20260830 --attempt-id STORY-01-worker-1 \\
-    --story STORY-01 --role worker --agent codexp --route default \\
-    --model gpt-5.6-codex --effort high --session <provider-session-id> \\
+    --story STORY-01 --role worker --agent pi --route default \\
+    --model glm-5.3-flash --effort high --session <provider-session-id> \\
     --plan-ref docs/plan/agent/STORY-01.json
   python3 {SCRIPT_PATH.name} --repository . attempt finish \\
     --run-id mission-20260830 --attempt-id STORY-01-worker-1 --outcome worker-done

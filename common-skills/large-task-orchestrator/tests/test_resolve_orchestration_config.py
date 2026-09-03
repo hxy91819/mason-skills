@@ -101,7 +101,7 @@ class ResolveOrchestrationConfigTest(unittest.TestCase):
         project = {
             "version": 1,
             "routing": {
-                "validator": {"default": [candidate("codexp")]},
+                "validator": {"default": [candidate("pi")]},
             },
             "profiles": [],
         }
@@ -111,7 +111,7 @@ class ResolveOrchestrationConfigTest(unittest.TestCase):
 
         self.assertEqual(
             result["config"]["routing"]["validator"]["default"],
-            [candidate("codexp")],
+            [candidate("pi")],
         )
         self.assertEqual(result["sources"]["user"]["status"], "loaded")
         self.assertEqual(result["sources"]["project"]["status"], "loaded")
@@ -158,7 +158,7 @@ class ResolveOrchestrationConfigTest(unittest.TestCase):
     def test_project_parent_symlink_fails_closed(self) -> None:
         self.write_json(self.user_path, self.base_config())
         outside = self.root / "outside"
-        self.write_json(outside / "orchestrator.json", self.base_config("codexp"))
+        self.write_json(outside / "orchestrator.json", self.base_config("pi"))
         (self.repository / ".local").mkdir()
         try:
             (self.repository / ".local" / "large-task-orchestrator").symlink_to(
@@ -209,19 +209,19 @@ class ResolveOrchestrationConfigTest(unittest.TestCase):
         project = {
             "version": 1,
             "routing": {
-                "worker": {"frontend": [candidate("codexp")]},
+                "worker": {"frontend": [candidate("pi")]},
                 "validator": {
                     "default": [
                         {
-                            "agent": "codexp",
+                            "agent": "pi",
                             "model_preference": "gpt-5.6",
                         }
                     ]
                 },
             },
             "profiles": [
-                profile("shared", "codexp", "max", "worker"),
-                profile("project-only", "codexp", "low", "validator"),
+                profile("shared", "pi", "max", "worker"),
+                profile("project-only", "pi", "low", "validator"),
             ],
         }
         self.write_json(self.project_path, project)
@@ -233,11 +233,11 @@ class ResolveOrchestrationConfigTest(unittest.TestCase):
             config["routing"]["worker"]["default"], [candidate("codex")]
         )
         self.assertEqual(
-            config["routing"]["worker"]["frontend"], [candidate("codexp")]
+            config["routing"]["worker"]["frontend"], [candidate("pi")]
         )
         self.assertEqual(
             config["routing"]["validator"]["default"],
-            [{"agent": "codexp", "model_preference": "gpt-5.6"}],
+            [{"agent": "pi", "model_preference": "gpt-5.6"}],
         )
         self.assertEqual(
             [item["name"] for item in config["profiles"]],
