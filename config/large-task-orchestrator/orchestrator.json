@@ -5,10 +5,9 @@
       "default": [
         { "agent": "codex", "model_preference": "gpt-5.6-sol" },
         {
-          "agent": "codebuddy",
-          "model_preference": "Hy4",
+          "agent": "cursor",
           "max_difficulty": "standard",
-          "reason": "Hy4 is the low-cost default for codebuddy; the standard ceiling leaves complex and critical Stories to the deeper agents."
+          "reason": "cursor-agent keeps the user-selected default model, so no model_preference is set; the standard ceiling leaves complex and critical Stories to the deeper agents."
         },
         { "agent": "codexl", "model_preference": "gpt-5.6-sol" },
         { "agent": "kiro", "model_preference": "gpt-5.6-sol" }
@@ -45,19 +44,6 @@
       "match": {
         "role": "worker",
         "agent": "codex"
-      },
-      "effort_by_difficulty": {
-        "routine": "low",
-        "standard": "medium",
-        "complex": "high",
-        "critical": "max"
-      }
-    },
-    {
-      "name": "codebuddy-worker",
-      "match": {
-        "role": "worker",
-        "agent": "codebuddy"
       },
       "effort_by_difficulty": {
         "routine": "low",
