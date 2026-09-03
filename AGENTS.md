@@ -34,6 +34,14 @@
 - 本机同步入口是 `$skill-manifest-sync`：`--mode check` 预览、`--mode apply` 执行。apply 对「指向本仓库但不在清单里」的软链逐个提示删除；用户明确说保留时写入本机白名单 `~/.agents/skill-sync-whitelist.yaml`。白名单属于本机环境偏好，不提交 Git，也不得加进仓库的 `.gitignore` 之外的任何清单文件。
 - 脚本只管理直接指向本仓库的软链：真实目录和经其他工作区中转的链接一律不碰，冲突只报告。
 
+## 非开源 Skill
+
+有些 skill 含内部账号映射、内网系统信息等明显不适合开源的内容（如 tccli 账号选择器）。这类 skill：
+
+- 不得提交到本仓库或推送到远程；发现已落在 `common-skills/` 时，交付前移出。
+- 直接以真实目录放在 `~/.agents/skills/<name>/`：触发行为与软链版一致，且天然在仓库、清单（`config/skill-symlinks.yaml`）和 `git add -A` 之外。
+- 分类与触发策略仍按「Skill invocation policy」执行；若发现此类内容已进入 Git 历史，停止并报告用户，不得自行改写历史。
+
 ## 复杂 Skill 的可观测设计
 
 新建或大改难以观测的 skill 时，必须按本仓库标准内置可观测设计。难以观测的判定：调用外部引擎/子进程、长时运行且内部有重试/fallback 状态迁移、输出是建议性结果且依赖人工裁决、或失败难以事后定位。参考实现：`large-task-orchestrator` 的 `scripts/orchestration_history.py`、`autoreview` 的 review history（`--history-summary`）。
@@ -53,7 +61,7 @@
 
 当前任务的改动完成且验证通过后，必须立即完成交付闭环；未完成闭环不得宣称任务完成：
 
-1. 再次检查当前分支、`git status --short` 和 `git worktree list`，确认要交付的文件范围。将本次任务及用户明确要求交付的现有改动全部提交；本次用户要求“提交当前仓库所有内容”时，核对后使用 `git add -A`，不得遗漏未跟踪文件，也不得覆盖或丢弃并发改动。
+1. 再次检查当前分支、`git status --short` 和 `git worktree list`，确认要交付的文件范围。将本次任务及用户明确要求交付的现有改动全部提交；本次用户要求“提交当前仓库所有内容”时，核对后使用 `git add -A`，不得遗漏未跟踪文件，也不得覆盖或丢弃并发改动。暂存前核对「非开源 Skill」边界，此类内容不得进入提交。
 2. 将提交推送到其对应远端分支。
 3. 若提交不在 `main`，切换到 `main`，将该分支合并到 `main`（优先快进；出现冲突时停止并报告），再推送 `main`。若提交本就在 `main`，确认 `main` 已推送即可视为合并步骤完成。
 4. 收尾时必须停留在 `main`，并确认 `git status --short` 为空、没有未跟踪文件；这两项及推送成功共同构成完成标准。任何一项未满足，都继续处理或明确报告阻塞原因。

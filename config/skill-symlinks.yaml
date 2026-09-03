@@ -25,6 +25,8 @@ skills:
   note: 开源贡献与发布卫生规范
 - name: ppt-visual-review
   note: PPT 式 HTML 逐页视觉验收
+- name: skill-authoring-gate
+  note: 创建或修改任何 skill 前的强制门禁
 - name: skill-manifest-sync
   note: 本清单的本机同步入口
 - name: spec-leak-review
