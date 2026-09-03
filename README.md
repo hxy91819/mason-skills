@@ -73,6 +73,9 @@ common-skills/
 
 See [common-skills/README.md](common-skills/README.md) for authoring guidelines.
 
+Repository tooling includes the [shared-worktree Git guard](tools/git-shared-worktree-guard/README.md),
+which preserves concurrent Agent work without blocking safe local history operations.
+
 ## Usage
 
 ### Cursor IDE

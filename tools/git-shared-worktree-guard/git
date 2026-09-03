@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 定义：共享工作区的 Git 保护 wrapper。正常 Git 命令透明转发，会破坏当前工作区现场的命令经影响预检后拒绝。
+# 定义：共享工作区的 Git 保护 wrapper。正常 Git 命令透明转发，会隐藏、丢弃或覆盖并行现场的命令被拒绝。
 # 参数：与 Git 完全相同；--wrapper-help 显示说明；--user-approved=<reason> 是唯一授权通道。
 # 输出：放行命令保留 Git 原始输出和退出码；被拦截时向 stderr 输出提示并返回 77。
-# 决策：先探测命令的实际影响；只有确认会破坏现场才拦截，无影响或无法确认时交给全局规则。
+# 决策：按命令语义和 Git 原生保护能力判定；会受并发竞态影响的破坏性预检不能作为放行依据。
 
 readonly REAL_GIT="/usr/bin/git"
 declare -a GIT_GLOBAL_ARGS=()
+declare -a SPLIT_ALIAS_ARGS=()
+declare -a RESOLVED_COMMAND_ARGS=()
+RESOLVED_COMMAND=""
+ALIAS_RESOLUTION_ERROR=""
+BLOCK_REASON="该命令会破坏或重置共享仓库、工作区、暂存区或远端状态。"
 
 usage() {
   cat <<'EOF'
@@ -16,11 +21,10 @@ Usage:
   git --wrapper-help
 
 Description:
-  Protects a shared worktree from commands that can hide, delete, overwrite,
-  or broadly replace files another user or agent may be reading or editing.
-  Normal Git workflows such as fetch, add, commit, and push are forwarded.
-  Disruptive commands are blocked only when a preflight check confirms that
-  the current invocation would actually affect shared worktree state.
+  Protects a shared worktree from commands that can hide, discard, or overwrite
+  another user or agent's uncommitted state. Commands that preserve file and
+  index state, including commit and rebase without autostash, are forwarded.
+  Mutating stash operations and autostash are forbidden and cannot be overridden.
 
 Options:
   --wrapper-help             Show this wrapper-specific help.
@@ -38,8 +42,9 @@ Examples:
   git status --short
   git add -- src/example.py
   git commit -m 'normal task commit'
+  git rebase --no-autostash origin/main
+  git reset --soft HEAD~1
   git --user-approved='user explicitly approved switching branches' switch feature/example
-  git --user-approved='user explicitly approved this exact stash' stash push -m 'approved by user'
 EOF
 }
 
@@ -58,7 +63,7 @@ block_command() {
   command_text="$(render_command git "$@")"
 
   cat >&2 <<EOF
-BLOCKED: 预检确认该命令会改变共享仓库或工作区状态。
+BLOCKED: ${BLOCK_REASON}
 
   ${command_text}
 
@@ -74,6 +79,24 @@ BLOCKED: 预检确认该命令会改变共享仓库或工作区状态。
 如果授权、目标或影响范围不明确，先说明风险并请求用户确认，用户同意后使用单次
 break-glass 授权：
   git --user-approved='<记录用户授权理由>' ${command_text#git }
+EOF
+  exit 77
+}
+
+hard_block_command() {
+  local reason="$1"
+  shift
+  local command_text
+  command_text="$(render_command git "$@")"
+
+  cat >&2 <<EOF
+HARD-BLOCKED: ${reason}
+
+  ${command_text}
+
+该命令在共享工作区中没有 break-glass 通道，\`--user-approved\` 也不能放行。
+请把需要保留的工作提交为本地 commit（不要推送临时保全提交），或者停止并交还用户处理。
+不得改用 /usr/bin/git、别名或其他方式绕过此保护。
 EOF
   exit 77
 }
@@ -129,496 +152,806 @@ find_subcommand_index() {
   done
 }
 
-branch_is_read_only() {
-  local arg
-  local query_mode=0
-  local positional=0
-
-  (($# == 0)) && return 0
-
-  for arg in "$@"; do
-    case "$arg" in
-      --show-current|--list|-l|--all|-a|--remotes|-r)
-        query_mode=1
-        ;;
-      --contains|--no-contains|--merged|--no-merged|--points-at|--format|--sort)
-        query_mode=1
-        ;;
-      --contains=*|--no-contains=*|--merged=*|--no-merged=*|--points-at=*|--format=*|--sort=*)
-        query_mode=1
-        ;;
-      --color|--no-color|--column|--no-column|--ignore-case|-i|-v|-vv|--verbose|--omit-empty)
-        ;;
-      --delete|-d|-D|--move|-m|-M|--copy|-c|-C|--edit-description|--set-upstream-to=*|--unset-upstream|-f|--force)
-        return 1
-        ;;
-      --*)
-        return 1
-        ;;
-      -*)
-        return 1
-        ;;
-      *)
-        ((positional += 1))
-        ;;
-    esac
-  done
-
-  ((positional == 0 || query_mode == 1))
-}
-
 git_probe() {
   # bash 3.2 在 set -u 下展开空数组会报 unbound variable，必须用 +缺省展开保护。
   "$REAL_GIT" ${GIT_GLOBAL_ARGS[@]+"${GIT_GLOBAL_ARGS[@]}"} "$@"
 }
 
-diff_has_changes() {
-  local probe_status=0
+requests_help() {
+  [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]
+}
 
-  git_probe diff --quiet "$@" || probe_status=$?
-  case "$probe_status" in
-    0) return 1 ;;
-    1) return 0 ;;
-    *) return 2 ;;
+split_git_alias() {
+  # 只解析 Git 的引号与转义，不用 eval，避免在策略检查阶段执行配置中的内容。
+  local input="$1"
+  local char=""
+  local quote=""
+  local token=""
+  local escaped=0
+  local token_started=0
+  local index
+
+  SPLIT_ALIAS_ARGS=()
+  for ((index = 0; index < ${#input}; index += 1)); do
+    char="${input:index:1}"
+    if ((escaped == 1)); then
+      token+="$char"
+      token_started=1
+      escaped=0
+      continue
+    fi
+
+    if [[ "$quote" == "single" ]]; then
+      if [[ "$char" == "'" ]]; then
+        quote=""
+      else
+        token+="$char"
+      fi
+      token_started=1
+      continue
+    fi
+
+    if [[ "$quote" == "double" ]]; then
+      case "$char" in
+        '"')
+          quote=""
+          ;;
+        \\)
+          escaped=1
+          ;;
+        *)
+          token+="$char"
+          ;;
+      esac
+      token_started=1
+      continue
+    fi
+
+    case "$char" in
+      "'")
+        quote="single"
+        token_started=1
+        ;;
+      '"')
+        quote="double"
+        token_started=1
+        ;;
+      \\)
+        escaped=1
+        token_started=1
+        ;;
+      ' '|$'\t'|$'\n')
+        if ((token_started == 1)); then
+          SPLIT_ALIAS_ARGS+=("$token")
+          token=""
+          token_started=0
+        fi
+        ;;
+      *)
+        token+="$char"
+        token_started=1
+        ;;
+    esac
+  done
+
+  [[ -z "$quote" && "$escaped" == "0" ]] || return 1
+  if ((token_started == 1)); then
+    SPLIT_ALIAS_ARGS+=("$token")
+  fi
+  ((${#SPLIT_ALIAS_ARGS[@]} > 0))
+}
+
+git_command_takes_precedence_over_alias() {
+  # Git 不允许 alias 覆盖已有子命令；先复现该优先级，避免误判同名 alias。
+  local commands=""
+
+  commands="$(git_probe --list-cmds=main,others,nohelpers 2>/dev/null)" || return 1
+  [[ $'\n'"$commands"$'\n' == *$'\n'"$1"$'\n'* ]]
+}
+
+resolve_alias_command() {
+  local candidate="$1"
+  shift
+  local alias_value=""
+  local depth=0
+  local seen="|${candidate}|"
+  local -a trailing_args=("$@")
+
+  ALIAS_RESOLUTION_ERROR=""
+  while ! git_command_takes_precedence_over_alias "$candidate"; do
+    alias_value="$(git_probe config --get "alias.${candidate}" 2>/dev/null)" || break
+    if [[ "$alias_value" == '!'* ]]; then
+      ALIAS_RESOLUTION_ERROR="shell alias '${candidate}' 的副作用无法静态判定。"
+      return 1
+    fi
+    if ! split_git_alias "$alias_value"; then
+      ALIAS_RESOLUTION_ERROR="alias '${candidate}' 无法被安全解析。"
+      return 1
+    fi
+    if [[ "${SPLIT_ALIAS_ARGS[0]}" == -* ]]; then
+      ALIAS_RESOLUTION_ERROR="alias '${candidate}' 以 Git 全局选项开头，无法安全判定。"
+      return 1
+    fi
+
+    candidate="${SPLIT_ALIAS_ARGS[0]}"
+    RESOLVED_COMMAND_ARGS=()
+    if ((${#SPLIT_ALIAS_ARGS[@]} > 1)); then
+      RESOLVED_COMMAND_ARGS=("${SPLIT_ALIAS_ARGS[@]:1}")
+    fi
+    if ((${#trailing_args[@]} > 0)); then
+      RESOLVED_COMMAND_ARGS+=("${trailing_args[@]}")
+    fi
+    trailing_args=()
+    if ((${#RESOLVED_COMMAND_ARGS[@]} > 0)); then
+      trailing_args=("${RESOLVED_COMMAND_ARGS[@]}")
+    fi
+    ((depth += 1))
+    if ((depth > 20)) || [[ "$seen" == *"|${candidate}|"* ]]; then
+      ALIAS_RESOLUTION_ERROR="alias 展开存在循环或超过 20 层。"
+      return 1
+    fi
+    seen+="${candidate}|"
+  done
+
+  RESOLVED_COMMAND="$candidate"
+  RESOLVED_COMMAND_ARGS=()
+  if ((${#trailing_args[@]} > 0)); then
+    RESOLVED_COMMAND_ARGS=("${trailing_args[@]}")
+  fi
+}
+
+stash_is_read_only() {
+  case "${1:-push}" in
+    list|show)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
   esac
 }
 
-tracked_worktree_has_changes() {
-  diff_has_changes HEAD --
-}
+clean_is_read_only() {
+  local arg
+  local options=1
 
-stash_ref_exists() {
-  local ref="${1:-stash@{0}}"
-
-  git_probe rev-parse --quiet --verify "${ref}^{commit}" >/dev/null 2>&1
-}
-
-stash_push_has_effect() {
-  local staged_only=0
-  local keep_index=0
-  local include_untracked=0
-  local include_ignored=0
-  local list_output=""
-  local probe_status
-  local -a pathspecs=()
-
-  while (($#)); do
-    case "$1" in
-      -S|--staged)
-        staged_only=1
-        ;;
-      -k|--keep-index)
-        keep_index=1
-        ;;
-      --no-keep-index)
-        keep_index=0
-        ;;
-      -u|--include-untracked)
-        include_untracked=1
-        ;;
-      -a|--all)
-        include_untracked=1
-        include_ignored=1
-        ;;
-      -m|--message)
-        (($# >= 2)) || return 2
-        shift
-        ;;
-      --message=*)
-        ;;
-      --pathspec-from-file|--pathspec-from-file=*|--pathspec-file-nul)
-        # 读取外部 pathspec 可能消费 stdin，无法安全预演时交给全局规则。
-        return 2
-        ;;
+  for arg in "$@"; do
+    if ((options == 0)); then
+      continue
+    fi
+    case "$arg" in
       --)
-        shift
-        pathspecs=("$@")
-        break
+        options=0
         ;;
-      -*)
+      -n|--dry-run)
+        return 0
         ;;
-      *)
-        pathspecs+=("$1")
+      -e|-e?*)
+        ;;
+      -[^-]*)
+        [[ "${arg#-}" == *n* ]] && return 0
         ;;
     esac
-    shift
   done
-
-  if ((staged_only == 1 || keep_index == 0)); then
-    if diff_has_changes --cached -- ${pathspecs[@]+"${pathspecs[@]}"}; then
-      return 0
-    else
-      probe_status=$?
-      ((probe_status == 2)) && return 2
-    fi
-  fi
-
-  if ((staged_only == 0)); then
-    if diff_has_changes -- ${pathspecs[@]+"${pathspecs[@]}"}; then
-      return 0
-    else
-      probe_status=$?
-      ((probe_status == 2)) && return 2
-    fi
-  fi
-
-  if ((include_untracked == 1)); then
-    list_output="$(git_probe ls-files --others --exclude-standard -- ${pathspecs[@]+"${pathspecs[@]}"})" || return 2
-    [[ -n "$list_output" ]] && return 0
-  fi
-
-  if ((include_ignored == 1)); then
-    list_output="$(git_probe ls-files --others --ignored --exclude-standard -- ${pathspecs[@]+"${pathspecs[@]}"})" || return 2
-    [[ -n "$list_output" ]] && return 0
-  fi
-
   return 1
 }
 
-stash_has_effect() {
-  local action="push"
-  local ref="stash@{0}"
-  local list_output=""
-  local -a positionals=()
+reset_preserves_shared_state() {
+  local arg
+  local mode="mixed"
+
+  for arg in "$@"; do
+    case "$arg" in
+      --soft)
+        mode="soft"
+        ;;
+      --mixed|--hard|--merge|--keep|-p|--patch)
+        mode="destructive"
+        ;;
+    esac
+  done
+  [[ "$mode" == "soft" ]]
+}
+
+branch_is_disruptive() {
+  local arg
+  local options=1
+
+  for arg in "$@"; do
+    if ((options == 0)); then
+      continue
+    fi
+    case "$arg" in
+      --)
+        options=0
+        ;;
+      -d|-D|--delete|-m|-M|--move|-C|-f|--force|--edit-description|--set-upstream-to|--set-upstream-to=*|--unset-upstream)
+        return 0
+        ;;
+      -[^-]*)
+        [[ "${arg#-}" == *[dDmMufC]* ]] && return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+restore_changes_shared_state() {
+  local arg
+  local expects_source=0
+  local path_seen=0
+  local separator_seen=0
+
+  for arg in "$@"; do
+    if ((expects_source == 1)); then
+      expects_source=0
+      continue
+    fi
+    if ((separator_seen == 1)); then
+      path_seen=1
+      continue
+    fi
+    case "$arg" in
+      --)
+        separator_seen=1
+        ;;
+      --source|-s)
+        expects_source=1
+        ;;
+      --source=*|-s?*)
+        ;;
+      --pathspec-from-file|--pathspec-from-file=*)
+        path_seen=1
+        ;;
+      -*)
+        ;;
+      *)
+        path_seen=1
+        ;;
+    esac
+  done
+  ((path_seen == 1))
+}
+
+checkout_changes_shared_state() {
+  local current_branch=""
+  local target=""
+  local arg
+  local positional_count=0
+
+  for arg in "$@"; do
+    case "$arg" in
+      --|-b|-B|-c|-C|--orphan|--orphan=*|--detach|-f|--force|--discard-changes|-p|--patch|--ours|--theirs|-m|--merge|--no-overlay|--recurse-submodules|--recurse-submodules=*|--pathspec-from-file|--pathspec-from-file=*)
+        return 0
+        ;;
+      -[^-]*)
+        [[ "${arg#-}" == *[bBdfmp23]* ]] && return 0
+        ;;
+      -*)
+        ;;
+      *)
+        target="$arg"
+        ((positional_count += 1))
+        ;;
+    esac
+  done
+
+  ((positional_count == 0)) && return 1
+  ((positional_count == 1)) || return 0
+  current_branch="$(git_probe branch --show-current 2>/dev/null)" || return 0
+  [[ -n "$current_branch" && "$target" == "$current_branch" ]] && return 1
+  return 0
+}
+
+switch_changes_shared_state() {
+  local current_branch=""
+  local target=""
   local arg
 
-  if (($#)) && [[ "$1" != -* ]]; then
-    action="$1"
-    shift
+  for arg in "$@"; do
+    case "$arg" in
+      -c|-C|--create|--create=*|--force-create|--force-create=*|-d|--detach|-f|--force|--discard-changes|-m|--merge|--orphan|--orphan=*|--recurse-submodules|--recurse-submodules=*)
+        return 0
+        ;;
+      -[^-]*)
+        [[ "${arg#-}" == *[cCdfm]* ]] && return 0
+        ;;
+      -*)
+        ;;
+      *)
+        target="$arg"
+        ;;
+    esac
+  done
+
+  [[ -n "$target" ]] || return 1
+  current_branch="$(git_probe branch --show-current 2>/dev/null)" || return 0
+  [[ -n "$current_branch" && "$target" == "$current_branch" ]] && return 1
+  return 0
+}
+
+sequencer_discards_state() {
+  local arg
+
+  for arg in "$@"; do
+    case "$arg" in
+      --abort|--skip|--quit)
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+is_sequencer_control() {
+  local arg
+
+  for arg in "$@"; do
+    case "$arg" in
+      --abort|--continue|--skip|--quit|--edit-todo|--show-current-patch)
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+pull_uses_rebase() {
+  local arg
+  local current_branch=""
+  local configured=""
+  local selected=""
+
+  for arg in "$@"; do
+    case "$arg" in
+      -r|--rebase)
+        selected="true"
+        ;;
+      --rebase=*)
+        selected="${arg#--rebase=}"
+        ;;
+      --no-rebase)
+        selected="false"
+        ;;
+    esac
+  done
+
+  if [[ -z "$selected" ]]; then
+    current_branch="$(git_probe symbolic-ref --quiet --short HEAD 2>/dev/null)" || true
+    if [[ -n "$current_branch" ]]; then
+      configured="$(git_probe config --get "branch.${current_branch}.rebase" 2>/dev/null)" || true
+    fi
+    if [[ -z "$configured" ]]; then
+      configured="$(git_probe config --get pull.rebase 2>/dev/null)" || true
+    fi
+    selected="$configured"
   fi
 
-  case "$action" in
-    list|show|create|store)
+  case "$selected" in
+    ""|false|False|FALSE|no|No|NO|off|Off|OFF|0)
       return 1
       ;;
-    push)
-      stash_push_has_effect "$@"
-      ;;
-    save)
-      stash_push_has_effect
-      ;;
-    pop|apply|drop)
-      for arg in "$@"; do
-        [[ "$arg" == -* ]] || ref="$arg"
-      done
-      stash_ref_exists "$ref"
-      ;;
-    branch)
-      for arg in "$@"; do
-        [[ "$arg" == -* ]] || positionals+=("$arg")
-      done
-      ref="${positionals[1]:-stash@{0}}"
-      stash_ref_exists "$ref"
-      ;;
-    clear)
-      list_output="$(git_probe stash list)" || return 2
-      [[ -n "$list_output" ]]
-      ;;
     *)
-      return 2
+      return 0
       ;;
   esac
 }
 
-clean_has_effect() {
-  local output=""
-  local arg
-  local clean_require_force=""
-  local config_status=0
-  local force_mode=0
-  local interactive_mode=0
-  local -a preview_args=()
+config_enables_autostash() {
+  local value=""
 
-  for arg in "$@"; do
-    case "$arg" in
-      -n|--dry-run)
-        return 1
-        ;;
-      -f|--force)
-        force_mode=1
-        preview_args+=("$arg")
-        ;;
-      -i|--interactive)
-        interactive_mode=1
-        ;;
-      -q|--quiet)
-        ;;
-      -e|-e?*)
-        preview_args+=("$arg")
-        ;;
-      -[^-]*)
-        [[ "$arg" == *f* ]] && force_mode=1
-        [[ "$arg" == *i* ]] && interactive_mode=1
-        [[ "$arg" == *q* ]] && return 2
-        preview_args+=("$arg")
-        ;;
-      *)
-        preview_args+=("$arg")
-        ;;
-    esac
-  done
-
-  if ((force_mode == 0 && interactive_mode == 0)); then
-    clean_require_force="$(git_probe config --bool --get clean.requireForce 2>/dev/null)" || config_status=$?
-    if ((config_status == 1)) || [[ "$clean_require_force" != "false" ]]; then
-      return 1
-    fi
-  fi
-
-  output="$(git_probe clean --dry-run ${preview_args[@]+"${preview_args[@]}"} 2>/dev/null)" || return 2
-  [[ -n "$output" ]]
-}
-
-reset_has_effect() {
-  local mode=""
-  local target="HEAD"
-  local current_oid=""
-  local target_oid=""
-  local arg
-  local probe_status
-
-  for arg in "$@"; do
-    case "$arg" in
-      --hard|--merge|--keep)
-        mode="$arg"
-        ;;
-      --soft|--mixed|--patch|-p|--)
-        ;;
-      -*)
-        ;;
-      *)
-        target="$arg"
-        break
-        ;;
-    esac
-  done
-
-  [[ -n "$mode" ]] || return 1
-  current_oid="$(git_probe rev-parse --verify HEAD^{commit} 2>/dev/null)" || return 2
-  target_oid="$(git_probe rev-parse --verify "${target}^{commit}" 2>/dev/null)" || return 2
-  [[ "$current_oid" == "$target_oid" ]] || return 0
-
-  if diff_has_changes "$target" --; then
-    return 0
-  else
-    probe_status=$?
-    ((probe_status == 1)) && return 1
-    return 2
-  fi
-}
-
-restore_has_effect() {
-  local staged=0
-  local worktree=0
-  local source=""
-  local arg
-  local probe_status
-  local -a pathspecs=()
-
-  while (($#)); do
-    arg="$1"
-    case "$arg" in
-      --staged|-S)
-        staged=1
-        ;;
-      --worktree|-W)
-        worktree=1
-        ;;
-      -[SW]* )
-        [[ "$arg" == *S* ]] && staged=1
-        [[ "$arg" == *W* ]] && worktree=1
-        ;;
-      --source|-s)
-        (($# >= 2)) || return 2
-        shift
-        source="$1"
-        ;;
-      --source=*)
-        source="${arg#--source=}"
-        ;;
-      -s?*)
-        source="${arg#-s}"
-        ;;
-      --pathspec-from-file|--pathspec-from-file=*|--pathspec-file-nul)
-        return 2
-        ;;
-      --)
-        shift
-        pathspecs=("$@")
-        break
-        ;;
-      -*)
-        ;;
-      *)
-        pathspecs+=("$arg")
-        ;;
-    esac
-    shift
-  done
-
-  ((staged == 1 && worktree == 0)) && return 1
-  ((${#pathspecs[@]} > 0)) || return 2
-  if [[ -z "$source" && "$staged" == "1" ]]; then
-    source="HEAD"
-  fi
-
-  if [[ -n "$source" ]]; then
-    diff_has_changes "$source" -- ${pathspecs[@]+"${pathspecs[@]}"}
-  else
-    diff_has_changes -- ${pathspecs[@]+"${pathspecs[@]}"}
-  fi
-  probe_status=$?
-  return "$probe_status"
-}
-
-checkout_has_effect() {
-  local current_branch=""
-  local target=""
-  local arg
-  local separator_seen=0
-  local force_mode=0
-  local probe_status
-  local -a before_separator=()
-  local -a pathspecs=()
-
-  (($#)) || return 1
-  for arg in "$@"; do
-    case "$arg" in
-      -h|--help)
-        return 1
-        ;;
-      -b|-B|-c|-C|--orphan|--detach)
-        return 0
-        ;;
-      -f|--force|--discard-changes)
-        force_mode=1
-        ;;
-      --)
-        separator_seen=1
-        ;;
-      -)
-        before_separator+=("$arg")
-        ;;
-      -*)
-        ;;
-      *)
-        if ((separator_seen == 1)); then
-          pathspecs+=("$arg")
-        else
-          before_separator+=("$arg")
-        fi
-        ;;
-    esac
-  done
-
-  if ((separator_seen == 1)); then
-    ((${#pathspecs[@]} > 0)) || return 2
-    if ((${#before_separator[@]} > 0)); then
-      diff_has_changes "${before_separator[0]}" -- ${pathspecs[@]+"${pathspecs[@]}"}
-    else
-      diff_has_changes -- ${pathspecs[@]+"${pathspecs[@]}"}
-    fi
-    probe_status=$?
-    return "$probe_status"
-  fi
-
-  ((${#before_separator[@]} > 0)) || return 2
-  target="${before_separator[0]}"
-  if git_probe rev-parse --verify "${target}^{commit}" >/dev/null 2>&1; then
-    current_branch="$(git_probe branch --show-current 2>/dev/null)" || return 2
-    if [[ "$target" == "$current_branch" ]]; then
-      if ((force_mode == 1)); then
-        tracked_worktree_has_changes
-        return $?
-      fi
-      return 1
-    fi
-    return 0
-  fi
-
-  diff_has_changes -- ${before_separator[@]+"${before_separator[@]}"}
-}
-
-switch_has_effect() {
-  local current_branch=""
-  local target=""
-  local destructive_mode=0
-  local arg
-
-  (($#)) || return 1
-  for arg in "$@"; do
-    case "$arg" in
-      -h|--help)
-        return 1
-        ;;
-      -c|-C|--create|--force-create|--detach)
-        return 0
-        ;;
-      -f|--force|--discard-changes)
-        destructive_mode=1
-        ;;
-      -)
-        target="$arg"
-        ;;
-      -*)
-        ;;
-      *)
-        target="$arg"
-        ;;
-    esac
-  done
-
-  [[ -n "$target" ]] || return 2
-  current_branch="$(git_probe branch --show-current 2>/dev/null)" || return 2
-  if [[ "$target" == "$current_branch" ]]; then
-    if ((destructive_mode == 1)); then
-      tracked_worktree_has_changes
-      return $?
-    fi
-    return 1
-  fi
-  git_probe rev-parse --verify "${target}^{commit}" >/dev/null 2>&1 || return 2
-  return 0
+  value="$(git_probe config --bool --get "$1" 2>/dev/null)" || true
+  [[ "$value" == "true" ]]
 }
 
 requests_autostash() {
   local command="$1"
   shift
   local arg
-  local explicit_autostash=0
-  local explicit_no_autostash=0
-  local config_val=""
+  local explicit=""
+
+  is_sequencer_control "$@" && return 1
 
   for arg in "$@"; do
     case "$arg" in
-      --autostash) explicit_autostash=1 ;;
-      --no-autostash) explicit_no_autostash=1 ;;
+      --autostash)
+        explicit="true"
+        ;;
+      --no-autostash)
+        explicit="false"
+        ;;
     esac
   done
 
-  if ((explicit_no_autostash == 1)); then
+  if [[ "$explicit" == "true" ]]; then
+    return 0
+  fi
+  if [[ "$explicit" == "false" ]]; then
     return 1
   fi
 
-  if ((explicit_autostash == 1)); then
-    tracked_worktree_has_changes && return 0
-    return 1
-  fi
-
-  config_val="$(git_probe config --bool --get "${command}.autoStash" 2>/dev/null)" || true
-  if [[ "$config_val" == "true" ]]; then
-    tracked_worktree_has_changes && return 0
-  fi
-
-  return 1
+  case "$command" in
+    rebase)
+      config_enables_autostash rebase.autoStash
+      ;;
+    merge)
+      config_enables_autostash merge.autoStash
+      ;;
+    pull)
+      if pull_uses_rebase "$@"; then
+        config_enables_autostash rebase.autoStash
+      else
+        config_enables_autostash merge.autoStash
+      fi
+      ;;
+  esac
 }
 
 submodule_changes_worktree() {
-  [[ "${1:-}" == "update" || "${1:-}" == "deinit" || "${1:-}" == "absorbgitdirs" ]]
+  local arg
+
+  for arg in "$@"; do
+    case "$arg" in
+      -*)
+        ;;
+      update|deinit|absorbgitdirs)
+        return 0
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  done
+  return 1
 }
 
 reflog_is_destructive() {
-  [[ "${1:-}" == "expire" || "${1:-}" == "delete" ]]
+  local action="${1:-}"
+  shift || true
+  local arg
+  local dry_run=0
+
+  [[ "$action" == "expire" || "$action" == "delete" ]] || return 1
+  for arg in "$@"; do
+    case "$arg" in
+      -n|--dry-run)
+        dry_run=1
+        ;;
+      --no-dry-run)
+        dry_run=0
+        ;;
+      -[^-]*)
+        [[ "${arg#-}" == *n* ]] && dry_run=1
+        ;;
+    esac
+  done
+  ((dry_run == 0))
+}
+
+push_is_destructive() {
+  local arg
+  local destructive_ref=0
+  local dry_run=0
+  local force=0
+  local options=1
+  local prune=0
+
+  for arg in "$@"; do
+    if [[ "$arg" == "+"* || "$arg" == ":"* ]]; then
+      destructive_ref=1
+      continue
+    fi
+    if ((options == 0)); then
+      continue
+    fi
+    case "$arg" in
+      --)
+        options=0
+        ;;
+      -n|--dry-run)
+        dry_run=1
+        ;;
+      --no-dry-run)
+        dry_run=0
+        ;;
+      -f|--force|--force-with-lease|--force-with-lease=*)
+        force=1
+        ;;
+      --no-force|--no-force-with-lease)
+        force=0
+        ;;
+      -d|--delete|--mirror)
+        destructive_ref=1
+        ;;
+      -o|-o?*)
+        ;;
+      -[^-]*)
+        [[ "${arg#-}" == *n* ]] && dry_run=1
+        [[ "${arg#-}" == *f* ]] && force=1
+        [[ "${arg#-}" == *d* ]] && destructive_ref=1
+        ;;
+      --prune)
+        prune=1
+        ;;
+      --no-prune)
+        prune=0
+        ;;
+    esac
+  done
+
+  ((dry_run == 1)) && return 1
+  ((force == 1 || destructive_ref == 1 || prune == 1)) && return 0
+  push_config_is_destructive "$@"
+}
+
+push_config_is_destructive() {
+  local arg
+  local branch=""
+  local configured_refspecs=""
+  local expects_value=""
+  local has_command_refspec=0
+  local mirror=""
+  local options=1
+  local repository=""
+
+  for arg in "$@"; do
+    if [[ -n "$expects_value" ]]; then
+      [[ "$expects_value" == "repository" ]] && repository="$arg"
+      expects_value=""
+      continue
+    fi
+    if ((options == 1)); then
+      case "$arg" in
+        --)
+          options=0
+          continue
+          ;;
+        --repo)
+          expects_value="repository"
+          continue
+          ;;
+        --repo=*)
+          repository="${arg#--repo=}"
+          continue
+          ;;
+        -r|--receive-pack|--exec|-o|--push-option)
+          expects_value="ignored"
+          continue
+          ;;
+        -r?*|--receive-pack=*|--exec=*|-o?*|--push-option=*)
+          continue
+          ;;
+        -*)
+          continue
+          ;;
+      esac
+    fi
+
+    if [[ -z "$repository" ]]; then
+      repository="$arg"
+    else
+      has_command_refspec=1
+    fi
+  done
+
+  if [[ -z "$repository" ]]; then
+    branch="$(git_probe symbolic-ref --quiet --short HEAD 2>/dev/null)" || return 1
+    repository="$(git_probe for-each-ref --format='%(push:remotename)' "refs/heads/${branch}" 2>/dev/null)" || true
+  fi
+  [[ -n "$repository" ]] || return 1
+
+  mirror="$(git_probe config --bool --get "remote.${repository}.mirror" 2>/dev/null)" || true
+  [[ "$mirror" == "true" ]] && return 0
+  ((has_command_refspec == 1)) && return 1
+
+  configured_refspecs="$(git_probe config --get-all "remote.${repository}.push" 2>/dev/null)" || true
+  while IFS= read -r arg; do
+    [[ "$arg" == "+"* || "$arg" == ":"* ]] && return 0
+  done <<< "$configured_refspecs"
+  return 1
+}
+
+prune_is_read_only() {
+  local arg
+  local options=1
+
+  for arg in "$@"; do
+    if ((options == 0)); then
+      continue
+    fi
+    case "$arg" in
+      --)
+        options=0
+        ;;
+      -n|--dry-run)
+        return 0
+        ;;
+      -[^-]*)
+        [[ "${arg#-}" == *n* ]] && return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+gc_prunes_explicitly() {
+  local arg
+
+  for arg in "$@"; do
+    case "$arg" in
+      --prune=never)
+        ;;
+      --prune|--prune=*)
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+forced_file_operation() {
+  local arg
+  local dry_run=0
+  local force=0
+  local options=1
+
+  for arg in "$@"; do
+    if ((options == 0)); then
+      continue
+    fi
+    case "$arg" in
+      --)
+        options=0
+        ;;
+      -f|--force)
+        force=1
+        ;;
+      --no-force)
+        force=0
+        ;;
+      -n|--dry-run)
+        dry_run=1
+        ;;
+      --no-dry-run)
+        dry_run=0
+        ;;
+      -[^-]*)
+        [[ "${arg#-}" == *f* ]] && force=1
+        [[ "${arg#-}" == *n* ]] && dry_run=1
+        ;;
+    esac
+  done
+  ((dry_run == 0 && force == 1))
+}
+
+worktree_is_destructive() {
+  local action="${1:-}"
+  shift || true
+  local arg
+  local dry_run=0
+
+  case "$action" in
+    ""|list)
+      return 1
+      ;;
+    prune)
+      for arg in "$@"; do
+        case "$arg" in
+          -n|--dry-run)
+            dry_run=1
+            ;;
+          --no-dry-run)
+            dry_run=0
+            ;;
+          -[^-]*)
+            [[ "${arg#-}" == *n* ]] && dry_run=1
+            ;;
+        esac
+      done
+      ((dry_run == 0))
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
+apply_uses_unsafe_paths() {
+  local arg
+  local check_only=0
+  local explicit_apply=0
+  local numstat_only=0
+  local stat_only=0
+  local summary_only=0
+  local unsafe_paths=0
+
+  for arg in "$@"; do
+    case "$arg" in
+      --unsafe-paths)
+        unsafe_paths=1
+        ;;
+      --no-unsafe-paths)
+        unsafe_paths=0
+        ;;
+      --apply)
+        explicit_apply=1
+        ;;
+      --no-apply)
+        explicit_apply=0
+        ;;
+      --stat)
+        stat_only=1
+        ;;
+      --no-stat)
+        stat_only=0
+        ;;
+      --numstat)
+        numstat_only=1
+        ;;
+      --no-numstat)
+        numstat_only=0
+        ;;
+      --summary)
+        summary_only=1
+        ;;
+      --no-summary)
+        summary_only=0
+        ;;
+      --check)
+        check_only=1
+        ;;
+      --no-check)
+        check_only=0
+        ;;
+    esac
+  done
+
+  ((
+    unsafe_paths == 1
+      && (
+        explicit_apply == 1
+          || (stat_only == 0 && numstat_only == 0 && summary_only == 0 && check_only == 0)
+      )
+  ))
+}
+
+bisect_is_read_only() {
+  case "${1:-}" in
+    ""|log|visualize|view|terms)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+sparse_checkout_is_read_only() {
+  case "${1:-}" in
+    ""|list|check-rules)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+is_hard_blocked() {
+  local command="$1"
+  shift
+
+  case "$command" in
+    stash)
+      ! stash_is_read_only "$@"
+      ;;
+    merge|pull|rebase)
+      requests_autostash "$command" "$@"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 is_blocked() {
@@ -626,35 +959,53 @@ is_blocked() {
   shift
 
   case "$command" in
-    stash)
-      stash_has_effect "$@"
-      ;;
     clean)
-      clean_has_effect "$@"
+      ! clean_is_read_only "$@"
       ;;
     reset)
-      reset_has_effect "$@"
+      ! reset_preserves_shared_state "$@"
       ;;
     restore)
-      restore_has_effect "$@"
+      restore_changes_shared_state "$@"
       ;;
     checkout)
-      checkout_has_effect "$@"
+      checkout_changes_shared_state "$@"
       ;;
     switch)
-      switch_has_effect "$@"
+      switch_changes_shared_state "$@"
       ;;
-    merge|pull|rebase)
-      requests_autostash "$command" "$@"
+    merge|rebase|cherry-pick|revert|am)
+      sequencer_discards_state "$@"
       ;;
-    bisect|sparse-checkout|checkout-index|read-tree)
+    push)
+      push_is_destructive "$@"
+      ;;
+    prune)
+      ! prune_is_read_only "$@"
+      ;;
+    gc)
+      gc_prunes_explicitly "$@"
+      ;;
+    rm|mv)
+      forced_file_operation "$@"
+      ;;
+    apply)
+      apply_uses_unsafe_paths "$@"
+      ;;
+    bisect)
+      ! bisect_is_read_only "$@"
+      ;;
+    sparse-checkout)
+      ! sparse_checkout_is_read_only "$@"
+      ;;
+    checkout-index|read-tree)
       return 0
       ;;
     branch)
-      ! branch_is_read_only "$@"
+      branch_is_disruptive "$@"
       ;;
     worktree)
-      [[ "${1:-}" != "list" ]]
+      worktree_is_destructive "$@"
       ;;
     reflog)
       reflog_is_destructive "$@"
@@ -707,6 +1058,30 @@ main() {
   fi
   if ((subcommand_index + 1 < ${#args[@]})); then
     command_args=("${args[@]:subcommand_index+1}")
+  fi
+
+  if ! resolve_alias_command "$command" ${command_args[@]+"${command_args[@]}"}; then
+    BLOCK_REASON="$ALIAS_RESOLUTION_ERROR"
+    if [[ -n "$approval_reason" ]]; then
+      run_approved "$approval_reason" "$@"
+    fi
+    block_command "$@"
+  fi
+  command="$RESOLVED_COMMAND"
+  command_args=()
+  if ((${#RESOLVED_COMMAND_ARGS[@]} > 0)); then
+    command_args=("${RESOLVED_COMMAND_ARGS[@]}")
+  fi
+
+  if requests_help ${command_args[@]+"${command_args[@]}"}; then
+    exec "$REAL_GIT" "$@"
+  fi
+
+  if is_hard_blocked "$command" ${command_args[@]+"${command_args[@]}"}; then
+    if [[ "$command" == "stash" ]]; then
+      hard_block_command "严格禁止会创建、应用、删除或隐藏现场的 stash 操作。" "$@"
+    fi
+    hard_block_command "显式或配置启用的 autostash 可能捕获另一个 Agent 并发写入的内容。" "$@"
   fi
 
   if is_blocked "$command" ${command_args[@]+"${command_args[@]}"}; then
