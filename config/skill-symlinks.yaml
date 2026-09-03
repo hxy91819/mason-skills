@@ -11,6 +11,8 @@ skills:
   note: 提交/发布前的结构化代码审查
 - name: distill
   note: 从会话中蒸馏可沉淀的经验
+- name: harness-config-sync
+  note: 跨宿主收敛 prompts/skills 软链布局(含 agy)
 - name: large-task-orchestrator
   note: 按计划持续编排大型任务
 - name: large-task-planning

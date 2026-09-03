@@ -1,0 +1,6 @@
+interface:
+  display_name: "Harness Config Sync"
+  short_description: "Sync prompts and skills across agent harnesses via symlinks"
+  default_prompt: "使用 $harness-config-sync 同步各 Agent 宿主的 prompts 和 skills 配置。"
+policy:
+  allow_implicit_invocation: false
