@@ -1,9 +1,22 @@
 ---
 name: local-test
-description: Guide for setting up and managing a safe, self-contained local test environment before deployment. Use when running local verification, functional testing, integration debugging, or preparing dev scripts.
+description: Set up, run, and cleanly shut down a multi-service local test environment (DB/backend/frontend) for integration testing and verification. Use exclusively when the task requires spinning up or managing a local testing environment before deployment. Do not use for unit testing, ordinary code editing, code review, or remote-only deployment.
 ---
 
 # Local Test 环境规范与治理
+
+## 门禁适用范围
+
+**仅在以下场景触发**：
+* 需要在本地搭建或启动多服务联调环境（包含数据库、后端、前端等）进行本地集成测试与功能验收；
+* 远端/云上发布或验证受阻，需要切换为在本地闭环验证功能；
+* 编写或维护项目的本地统一启停与生命周期脚本（如 `bin/dev`）。
+
+**非目标（严禁触发）**：
+* 单纯运行单元测试（如 `go test ./...`、`npm test`、`pytest`）；
+* 普通的代码逻辑修改、重构或 Bug 修复；
+* 代码评审（Code Review）或文档编写；
+* 纯远端服务器部署或云端 CI/CD 配置。
 
 在面对复杂业务交付、云端流程阻塞或多服务联调时，**优先在本地构建测试环境完成功能闭环与验收**。通过统一脚本收敛本地服务的启动、停止与安全访问。
 

@@ -1,7 +1,7 @@
 interface:
   display_name: "Local Test Environment"
-  short_description: "Manage safe, isolated local test environments with dev scripts and Nginx password protection."
-  default_prompt: "Use $local-test to spin up a local development environment, run functional tests, and ensure clean shutdown."
+  short_description: "Set up, verify, and cleanly shut down isolated local test environments."
+  default_prompt: "Use $local-test when setting up or running local multi-service testing environments for functional verification before deployment."
 
 policy:
   allow_implicit_invocation: true
