@@ -79,6 +79,29 @@ class SharedWorktreeGuardTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 77)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_rebase_with_autostash_and_dirty_worktree_is_blocked(self) -> None:
+        (self.root / "README.md").write_text("dirty change\n", encoding="utf-8")
+        result = self.guard("rebase", "--autostash", "HEAD")
+        self.assertEqual(result.returncode, 77)
+
+    def test_rebase_with_autostash_and_clean_worktree_is_not_blocked(self) -> None:
+        result = self.guard("rebase", "--autostash", "HEAD")
+        self.assertNotEqual(result.returncode, 77)
+
+    def test_rebase_with_config_autostash_and_dirty_worktree_is_blocked(self) -> None:
+        self.git("config", "rebase.autoStash", "true")
+        (self.root / "README.md").write_text("dirty change\n", encoding="utf-8")
+        result = self.guard("rebase", "HEAD")
+        self.assertEqual(result.returncode, 77)
+
+    def test_rebase_with_config_autostash_and_no_autostash_flag_is_not_blocked(
+        self,
+    ) -> None:
+        self.git("config", "rebase.autoStash", "true")
+        (self.root / "README.md").write_text("dirty change\n", encoding="utf-8")
+        result = self.guard("rebase", "--no-autostash", "HEAD")
+        self.assertNotEqual(result.returncode, 77)
+
 
 if __name__ == "__main__":
     unittest.main()

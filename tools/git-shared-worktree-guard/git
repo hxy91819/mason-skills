@@ -582,11 +582,34 @@ switch_has_effect() {
 }
 
 requests_autostash() {
+  local command="$1"
+  shift
   local arg
+  local explicit_autostash=0
+  local explicit_no_autostash=0
+  local config_val=""
 
   for arg in "$@"; do
-    [[ "$arg" == "--autostash" ]] && tracked_worktree_has_changes && return 0
+    case "$arg" in
+      --autostash) explicit_autostash=1 ;;
+      --no-autostash) explicit_no_autostash=1 ;;
+    esac
   done
+
+  if ((explicit_no_autostash == 1)); then
+    return 1
+  fi
+
+  if ((explicit_autostash == 1)); then
+    tracked_worktree_has_changes && return 0
+    return 1
+  fi
+
+  config_val="$(git_probe config --bool --get "${command}.autoStash" 2>/dev/null)" || true
+  if [[ "$config_val" == "true" ]]; then
+    tracked_worktree_has_changes && return 0
+  fi
+
   return 1
 }
 
@@ -621,8 +644,8 @@ is_blocked() {
     switch)
       switch_has_effect "$@"
       ;;
-    merge|pull)
-      requests_autostash "$@"
+    merge|pull|rebase)
+      requests_autostash "$command" "$@"
       ;;
     bisect|sparse-checkout|checkout-index|read-tree)
       return 0
