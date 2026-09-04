@@ -16,8 +16,8 @@
 
 - **Worker**：实现型 subagent（general-purpose / coding worker）。只读 explore 不写代码。按 Story
   难度取最低够用档。
-- **Validator**：固定 economy。任务必须显式要求 `$story-direction-review`，只确认 Story 是否真正
-  完成。不要派 code review、bugbot、security-review 或其他专用审查器。
+- **Validator**：固定最低校验档，不套 Worker 的能力档。任务必须显式要求 `$story-direction-review`，
+  只确认 Story 是否真正完成。不要派 code review、bugbot、security-review 或其他专用审查器。
 - **只读探查**：可用宿主的快速 explore / investigate 类型，档位 economy。
 
 ## 对照（以派发时目录为准）
@@ -25,12 +25,13 @@
 - Cursor Task：从目录中剔除所有 `claude-*` 型号，也不要通过 inherit 落到 Claude。剩余选项：
   `composer-*-fast` / `cursor-grok-*-fast` → economy；`gpt-*-terra-*` → standard；`gpt-*-sol-*` →
   strong。Validator 只从 economy 里选。
-- Codex `spawn_agent`：按当前 model 列表的价格与能力分档；保持 fresh context（如
-  `fork_turns: none`）。Validator 取列表中能跑验证命令的最低成本型号。
+- Codex `spawn_agent`：模型用当前目录里的 terra（如 `gpt-5.6-terra`），保持 fresh context（如
+  `fork_turns: none`）。Worker 按能力档设 effort：economy → `high`，standard → `xhigh`，strong →
+  `max`。Validator 固定 terra `medium`，不升档。
 - Claude Code Task：同样按目录相对分档；未暴露模型选择时 `--model default`。Validator 仍选最低
   成本可用型号。
 
 ## 升级证据
 
 只升级 Worker，且只依据可观察实现失败：越界、漏验收、测试假绿。配额、路由或 session 失败换同等档
-的 replacement。Validator 始终 economy，不升档。
+的 replacement。Validator 不升档：Codex 固定 terra `medium`，其他宿主固定 economy。
