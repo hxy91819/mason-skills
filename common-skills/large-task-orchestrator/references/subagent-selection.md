@@ -30,6 +30,8 @@
   `max`。只有 **strong**（非常难：跨模块设计、模糊契约、安全/迁移、terra 已因能力失败、或
   `final_story` 整合）才允许改用 sol（如 `gpt-5.6-sol`），effort 取 `medium`、`high` 或 `xhigh`；
   不要默认派 sol，也不要用 sol `max`。Validator 固定 terra `medium`，不升档。
+- Pi：模型用当前目录里的 GLM 5.3 Flash（如 `zai/glm-5.3-flash`）。Worker 固定 thinking `max`，不按
+  档位换型号。Validator 固定 GLM 5.3 Flash `high`，不升档。
 - Claude Code Task：同样按目录相对分档；未暴露模型选择时 `--model default`。Validator 仍选最低
   成本可用型号。
 
@@ -37,4 +39,4 @@
 
 只升级 Worker，且只依据可观察实现失败：越界、漏验收、测试假绿。配额、路由或 session 失败换同等档
 的 replacement。Codex 上 terra 因能力失败才升到 sol `medium`，仍不够再升 `high` / `xhigh`。Validator
-不升档：Codex 固定 terra `medium`，其他宿主固定 economy。
+不升档：Codex 固定 terra `medium`，Pi 固定 GLM 5.3 Flash `high`，其他宿主固定 economy。
