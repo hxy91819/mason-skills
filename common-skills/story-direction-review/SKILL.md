@@ -6,12 +6,13 @@ disable-model-invocation: true
 
 # Story Direction Review
 
-这是流程类 Skill，仅在用户显式调用 `$story-direction-review` 时运行。默认只读；普通代码缺陷、格式和
-局部重构交给 Story 的 Spec/Standards review，本 Skill 只判断方向和计划影响。
+这是流程类 Skill，仅在用户显式调用 `$story-direction-review` 时运行。`large-task-orchestrator` 的
+Validator 也通过任务里的 `$story-direction-review` 显式调用本 Skill。默认只读；只确认 Story 是否真正
+完成、方向是否仍成立。不做代码审查、风格检查或局部重构建议。
 
 ## 建立独立视角
 
-优先由未实现该 Story 的 Reviewer 执行。先运行 sibling `large-task-planning/scripts/epic_story.py brief`
+优先由未实现该 Story 的 Validator 执行。先运行 sibling `large-task-planning/scripts/epic_story.py brief`
 取得稳定边界、目标 Story、相关黄金案例与直接前置 Handoff，再读 `status --json` 了解后续结果与依赖；
 有疑点时查看 `SPEC.md`、原始证据和代码。不要把 `STATUS.md` 当成 Agent 状态源。
 
@@ -31,7 +32,7 @@ disable-model-invocation: true
 - `INSERT_STORY`：出现新的独立工程结果；说明插入位置、依赖、验收和最小计划影响。
 - `REPLAN`：Goal、黄金判据或用户边界失效；列出需要用户决定的一个最小问题。
 
-Reviewer 不修改文件或状态。若用户另行要求应用结论，由 orchestrator 保留既有 Story ID 和已完成证据；
+Validator 不修改文件或状态。若用户另行要求应用结论，由 orchestrator 保留既有 Story ID 和已完成证据；
 插入使用 `STORY-NN.M`；改变 Story Outcome/Acceptance 时递增 `intent_version`；改变 Goal、黄金判据或
 用户边界时先取得用户决定并递增 `goal_version`。
 
@@ -49,4 +50,4 @@ Reviewer 不修改文件或状态。若用户另行要求应用结论，由 orch
 下一步提示词：<Worker、orchestrator 或决策人可直接使用的内容>
 ```
 
-完成标准：结论唯一、证据可追溯、没有普通代码审查噪声，下一会话能直接继续或明确停止。
+完成标准：结论唯一、证据可追溯、没有代码审查噪声，下一会话能直接继续或明确停止。

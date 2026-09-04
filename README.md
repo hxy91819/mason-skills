@@ -116,7 +116,7 @@ ln -s /path/to/mason-skills/common-skills/worktree-cleanup ~/.agents/skills/work
 | [article-workflow](common-skills/article-workflow/) | A phased article optimization workflow with 13 skills — from brief generation through final publication. See [workflow README](common-skills/article-workflow/README.md) for phase order and usage. |
 | [distill](common-skills/distill/) | Reviews one session or a bounded periodic cross-session window for evidence-backed harness and project-knowledge improvements, explicitly auditing repository Skills and AGENTS.md instructions for design and usability problems. |
 | [large-task-planning](common-skills/large-task-planning/) | Compiles a large engineering goal into reader-friendly SPEC/STATUS views and a JSON execution plan. Explicit invocation only. |
-| [large-task-orchestrator](common-skills/large-task-orchestrator/) | Uses host-native worker and reviewer subagents to execute a plan until delivery or a genuine blocker. Explicit invocation only. |
+| [large-task-orchestrator](common-skills/large-task-orchestrator/) | Uses host-native workers and an economy validator (`$story-direction-review`) to execute a plan until delivery or a genuine blocker. Explicit invocation only. |
 | [mermaid-lint](common-skills/mermaid-lint/) | Validates and fixes mermaid diagrams in markdown. Renders every block against the real mermaid renderer and reports all failures in one pass. Original skill design. |
 | [open-source-contribution](common-skills/open-source-contribution/) | Open-source contribution hygiene: identity verification, privacy scanning, Git history cleanup, installer hardening, autoreview, and safe push/PR validation. |
 | [secure-release](common-skills/secure-release/) | Integrates fail-closed release pipelines using a versioned CI kit; npm is the first implemented adapter. |
@@ -188,7 +188,8 @@ state, dependencies, context, and handoff. The Markdown views are generated arou
 questions instead of mirroring internal Story fields.
 
 Its execution counterpart, `large-task-orchestrator`, drives fresh host-native worker
-subagents and independent two-axis reviewers, with one writer by default. Plan files and
+subagents and an economy validator that runs `$story-direction-review` to confirm the
+story is actually complete, with one writer by default. Plan files and
 Git checkpoints make subagent sessions disposable and long-running work recoverable. The
 two Skills share a [core system design](docs/large-task-system-design.md), and the v2
 token-login example is [`docs/largeplan-example/`](docs/largeplan-example/).
@@ -280,9 +281,10 @@ neither project's code is vendored here.
 ### [large-task-planning](common-skills/large-task-planning/)
 
 Original long-running task system. The v2 design selectively adapts the decision-fog,
-tracer-bullet, observable-test-seam, and separate Standards/Spec review ideas from
+tracer-bullet, and observable-test-seam ideas from
 [Matt Pocock's skills](https://github.com/mattpocock/skills) (MIT, Copyright Matt Pocock)
-without vendoring or requiring that package at runtime. See the
+without vendoring or requiring that package at runtime. Story closeout is completion
+validation via `$story-direction-review`, not two-axis code review. See the
 [pinned upstream provenance](docs/large-task-system-design.md#上游借鉴与版本回溯) for the exact
 source commit and design mapping.
 

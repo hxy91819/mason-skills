@@ -7,27 +7,30 @@
 
 1. **economy**：能使用实现或探查所需工具、上下文够用的最低成本型号。
 2. **standard**：宿主默认编码模型，或中档 reasoning。
-3. **strong**：目录里最强的实现或审查型号。
+3. **strong**：目录里最强的实现型号。
 
 没有三档可选时，把可用选项压到最接近的两档或一档，并在 history `--model` 记下实际值。省略 model
 等于 inherit 父会话；编排会话通常已是高档，只有用户要求或目录只剩 inherit 时才用。
 
 ## 角色
 
-- **Worker**：实现型 subagent（general-purpose / coding worker）。只读 explore 不写代码。
-- **Reviewer**：能跑验证命令、并遵守本 Skill 双轴报告契约的独立 subagent。输出契约不同的专用
-  审查器不能代替 Reviewer。
+- **Worker**：实现型 subagent（general-purpose / coding worker）。只读 explore 不写代码。按 Story
+  难度取最低够用档。
+- **Validator**：固定 economy。任务必须显式要求 `$story-direction-review`，只确认 Story 是否真正
+  完成。不要派 code review、bugbot、security-review 或其他专用审查器。
 - **只读探查**：可用宿主的快速 explore / investigate 类型，档位 economy。
 
 ## 对照（以派发时目录为准）
 
-- Cursor Task：`composer-*-fast` / `cursor-grok-*-fast` → economy；`claude-sonnet-*` /
-  `gpt-*-terra-*` → standard；`claude-opus-*` / `gpt-*-sol-*` → strong。
+- Cursor Task：从目录中剔除所有 `claude-*` 型号，也不要通过 inherit 落到 Claude。剩余选项：
+  `composer-*-fast` / `cursor-grok-*-fast` → economy；`gpt-*-terra-*` → standard；`gpt-*-sol-*` →
+  strong。Validator 只从 economy 里选。
 - Codex `spawn_agent`：按当前 model 列表的价格与能力分档；保持 fresh context（如
-  `fork_turns: none`）。
-- Claude Code Task：同样按目录相对分档；未暴露模型选择时 `--model default`。
+  `fork_turns: none`）。Validator 取列表中能跑验证命令的最低成本型号。
+- Claude Code Task：同样按目录相对分档；未暴露模型选择时 `--model default`。Validator 仍选最低
+  成本可用型号。
 
 ## 升级证据
 
-升档只依据可观察失败：越界、漏验收、测试假绿、Reviewer 指出的能力性缺陷。配额、路由或 session
-失败换同等档的 replacement，不升档。
+只升级 Worker，且只依据可观察实现失败：越界、漏验收、测试假绿。配额、路由或 session 失败换同等档
+的 replacement。Validator 始终 economy，不升档。

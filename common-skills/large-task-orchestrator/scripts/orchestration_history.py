@@ -46,7 +46,7 @@ TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+/@:^~-]{0,127}$")
 STORY_RE = re.compile(r"^STORY-[0-9]+(?:\.[0-9]+)?$")
 HEX_RE = re.compile(r"^[0-9a-f]{7,64}$")
 
-# `validator` remains readable for existing local history; new runs use `reviewer`.
+# `reviewer` remains readable for existing local history; new runs use `validator`.
 ROLES = ("worker", "reviewer", "validator")
 WORKER_OUTCOMES = ("worker-done", "blocked", "failed", "quota-exhausted")
 REVIEW_OUTCOMES = (

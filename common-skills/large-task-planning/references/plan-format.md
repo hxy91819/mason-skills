@@ -96,7 +96,7 @@
 状态只有：
 
 - `todo`：未领取，`owner` 与 `blocker` 都是 `null`。
-- `in_progress`：Worker 实现与 Reviewer 往返都属于此状态。
+- `in_progress`：Worker 实现与 Validator 往返都属于此状态。
 - `blocked`：`blocker` 写无法在现有边界内解决的具体事实。
 - `done`：所有 Acceptance 均为 `passed=true`，并有完整 Handoff。
 

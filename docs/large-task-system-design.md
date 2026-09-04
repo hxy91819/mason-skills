@@ -43,15 +43,16 @@ subagent session 不是持久状态，可以在失败、配额耗尽或上下文
 
 ## Orchestrator 是唯一控制面
 
-当前 Agent 使用所在 coding agent 的原生 subagent 接口。每一轮 Worker / Reviewer 由 orchestrator
-按 Story 难度选择 economy / standard / strong，再映射到宿主当前可用型号；叶子不自选型号。
+当前 Agent 使用所在 coding agent 的原生 subagent 接口。Worker 按 Story 难度选择 economy /
+standard / strong；Validator 固定 economy，并通过 `$story-direction-review` 确认 Story 是否真正
+完成。叶子不自选型号。
 
 - Worker 实现一张 Story；
-- 独立 Reviewer 分开检查 Spec 与 Standards；
+- 独立 Validator 只确认完成，不做代码审查；
 - Orchestrator 裁决证据、更新 JSON、创建 Git checkpoint 并完成最终交付。
 
-默认只有一个 Worker 写共享工作区。只读调查和 Reviewer 可以并行；多个写入 Worker 只有在已经存在
-隔离边界并明确分配 write scope 时才并行。Worker 与 Reviewer 都是叶子，不继续派生 subagent，也不
+默认只有一个 Worker 写共享工作区。只读调查和 Validator 可以并行；多个写入 Worker 只有在已经存在
+隔离边界并明确分配 write scope 时才并行。Worker 与 Validator 都是叶子，不继续派生 subagent，也不
 拥有计划状态或 Git 交付状态。这套协议不绑定某个 coding agent 或 provider。
 
 ## 端到端闭环
@@ -59,13 +60,13 @@ subagent session 不是持久状态，可以在失败、配额耗尽或上下文
 1. Planning 固定目标、黄金案例和边界，生成 Agent JSON 与两份人读视图，并校验依赖图。
 2. Orchestrator 从 frontier 原子领取一张 Story，再用 `brief` 派发 fresh Worker。
 3. Worker 在公共 seam 上以 red → green 纵向小循环实现并报告证据。
-4. 独立 Reviewer 对同一 diff 分别检查 Spec 和 Standards；修复留在同一 Story。
+4. 独立 Validator 用 `$story-direction-review` 确认该 Story 是否真正完成；修复留在同一 Story。
 5. Orchestrator 核对工作区事实，更新验收与 Handoff，刷新人读视图并提交 checkpoint。
 6. 新证据触发最小计划调整，然后继续下一项可执行结果，不在 Story 之间等待人工确认。
 7. `final_story` 在同一 acceptance commit 上重跑全部黄金案例和整合检查。
 8. 完成门禁、测试、授权提交与真实远端 HEAD 同时成立后，目标才算完成。
 
-`worker_done` 和 Reviewer 往返都属于 `in_progress`，不增加更多状态。
+`worker_done` 和 Validator 往返都属于 `in_progress`，不增加更多状态。
 
 ## 权限、阻塞与恢复
 
@@ -102,7 +103,7 @@ subagent session 不是持久状态，可以在失败、配额耗尽或上下文
 | [To Spec](https://github.com/mattpocock/skills/blob/6654f6b60cd9d5be8b54c6fafe44346dabeb3b76/skills/engineering/to-spec/SKILL.md) | 从使用者视角组织 Problem、Solution、User Stories、Decisions、Testing 与 Out of Scope |
 | [To Tickets](https://github.com/mattpocock/skills/blob/6654f6b60cd9d5be8b54c6fafe44346dabeb3b76/skills/engineering/to-tickets/SKILL.md) | tracer-bullet 纵向结果、真实 blocker、fresh context，以及宽迁移的 expand-contract 例外 |
 | [TDD](https://github.com/mattpocock/skills/blob/6654f6b60cd9d5be8b54c6fafe44346dabeb3b76/skills/engineering/tdd/SKILL.md) | 在公共 seam 验证可观察行为，并按 red → green 小循环推进 |
-| [Code Review](https://github.com/mattpocock/skills/blob/6654f6b60cd9d5be8b54c6fafe44346dabeb3b76/skills/engineering/code-review/SKILL.md) | 将 Spec 与 Standards 作为两个独立审查轴，避免相互掩盖 |
+| [Code Review](https://github.com/mattpocock/skills/blob/6654f6b60cd9d5be8b54c6fafe44346dabeb3b76/skills/engineering/code-review/SKILL.md) | 独立 closeout 视角；本系统改为 `$story-direction-review` 完成校验，不跑双轴代码审查 |
 
 所有固定源文件都以同一个上游快照为准。这里不把“最后触碰文件的提交”当成设计版本，因为它可能只是
 格式化或元数据修复。下次借鉴前，先比较上述基线与新的上游 `main` 在这五个文件上的语义差异；只吸收
@@ -110,5 +111,5 @@ subagent session 不是持久状态，可以在失败、配额耗尽或上下文
 
 ## 维护边界
 
-计划格式、依赖、readiness、黄金验收和人读投影由 Planning 维护；subagent 生命周期、独立 review、恢复、
+计划格式、依赖、readiness、黄金验收和人读投影由 Planning 维护；subagent 生命周期、完成校验、恢复、
 checkpoint 和最终交付由 Orchestrator 维护。共享理由只在本文保留一次。
