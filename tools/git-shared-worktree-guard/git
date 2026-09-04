@@ -974,7 +974,9 @@ is_blocked() {
     switch)
       switch_changes_shared_state "$@"
       ;;
-    merge|rebase|cherry-pick|revert|am)
+    # revert 不拦截是用户的明确决策：revert 产生新的反向 commit，不隐藏或改写现有内容；
+    # 序列控制旗标（--abort/--skip/--quit）也放行，残余风险记录在 README 放行清单。
+    merge|rebase|cherry-pick|am)
       sequencer_discards_state "$@"
       ;;
     push)

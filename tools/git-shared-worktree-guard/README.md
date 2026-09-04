@@ -17,7 +17,7 @@
 | 类别 | 处理 | 例子 |
 | --- | --- | --- |
 | 只读或保留现场 | 透明转发给 Git | `status`、`stash list/show`、`clean -n`、`reset --soft` |
-| 由 Git 原生冲突检查保护的正常工作流 | 透明转发给 Git，由 Git 成功或报错 | `commit`、无 autostash 的 `rebase/merge/pull`、普通 `apply`、非强制 `rm` |
+| 由 Git 原生冲突检查保护的正常工作流 | 透明转发给 Git，由 Git 成功或报错 | `commit`、无 autostash 的 `rebase/merge/pull`、普通 `revert`、普通 `apply`、非强制 `rm` |
 | 会隐藏、重置、覆盖或删除共享现场 | 返回 77；除 stash 外可在目标已获明确授权时使用单次 `--user-approved` | `restore`、mixed/hard reset、实际 clean、切换分支、force push |
 
 stash 与 autostash 单独采用不可绕过的硬拦截，因为它们的目的就是把当前现场移出 working tree。即使预检时没有 diff，另一个 Agent 也可能在真实 Git 命令开始前保存文件；因此“当前无影响”不是可靠的放行条件。
@@ -26,6 +26,7 @@ stash 与 autostash 单独采用不可绕过的硬拦截，因为它们的目的
 
 - `git add` 和 `git commit`：把内容变得更耐久，不清除 working tree 中的文件内容。即使 commit 包含了另一个 Agent 的改动，也优先保证内容不丢失；这类临时保全 commit 不得推送。
 - `git rebase`、`git merge`、`git pull`：没有 autostash 时允许。Git 会拒绝无法安全处理的本地修改；已经 commit 的内容可随本地历史重写，不应被 wrapper 误杀。
+- `git revert`：产生一个新的反向 commit，不隐藏 working tree 内容、不改写已有提交，与 commit 同属创建类动作。序列进行中的 `--abort`、`--skip`、`--quit` 同样放行，这是用户的明确决策：revert 序列只会由本 worktree 内主动发起的 revert 创建，通常由同一参与者立即收尾；若中止了另一个参与者的冲突处理，按共享工作区规则先重新读取现场、恢复兼容内容。
 - `git reset --soft`：只移动本地 HEAD，保留 working tree 与 index，符合“本地历史可改写”的约束。
 - `git apply`：普通补丁应用属于有上下文校验的编辑动作，现有内容不匹配时由 Git 拒绝或产生显式冲突。整体封禁会阻止正常工作，却不能解决所有编辑器和 shell 写入之间的协作问题；会越出 worktree 的 `--unsafe-paths` 写入仍需拦截，只读 `--check` 不受影响。
 - 本地分支创建和查询、所有帮助与 dry-run 命令：不会移除现有内容或引用，允许执行。
@@ -35,7 +36,7 @@ stash 与 autostash 单独采用不可绕过的硬拦截，因为它们的目的
 
 - 所有产生副作用的 stash，以及 `--autostash`、`rebase.autoStash=true`、`merge.autoStash=true`。`pull` 根据实际选择的 merge/rebase 策略读取相应配置。
 - `restore`、path checkout、mixed/hard/merge/keep/patch reset、真实执行的 clean。这些动作会恢复或删除 working tree/index，且基于 diff 的预检存在竞态。
-- rebase、merge、cherry-pick、revert 和 am 的 `--abort`、`--skip`、`--quit`。它们会丢弃冲突处理结果或改变另一个参与者可能正在推进的序列状态；`--continue` 和只读查看仍放行。
+- rebase、merge、cherry-pick 和 am 的 `--abort`、`--skip`、`--quit`。它们会丢弃冲突处理结果或改变另一个参与者可能正在推进的序列状态；`--continue` 和只读查看仍放行。`revert` 不在此列：经用户决定全程放行，理由见放行清单。
 - 强制 `rm`、强制 `mv`、分支删除/改名/强制重置、会改变当前 worktree 的 checkout/switch，以及 worktree 管理写操作。
 - force/force-with-lease push、远端 ref 删除、mirror 和 prune push，包括配置在 `remote.<name>.push` 或 `remote.<name>.mirror` 中的等价行为。临时保全 commit 不得借这些路径改写或删除远端共享历史；对应 dry-run 仍放行。
 - `git prune`、显式 `git gc --prune...` 和 reflog 删除/过期。commit 对象并非永久备份：一旦失去 ref/reflog 可达性并被清理，仍可能物理消失。

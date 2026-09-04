@@ -522,9 +522,6 @@ class SharedWorktreeGuardTest(unittest.TestCase):
             ("cherry-pick", "--abort"),
             ("cherry-pick", "--skip"),
             ("cherry-pick", "--quit"),
-            ("revert", "--abort"),
-            ("revert", "--skip"),
-            ("revert", "--quit"),
             ("am", "--abort"),
             ("am", "--skip"),
             ("am", "--quit"),
@@ -536,6 +533,36 @@ class SharedWorktreeGuardTest(unittest.TestCase):
         result = self.guard("rebase", "--continue")
 
         self.assert_not_blocked(result)
+
+    def test_revert_is_not_blocked(self) -> None:
+        self.commit_file("reverted.txt", "content\n", "commit to revert")
+
+        result = self.guard("revert", "--no-edit", "HEAD")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.root / "reverted.txt").exists())
+
+    def test_revert_abort_is_not_blocked(self) -> None:
+        self.commit_file("reverted.txt", "line\n", "add line")
+        (self.root / "reverted.txt").write_text("changed\n", encoding="utf-8")
+        self.git("add", "reverted.txt")
+        self.git("commit", "-m", "change line")
+
+        start = self.guard("revert", "--no-edit", "HEAD~1")
+        self.assert_not_blocked(start)
+        self.assertNotEqual(start.returncode, 0, start.stderr)
+
+        abort = self.guard("revert", "--abort")
+
+        self.assertEqual(abort.returncode, 0, abort.stderr)
+        self.assertEqual((self.root / "reverted.txt").read_text(encoding="utf-8"), "changed\n")
+
+    def test_revert_sequencer_actions_reach_git_without_state(self) -> None:
+        for action in ("--abort", "--skip", "--quit"):
+            with self.subTest(action=action):
+                result = self.guard("revert", action)
+
+                self.assert_not_blocked(result)
 
     def test_forced_rm_cannot_discard_a_dirty_file(self) -> None:
         (self.root / "README.md").write_text("dirty work\n", encoding="utf-8")
