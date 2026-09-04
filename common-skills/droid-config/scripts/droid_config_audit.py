@@ -202,7 +202,7 @@ def check_settings(path: Path) -> dict[str, Any]:
                 "provider": provider,
                 "provider_host": parsed.hostname,
                 "max_output_tokens": maximum,
-                "image_support": not bool(raw.get("noImageSupport", False)),
+                "image_input_configured": not bool(raw.get("noImageSupport", False)),
             }
         )
 
@@ -514,6 +514,8 @@ def self_test() -> dict[str, Any]:
             summary = check_settings(settings)
             if secret in json.dumps(summary):
                 raise AuditError("self-test: check 输出泄漏密钥")
+            if summary["models"][0]["image_input_configured"] is not True:
+                raise AuditError("self-test: 图像配置意图报告错误")
 
             for index in range(MAX_LIVE_RUNS + 5):
                 args = argparse.Namespace(
@@ -570,7 +572,14 @@ def self_test() -> dict[str, Any]:
             os.environ["DROID_CONFIG_STATE_DIR"] = previous
     return {
         "status": "ok",
-        "checks": ["redaction", "rolling", "overwrite", "no-double-count", "unknown-id"],
+        "checks": [
+            "redaction",
+            "image-flag-semantics",
+            "rolling",
+            "overwrite",
+            "no-double-count",
+            "unknown-id",
+        ],
     }
 
 

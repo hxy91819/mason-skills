@@ -4,10 +4,10 @@
 
 以下结果来自 Droid `0.212.0`、Factory 文档、模型厂商文档和 Ollama Cloud 实际请求。未来调用必须按 [官方来源与刷新规则](official-sources.md) 重新核验。
 
-| 模型 | Ollama 请求 ID | 厂商上下文 | Droid/Ollama 最大输出 | effort | 图像 |
+| 模型 | Ollama 请求 ID | 厂商上下文 | Droid/Ollama 最大输出 | effort | 供应商图像 |
 | --- | --- | ---: | ---: | --- | --- |
 | GLM 5.3 | `glm-5.3` | 1,048,576 | 131,072 | `low/high/max`，默认 `max` | 否 |
-| GLM 5.3 Flash | `glm-5.3-flash` | 1,048,576 | 131,072 | `low/high/max`，Droid 默认 `high` | 是 |
+| GLM 5.3 Flash | `glm-5.3-flash` | 1,048,576 | 131,072 | `low/high/max`，Droid 默认 `high` | 是；Droid `0.212.0` BYOK 端到端失败 |
 | DeepSeek V4 Flash | `deepseek-v4-flash:0731` | 1,048,576 | 65,536 | `off/low/high/max`，Droid 默认 `high` | 否 |
 | Kimi K3 | `kimi-k3` | 1,048,576 | 131,072 | 厂商为 `low/high/max`、默认 `max` 且始终思考 | 是 |
 
@@ -52,6 +52,7 @@ Factory 文档允许环境变量插值，但只有 Droid 启动环境确实定�
 - 先升级再看模型目录。旧 Droid 可能缺少新模型、effort 元数据或 Mission 字段。
 - `droid exec --help` 同时列出内置模型、自定义模型和内置模型的 effort；它适合验证解析结果，但不能替代真实 API 调用。
 - `/v1/models` 确认准确请求 ID，`/api/show` 确认 context 与 vision/thinking/tools capabilities。
+- Droid `0.212.0` 的 generic BYOK 图像判定存在缺陷：即使 `noImageSupport: false`，`Read` 的图片仍会在下一轮请求前被 `stripImagesFromConversation` 剥离。同图直连 Ollama `/v1/chat/completions` 与 `/v1/responses` 均可识别；模型标签别名、不同自定义 ID 和切换 `openai` provider 都不能修复。保留供应商标准模型 ID，升级 Droid 后重新做 Read-only 端到端验证；修复前只能明确报告限制或经用户允许使用裁剪/OCR fallback。
 - 最小 API 请求把 `max_tokens` 设置为候选上限并要求只回复 `OK`，可以低成本暴露供应商上限拒绝。
 - 四个模型应串行验证。并行启动多个 Droid 进程会竞争单一日志文件，导致失败时段难以归因。
 - `droid exec` 只显示笼统 `Exec failed` 时，先按 session/time 查 `~/.factory/logs/`，再用同一模型、effort 与上限直连供应商；直连成功通常说明 Droid 字段或请求组合有问题。
