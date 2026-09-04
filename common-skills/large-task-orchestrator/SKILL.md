@@ -93,7 +93,8 @@ python3 <planning-skill>/scripts/epic_story.py status \
 8. **继续。** 重新计算 frontier，直到 `final_story` 完成或没有可推进工作。
 
 每次 context compaction 前，先把当前阶段、证据和精确下一步写回 Story Handoff。恢复顺序固定为
-Agent JSON → Git/diff → history；subagent 对话只在仍可访问且确有需要时读取。
+Agent JSON → Git/diff → history；subagent 对话只在仍可访问且确有需要时读取。启动 history、记录
+attempt、聚合复盘或收口 finish 时读[History 与复盘](references/orchestration-history.md)。
 
 ## Subagent 报告契约
 
@@ -124,29 +125,6 @@ Orchestrator 在既定 Goal 和用户边界内拥有实现路径，可以重排�
 普通实现不确定、首次测试失败、subagent 消失或等价技术方案选择都由 orchestrator 解决。最终验收
 失败时保留失败证据：实现缺陷插入修复 Story；fixture/环境错误修复验收环境；Goal 或边界错误才请求
 用户。不得降低黄金判据来获得绿色结果。
-
-## History 与复盘
-
-复杂长时运行需要最小可观测性，但不需要第二套状态账本。使用
-[`scripts/orchestration_history.py`](scripts/orchestration_history.py) 维护 Git-ignored 的
-`<repo>/.local/large-task-orchestrator/run-history.json`：
-
-```bash
-python3 <skill-dir>/scripts/orchestration_history.py --repository <repo> start \
-  --run-id <stable-run-id> --plan-ref <topic>
-python3 <skill-dir>/scripts/orchestration_history.py --repository <repo> attempt start \
-  --run-id <run-id> --attempt-id <story-role-attempt> --story <STORY-ID> \
-  --role worker --agent <host-agent> --route host-native \
-  --model <actual-model-or-default> --effort <actual-effort-or-default> \
-  --plan-ref <topic>/agent/stories/<Story.json>
-python3 <skill-dir>/scripts/orchestration_history.py --repository <repo> attempt finish \
-  --run-id <run-id> --attempt-id <story-role-attempt> --outcome worker-done
-```
-
-Worker 与 Validator 每次 turn 各记录一个 attempt（`--role worker` / `--role validator`）；真实 plan
-change、blocked episode 和 Git checkpoint 记录 event。只保存 engine/model/耗时/outcome/reason/stable
-id 等最小事实，不保存 prompt、回复、diff、测试日志或密钥。`show` 提供带分母的聚合复盘；记录失败只
-告警并继续权威流程。
 
 ## 收口与交付
 
