@@ -43,7 +43,8 @@ subagent session 不是持久状态，可以在失败、配额耗尽或上下文
 
 ## Orchestrator 是唯一控制面
 
-当前 Agent 使用所在 coding agent 的原生 subagent 接口：
+当前 Agent 使用所在 coding agent 的原生 subagent 接口。每一轮 Worker / Reviewer 由 orchestrator
+按 Story 难度选择 economy / standard / strong，再映射到宿主当前可用型号；叶子不自选型号。
 
 - Worker 实现一张 Story；
 - 独立 Reviewer 分开检查 Spec 与 Standards；

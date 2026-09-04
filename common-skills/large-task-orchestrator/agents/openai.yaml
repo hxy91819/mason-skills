@@ -1,6 +1,6 @@
 interface:
   display_name: "Large Task Orchestrator"
-  short_description: "用宿主原生 subagent 持续执行大型任务计划"
-  default_prompt: "Use $large-task-orchestrator to drive this plan with native worker and reviewer subagents until delivery or a genuine blocker."
+  short_description: "按 Story 难度选择原生 Worker/Reviewer，持续执行大型任务计划"
+  default_prompt: "Use $large-task-orchestrator to drive this plan with native worker and reviewer subagents until delivery or a genuine blocker. Select each subagent's capability class from Story difficulty, preferring the cheapest class that can still finish the turn."
 policy:
   allow_implicit_invocation: false

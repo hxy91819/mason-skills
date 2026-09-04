@@ -1,6 +1,6 @@
 ---
 name: large-task-orchestrator
-description: 用宿主原生 subagent 持续执行已有大型任务计划，直到完整交付或出现真实 blocker。
+description: 用宿主原生 subagent 持续执行已有大型任务计划，按 Story 难度选择能力档，直到完整交付或出现真实 blocker。
 disable-model-invocation: true
 ---
 
@@ -9,8 +9,9 @@ disable-model-invocation: true
 这是流程类 Skill，仅在用户显式调用 `$large-task-orchestrator` 时运行。
 
 当前 Agent 是 orchestrator。使用宿主提供的原生 subagent 能力调度 worker 与 reviewer；具体工具名因
-coding agent 而异。计划、Git 和验证证据承载长期状态，subagent session 可以随时丢弃和替换。
-核心流程不依赖外部代理 CLI、provider 路由表或某个特定 coding agent。
+coding agent 而异。每一轮按 Story 难度选择能力档，再映射到宿主当前可用型号。计划、Git 和验证证据
+承载长期状态，subagent session 可以随时丢弃和替换。核心流程不依赖外部代理 CLI、provider 路由表
+或某个特定 coding agent。
 
 只接管已存在并通过 sibling `large-task-planning` v2 校验的计划。先读
 [`../large-task-planning/references/plan-format.md`](../large-task-planning/references/plan-format.md)；维护两项
@@ -18,8 +19,8 @@ Skill 的共同边界或回溯 Matt 上游借鉴时再读[联合核心设计](..
 
 ## 角色边界
 
-- **Orchestrator（当前 Agent）**：唯一控制面。拥有 Story 状态、计划调整、subagent 调度、结果裁决、
-  Git checkpoint、整合与最终 push。
+- **Orchestrator（当前 Agent）**：唯一控制面。拥有 Story 状态、计划调整、能力档选择、subagent
+  调度、结果裁决、Git checkpoint、整合与最终 push。Worker 与 Reviewer 不自选型号。
 - **Worker（fresh subagent）**：一次只实现一张 Story。可在同一 Story 内接收修复 follow-up；不修改
   计划、不提交、不推送，也不继续派生 subagent。
 - **Reviewer（独立 subagent）**：没有参与该 Story 的实现。只读检查并运行验证命令，不编辑文件、
@@ -46,6 +47,26 @@ python3 <planning-skill>/scripts/epic_story.py status \
    继续；session 已丢失就把这些事实交给 fresh replacement Worker。不要因为对话压缩而重新领取。
 4. 尽力启动本地 history run。History 是旁路复盘缓存；写入失败只警告，不改变计划状态或交付事实。
 
+## 选择能力档
+
+派发 Worker 或 Reviewer 前先定本轮 **能力档**，再映射到宿主当前可用的原生 subagent、model 与
+effort。用户指定模型或 effort 时原样使用。难度从当前 Story 与已有失败证据现场判定，不写入计划 JSON。
+
+- **economy**：验收可脚本化、write_scope 窄、已有测试或黄金案例可当 oracle、无设计分叉。
+- **standard**：常规实现或审查；seam 清楚，但需要跨文件判断。
+- **strong**：跨模块设计、模糊契约、安全或数据迁移、同一 Story 已因能力失败、或 `final_story` 整合。
+
+默认 Worker 取上表最低够用档；Reviewer 可再低一档，除非 Worker 已失败或 Spec 漏项风险高。只读探查用
+economy。不要 inherit 父会话模型来图方便：编排会话通常已是高档。宿主不能选模型时用其默认值，并在
+history 记下实际 model/effort 或 `default`。
+
+同一 Story 上较低档失败，且原因是实现或审查能力（不是环境、权限、配额）时升一档再派。strong 仍
+失败则拆分、换路线或按 blocker 规则问用户。长时间 strong 循环或并行多个高档 Worker 属于显著成本，
+先问用户。
+
+每次派发都能说出档位、宿主映射，以及为何不是更低一档。宿主型号对照见
+[能力档映射](references/subagent-selection.md)。
+
 ## 自主循环
 
 持续执行下面的循环，不在 Story 之间停下来询问是否继续：
@@ -53,12 +74,14 @@ python3 <planning-skill>/scripts/epic_story.py status \
 1. **选择 frontier。** 从 `status --json` 的 `ready` 中选择最能降低 Goal 风险的 Story；通常取第一项。
 2. **原子领取。** 使用 `transition --expect todo --status in_progress --owner <worker-id>`。若预期状态失败，
    重新读取计划并协调并发事实。
-3. **派发 fresh Worker。** 用 planning 的 `brief` 命令提取当前 Story、稳定边界、相关黄金案例和直接
-   前置 handoff，再补充仓库规则、当前基线与并发 write scope。要求它先验证现状，在指定公开 seam 上
-   按 red → green 的纵向小循环实现并运行相关测试。不要复制整个会话历史或全部计划。
+3. **选择能力档并派发 fresh Worker。** 按「选择能力档」为本轮 Worker 定档并映射到宿主原生
+   subagent。用 planning 的 `brief` 命令提取当前 Story、稳定边界、相关黄金案例和直接前置 handoff，
+   再补充仓库规则、当前基线与并发 write scope。要求它先验证现状，在指定公开 seam 上按 red → green
+   的纵向小循环实现并运行相关测试。不要复制整个会话历史或全部计划。
 4. **核对落盘事实。** Worker 回复不是完成证明。Orchestrator 检查 diff、工作区和命令证据，确认没有
    越界、丢失并发改动或只修改了报告。
-5. **独立审查。** 派发未参与实现的 Reviewer，并固定本轮基线与 diff。要求分别检查：
+5. **独立审查。** 先为 Reviewer 定档（默认可低于 Worker 一档），再派发未参与实现的 Reviewer，并固定
+   本轮基线与 diff。要求分别检查：
    - `Spec`：Story Outcome/Acceptance 与相关黄金案例是否完整实现，有无漏项、错误或范围蔓延；
    - `Standards`：适用仓库规则、可维护性和明显 code smell；跳过工具已覆盖的纯格式噪声。
 6. **裁决。** Reviewer 通过则由 orchestrator 运行必要测试；有可操作缺陷则把精确 finding 发回同一
@@ -121,6 +144,7 @@ python3 <skill-dir>/scripts/orchestration_history.py --repository <repo> start \
 python3 <skill-dir>/scripts/orchestration_history.py --repository <repo> attempt start \
   --run-id <run-id> --attempt-id <story-role-attempt> --story <STORY-ID> \
   --role worker --agent <host-agent> --route host-native \
+  --model <actual-model-or-default> --effort <actual-effort-or-default> \
   --plan-ref <topic>/agent/stories/<Story.json>
 python3 <skill-dir>/scripts/orchestration_history.py --repository <repo> attempt finish \
   --run-id <run-id> --attempt-id <story-role-attempt> --outcome worker-done
