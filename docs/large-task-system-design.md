@@ -84,6 +84,29 @@ subagent session 不是持久状态，可以在失败、配额耗尽或上下文
 历史脚本提供滚动保留、固定维度 rollup、幂等写入和带分母的 review hooks。History 写入失败只告警，
 不改变 Story 状态，也不推翻由计划、测试和 Git 证明的交付。
 
+## 上游借鉴与版本回溯
+
+这套系统是本仓库独立维护的长时工作协议，不在运行时组装或依赖 Matt Pocock Skills。v2 只选择性吸收
+其中经过验证的工程设计，再补上长期状态、自主恢复、计划演化、checkpoint 和真实交付闭环。
+
+- **Matt 上游仓库：** [`mattpocock/skills`](https://github.com/mattpocock/skills)
+- **借鉴基线：** [`6654f6b60cd9d5be8b54c6fafe44346dabeb3b76`](https://github.com/mattpocock/skills/commit/6654f6b60cd9d5be8b54c6fafe44346dabeb3b76)
+  （2026-08-24 的上游 `main` 快照）
+- **本仓库落点：** [`16c409efff03904fbc891c6a69f5ce7e71775e3f`](https://github.com/hxy91819/mason-skills/commit/16c409efff03904fbc891c6a69f5ce7e71775e3f)
+  首次完成本轮 v2 简化改造
+
+| 上游 Skill（固定版本） | 本系统吸收的设计 |
+| --- | --- |
+| [Wayfinder](https://github.com/mattpocock/skills/blob/6654f6b60cd9d5be8b54c6fafe44346dabeb3b76/skills/engineering/wayfinder/SKILL.md) | 区分决策迷雾与执行路径；目标稳定，路线随新证据演化 |
+| [To Spec](https://github.com/mattpocock/skills/blob/6654f6b60cd9d5be8b54c6fafe44346dabeb3b76/skills/engineering/to-spec/SKILL.md) | 从使用者视角组织 Problem、Solution、User Stories、Decisions、Testing 与 Out of Scope |
+| [To Tickets](https://github.com/mattpocock/skills/blob/6654f6b60cd9d5be8b54c6fafe44346dabeb3b76/skills/engineering/to-tickets/SKILL.md) | tracer-bullet 纵向结果、真实 blocker、fresh context，以及宽迁移的 expand-contract 例外 |
+| [TDD](https://github.com/mattpocock/skills/blob/6654f6b60cd9d5be8b54c6fafe44346dabeb3b76/skills/engineering/tdd/SKILL.md) | 在公共 seam 验证可观察行为，并按 red → green 小循环推进 |
+| [Code Review](https://github.com/mattpocock/skills/blob/6654f6b60cd9d5be8b54c6fafe44346dabeb3b76/skills/engineering/code-review/SKILL.md) | 将 Spec 与 Standards 作为两个独立审查轴，避免相互掩盖 |
+
+所有固定源文件都以同一个上游快照为准。这里不把“最后触碰文件的提交”当成设计版本，因为它可能只是
+格式化或元数据修复。下次借鉴前，先比较上述基线与新的上游 `main` 在这五个文件上的语义差异；只吸收
+仍符合本系统目标的部分，再更新基线与本仓库落点，不做整包同步。
+
 ## 维护边界
 
 计划格式、依赖、readiness、黄金验收和人读投影由 Planning 维护；subagent 生命周期、独立 review、恢复、

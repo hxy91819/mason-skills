@@ -14,7 +14,7 @@ disable-model-invocation: true
 
 创建或检查计划前读[格式契约](references/plan-format.md)。发现 v1 的 `epics/ + stories/ +
 agent/*.json + 项目进展.md` 时，再读[迁移说明](references/migrate-v1.md)。维护与 orchestrator 共享的
-职责或完成语义时，读[联合核心设计](../../docs/large-task-system-design.md)。
+职责、完成语义或回溯 Matt 上游借鉴时，读[联合核心设计](../../docs/large-task-system-design.md)。
 
 ## 产物与受众
 

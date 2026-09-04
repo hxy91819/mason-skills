@@ -14,7 +14,7 @@ coding agent 而异。计划、Git 和验证证据承载长期状态，subagent 
 
 只接管已存在并通过 sibling `large-task-planning` v2 校验的计划。先读
 [`../large-task-planning/references/plan-format.md`](../large-task-planning/references/plan-format.md)；维护两项
-Skill 的共同边界时再读[联合核心设计](../../docs/large-task-system-design.md)。
+Skill 的共同边界或回溯 Matt 上游借鉴时再读[联合核心设计](../../docs/large-task-system-design.md)。
 
 ## 角色边界
 

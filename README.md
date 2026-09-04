@@ -282,7 +282,9 @@ neither project's code is vendored here.
 Original long-running task system. The v2 design selectively adapts the decision-fog,
 tracer-bullet, observable-test-seam, and separate Standards/Spec review ideas from
 [Matt Pocock's skills](https://github.com/mattpocock/skills) (MIT, Copyright Matt Pocock)
-without vendoring or requiring that package at runtime.
+without vendoring or requiring that package at runtime. See the
+[pinned upstream provenance](docs/large-task-system-design.md#上游借鉴与版本回溯) for the exact
+source commit and design mapping.
 
 ### [story-direction-review](common-skills/story-direction-review/)
 
