@@ -16,10 +16,10 @@ DeepSeek 厂商接口当时标注最大输出 384K，但 Ollama Cloud 对 `deeps
 ## 经验证的 Mission 组合
 
 - orchestrator：GLM 5.3，`max`
-- worker：GLM 5.3 Flash，`high`
+- worker：GLM 5.3 Flash，`max`（用户明确选择；Factory 内置模型默认仍为 `high`）
 - validator：DeepSeek V4 Flash，`max`
 
-这是一种质量/吞吐取舍，不是通用强制值。未来版本先从 `droid exec --help` 和模型官方文档确认 effort，再服从用户指定。
+这是当前部署的质量优先选择，不是通用强制值。未来版本先从 `droid exec --help` 和模型官方文档确认 effort，再服从用户指定；不要把 Factory 默认值与用户显式配置混为一谈。
 
 当时使用的压缩阈值为：128K 输出模型 900,000；64K 输出的 DeepSeek 950,000。选择原则是 `context - compaction threshold` 大于最大输出并包含额外安全余量，而非复制固定数字。
 
