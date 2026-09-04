@@ -1,0 +1,6 @@
+interface:
+  display_name: "Skill Test"
+  short_description: "用原生 subagent 隔离测试 skill 行为"
+  default_prompt: "Use $skill-test to behavior-test the requested skill with a fresh native subagent."
+policy:
+  allow_implicit_invocation: false

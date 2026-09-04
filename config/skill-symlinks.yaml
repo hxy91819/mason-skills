@@ -29,6 +29,8 @@ skills:
   note: 创建或修改任何 skill 前的强制门禁
 - name: skill-manifest-sync
   note: 本清单的本机同步入口
+- name: skill-test
+  note: 用原生 subagent 隔离测试 skill 行为
 - name: spec-leak-review
   note: 界面/文本中的 spec leak 审查
 - name: story-direction-review
