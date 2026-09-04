@@ -1,0 +1,6 @@
+interface:
+  display_name: "Echo Skill Fixture"
+  short_description: "将短文本原样写入指定测试文件"
+  default_prompt: "Use $echo-skill to write the provided text to the requested test file."
+policy:
+  allow_implicit_invocation: true
