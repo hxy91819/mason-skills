@@ -10,6 +10,7 @@ description: 创建、迁移、重命名或修改任何 skill 前的强制门禁
 1. 加载 `~/.agents/skills/writing-for-agents/SKILL.md`；涉及 frontmatter、触发方式或 router 时，继续加载同目录的 `SKILL-MECHANICS.md`。
 2. 加载 `~/.agents/skills/.system/skill-creator/SKILL.md`；它是系统 skill，不是目标仓库的 skill。不要把"系统可能自动选中 Skill Creator"当作门禁，规则本身必须保证被执行。
 3. 先读取目标 `SKILL.md` 和 `agents/openai.yaml`（如果存在），按实际工作流判断默认触发类型，再修改内容与配置。
+4. `SKILL.md` frontmatter 的 `description` 是触发规则，不是功能介绍。只写用户请求或任务形状何时匹配；能力、角色、实现和本轮改动写进正文。改行为时默认保持 `description` 不变，除非触发条件本身变了。
 
 ## 分类与配置一致
 
@@ -20,4 +21,5 @@ description: 创建、迁移、重命名或修改任何 skill 前的强制门禁
 ## 交付前
 
 - 运行 Skill validator、YAML 解析和 `git diff --check`；如果 validator 尚不识别兼容性的 `disable-model-invocation` 字段，记录该工具限制并补做 frontmatter 结构检查，不得为了让 validator 通过而删除流程类 Skill 的禁用标记。
+- 核对 `description` 仍是触发匹配，没有被改成能力说明书。
 - 向用户报告：分类、默认策略、判断依据、配置位置，以及显式触发 Skill 的 `$skill-name` 用法；用户明确意图与默认分类冲突时，以用户意图为准并说明。

@@ -19,7 +19,7 @@
 ### 配置与告知机制
 
 1. 在 `agents/openai.yaml` 中写入或更新 `policy.allow_implicit_invocation`，保留无关的 `interface` 与 `dependencies` 字段；缺少该文件时创建最小完整配置。
-2. 让 `SKILL.md` 的描述和正文与该策略一致：显式触发的 skill 要说明需要用户调用，允许隐式触发的 skill 不得声称只能手动调用。
+2. 让 `SKILL.md` 的描述和正文与该策略一致：显式触发的 skill 要说明需要用户调用，允许隐式触发的 skill 不得声称只能手动调用。`description` 只写何时触发，不介绍 skill 做什么；行为变化写进正文，默认不动 `description`。
 3. 向用户报告：skill 名称、分类、默认策略、判断依据、配置文件，以及显式触发时的 `$skill-name` 用法；若采用保守默认，还要说明如何请求改为允许隐式触发。
 4. 用 skill validator、YAML 解析和 `git diff --check` 验证；若配置或分类与用户明确要求冲突，以用户要求为准并在报告中说明。
 

@@ -1,6 +1,6 @@
 ---
 name: large-task-orchestrator
-description: 用宿主原生 subagent 持续执行已有大型任务计划；Worker 按难度选档，economy Validator 用 $story-direction-review 确认 Story 是否真正完成。
+description: 用宿主原生 subagent 持续执行已有大型任务计划，直到完整交付或出现真实 blocker。
 disable-model-invocation: true
 ---
 
