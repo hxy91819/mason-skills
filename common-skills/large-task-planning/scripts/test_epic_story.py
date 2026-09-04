@@ -1,1051 +1,474 @@
+from __future__ import annotations
+
 import json
 import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import date
+from copy import deepcopy
 from pathlib import Path
+from typing import Any
 
 
 SCRIPT = Path(__file__).with_name("epic_story.py")
-EPIC_MERMAID_BLOCK = """```mermaid
-%%{init: {"securityLevel": "strict", "htmlLabels": false}}%%
-flowchart LR
-    A["输入"] --> B["交付"]
-```"""
 
 
-def card_payload(story_id: str = "STORY-01", coverage: str = "TEST", slug: str = "测试") -> dict[str, object]:
+def plan_data(*, final_story: str = "STORY-02") -> dict[str, Any]:
     return {
-        "kind": "agent-card",
-        "schema_version": 1,
-        "story": story_id,
-        "intent_version": 1,
-        "status": "todo",
-        "owner": "待领取",
-        "blocker": "无",
-        "status_updated": "2026-08-17",
-        "refreshed": "待领取",
-        "code_baseline": "待领取",
-        "owns": [coverage],
-        "verifies": [],
-        "acceptance_cases": ["GC-01"],
-        "goal": "产出可验证结果。",
-        "decision_boundary": "愿景和验收由人维护。",
-        "technical_plan": "固定输入后验证。",
-        "authoritative_inputs": "读取当前 Story。",
-        "claim_checks": "开始前刷新代码入口和基线。",
-        "checklist": [
-            {"done": True, "text": "已完成项"},
-            {"done": False, "text": "待完成项"},
-            {"done": False, "text": "后续项"},
+        "kind": "large-task-plan",
+        "schema_version": 2,
+        "id": "EPIC-DEMO",
+        "title": "可恢复的演示任务",
+        "goal_version": 1,
+        "updated": "2026-09-04",
+        "language": "zh-Hans",
+        "spec": {
+            "problem_statement": "用户现在无法从公开入口得到稳定结果。",
+            "solution": "提供一条可复现、可验证的完整路径。",
+            "user_stories": [
+                {
+                    "id": "US-01",
+                    "actor": "演示用户",
+                    "want": "通过公开入口获得结果",
+                    "benefit": "可以确认能力真实可用",
+                }
+            ],
+            "boundaries": ["保持现有公开接口兼容。"],
+            "decisions": [
+                {
+                    "id": "D-01",
+                    "decision": "复用现有公开入口",
+                    "rationale": "它是最高且稳定的行为边界。",
+                    "impact": "测试不绑定内部实现。",
+                    "owner": "agent",
+                }
+            ],
+            "testing": {
+                "seams": ["公开命令的退出码与输出。"],
+                "strategy": "每个纵向切片先得到失败证据，再做最小实现。",
+            },
+            "out_of_scope": ["不执行正式发布。"],
+        },
+        "golden_acceptance": [
+            {
+                "id": "GC-01",
+                "title": "完整路径",
+                "fixture": ["固定输入和版本。"],
+                "actions": ["用户执行一次公开命令。"],
+                "oracle": ["返回已知正确结果。"],
+                "evidence": ["保存输出与退出码。"],
+            }
         ],
-        "steps": "1. 运行检查，退出码为零时完成。",
-        "verification": "保存退出码。",
-        "stop_conditions": "输入漂移时停止。",
-        "handoff": "提交结果与版本。",
+        "final_story": final_story,
     }
 
 
-def risk_payload(epic_id: str = "EPIC-TEST") -> dict[str, object]:
+def story_data(
+    story_id: str,
+    *,
+    blocked_by: list[str],
+    status: str = "todo",
+    passed: bool = False,
+    handoff: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    titles = {
+        "STORY-01": "先让公开入口返回可信结果",
+        "STORY-02": "复验完整使用路径",
+        "STORY-03": "补齐独立结果",
+    }
     return {
-        "kind": "risk-register",
-        "schema_version": 1,
-        "epic": epic_id,
-        "updated": "2026-08-17",
-        "pending_decisions": [],
-        "watch_items": ["上游变化时重新验证。"],
+        "kind": "large-task-story",
+        "schema_version": 2,
+        "id": story_id,
+        "plan": "EPIC-DEMO",
+        "title": titles.get(story_id, "交付一个可验证结果"),
+        "intent_version": 1,
+        "status": status,
+        "blocked_by": blocked_by,
+        "covers": ["GC-01"],
+        "outcome": "用户可以从公开入口观察到计划中的结果。",
+        "acceptance": [
+            {"id": "AC-01", "criterion": "公开入口返回已知结果。", "passed": passed}
+        ],
+        "context": {
+            "test_seams": ["公开命令。"],
+            "code_anchors": ["src/demo.py:main"],
+            "authoritative_inputs": ["README.md"],
+            "write_scope": ["src/ 与 tests/。"],
+            "stop_conditions": ["公开契约需要变化。"],
+        },
+        "owner": None if status == "todo" else "orchestrator",
+        "blocker": None,
+        "updated": "2026-09-04",
+        "handoff": handoff,
     }
 
 
-class EpicStoryTest(unittest.TestCase):
+def completed_handoff(summary: str = "可观察结果已经交付。") -> dict[str, Any]:
+    return {
+        "summary": summary,
+        "verification": ["python -m unittest：退出码 0。"],
+        "remaining": [],
+        "risks": [],
+        "next": "读取下一张 Story。",
+    }
+
+
+class EpicStoryCliTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name)
-        self.epics = self.root / "epics"
-        self.epics.mkdir()
-        self.stories = self.root / "stories"
-        self.stories.mkdir()
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name) / "plan"
         self.agent = self.root / "agent"
-        self.agent.mkdir()
-        self.epic = self.epics / "EPIC-TEST.md"
-        self.overview = self.root / "README.md"
-        self.dashboard = self.root / "项目进展.md"
-        self.risks = self.agent / "风险与阻塞.json"
-        self.overview.write_text(
-            "# 项目\n\n<!-- large-task-planning:project-overview -->\n## 项目一览\n看进展。\n\n<!-- large-task-planning:epics -->\n## Epic\n- Epic。\n\n<!-- large-task-planning:agent-entry -->\n## Agent 入口\n- Agent。\n",
-            encoding="utf-8",
+        self.stories = self.agent / "stories"
+        self.stories.mkdir(parents=True)
+        self.plan = self.agent / "plan.json"
+        self.write_json(self.plan, plan_data())
+        self.story_1 = self.stories / "STORY-01-first.json"
+        self.story_2 = self.stories / "STORY-02-final.json"
+        self.write_json(self.story_1, story_data("STORY-01", blocked_by=[]))
+        self.write_json(self.story_2, story_data("STORY-02", blocked_by=["STORY-01"]))
+        self.run_cli("render", *self.project_args())
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    @staticmethod
+    def write_json(path: Path, value: dict[str, Any]) -> None:
+        path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    def run_cli(self, *arguments: str, expected: int = 0) -> subprocess.CompletedProcess[str]:
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), *arguments],
+            capture_output=True,
+            text=True,
+            check=False,
         )
+        self.assertEqual(result.returncode, expected, result.stderr or result.stdout)
+        return result
+
+    def project_args(self) -> tuple[str, ...]:
+        return ("--plan", str(self.plan), "--stories-dir", str(self.stories))
+
+    def test_human_documents_answer_human_questions_without_agent_noise(self) -> None:
+        self.run_cli("check", *self.project_args())
+        spec = (self.root / "SPEC.md").read_text(encoding="utf-8")
+        status = (self.root / "STATUS.md").read_text(encoding="utf-8")
+        self.assertIn("## 为什么要做", spec)
+        self.assertIn("[查看当前进展](STATUS.md)", spec)
+        self.assertIn("## 对使用者的承诺", spec)
+        self.assertIn("## 已经做出的关键取舍", spec)
+        self.assertIn("#### 完整路径", spec)
+        self.assertIn("## 我们会怎样走到终点", spec)
+        self.assertIn("## 接下来", status)
+        self.assertIn("[查看目标与验收](SPEC.md)", status)
+        self.assertIn("尚未开始。第一项结果已经明确", status)
+        self.assertIn("先让公开入口返回可信结果", status)
+        self.assertIn("## 之后的路线", status)
+        self.assertIn("## 需要关注", status)
+        self.assertNotIn("STORY-01", spec)
+        self.assertNotIn("STORY-01", status)
+        self.assertNotIn("Agent", spec)
+        self.assertNotIn("Agent", status)
+        self.assertNotIn("src/demo.py", spec)
+        self.assertNotIn("src/demo.py", status)
+        self.assertNotIn("owner", status)
+
+    def test_human_status_prefers_verified_result_and_surfaces_residual_risk(self) -> None:
+        first = story_data(
+            "STORY-01",
+            blocked_by=[],
+            status="done",
+            passed=True,
+            handoff={
+                **completed_handoff("用户已经能稳定得到公开结果。"),
+                "risks": ["首次真实流量到来后仍需观察容量。"],
+            },
+        )
+        self.write_json(self.story_1, first)
+        self.run_cli("render", *self.project_args())
+        status = (self.root / "STATUS.md").read_text(encoding="utf-8")
+        self.assertIn("用户已经能稳定得到公开结果", status)
+        self.assertIn("首次真实流量到来后仍需观察容量", status)
+        self.assertNotIn("python -m unittest", status)
+
+    def test_status_and_brief_separate_frontier_from_agent_context(self) -> None:
+        status = json.loads(self.run_cli("status", *self.project_args(), "--json").stdout)
+        self.assertEqual(status["ready"], ["STORY-01"])
+        brief = json.loads(
+            self.run_cli("brief", *self.project_args(), "--story", "STORY-01").stdout
+        )
+        self.assertEqual(brief["story"]["context"]["code_anchors"], ["src/demo.py:main"])
+        self.assertEqual([item["id"] for item in brief["golden_acceptance"]], ["GC-01"])
+        self.assertEqual(brief["plan"]["out_of_scope"], ["不执行正式发布。"])
+        self.assertEqual(brief["plan"]["testing"]["seams"], ["公开命令的退出码与输出。"])
+        self.assertEqual(brief["dependency_handoffs"], [])
+
+    def test_transition_uses_expected_state_and_refreshes_status(self) -> None:
+        self.run_cli(
+            "transition",
+            "--story",
+            str(self.story_1),
+            "--expect",
+            "todo",
+            "--status",
+            "in_progress",
+            "--owner",
+            "worker-1",
+            "--at",
+            "2026-09-05",
+        )
+        data = json.loads(self.story_1.read_text(encoding="utf-8"))
+        self.assertEqual(data["owner"], "worker-1")
+        self.assertIn(
+            "先让公开入口返回可信结果",
+            (self.root / "STATUS.md").read_text(encoding="utf-8"),
+        )
+        failed = self.run_cli(
+            "transition",
+            "--story",
+            str(self.story_1),
+            "--expect",
+            "todo",
+            "--status",
+            "in_progress",
+            expected=1,
+        )
+        self.assertIn("期望状态 todo，实际为 in_progress", failed.stderr)
+
+    def test_done_requires_acceptance_and_handoff_evidence(self) -> None:
+        self.run_cli(
+            "transition",
+            "--story",
+            str(self.story_1),
+            "--status",
+            "in_progress",
+            "--owner",
+            "worker-1",
+        )
+        rejected = self.run_cli(
+            "transition", "--story", str(self.story_1), "--status", "done", expected=1
+        )
+        self.assertIn("acceptance 必须全部 passed=true", rejected.stderr)
+        current = json.loads(self.story_1.read_text(encoding="utf-8"))
+        current["acceptance"][0]["passed"] = True
+        current["handoff"] = completed_handoff()
+        self.write_json(self.story_1, current)
+        self.run_cli("transition", "--story", str(self.story_1), "--status", "done")
+
+    def test_completion_requires_all_stories_and_fresh_human_projection(self) -> None:
+        incomplete = self.run_cli("completion-check", *self.project_args(), expected=1)
+        self.assertIn("仍有未完成 Story", incomplete.stderr)
+        self.write_json(
+            self.story_1,
+            story_data(
+                "STORY-01",
+                blocked_by=[],
+                status="done",
+                passed=True,
+                handoff=completed_handoff(),
+            ),
+        )
+        self.write_json(
+            self.story_2,
+            story_data(
+                "STORY-02",
+                blocked_by=["STORY-01"],
+                status="done",
+                passed=True,
+                handoff=completed_handoff("同一提交上重跑 GC-01。"),
+            ),
+        )
+        stale = self.run_cli("completion-check", *self.project_args(), expected=1)
+        self.assertIn("人读投影已过期", stale.stderr)
+        self.run_cli("render", *self.project_args())
+        completed = self.run_cli("completion-check", *self.project_args())
+        self.assertIn("golden_cases=1/1", completed.stdout)
+
+    def test_final_story_must_close_all_paths(self) -> None:
+        orphan = self.stories / "STORY-03-orphan.json"
+        self.write_json(orphan, story_data("STORY-03", blocked_by=[]))
+        result = self.run_cli("status", *self.project_args(), expected=1)
+        self.assertIn("final_story 必须直接或间接阻塞于全部 Story", result.stderr)
+
+    def test_cycle_is_rejected(self) -> None:
+        first = story_data("STORY-01", blocked_by=["STORY-02"])
+        self.write_json(self.story_1, first)
+        result = self.run_cli("status", *self.project_args(), expected=1)
+        self.assertIn("Story blocker 成环", result.stderr)
+
+    def test_write_rejects_schema_sediment(self) -> None:
+        invalid = deepcopy(plan_data())
+        invalid["extra_rule"] = True
+        payload = self.root / "invalid.json"
+        self.write_json(payload, invalid)
+        result = self.run_cli(
+            "write", "--file", str(self.plan), "--from", str(payload), expected=1
+        )
+        self.assertIn("未知字段: extra_rule", result.stderr)
+
+
+class MigrationTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.legacy = self.root / "legacy"
+        (self.legacy / "epics").mkdir(parents=True)
+        (self.legacy / "stories").mkdir()
+        (self.legacy / "agent").mkdir()
+        self.epic = self.legacy / "epics" / "EPIC-DEMO.md"
         self.epic.write_text(
             """---
 kind: epic
-id: EPIC-TEST
-title: 测试 Epic
-updated: 2026-08-17
+id: EPIC-DEMO
+title: 旧计划
+updated: 2026-09-04
 goal_version: 1
-coverage: [TEST]
 language: zh-Hans
 ---
-# Epic
+
 <!-- large-task-planning:vision -->
 ## 愿景
-愿景。
+
+用户通过公开入口获得结果。
+
 <!-- large-task-planning:global-design -->
 ## 全局设计
-统一设计。
-{EPIC_MERMAID_BLOCK}
+
+沿用现有系统。
+
 <!-- large-task-planning:manual-acceptance -->
 ## 人工验收
-- 甲方在测试环境完成一次业务操作，并在产品界面确认结果。
+
+执行完整路径。
+
 <!-- large-task-planning:success-criteria -->
 ## 成功标准
-- 交付。
+
+全部通过。
+
 <!-- large-task-planning:story-map -->
 ## Story 地图
-- [Story](../stories/Story-01-测试.md)
-""".format(EPIC_MERMAID_BLOCK=EPIC_MERMAID_BLOCK),
-            encoding="utf-8",
-        )
-        self.story = self.stories / "Story-01-测试.md"
-        self.story.write_text(
-            """---
-kind: story
-id: STORY-01
-epic: EPIC-TEST
-title: 完成测试
-gate: G1
-depends_on: []
-updated: 2026-08-17
-intent_version: 1
-language: zh-Hans
----
-# Story
-<!-- large-task-planning:vision -->
-## 愿景
-可验证。
-<!-- large-task-planning:scope -->
-## 范围
-完成本次可观察结果。
-<!-- large-task-planning:key-decisions -->
-## 关键决策
-<!-- large-task-planning:decision owner=user -->
-1. **固定输入。**
-   - 决定者：用户。
-   - Agent 建议：采用固定输入，用户采纳。
-   - 结果与影响：输出可复现。
-<!-- large-task-planning:acceptance-criteria -->
-## 验收标准
-- 二元通过。
+
+两个 Story。
+
+<!-- large-task-planning:project-boundaries -->
+## 项目边界
+
+- 保持公开接口兼容。
 """,
             encoding="utf-8",
         )
-        self.card = self.agent / "STORY-01-测试.json"
-        self.write_json(self.card, card_payload())
-        self.write_json(self.risks, risk_payload())
-        self.write_json(
-            self.agent / "黄金验收.json",
-            {
-                "kind": "golden-acceptance",
-                "schema_version": 1,
-                "epic": "EPIC-TEST",
-                "goal_version": 1,
-                "updated": "2026-08-17",
-                "provenance": "user-provided",
-                "cases": [
-                    {
-                        "id": "GC-01",
-                        "title": "测试案例",
-                        "fixture": ["固定测试输入。"],
-                        "interaction": ["执行一次测试。"],
-                        "oracle": ["得到预期结果。"],
-                        "required_paths": [],
-                        "evidence": ["保存结果。"],
-                        "pass_condition": "结果符合预期。",
-                    }
-                ],
-            },
+        for number in (1, 2):
+            story_id = f"STORY-{number:02d}"
+            dependency = "[]" if number == 1 else "[STORY-01]"
+            (self.legacy / "stories" / f"Story-{number:02d}-demo.md").write_text(
+                f"""---
+kind: story
+id: {story_id}
+epic: EPIC-DEMO
+title: 旧 Story {number}
+depends_on: {dependency}
+updated: 2026-09-04
+intent_version: 1
+---
+
+<!-- large-task-planning:vision -->
+## 愿景
+
+交付结果 {number}。
+
+<!-- large-task-planning:scope -->
+## 范围
+
+修改公开入口；后台管理不在本 Story 内。
+
+<!-- large-task-planning:acceptance-criteria -->
+## 验收标准
+
+- 公开入口返回结果 {number}。
+""",
+                encoding="utf-8",
+            )
+            card = {
+                "kind": "agent-card",
+                "story": story_id,
+                "status": "todo",
+                "owner": "待领取",
+                "blocker": "无",
+                "acceptance_cases": ["GC-01"],
+                "technical_plan": "src/demo.py:main",
+                "authoritative_inputs": "README.md",
+                "verification": "待执行。",
+                "stop_conditions": "公开契约变化。",
+                "handoff": "未开始。",
+            }
+            (self.legacy / "agent" / f"{story_id}-demo.json").write_text(
+                json.dumps(card, ensure_ascii=False), encoding="utf-8"
+            )
+        golden = {
+            "kind": "golden-acceptance",
+            "cases": [
+                {
+                    "id": "GC-01",
+                    "title": "完整路径",
+                    "fixture": ["固定版本。"],
+                    "interaction": ["执行公开入口。"],
+                    "oracle": ["得到已知结果。"],
+                    "evidence": ["保存输出。"],
+                }
+            ],
+        }
+        (self.legacy / "agent" / "黄金验收.json").write_text(
+            json.dumps(golden, ensure_ascii=False), encoding="utf-8"
         )
-        self.dashboard.write_text("旧内容\n", encoding="utf-8")
 
     def tearDown(self) -> None:
-        self.temp.cleanup()
+        self.temporary.cleanup()
 
-    def write_json(self, path: Path, payload: object) -> None:
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-    def read_json(self, path: Path) -> dict[str, object]:
-        return json.loads(path.read_text(encoding="utf-8"))
-
-    def run_cli(self, *arguments: object) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [sys.executable, str(SCRIPT), *(str(argument) for argument in arguments)],
-            text=True,
-            capture_output=True,
-            check=False,
+    def run_cli(self, *arguments: str, expected: int = 0) -> subprocess.CompletedProcess[str]:
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), *arguments], capture_output=True, text=True, check=False
         )
+        self.assertEqual(result.returncode, expected, result.stderr or result.stdout)
+        return result
 
-    def common_args(self) -> tuple[str, ...]:
-        return ("--epic", str(self.epic), "--stories-dir", str(self.stories))
-
-    def completion_args(self) -> tuple[str, ...]:
-        return (
-            *self.common_args(),
-            "--overview",
-            str(self.overview),
-            "--dashboard",
-            str(self.dashboard),
+    def test_migration_creates_both_audiences_and_preserves_v1(self) -> None:
+        output = self.root / "v2"
+        migrated = self.run_cli(
+            "migrate-v1",
+            "--epic",
+            str(self.epic),
+            "--stories-dir",
+            str(self.legacy / "stories"),
+            "--output-dir",
+            str(output),
         )
-
-    def add_story(self, story_id: str, slug: str, dependency: str, coverage: str) -> Path:
-        suffix = story_id.removeprefix("STORY-")
-        story_name = f"Story-{suffix}-{slug}.md"
-        story_path = self.stories / story_name
-        story_path.write_text(
-            self.story.read_text(encoding="utf-8")
-            .replace("STORY-01", story_id)
-            .replace("Story-01-测试", f"Story-{suffix}-{slug}")
-            .replace("title: 完成测试", f"title: {slug}")
-            .replace("depends_on: []", f"depends_on: [{dependency}]")
-            .replace("# Story", f"# {story_id}"),
-            encoding="utf-8",
+        self.assertIn("review problem_statement", migrated.stdout)
+        self.assertTrue(self.epic.exists())
+        self.assertTrue((output / "SPEC.md").is_file())
+        self.assertTrue((output / "STATUS.md").is_file())
+        self.assertTrue((output / "agent" / "plan.json").is_file())
+        check = self.run_cli(
+            "check",
+            "--plan",
+            str(output / "agent" / "plan.json"),
+            "--stories-dir",
+            str(output / "agent" / "stories"),
         )
-        self.write_json(self.agent / f"{story_id}-{slug}.json", card_payload(story_id, coverage, slug))
-        epic_text = self.epic.read_text(encoding="utf-8").replace(
-            "coverage: [", f"coverage: [{coverage}, ", 1
+        self.assertIn("projections=fresh", check.stdout)
+        final = json.loads((output / "agent" / "stories" / "STORY-02.json").read_text(encoding="utf-8"))
+        self.assertEqual(final["blocked_by"], ["STORY-01"])
+        refused = self.run_cli(
+            "migrate-v1",
+            "--epic",
+            str(self.epic),
+            "--stories-dir",
+            str(self.legacy / "stories"),
+            "--output-dir",
+            str(output),
+            expected=1,
         )
-        self.epic.write_text(
-            epic_text.rstrip() + f"\n- [{story_id}](../stories/{story_name})\n", encoding="utf-8"
-        )
-        return story_path
-
-    def mark_done(self, path: Path) -> None:
-        text = path.read_text(encoding="utf-8")
-        story_id = next(line.split(":", 1)[1].strip() for line in text.splitlines() if line.startswith("id: "))
-        for card in self.agent.glob(f"{story_id}-*.json"):
-            data = self.read_json(card)
-            data["status"] = "done"
-            data["owner"] = "Agent"
-            data["blocker"] = "无"
-            data["refreshed"] = "2026-08-18"
-            data["code_baseline"] = "testhash"
-            data["checklist"] = [
-                {"done": True, "text": item["text"]} for item in data["checklist"]
-            ]
-            self.write_json(card, data)
-
-    def test_render_check_and_status_report_observable_project_state(self) -> None:
-        rendered = self.run_cli("render", *self.common_args(), "--dashboard", self.dashboard)
-        self.assertEqual(0, rendered.returncode, rendered.stderr)
-        output = self.dashboard.read_text(encoding="utf-8")
-        self.assertIn("状态 | 进度 | 当前结果或下一步", output)
-        self.assertIn("1/3", output)
-        self.assertIn("可领取：STORY-01", output)
-        self.assertIn("后续关注", output)
-        self.assertNotIn("门禁状态", output)
-        self.assertNotIn("关键基线", output)
-        self.assertIn("本文由脚本根据 Agent JSON 状态源生成", output)
-
-        checked = self.run_cli("check", *self.common_args(), "--dashboard", self.dashboard)
-        self.assertEqual(0, checked.returncode, checked.stderr)
-
-        overview_checked = self.run_cli("check", *self.common_args(), "--overview", self.overview)
-        self.assertEqual(0, overview_checked.returncode, overview_checked.stderr)
-
-        status = self.run_cli("status", *self.common_args(), "--json")
-        self.assertEqual(0, status.returncode, status.stderr)
-        payload = json.loads(status.stdout)
-        self.assertEqual(["STORY-01"], payload["epic"]["ready_stories"])
-        self.assertEqual(["TEST"], payload["epic"]["coverage"])
-        self.assertEqual(3000, payload["epic"]["content_target"])
-        self.assertLess(payload["epic"]["content_chars"], payload["epic"]["content_target"])
-        self.assertEqual(2200, payload["stories"][0]["content_limit"])
-        self.assertEqual(1, payload["stories"][0]["checklist_done"])
-        self.assertEqual(3, payload["stories"][0]["checklist_total"])
-        self.assertEqual("待完成项", payload["stories"][0]["next_item"])
-        self.assertEqual(str(self.card), payload["stories"][0]["card"])
-
-    def test_done_dashboard_shows_the_last_completed_result(self) -> None:
-        data = self.read_json(self.card)
-        data["status"] = "done"
-        data["owner"] = "Agent"
-        data["refreshed"] = "2026-08-17"
-        data["code_baseline"] = "abc123"
-        data["verification"] = "GC-01：结果与证据已保存。"
-        data["checklist"] = [{"done": True, "text": item["text"]} for item in data["checklist"]]
-        self.write_json(self.card, data)
-        result = self.run_cli("render", *self.common_args(), "--dashboard", self.dashboard)
-        self.assertEqual(0, result.returncode, result.stderr)
-        self.assertIn("| 已完成 | 3/3 | 后续项 |", self.dashboard.read_text(encoding="utf-8"))
-
-    def test_completion_check_requires_every_story_and_current_dashboard(self) -> None:
-        rendered = self.run_cli("render", *self.common_args(), "--dashboard", self.dashboard)
-        self.assertEqual(0, rendered.returncode, rendered.stderr)
-
-        incomplete = self.run_cli("completion-check", *self.completion_args())
-        self.assertEqual(1, incomplete.returncode)
-        self.assertIn("仍有未完成 Story: STORY-01", incomplete.stderr)
-
-        self.mark_done(self.story)
-        data = self.read_json(self.card)
-        data["verification"] = "GC-01：通过；证据位于 agent/evidence/GC-01.txt。"
-        self.write_json(self.card, data)
-        rendered = self.run_cli("render", *self.common_args(), "--dashboard", self.dashboard)
-        self.assertEqual(0, rendered.returncode, rendered.stderr)
-
-        completed = self.run_cli("completion-check", *self.completion_args())
-        self.assertEqual(0, completed.returncode, completed.stderr)
-        self.assertIn("golden_cases=1/1", completed.stdout)
-
-        self.dashboard.write_text("过期\n", encoding="utf-8")
-        stale = self.run_cli("completion-check", *self.completion_args())
-        self.assertEqual(1, stale.returncode)
-        self.assertIn("仪表盘已过期", stale.stderr)
-
-    def test_final_golden_evidence_requires_exact_case_id(self) -> None:
-        self.mark_done(self.story)
-        data = self.read_json(self.card)
-        data["verification"] = "GC-010：相似编号不能替代目标案例的证据。"
-        self.write_json(self.card, data)
-
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("黄金验收完成证据缺少案例: GC-01", result.stderr)
-
-    def test_done_requires_all_todos_checked(self) -> None:
-        data = self.read_json(self.card)
-        data["status"] = "done"
-        data["owner"] = "Agent"
-        data["refreshed"] = "2026-08-17"
-        data["code_baseline"] = "abc123"
-        self.write_json(self.card, data)
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("所有执行清单项必须勾选", result.stderr)
-
-    def test_missing_dependency_fails(self) -> None:
-        text = self.story.read_text(encoding="utf-8").replace("depends_on: []", "depends_on: [STORY-99]")
-        self.story.write_text(text, encoding="utf-8")
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("不存在的 STORY-99", result.stderr)
-
-    def test_forward_dependency_fails(self) -> None:
-        second = self.stories / "Story-02-后续.md"
-        second.write_text(
-            self.story.read_text(encoding="utf-8")
-            .replace("id: STORY-01", "id: STORY-02")
-            .replace("Story-01-测试", "Story-02-后续")
-            .replace("# Story", "# 后续 Story"),
-            encoding="utf-8",
-        )
-        self.write_json(self.agent / "STORY-02-后续.json", card_payload("STORY-02", "NEXT", "后续"))
-        self.epic.write_text(
-            self.epic.read_text(encoding="utf-8").replace(
-                "- [Story](../stories/Story-01-测试.md)",
-                "- [Story](../stories/Story-01-测试.md)\n- [后续](../stories/Story-02-后续.md)",
-            ),
-            encoding="utf-8",
-        )
-        self.story.write_text(
-            self.story.read_text(encoding="utf-8").replace("depends_on: []", "depends_on: [STORY-02]"),
-            encoding="utf-8",
-        )
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("不得前向依赖 STORY-02", result.stderr)
-
-    def test_project_defined_gate_id_is_supported(self) -> None:
-        self.story.write_text(
-            self.story.read_text(encoding="utf-8").replace("gate: G1", "gate: RELEASE"),
-            encoding="utf-8",
-        )
-
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(0, result.returncode, result.stderr)
-
-    def test_inserted_story_ids_sort_by_numeric_segment(self) -> None:
-        self.add_story("STORY-01.2", "插入二", "STORY-01", "INSERT_2")
-        self.add_story("STORY-01.10", "插入十", "STORY-01.2", "INSERT_10")
-        self.add_story("STORY-02", "后续", "STORY-01.10", "NEXT")
-
-        result = self.run_cli("status", *self.common_args(), "--json")
-        self.assertEqual(0, result.returncode, result.stderr)
-        payload = json.loads(result.stdout)
-        self.assertEqual(
-            ["STORY-01", "STORY-01.2", "STORY-01.10", "STORY-02"],
-            [story["id"] for story in payload["stories"]],
-        )
-
-    def test_inserted_story_cannot_depend_on_later_insert(self) -> None:
-        self.add_story("STORY-01.2", "插入二", "STORY-01.10", "INSERT_2")
-        self.add_story("STORY-01.10", "插入十", "STORY-01", "INSERT_10")
-
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("不得前向依赖 STORY-01.10", result.stderr)
-
-    def test_inserted_story_requires_existing_base_story(self) -> None:
-        self.add_story("STORY-02.1", "孤立插入", "STORY-01", "INSERT")
-
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("插入 Story 缺少主编号 STORY-02", result.stderr)
-
-    def test_inserted_story_suffix_must_be_positive_without_leading_zero(self) -> None:
-        invalid = "STORY-01.0"
-        renamed_story = self.stories / "Story-01.0-测试.md"
-        self.story.rename(renamed_story)
-        renamed_story.write_text(
-            renamed_story.read_text(encoding="utf-8")
-            .replace("STORY-01", invalid)
-            .replace("Story-01-测试", "Story-01.0-测试"),
-            encoding="utf-8",
-        )
-        renamed_card = self.agent / "STORY-01.0-测试.json"
-        self.card.rename(renamed_card)
-        data = self.read_json(renamed_card)
-        data["story"] = invalid
-        self.write_json(renamed_card, data)
-        self.epic.write_text(
-            self.epic.read_text(encoding="utf-8").replace("Story-01-测试", "Story-01.0-测试"),
-            encoding="utf-8",
-        )
-
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("Story id 必须匹配 STORY-NN 或 STORY-NN.M", result.stderr)
-
-    def test_checklist_count_outside_agent_card_contract_fails(self) -> None:
-        data = self.read_json(self.card)
-        data["checklist"] = data["checklist"][:2]
-        self.write_json(self.card, data)
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("执行清单必须包含 3～7 个复选项", result.stderr)
-
-    def test_human_story_rejects_untagged_heading(self) -> None:
-        text = self.story.read_text(encoding="utf-8").replace(
-            "## 验收标准",
-            "## TODO\n- [x] 历史项。\n\n## 验收标准",
-        )
-        self.story.write_text(text, encoding="utf-8")
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("每个二级标题都必须紧接在", result.stderr)
-
-    def test_human_story_rejects_delivery_evidence(self) -> None:
-        self.story.write_text(
-            self.story.read_text(encoding="utf-8")
-            + "\n## 交付证据\n\n- Agent 记录的测试结果。\n",
-            encoding="utf-8",
-        )
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("每个二级标题都必须紧接在", result.stderr)
-
-    def test_visible_headings_can_use_the_project_language(self) -> None:
-        self.overview.write_text(
-            self.overview.read_text(encoding="utf-8")
-            .replace("项目一览", "Project Overview")
-            .replace("Agent 入口", "Agent Entry"),
-            encoding="utf-8",
-        )
-        result = self.run_cli("check", *self.common_args(), "--overview", self.overview)
-        self.assertEqual(0, result.returncode, result.stderr)
-
-    def test_english_project_uses_semantic_sections_and_localized_dashboard(self) -> None:
-        self.epic.write_text(
-            self.epic.read_text(encoding="utf-8")
-            .replace("language: zh-Hans", "language: en")
-            .replace("## 愿景", "## Goal")
-            .replace("## 全局设计", "## System Design")
-            .replace("## 人工验收", "## Manual Acceptance")
-            .replace("## 成功标准", "## Success Criteria")
-            .replace("## Story 地图", "## Story Map"),
-            encoding="utf-8",
-        )
-        self.story.write_text(
-            self.story.read_text(encoding="utf-8")
-            .replace("language: zh-Hans", "language: en")
-            .replace("## 愿景", "## Goal")
-            .replace("## 范围", "## Scope")
-            .replace("## 关键决策", "## Key Decisions")
-            .replace("## 验收标准", "## Acceptance Criteria"),
-            encoding="utf-8",
-        )
-        self.overview.write_text(
-            self.overview.read_text(encoding="utf-8")
-            .replace("项目一览", "Project Overview")
-            .replace("Agent 入口", "Agent Entry"),
-            encoding="utf-8",
-        )
-        rendered = self.run_cli("render", *self.common_args(), "--dashboard", self.dashboard)
-        self.assertEqual(0, rendered.returncode, rendered.stderr)
-        checked = self.run_cli(
-            "check", *self.common_args(), "--overview", self.overview, "--dashboard", self.dashboard
-        )
-        self.assertEqual(0, checked.returncode, checked.stderr)
-        output = self.dashboard.read_text(encoding="utf-8")
-        self.assertIn("## Epic / Story Overview", output)
-        self.assertIn("## Risks and Blockers", output)
-        self.assertIn("This page is generated", output)
-
-    def test_traditional_chinese_project_uses_traditional_dashboard_labels(self) -> None:
-        self.epic.write_text(
-            self.epic.read_text(encoding="utf-8").replace("language: zh-Hans", "language: zh-Hant"),
-            encoding="utf-8",
-        )
-        self.story.write_text(
-            self.story.read_text(encoding="utf-8").replace("language: zh-Hans", "language: zh-Hant"),
-            encoding="utf-8",
-        )
-        rendered = self.run_cli("render", *self.common_args(), "--dashboard", self.dashboard)
-        self.assertEqual(0, rendered.returncode, rendered.stderr)
-        output = self.dashboard.read_text(encoding="utf-8")
-        self.assertIn("测试 Epic 專案進展", output)
-        self.assertIn("## 風險與阻塞", output)
-        self.assertIn("請勿手動修改", output)
-
-    def test_story_language_must_match_the_epic(self) -> None:
-        self.story.write_text(
-            self.story.read_text(encoding="utf-8").replace("language: zh-Hans", "language: en"),
-            encoding="utf-8",
-        )
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("language 必须与 EPIC-TEST.md 一致", result.stderr)
-
-    def test_human_story_rejects_solution_overview(self) -> None:
-        self.story.write_text(
-            self.story.read_text(encoding="utf-8").replace(
-                "## 验收标准", "## 解决方案概览\n- 历史方案。\n\n## 验收标准"
-            ),
-            encoding="utf-8",
-        )
-        self.mark_done(self.story)
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("每个二级标题都必须紧接在", result.stderr)
-
-    def test_epic_must_be_a_standalone_file(self) -> None:
-        misplaced = self.root / "README.md"
-        text = self.epic.read_text(encoding="utf-8").replace("../stories/", "stories/")
-        misplaced.write_text(text, encoding="utf-8")
-        result = self.run_cli("check", "--epic", misplaced, "--stories-dir", self.stories)
-        self.assertEqual(1, result.returncode)
-        self.assertIn("Epic 必须独立保存", result.stderr)
-
-    def test_epic_requires_global_design(self) -> None:
-        text = self.epic.read_text(encoding="utf-8").replace(
-            "<!-- large-task-planning:global-design -->\n", ""
-        )
-        self.epic.write_text(text, encoding="utf-8")
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("缺少语义章节 global-design", result.stderr)
-
-    def test_epic_requires_manual_acceptance(self) -> None:
-        text = self.epic.read_text(encoding="utf-8").replace(
-            "<!-- large-task-planning:manual-acceptance -->\n", ""
-        )
-        self.epic.write_text(text, encoding="utf-8")
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("缺少语义章节 manual-acceptance", result.stderr)
-
-    def test_goal_requires_golden_acceptance_contract(self) -> None:
-        self.agent.joinpath("黄金验收.json").unlink()
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("黄金验收.json", result.stderr)
-
-    def test_goal_accepts_agent_drafted_golden_acceptance(self) -> None:
-        data = self.read_json(self.agent / "黄金验收.json")
-        data["provenance"] = "agent-drafted"
-        self.write_json(self.agent / "黄金验收.json", data)
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(0, result.returncode, result.stderr)
-
-    def test_goal_rejects_unknown_golden_provenance(self) -> None:
-        data = self.read_json(self.agent / "黄金验收.json")
-        data["provenance"] = "guessed"
-        self.write_json(self.agent / "黄金验收.json", data)
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("provenance 必须是", result.stderr)
-
-    def test_template_golden_acceptance_is_valid(self) -> None:
-        result = self.run_cli(
-            "template", "golden-acceptance", "--epic-id", "EPIC-TEST"
-        )
-        self.assertEqual(0, result.returncode, result.stderr)
-        payload = json.loads(result.stdout)
-        self.assertEqual("golden-acceptance", payload["kind"])
-        self.assertEqual(["GC-01"], [case["id"] for case in payload["cases"]])
-
-    def test_final_story_must_list_all_golden_cases(self) -> None:
-        data = self.read_json(self.card)
-        data["acceptance_cases"] = []
-        self.write_json(self.card, data)
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("最后一个 Story 必须验收全部黄金案例", result.stderr)
-
-    def test_epic_rejects_unknown_semantic_section(self) -> None:
-        text = self.epic.read_text(encoding="utf-8").replace(
-            "large-task-planning:manual-acceptance", "large-task-planning:planning-decision"
-        )
-        self.epic.write_text(text, encoding="utf-8")
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("存在不允许的语义章节: planning-decision", result.stderr)
-
-    def test_pending_planning_decision_blocks_the_entire_epic(self) -> None:
-        data = self.read_json(self.risks)
-        data["pending_decisions"] = ["确认产品边界。"]
-        self.write_json(self.risks, data)
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("存在规划待决事项时所有 Story 必须为 blocked", result.stderr)
-
-    def test_epic_allows_more_than_seven_stories(self) -> None:
-        dependency = "STORY-01"
-        for index in range(2, 9):
-            story_id = f"STORY-{index:02d}"
-            self.add_story(story_id, f"测试{index}", dependency, f"TEST{index}")
-            dependency = story_id
-        rendered = self.run_cli("render", *self.common_args(), "--dashboard", self.dashboard)
-        self.assertEqual(0, rendered.returncode, rendered.stderr)
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(0, result.returncode, result.stderr)
-
-    def test_epic_global_design_requires_architecture_diagram(self) -> None:
-        text = self.epic.read_text(encoding="utf-8").replace(EPIC_MERMAID_BLOCK, "只有文字。")
-        self.epic.write_text(text, encoding="utf-8")
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("必须包含至少一张", result.stderr)
-
-    def test_epic_global_design_accepts_multiple_independent_diagrams(self) -> None:
-        second_diagram = """```mermaid
-%%{init: {"securityLevel": "strict", "htmlLabels": false}}%%
-flowchart LR
-    C["独立输入"] --> D["独立交付"]
-```"""
-        text = self.epic.read_text(encoding="utf-8").replace(
-            EPIC_MERMAID_BLOCK,
-            EPIC_MERMAID_BLOCK + "\n\n**能力二：独立流程。**\n\n" + second_diagram,
-        )
-        self.epic.write_text(text, encoding="utf-8")
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(0, result.returncode, result.stderr)
-
-    def test_epic_global_design_accepts_text_architecture_diagram(self) -> None:
-        text = self.epic.read_text(encoding="utf-8").replace(
-            EPIC_MERMAID_BLOCK,
-            "```text\n[输入] --> [交付]\n```",
-        )
-        self.epic.write_text(text, encoding="utf-8")
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(0, result.returncode, result.stderr)
-
-    def test_epic_content_budget_is_a_soft_target(self) -> None:
-        text = self.epic.read_text(encoding="utf-8").replace("愿景。", "愿景。" + "甲" * 3001)
-        self.epic.write_text(text, encoding="utf-8")
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(0, result.returncode, result.stderr)
-
-    def test_overview_content_budget_is_enforced(self) -> None:
-        text = self.overview.read_text(encoding="utf-8").replace("看进展。", "看进展。" + "丁" * 1501)
-        self.overview.write_text(text, encoding="utf-8")
-        result = self.run_cli("check", *self.common_args(), "--overview", self.overview)
-        self.assertEqual(1, result.returncode)
-        self.assertIn("超过上限 1500", result.stderr)
-
-    def test_story_content_budget_is_enforced(self) -> None:
-        text = self.story.read_text(encoding="utf-8").replace("可验证。", "可验证。" + "乙" * 2201)
-        self.story.write_text(text, encoding="utf-8")
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("超过上限 2200", result.stderr)
-
-    def test_stale_dashboard_fails_check(self) -> None:
-        rendered = self.run_cli("render", *self.common_args(), "--dashboard", self.dashboard)
-        self.assertEqual(0, rendered.returncode, rendered.stderr)
-        text = self.story.read_text(encoding="utf-8").replace("title: 完成测试", "title: 完成新测试")
-        self.story.write_text(text, encoding="utf-8")
-        result = self.run_cli("check", *self.common_args(), "--dashboard", self.dashboard)
-        self.assertEqual(1, result.returncode)
-        self.assertIn("仪表盘已过期", result.stderr)
-
-    def test_render_replaces_the_entire_dashboard(self) -> None:
-        self.dashboard.write_text("# 手工状态\n\n## 执行命令\n旧内容。\n", encoding="utf-8")
-        result = self.run_cli("render", *self.common_args(), "--dashboard", self.dashboard)
-        self.assertEqual(0, result.returncode, result.stderr)
-        output = self.dashboard.read_text(encoding="utf-8")
-        self.assertNotIn("执行命令", output)
-        self.assertIn("本文由脚本根据 Agent JSON 状态源生成", output)
-
-    def test_dashboard_content_budget_is_enforced(self) -> None:
-        data = self.read_json(self.risks)
-        data["watch_items"] = ["上游变化时重新验证。" + "丙" * 3001]
-        self.write_json(self.risks, data)
-        result = self.run_cli("render", *self.common_args(), "--dashboard", self.dashboard)
-        self.assertEqual(1, result.returncode)
-        self.assertIn("超过上限 3000", result.stderr)
-
-    def test_dashboard_allows_six_risks_and_rejects_seven(self) -> None:
-        data = self.read_json(self.risks)
-        data["watch_items"] = [f"风险 {index}" for index in range(1, 7)]
-        self.write_json(self.risks, data)
-        allowed = self.run_cli("render", *self.common_args(), "--dashboard", self.dashboard)
-        self.assertEqual(0, allowed.returncode, allowed.stderr)
-
-        data["watch_items"].append("风险 7")
-        self.write_json(self.risks, data)
-        rejected = self.run_cli("render", *self.common_args(), "--dashboard", self.dashboard)
-        self.assertEqual(1, rejected.returncode)
-        self.assertIn("待决策与后续关注合计最多 6 项", rejected.stderr)
-
-    def test_check_rejects_manually_edited_dashboard(self) -> None:
-        rendered = self.run_cli("render", *self.common_args(), "--dashboard", self.dashboard)
-        self.assertEqual(0, rendered.returncode, rendered.stderr)
-        self.dashboard.write_text(
-            self.dashboard.read_text(encoding="utf-8") + "\n## 执行命令\n运行细节。\n",
-            encoding="utf-8",
-        )
-        result = self.run_cli("check", *self.common_args(), "--dashboard", self.dashboard)
-        self.assertEqual(1, result.returncode)
-        self.assertIn("仪表盘已过期", result.stderr)
-
-    def test_story_requires_one_direct_agent_card(self) -> None:
-        self.card.unlink()
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("必须有且仅有一份", result.stderr)
-
-    def test_markdown_agent_card_is_rejected(self) -> None:
-        self.card.unlink()
-        (self.agent / "STORY-01-测试执行卡.md").write_text("# 旧执行卡\n", encoding="utf-8")
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("Agent 执行卡必须是 JSON", result.stderr)
-
-    def test_agent_card_requires_structured_fields(self) -> None:
-        data = self.read_json(self.card)
-        del data["goal"]
-        self.write_json(self.card, data)
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("缺少字段 goal", result.stderr)
-
-    def test_agent_card_intent_version_must_match_story(self) -> None:
-        data = self.read_json(self.card)
-        data["intent_version"] = 2
-        self.write_json(self.card, data)
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("intent_version 必须与", result.stderr)
-
-    def test_agent_card_identity_fields_mirror_the_story(self) -> None:
-        data = self.read_json(self.card)
-        data.update({"title": "完成测试", "epic": "EPIC-TEST", "gate": "G1", "depends_on": []})
-        self.write_json(self.card, data)
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(0, result.returncode)
-
-    def test_agent_card_identity_drift_fails(self) -> None:
-        data = self.read_json(self.card)
-        data.update({"title": "另一个标题", "gate": "G2"})
-        self.write_json(self.card, data)
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("title 必须与", result.stderr)
-        self.assertIn("gate 必须与", result.stderr)
-
-    def test_agent_card_depends_on_drift_fails(self) -> None:
-        self.add_story("STORY-02", "后续", "STORY-01", "TEST2")
-        card_path = self.agent / "STORY-02-后续.json"
-        data = self.read_json(card_path)
-        data["depends_on"] = ["STORY-01"]
-        self.write_json(card_path, data)
-        synced = self.run_cli(
-            "render", *self.common_args(), "--dashboard", str(self.dashboard)
-        )
-        self.assertEqual(0, synced.returncode, synced.stderr)
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(0, result.returncode, result.stderr)
-        drifted = self.read_json(card_path)
-        drifted["depends_on"] = []
-        self.write_json(card_path, drifted)
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("depends_on 必须与", result.stderr)
-
-    def test_template_card_includes_identity_fields(self) -> None:
-        result = self.run_cli("template", "agent-card", "--story", "STORY-01")
-        self.assertEqual(0, result.returncode)
-        payload = json.loads(result.stdout)
-        for field in ("title", "epic", "gate", "depends_on"):
-            self.assertIn(field, payload)
-
-    def test_patch_writes_drifted_depends_on_that_check_rejects(self) -> None:
-        result = self.run_cli(
-            "patch",
-            "--file",
-            str(self.card),
-            "--set",
-            'depends_on=["STORY-00"]',
-        )
-        self.assertEqual(0, result.returncode, result.stderr)
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("depends_on 必须与", result.stderr)
-
-    def test_key_decision_requires_an_owner_marker(self) -> None:
-        text = self.story.read_text(encoding="utf-8").replace(
-            "<!-- large-task-planning:decision owner=user -->\n", ""
-        )
-        self.story.write_text(text, encoding="utf-8")
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("每项关键决策必须紧接在", result.stderr)
-
-    def test_pending_key_decision_requires_blocked_story(self) -> None:
-        text = self.story.read_text(encoding="utf-8").replace("owner=user", "owner=pending")
-        self.story.write_text(text, encoding="utf-8")
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("存在 pending 关键决策时 status 必须为 blocked", result.stderr)
-
-    def test_agent_owned_key_decision_is_valid(self) -> None:
-        text = self.story.read_text(encoding="utf-8").replace("owner=user", "owner=agent")
-        self.story.write_text(text, encoding="utf-8")
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(0, result.returncode, result.stderr)
-
-    def test_human_documents_reject_dynamic_status_fields(self) -> None:
-        self.story.write_text(
-            self.story.read_text(encoding="utf-8").replace("gate: G1", "status: todo\ngate: G1"),
-            encoding="utf-8",
-        )
-        self.epic.write_text(
-            self.epic.read_text(encoding="utf-8").replace("title: 测试 Epic", "title: 测试 Epic\nowner: Agent"),
-            encoding="utf-8",
-        )
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("人读文档不保存动态字段 status", result.stderr)
-        self.assertIn("人读文档不保存动态字段 owner", result.stderr)
-
-    def test_risk_register_is_required(self) -> None:
-        self.risks.unlink()
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("风险与阻塞.json", result.stderr)
-
-    def test_every_epic_coverage_item_requires_one_owner(self) -> None:
-        data = self.read_json(self.card)
-        data["owns"] = []
-        self.write_json(self.card, data)
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("owns 至少包含一个覆盖项", result.stderr)
-        self.assertIn("覆盖项 TEST 没有 Story 主责", result.stderr)
-
-    def test_agent_card_rejects_duplicate_coverage_claims(self) -> None:
-        data = self.read_json(self.card)
-        data["owns"] = ["TEST", "TEST"]
-        self.write_json(self.card, data)
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("owns 不得包含重复覆盖项", result.stderr)
-
-    def test_coverage_item_must_not_have_multiple_story_owners(self) -> None:
-        second = self.stories / "Story-02-测试.md"
-        second.write_text(
-            self.story.read_text(encoding="utf-8").replace("STORY-01", "STORY-02").replace(
-                "Story-01-测试", "Story-02-测试"
-            ),
-            encoding="utf-8",
-        )
-        self.write_json(self.agent / "STORY-02-测试.json", card_payload("STORY-02", "TEST", "测试"))
-        self.epic.write_text(
-            self.epic.read_text(encoding="utf-8").replace(
-                "- [Story](../stories/Story-01-测试.md)",
-                "- [Story](../stories/Story-01-测试.md)\n- [Story](../stories/Story-02-测试.md)",
-            ),
-            encoding="utf-8",
-        )
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("覆盖项 TEST 被多个 Story 主责: STORY-01, STORY-02", result.stderr)
-
-    def test_render_clears_finished_dependency_blocker(self) -> None:
-        self.add_story("STORY-02", "后续", "STORY-01", "NEXT")
-        self.mark_done(self.story)
-        second_card = next(self.agent.glob("STORY-02-*.json"))
-        data = self.read_json(second_card)
-        data["status"] = "blocked"
-        data["blocker"] = "STORY-01 未完成"
-        self.write_json(second_card, data)
-
-        rendered = self.run_cli("render", *self.common_args(), "--dashboard", self.dashboard)
-        self.assertEqual(0, rendered.returncode, rendered.stderr)
-        self.assertIn("已同步依赖阻塞: STORY-02", rendered.stdout)
-        updated = self.read_json(second_card)
-        self.assertEqual("todo", updated["status"])
-        self.assertEqual("无", updated["blocker"])
-        self.assertIn("可领取：STORY-02", self.dashboard.read_text(encoding="utf-8"))
-
-    def test_render_marks_waiting_story_blocked(self) -> None:
-        self.add_story("STORY-02", "后续", "STORY-01", "NEXT")
-        stale = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, stale.returncode)
-        self.assertIn("依赖阻塞已过期，请运行 render: STORY-02", stale.stderr)
-
-        rendered = self.run_cli("render", *self.common_args(), "--dashboard", self.dashboard)
-        self.assertEqual(0, rendered.returncode, rendered.stderr)
-        self.assertIn("已同步依赖阻塞: STORY-02", rendered.stdout)
-        second_card = next(self.agent.glob("STORY-02-*.json"))
-        updated = self.read_json(second_card)
-        self.assertEqual("blocked", updated["status"])
-        self.assertEqual("STORY-01 未完成", updated["blocker"])
-
-    def test_render_keeps_non_dependency_blocker(self) -> None:
-        self.add_story("STORY-02", "后续", "STORY-01", "NEXT")
-        self.mark_done(self.story)
-        second_card = next(self.agent.glob("STORY-02-*.json"))
-        data = self.read_json(second_card)
-        data["status"] = "blocked"
-        data["blocker"] = "证书未就绪"
-        self.write_json(second_card, data)
-
-        rendered = self.run_cli("render", *self.common_args(), "--dashboard", self.dashboard)
-        self.assertEqual(0, rendered.returncode, rendered.stderr)
-        self.assertNotIn("已同步依赖阻塞", rendered.stdout)
-        updated = self.read_json(second_card)
-        self.assertEqual("blocked", updated["status"])
-        self.assertEqual("证书未就绪", updated["blocker"])
-
-        checked = self.run_cli("check", *self.common_args(), "--dashboard", self.dashboard)
-        self.assertEqual(0, checked.returncode, checked.stderr)
-
-    def test_check_fails_when_dependency_blocker_is_stale(self) -> None:
-        self.add_story("STORY-02", "后续", "STORY-01", "NEXT")
-        self.mark_done(self.story)
-        second_card = next(self.agent.glob("STORY-02-*.json"))
-        data = self.read_json(second_card)
-        data["status"] = "blocked"
-        data["blocker"] = "STORY-01 未完成"
-        self.write_json(second_card, data)
-
-        checked = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, checked.returncode)
-        self.assertIn("依赖阻塞已过期，请运行 render: STORY-02", checked.stderr)
-
-    def test_started_story_requires_refreshed_code_baseline(self) -> None:
-        data = self.read_json(self.card)
-        data["status"] = "in_progress"
-        data["owner"] = "Agent"
-        self.write_json(self.card, data)
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, result.returncode)
-        self.assertIn("refreshed 不能为待领取", result.stderr)
-        self.assertIn("code_baseline 必须记录实际版本", result.stderr)
-
-    def test_write_canonicalizes_agent_card(self) -> None:
-        payload = card_payload()
-        payload["status"] = "todo"
-        source = self.root / "incoming.json"
-        self.write_json(source, payload)
-        target = self.agent / "STORY-01-测试.json"
-        result = self.run_cli("write", "--file", target, "--from", source)
-        self.assertEqual(0, result.returncode, result.stderr)
-        written = target.read_text(encoding="utf-8")
-        self.assertTrue(written.startswith("{\n  \"kind\": \"agent-card\""))
-        self.assertIn("schema_version", written)
-
-    def test_write_rejects_invalid_card(self) -> None:
-        payload = card_payload()
-        payload["status"] = "mystery"
-        source = self.root / "incoming.json"
-        self.write_json(source, payload)
-        result = self.run_cli("write", "--file", self.card, "--from", source)
-        self.assertEqual(1, result.returncode)
-        self.assertIn("status 必须是", result.stderr)
-
-    def test_patch_updates_card_status_and_checklist(self) -> None:
-        result = self.run_cli(
-            "patch",
-            "--file",
-            self.card,
-            "--set",
-            "status=in_progress",
-            "--set",
-            "owner=Codex",
-            "--set",
-            "refreshed=2026-08-18",
-            "--set",
-            "code_baseline=abc123",
-            "--check-item",
-            "2",
-        )
-        self.assertEqual(0, result.returncode, result.stderr)
-        data = self.read_json(self.card)
-        self.assertEqual("in_progress", data["status"])
-        self.assertEqual("Codex", data["owner"])
-        self.assertEqual(date.today().isoformat(), data["status_updated"])
-        self.assertTrue(data["checklist"][1]["done"])
-
-    def test_patch_can_update_risk_register(self) -> None:
-        result = self.run_cli(
-            "patch",
-            "--file",
-            self.risks,
-            "--set",
-            'watch_items=["需要复核上游。"]',
-        )
-        self.assertEqual(0, result.returncode, result.stderr)
-        data = self.read_json(self.risks)
-        self.assertEqual(["需要复核上游。"], data["watch_items"])
-        self.assertEqual(date.today().isoformat(), data["updated"])
-
-    def test_template_writes_card_scaffold(self) -> None:
-        target = self.agent / "STORY-09-脚手架.json"
-        result = self.run_cli(
-            "template",
-            "agent-card",
-            "--story",
-            "STORY-09",
-            "--file",
-            target,
-        )
-        self.assertEqual(0, result.returncode, result.stderr)
-        data = self.read_json(target)
-        self.assertEqual("agent-card", data["kind"])
-        self.assertEqual("STORY-09", data["story"])
-        self.assertEqual(3, len(data["checklist"]))
-
-    def test_optional_agent_reference_must_be_valid_json(self) -> None:
-        self.write_json(
-            self.agent / "核心决策.json",
-            {
-                "kind": "agent-reference",
-                "schema_version": 1,
-                "id": "core-decisions",
-                "title": "核心决策",
-                "updated": "2026-08-17",
-                "body": {"D-01": "破坏性 v2"},
-            },
-        )
-        result = self.run_cli("check", *self.common_args())
-        self.assertEqual(0, result.returncode, result.stderr)
-
-        self.write_json(self.agent / "坏文档.json", {"kind": "agent-reference"})
-        rejected = self.run_cli("check", *self.common_args())
-        self.assertEqual(1, rejected.returncode)
-        self.assertIn("缺少非空字段", rejected.stderr)
+        self.assertIn("输出目录必须为空", refused.stderr)
 
 
 if __name__ == "__main__":

@@ -1,62 +1,52 @@
 ---
 name: story-direction-review
-description: 独立检查已完成 Story 是否偏离目标，以及剩余计划是否需要调整。
+description: 独立检查已实现 Story 是否仍朝向结构化计划的 Goal，以及后续路线是否需要调整。
 disable-model-invocation: true
 ---
 
 # Story Direction Review
 
-仅在用户显式调用时，检查刚完成的 Story 是否仍把整个 Epic 带向正确结果。默认只读，只处理会改变目标、范围、顺序、门禁、责任覆盖或后续方案的重大问题。
+这是流程类 Skill，仅在用户显式调用 `$story-direction-review` 时运行。默认只读；普通代码缺陷、格式和
+局部重构交给 Story 的 Spec/Standards review，本 Skill 只判断方向和计划影响。
 
-## 1. 保持独立
+## 建立独立视角
 
-优先由未执行该 Story 的 Reviewer 进行检查。先读取 Epic、项目进展、刚完成的 Story、执行卡 `handoff` 和后续 Story 地图；只有结论存在疑点时才读取原始证据或相关代码。无法获得独立 Reviewer 时明确说明限制，不把执行 Agent 的分析总结直接当成事实。
+优先由未实现该 Story 的 Reviewer 执行。先运行 sibling `large-task-planning/scripts/epic_story.py brief`
+取得稳定边界、目标 Story、相关黄金案例与直接前置 Handoff，再读 `status --json` 了解后续结果与依赖；
+有疑点时查看 `SPEC.md`、原始证据和代码。不要把 `STATUS.md` 当成 Agent 状态源。
 
-完成标准：能区分人确认的意图、执行结果、新发现事实和原计划假设。
+区分四类事实：稳定 Goal 与用户边界、Story 原意、实际交付与证据、新发现的实现假设。
 
-## 2. 检查四件事
+## 检查方向
 
-1. 对照愿景、范围和验收标准，判断交付是否实现原定结果，或只是用局部通过替代目标。
-2. 找出本 Story 新验证或推翻的关键事实，判断它们是否使后续方案、顺序或门禁失效。
-3. 从 Epic 覆盖和剩余 Story 检查重大遗漏、重复主责和无人负责的结果。
-4. 判断下一 Story 是否仍可按当前执行卡开工，而无需自行发明需求或架构决定。
+1. 实际结果是否满足 Story Outcome/Acceptance，还是用局部通过替代了用户结果。
+2. 新事实是否推翻 `agent/plan.json` 的 Goal、黄金 oracle、边界或后续 Story 前提。
+3. 黄金案例和纵向结果是否有重大遗漏，`final_story` 是否仍能闭合全部依赖路径。
+4. 下一张 Story 是否能凭自身 Context 与前置 Handoff 开工，而无需发明产品决定。
 
-普通代码 Bug、风格、局部重构和非阻断优化不进入结论；它们留在执行 Story 的测试与代码审查流程。
+## 给出唯一结论
 
-## 3. 给出唯一结论
+- `CONTINUE`：方向和后续前提成立。
+- `PATCH`：同一 Story 内有明确小遗漏；给出 Worker 可直接使用的修复提示。
+- `INSERT_STORY`：出现新的独立工程结果；说明插入位置、依赖、验收和最小计划影响。
+- `REPLAN`：Goal、黄金判据或用户边界失效；列出需要用户决定的一个最小问题。
 
-只选择一种：
+Reviewer 不修改文件或状态。若用户另行要求应用结论，由 orchestrator 保留既有 Story ID 和已完成证据；
+插入使用 `STORY-NN.M`；改变 Story Outcome/Acceptance 时递增 `intent_version`；改变 Goal、黄金判据或
+用户边界时先取得用户决定并递增 `goal_version`。
 
-- `CONTINUE`：方向、覆盖和后续前提仍成立；下一 Story 可领取。
-- `PATCH_PROMPT`：存在小遗漏，但不改变人确认的意图或 Story 结构；提供下一 Agent 可直接使用的补充提示词。
-- `INSERT_STORY`：出现新的独立工程结果；说明插入位置、依赖、验收结果和对后续 Story 的最小影响。
-- `REPLAN`：目标、流程、门禁或主要假设失效；暂停领取下一 Story，并列出需要人确认的最小决策。
-
-`INSERT_STORY` 和 `REPLAN` 建议后续工作保持 blocked，直到计划更新并通过授权。Reviewer 不直接修改状态或计划，除非用户同时要求应用审查结论。`PATCH_PROMPT` 一旦改变愿景、范围、方案方向或验收标准，升级为 `REPLAN`。
-
-## 4. 保护历史并调整计划
-
-- 新事实不影响已完成结果时，保留 Story `done`，只调整未来计划。
-- 新事实推翻已完成结论时，保留历史并标记相关证据失效，把 Story 改回 `in_progress` 或 `blocked`。
-- 插入任务时保留所有既有 Story 的 ID；使用 `STORY-NN.M` 插入号，例如在 `STORY-03` 后增加 `STORY-03.1`，并只更新必要依赖、执行卡 JSON 和仪表盘。超过 Epic 的 Story 上限时再评估拆分 Epic。
-- 修改人确认的意图前取得明确授权，并递增受影响 Story 与执行卡的 `intent_version`。Agent JSON 只通过 `epic_story.py` 的 `write`/`patch`/`render` 更新。
-
-先返回审查结果。用户要求落地时，再把结论写入刚完成执行卡的 `handoff`，记录日期、2～4 条依据、计划影响和可直接复制的下一步提示词；按仓库规则提交。普通审查不自行创建文档、提交或推送。
-
-## 5. 使用固定输出
+## 输出
 
 ```text
-结论：CONTINUE | PATCH_PROMPT | INSERT_STORY | REPLAN
+结论：CONTINUE | PATCH | INSERT_STORY | REPLAN
 
-大局判断：
-- <原定结果是否成立>
+方向证据：
+- <原定结果与实际证据>
 - <新事实对后续计划的影响>
-- <重大遗漏或覆盖结论>
+- <黄金覆盖或重大遗漏>
 
 计划动作：<无需调整，或最小调整>
-
-下一步提示词：
-<下一 Agent 可直接执行的提示词；REPLAN 时写给决策人>
+下一步提示词：<Worker、orchestrator 或决策人可直接使用的内容>
 ```
 
-完成标准：结论唯一，依据可追溯，没有普通代码审查噪声；下一会话能据此继续或明确停止。
+完成标准：结论唯一、证据可追溯、没有普通代码审查噪声，下一会话能直接继续或明确停止。

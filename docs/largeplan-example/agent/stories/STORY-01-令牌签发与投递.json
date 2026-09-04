@@ -1,0 +1,61 @@
+{
+  "kind": "large-task-story",
+  "schema_version": 2,
+  "id": "STORY-01",
+  "plan": "EPIC-TOKEN-LOGIN",
+  "title": "让员工收到安全的一次性登录邮件",
+  "intent_version": 1,
+  "status": "todo",
+  "blocked_by": [],
+  "covers": [
+    "GC-01"
+  ],
+  "outcome": "员工提交企业邮箱后，一分钟内收到同时包含登录链接与验证码的中文邮件；服务端只保存令牌摘要，本阶段不建立登录会话。",
+  "acceptance": [
+    {
+      "id": "AC-01",
+      "criterion": "企业邮箱提交后 1 分钟内收到邮件，链接与验证码均存在。",
+      "passed": false
+    },
+    {
+      "id": "AC-02",
+      "criterion": "非企业域名被公开入口拒绝，并向用户说明原因。",
+      "passed": false
+    },
+    {
+      "id": "AC-03",
+      "criterion": "持久化数据只有摘要、签发时间和到期时间，没有明文令牌。",
+      "passed": false
+    },
+    {
+      "id": "AC-04",
+      "criterion": "登录页与邮件文案为中文，不向用户暴露技术术语。",
+      "passed": false
+    }
+  ],
+  "context": {
+    "test_seams": [
+      "登录申请公开入口。",
+      "真实预发收信结果。"
+    ],
+    "code_anchors": [
+      "现有登录页与后端登录入口。",
+      "数据访问层与邮件适配器。"
+    ],
+    "authoritative_inputs": [
+      "agent/plan.json 中 D-01 和令牌安全边界。"
+    ],
+    "write_scope": [
+      "登录申请、令牌持久化和邮件模板。",
+      "不修改会话、强制频控和审计。"
+    ],
+    "stop_conditions": [
+      "必须新增投递渠道或账号体系。",
+      "必须改变公开登录形态。"
+    ]
+  },
+  "owner": null,
+  "blocker": null,
+  "updated": "2026-09-04",
+  "handoff": null
+}

@@ -14,9 +14,9 @@ skills:
 - name: harness-config-sync
   note: 跨宿主收敛 prompts/skills 软链布局(含 agy)
 - name: large-task-orchestrator
-  note: 按计划持续编排大型任务
+  note: 用宿主原生 subagent 持续编排大型任务
 - name: large-task-planning
-  note: 大型任务的 Epic/Story/门禁规划
+  note: 大型任务的人读视图与 Agent JSON 双层规划
 - name: local-test
   note: 本地测试与环境启停安全规范
 - name: mermaid-lint

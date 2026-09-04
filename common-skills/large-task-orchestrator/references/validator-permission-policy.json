@@ -1,5 +1,0 @@
-{
-  "autoApprove": ["read", "search", "execute"],
-  "autoDeny": ["edit", "delete", "move", "fetch", "switch_mode"],
-  "defaultAction": "deny"
-}

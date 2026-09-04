@@ -1,7 +1,7 @@
 interface:
   display_name: "Large Task Planning"
-  short_description: "用 Epic、Story、Agent JSON 和生成的项目进展规划大型工程"
-  default_prompt: "Use $large-task-planning to build an executable Epic and Story delivery plan for this engineering effort."
+  short_description: "把大型目标编译为人读视图与 Agent JSON"
+  default_prompt: "Use $large-task-planning to compile this engineering goal into reader-friendly SPEC/STATUS views and a durable JSON execution plan."
 
 policy:
   allow_implicit_invocation: false

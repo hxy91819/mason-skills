@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -15,9 +14,8 @@ from unittest import mock
 SKILL_DIR = Path(__file__).parents[1]
 SCRIPT = SKILL_DIR / "scripts" / "orchestration_history.py"
 PLANNING_SCRIPT = SKILL_DIR.parent / "large-task-planning" / "scripts" / "epic_story.py"
-FIXTURE_PLAN = SKILL_DIR / "tests" / "fixtures" / "black-box-e2e" / "repository" / "docs" / "plan"
 HISTORY = Path(".local/large-task-orchestrator/run-history.json")
-CARD_REF = "docs/plan/agent/STORY-01-创建并验证问候文件.json"
+STORY_REF = "docs/plan/agent/stories/STORY-01-创建并验证问候文件.json"
 MODULE_SPEC = importlib.util.spec_from_file_location("orchestration_history", SCRIPT)
 assert MODULE_SPEC is not None and MODULE_SPEC.loader is not None
 HISTORY_MODULE = importlib.util.module_from_spec(MODULE_SPEC)
@@ -35,24 +33,99 @@ class OrchestrationHistoryTest(unittest.TestCase):
         self.git("config", "user.email", "history@example.invalid")
         (self.repository / "README.md").write_text("fixture\n", encoding="utf-8")
         plan = self.repository / "docs" / "plan"
-        shutil.copytree(FIXTURE_PLAN, plan)
-        rendered = subprocess.run(
+        stories = plan / "agent" / "stories"
+        stories.mkdir(parents=True)
+        plan_data = {
+            "kind": "large-task-plan",
+            "schema_version": 2,
+            "id": "EPIC-FORWARD",
+            "title": "创建并验证问候文件",
+            "goal_version": 1,
+            "updated": "2026-08-30",
+            "language": "zh-Hans",
+            "spec": {
+                "problem_statement": "仓库还不能提供可验证的问候结果。",
+                "solution": "用户运行公开检查命令即可确认问候文件正确。",
+                "user_stories": [
+                    {
+                        "id": "US-01",
+                        "actor": "使用者",
+                        "want": "运行公开命令验证问候文件",
+                        "benefit": "确认交付结果真实可用",
+                    }
+                ],
+                "boundaries": ["只修改任务范围内文件。"],
+                "decisions": [],
+                "testing": {
+                    "seams": ["公开检查命令的输出和退出码。"],
+                    "strategy": "通过已知输出独立判断结果。",
+                },
+                "out_of_scope": ["不发布额外产物。"],
+            },
+            "golden_acceptance": [
+                {
+                    "id": "GC-01",
+                    "title": "问候输出",
+                    "fixture": ["固定仓库版本。"],
+                    "actions": ["运行公开检查命令。"],
+                    "oracle": ["输出预期问候。"],
+                    "evidence": ["保存命令和退出码。"],
+                }
+            ],
+            "final_story": "STORY-01",
+        }
+        story_data = {
+            "kind": "large-task-story",
+            "schema_version": 2,
+            "id": "STORY-01",
+            "plan": "EPIC-FORWARD",
+            "title": "创建并验证问候文件",
+            "intent_version": 1,
+            "status": "todo",
+            "blocked_by": [],
+            "covers": ["GC-01"],
+            "outcome": "公开检查命令可以验证问候文件。",
+            "acceptance": [
+                {
+                    "id": "AC-01",
+                    "criterion": "问候文件通过公开检查命令。",
+                    "passed": False,
+                }
+            ],
+            "context": {
+                "test_seams": ["公开检查命令。"],
+                "code_anchors": ["README.md"],
+                "authoritative_inputs": [],
+                "write_scope": ["问候文件。"],
+                "stop_conditions": ["公开行为需要改变。"],
+            },
+            "owner": None,
+            "blocker": None,
+            "updated": "2026-08-30",
+            "handoff": None,
+        }
+        (plan / "agent" / "plan.json").write_text(
+            json.dumps(plan_data, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        (self.repository / STORY_REF).write_text(
+            json.dumps(story_data, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        subprocess.run(
             [
                 sys.executable,
                 str(PLANNING_SCRIPT),
                 "render",
-                "--epic",
-                str(plan / "epics" / "EPIC-FORWARD.md"),
+                "--plan",
+                str(plan / "agent" / "plan.json"),
                 "--stories-dir",
-                str(plan / "stories"),
-                "--dashboard",
-                str(plan / "项目进展.md"),
+                str(stories),
             ],
             capture_output=True,
             text=True,
-            check=False,
+            check=True,
         )
-        self.assertEqual(rendered.returncode, 0, rendered.stderr)
         self.git("add", "README.md", "docs")
         self.git("commit", "-m", "test: initialize history fixture")
         exclude = self.repository / ".git" / "info" / "exclude"
@@ -113,51 +186,42 @@ class OrchestrationHistoryTest(unittest.TestCase):
 
     def delivery_args(self) -> tuple[str, ...]:
         return (
-            "--epic",
-            "docs/plan/epics/EPIC-FORWARD.md",
+            "--plan",
+            "docs/plan/agent/plan.json",
             "--stories-dir",
-            "docs/plan/stories",
-            "--overview",
-            "docs/plan/README.md",
-            "--dashboard",
-            "docs/plan/项目进展.md",
+            "docs/plan/agent/stories",
         )
 
     def complete_plan(self) -> None:
-        card_path = self.repository / CARD_REF
-        card = json.loads(card_path.read_text(encoding="utf-8"))
-        card["status"] = "done"
-        card["owner"] = "Orchestrator"
-        card["blocker"] = "无"
-        card["refreshed"] = "2026-08-30"
-        card["code_baseline"] = self.git("rev-parse", "HEAD").stdout.strip()
-        card["checklist"] = [
-            {"done": True, "text": item["text"]} for item in card["checklist"]
-        ]
-        card["verification"] = "GC-01：通过；证据已保存。validator=CONTINUE。"
-        card["handoff"] = "全部验收完成，等待交付。"
-        card_path.write_text(
-            json.dumps(card, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
+        story = self.repository / STORY_REF
+        content = json.loads(story.read_text(encoding="utf-8"))
+        content["status"] = "done"
+        content["owner"] = "orchestrator"
+        content["acceptance"][0]["passed"] = True
+        content["handoff"] = {
+            "summary": "公开检查命令已经验证问候文件。",
+            "verification": ["公开检查命令退出码 0。"],
+            "remaining": [],
+            "risks": [],
+            "next": "计划已完成。",
+        }
+        story.write_text(
+            json.dumps(content, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
-        plan = self.repository / "docs" / "plan"
-        rendered = subprocess.run(
+        subprocess.run(
             [
                 sys.executable,
                 str(PLANNING_SCRIPT),
                 "render",
-                "--epic",
-                str(plan / "epics" / "EPIC-FORWARD.md"),
+                "--plan",
+                str(self.repository / "docs/plan/agent/plan.json"),
                 "--stories-dir",
-                str(plan / "stories"),
-                "--dashboard",
-                str(plan / "项目进展.md"),
+                str(self.repository / "docs/plan/agent/stories"),
             ],
             capture_output=True,
             text=True,
-            check=False,
+            check=True,
         )
-        self.assertEqual(rendered.returncode, 0, rendered.stderr)
 
     def test_start_and_attempt_retries_are_idempotent(self) -> None:
         self.start()
@@ -192,7 +256,7 @@ class OrchestrationHistoryTest(unittest.TestCase):
             "--effort",
             "high",
             "--plan-ref",
-            CARD_REF,
+            STORY_REF,
             "--at",
             "2026-08-30T00:01:00Z",
         )
@@ -257,7 +321,7 @@ class OrchestrationHistoryTest(unittest.TestCase):
                 "--reason",
                 "environment",
                 "--plan-ref",
-                CARD_REF,
+                STORY_REF,
                 "--at",
                 f"2026-08-30T00:{index + 2:02d}:00Z",
             )
@@ -492,7 +556,7 @@ class OrchestrationHistoryTest(unittest.TestCase):
         self.git("add", "docs/plan")
         self.git("commit", "-m", "docs: complete plan")
         self.git("push")
-        evidence = self.repository / "docs" / "plan" / "agent" / "evidence"
+        evidence = self.repository / "docs" / "plan" / "evidence"
         evidence.mkdir()
         (evidence / "untracked.txt").write_text("local evidence\n", encoding="utf-8")
         untracked, _ = self.run_cli(
@@ -519,13 +583,13 @@ class OrchestrationHistoryTest(unittest.TestCase):
         self.start()
         self.complete_plan()
 
-        golden = self.repository / "docs" / "plan" / "agent" / "黄金验收.json"
-        outside = self.root / "outside-golden.json"
-        outside.write_bytes(golden.read_bytes())
-        golden.unlink()
-        golden.symlink_to(outside)
+        story = self.repository / STORY_REF
+        outside = self.root / "outside-story.json"
+        outside.write_bytes(story.read_bytes())
+        story.unlink()
+        story.symlink_to(outside)
         self.git("add", "docs/plan")
-        self.git("commit", "-m", "test: link golden plan outside repository")
+        self.git("commit", "-m", "test: link Story outside repository")
         self.git("push")
         external_link, _ = self.run_cli(
             "finish",
@@ -538,12 +602,12 @@ class OrchestrationHistoryTest(unittest.TestCase):
         )
         self.assertIn("普通非 symlink 文件", external_link.stderr)
 
-        shared = self.repository / "shared-golden.json"
+        shared = self.repository / "shared-story.json"
         shared.write_bytes(outside.read_bytes())
-        golden.unlink()
-        golden.symlink_to(shared)
-        self.git("add", "docs/plan", "shared-golden.json")
-        self.git("commit", "-m", "test: link golden plan inside repository")
+        story.unlink()
+        story.symlink_to(shared)
+        self.git("add", "docs/plan", "shared-story.json")
+        self.git("commit", "-m", "test: link Story inside repository")
         self.git("push")
         internal_link, _ = self.run_cli(
             "finish",
@@ -639,11 +703,11 @@ class OrchestrationHistoryTest(unittest.TestCase):
         self.assertIn("insufficient-data", codes)
         self.assertIn("route-reliability", codes)
         self.assertIn("plan-volatility", codes)
-        self.assertEqual(shown["recovery_order"], ["plan", "history", "notebook"])
+        self.assertEqual(shown["recovery_order"], ["agent-json", "git", "history"])
 
     def test_reserved_capacity_still_allows_abandon_to_close_attempts(self) -> None:
         self.start()
-        for role, suffix in (("worker", "worker-1"), ("validator", "validator-1")):
+        for role, suffix in (("worker", "worker-1"), ("reviewer", "reviewer-1")):
             self.run_cli(
                 "attempt",
                 "start",

@@ -1,239 +1,145 @@
 ---
 name: large-task-orchestrator
-description: Persistently orchestrate an existing large task plan with external worker and validator agents, one Story per session, using a fixed read/search/execute validator permission contract.
+description: 用宿主原生 subagent 持续执行已有大型任务计划，直到完整交付或出现真实 blocker。
 disable-model-invocation: true
 ---
 
 # Large Task Orchestrator
 
-这是流程类 Skill，仅在用户显式调用时运行：Codex、Pi、OpenCode 使用
-`$large-task-orchestrator`，Kimi 使用 `/skill:large-task-orchestrator`。
+这是流程类 Skill，仅在用户显式调用 `$large-task-orchestrator` 时运行。
 
-Use the agent that invoked this Skill as the orchestrator. Run all Story implementation and validation through external agents controlled by ACPX or Herdr.
+当前 Agent 是 orchestrator。使用宿主提供的原生 subagent 能力调度 worker 与 reviewer；具体工具名因
+coding agent 而异。计划、Git 和验证证据承载长期状态，subagent session 可以随时丢弃和替换。
+核心流程不依赖外部代理 CLI、provider 路由表或某个特定 coding agent。
 
-When maintaining the responsibility boundary, state contract, or lifecycle shared with `large-task-planning`, read [the joint core design](../../docs/large-task-system-design.md). Ordinary missions do not load it.
+只接管已存在并通过 sibling `large-task-planning` v2 校验的计划。先读
+[`../large-task-planning/references/plan-format.md`](../large-task-planning/references/plan-format.md)；维护两项
+Skill 的共同边界时再读[联合核心设计](../../docs/large-task-system-design.md)。
 
-## Roles
+## 角色边界
 
-- **Orchestrator:** the current agent. Own plan state, dependency waves, routing, dispatch, handoffs, integration, and user decisions. Stay on the control plane instead of implementing Stories or using Codex collaboration subagents.
-- **Worker:** an external leaf agent. Give each Story a fresh worker session. A session may receive fixes and follow-ups for that Story, and never work on another Story.
-- **Validator:** a separate external leaf agent and session for the same Story. Check completion, report evidence to the orchestrator, and never implement fixes.
+- **Orchestrator（当前 Agent）**：唯一控制面。拥有 Story 状态、计划调整、subagent 调度、结果裁决、
+  Git checkpoint、整合与最终 push。
+- **Worker（fresh subagent）**：一次只实现一张 Story。可在同一 Story 内接收修复 follow-up；不修改
+  计划、不提交、不推送，也不继续派生 subagent。
+- **Reviewer（独立 subagent）**：没有参与该 Story 的实现。只读检查并运行验证命令，不编辑文件、
+  不修改计划。分别报告 Spec 与 Standards 两个轴，不让一个轴掩盖另一个。
 
-Workers and validators do not start other agents, edit the large task plan, or push repository changes.
+默认同时只运行一个会写工作区的 Worker。共享工作区中的并行写入收益通常低于冲突与恢复成本。
+只读调查或互不影响的 Reviewer 可以并行；只有已有隔离 worktree 且计划明确分配 write scope 时，才并行
+多个 Worker。未经用户授权，不创建、切换或清理 branch/worktree。
 
-**Hard gate — validator contract:** Before any validator session is created, resumed, or prompted, load and verify [`references/validator-permission-policy.json`](references/validator-permission-policy.json) and pass `--permission-policy <absolute-skill-dir>/references/validator-permission-policy.json --non-interactive-permissions fail`. The contract auto-approves `read`/`search`/`execute` and denies editing; `execute` is required for validation commands. A validator is not ready with `--approve-reads`, a missing policy, or an unverified read-only sandbox.
+## 启动或恢复
 
-## Drive the mission autonomously
-
-Operate as a persistent goal runner: the default response to uncertainty is to inspect, decide, record, and continue. Resolve worker and validator questions yourself when the choice stays inside the accepted plan, task scope, and existing authority. Choose the lowest-risk reversible option supported by repository evidence, then validate the outcome; do not ask the user to select among equivalent implementation, tooling, routing, or recovery options.
-
-Within the accepted Goal, the orchestrator owns the solution path. It may reorder, split, merge, insert, or rewrite not-yet-started Stories, change routes and implementation tactics, and add work required by new evidence. Record each non-obvious plan choice as an Agent decision with its evidence, trade-off, and impact; increment `intent_version` when a Story's scope or acceptance changes, and keep the original Goal, golden acceptance, and user boundaries unchanged. A validator judges the unchanged acceptance contract, not whether the initial plan was followed.
-
-Treat runtime enablement as an orchestration decision. On startup/resume, reconcile every recorded capability lease before dispatch: restore or quarantine any project/personal elevation whose owner is absent, expired, or not verified closed. When an accepted Story requires ports, containers, network access, filesystem writes, or similar worker capabilities, adjust the selected worker's session to the minimum sufficient capability and continue. Prefer task/session scope. A project-level change is allowed only inside an isolated project scope, with an owner, expiry/checkpoint, serialized access for the elevation window, and restoration plus inheritance verification at Story close, handoff, abort, or restart. If a configured personal profile is the only viable authorized surface, apply the same lease requirements. If any restoration or verification fails, keep the affected chain blocked and do not dispatch unrelated work through the elevated scope. Add a notebook entry only when the change affects future routing or recovery.
-
-Record other non-obvious execution decisions in the authoritative plan field that owns the outcome, normally the execution-card handoff or verification evidence. Use the notebook only for its qualifying recovery events. A decision record is evidence for resumption, not a request for retrospective approval.
-
-Escalate only when no safe in-scope action can make meaningful progress because at least one of these conditions holds:
-
-- Required credentials or authority are unavailable to the orchestrator and cannot be obtained from the configured environment.
-- The next action is destructive, difficult to reverse, materially externally visible or costly, or expands the user's requested scope.
-- The choice changes product intent, acceptance criteria, or an authorized architecture boundary and the plan or repository provides no defensible default.
-- Concurrent edits conflict in the same semantic area and their intended outcome cannot be reconciled from available evidence.
-- Every viable control surface, route, and proportionate recovery for the affected work has been exhausted, or the validation contract requires a user-authorized replan.
-
-Before marking work `blocked`, inspect the exact failure, try the safe applicable recovery paths, and continue every independent ready Story. Block only the affected dependency chain; stop the mission only when no other meaningful plan work can proceed. When escalation is unavoidable, ask one minimum decision question and report the evidence, attempted recoveries, affected Stories, and the action that will resume execution. Do not treat ambiguity, a worker's first failure, a preference between reasonable options, or a sandbox mismatch by itself as a user blocker.
-
-## Use the plan as state
-
-Treat the existing large task plan as the sole source of truth. Preserve its schema and status vocabulary; do not create a parallel ledger or repository sidecar.
-
-When the plan follows the sibling `large-task-planning` contract, read [`../large-task-planning/agent-schema.md`](../large-task-planning/agent-schema.md) and use its `scripts/epic_story.py` commands for every Agent JSON update and dashboard render. Never add unsupported fields or edit `agent/*.json` directly.
-
-Map orchestration phases onto its existing execution-card states:
-
-| Card status | Orchestration meaning |
-| --- | --- |
-| `todo` | Not claimed; readiness comes from dependencies and the generated project status. |
-| `in_progress` | Worker execution, `worker_done`, validation, and `needs_fix` remain active phases. Record the current agent/model/session and phase in existing `owner`, `verification`, and `handoff` fields. |
-| `blocked` | An exhausted environment or authority failure, irreconcilable decision, `INSERT_STORY`, or `REPLAN` prevents the affected dependency chain from continuing safely. |
-| `done` | Worker evidence is complete and the independent validator returned `CONTINUE`. |
-
-Quota exhaustion is an execution-attempt outcome, not a Story state; record the handoff and keep the card `in_progress` while switching workers.
-
-Only the orchestrator changes plan state. Patch and render promptly after dispatch, worker result, validator result, and handoff. On resume, run the plan's status command and reconcile every `in_progress` or `blocked` card against its recorded role/session, actual ACPX or Herdr session, working tree, and evidence before dispatching anything. Never redispatch a non-`todo` Story merely because conversation context was lost.
-
-## Keep one lightweight local notebook
-
-Use `<repository>/.local/large-task-orchestrator/notebook.ndjson` as the default orchestrator notebook. Keep one file per repository and distinguish missions with `run_id`; never create one notebook per Story, worker, or validator. Keep it local and untracked. Before the first write, confirm the exact path is ignored; when necessary, add it to `.git/info/exclude` instead of changing the shared `.gitignore` merely for orchestration.
-
-Create the file only at the first qualifying event. Append one compact JSON object for:
-
-- An unexpected provider, quota, session, tool, or environment failure that changes routing or the next action.
-- A worker handoff, concurrent-edit conflict, or validator result whose context is not fully represented by the execution card.
-- Discovery, promotion, or resolution of a blocker.
-- A checkpoint immediately before context compaction or orchestrator handoff when active work would otherwise be hard to reconstruct.
-
-Do not record routine successful dispatches, ordinary progress messages, full transcripts, diffs, requirements, test logs, or facts already authoritative in the plan. Keep each entry under 1200 UTF-8 bytes with only `time`, `run_id`, `event`, `story`, `session`, up to three short `facts`, `decision`, `next`, and `plan_ref`; omit unused fields and all secrets. Use no more than one checkpoint per Story phase. When a run approaches 30 entries, append one consolidation entry and continue only for new blockers or materially changed recovery actions.
-
-The notebook is recovery evidence, never a status source. If an event changes readiness, dependencies, acceptance, sequence, or user decisions, update the execution card, risk register, or authorized plan first and let the notebook point to that record. On resume, read the plan first, run the rolling-history `show` flow below, then read only notebook entries matching the affected run/event before reconciling actual agent sessions and Git state.
-
-Before dispatch and again before integration, read applicable `AGENTS.md` files and inspect the current branch, `git status --short`, and `git worktree list`. Treat unrelated changes as concurrent work and preserve them.
-
-## Keep one rolling run history
-
-Use `<repository>/.local/large-task-orchestrator/run-history.json` as the single discoverable retrospective cache for this checkout. It is local, Git-ignored evidence for later analysis, not plan state and not a cross-machine audit log. Maintain it only with [`scripts/orchestration_history.py`](scripts/orchestration_history.py); run `--help` for the full command contract.
-
-At mission start, call `start` with a stable `run_id` and repository-relative `plan_ref`. Around every worker or validator turn, call `attempt start` after resolving the actual session/route and `attempt finish` immediately after the fixed worker status or validator conclusion; use the unique session name as `attempt_id` and pass the actual provider session identifier with `--session`. The script owns timestamps, durations, aggregation, idempotence, locking, and rolling retention. Use `event` only for a real plan change, a blocked episode, or a mechanical Git checkpoint. Do not copy prompts, replies, diffs, test logs, or plan rationale into history.
-
-After the final push, call `finish --outcome delivered` with repository-relative `--epic`, `--stories-dir`, `--overview`, and `--dashboard`. The script runs the sibling planning `completion-check`, requires every checked plan input to be a tracked regular non-symlink file with no pending change in the plan directory, rejects active attempts, and proves the real upstream ref equals `HEAD`. A successful push by itself is never a delivered mission. Use `abandoned` only when the mission will not resume. A resumable blocker remains an active run and gets a `blocked` event. If any history command fails, warn with the exact error and continue from the authoritative plan; never change Story state, retry a delivery, overwrite a damaged history file, or fabricate a missing success record merely to make telemetry complete.
-
-On resume or retrospective review, read the plan first, then run `show`, then follow the returned `plan_ref` and recent hotspot signals. Read notebook entries only for the matching exceptional event. Base optimization proposals on explicit numerators, denominators, and plan/Git evidence; route each accepted change to the planning contract, orchestration route/lifecycle, or test harness that owns it.
-
-## Select the control surface
-
-- Prefer ACPX for headless, persistent, structured orchestration. When using it, follow the short path in [references/acpx.md](references/acpx.md): select one candidate, use one bounded ACP handshake as the preflight, create/ensure one session, and dispatch. Read recovery guidance only when recovery is needed.
-- Use Herdr when `HERDR_ENV=1` and visible terminal panes are useful or requested. Read [references/herdr.md](references/herdr.md) before using it.
-- If neither surface is usable, report the missing capability instead of substituting built-in subagents.
-
-## Build execution waves
-
-Derive a dependency DAG from the plan. A Story is claimable only when its dependency cards are `done` and the generated project status marks it ready. Run claimable Stories in parallel only when their write scopes are disjoint or an existing worktree arrangement isolates them. Serialize shared-file, schema-before-consumer, migration, and integration work.
-
-Use existing worktrees when the plan assigns them. Never create, switch, clean, stash, reset, or remove branches or worktrees without explicit user authorization. Choose concurrency from ready work, provider capacity, and collision risk.
-
-## Route external roles
-
-Read [references/orchestration-config.md](references/orchestration-config.md) and run its resolver before each first external dispatch, every orchestrator resume, and every route switch. Treat only that command's merged `config` as routing input. A successful gate has `ok=true` and reports both `sources.user` and `sources.project`, including an `absent` project source; until then, do not create, ensure, or prompt a worker or validator session.
-
-Use the `frontend` worker route for a frontend-dominant Story and the `default` worker route otherwise; use the validator's `default` route for the validation gate. For mixed Stories, classify by the highest-risk portion; split only when the plan preserves independent acceptance and ownership. Walk the selected candidate array lazily. Skip a candidate whose `max_difficulty` sits below the Story's difficulty and record that skip with its reason in the execution-card handoff. Create one fresh session for the first remaining candidate and use its bounded ACP initialize/session handshake as the preflight; advance only when it is unavailable, incompatible, or quota-exhausted. If no candidate remains, block the Story with the exact routing reason instead of inventing a fallback.
-
-Classify the Story's difficulty and select the matching configured effort profile when one exists. A candidate's optional `model_preference` is a recommendation: apply it through the adapter's advertised model config before the first prompt and record the model actually selected. If the provider cannot honor that preference, continue with its supported default; a validator's model identity never invalidates an otherwise valid independent review. Treat legacy `model_contains` on a validator as the same non-blocking preference; reserve strict model gating for a worker capability that genuinely depends on it. Apply the abstract effort through the adapter-specific config option advertised by the handshake (Codex `reasoning_effort`, Pi ACP `thought_level`, or a validated native startup flag); if no such option/value is advertised, use the adapter default without trying aliases. Record the resolved role, route, candidate, model, effort, effort config ID, and both reported configuration sources in the execution-card handoff. For the tested Pi mapping and its `max` limitation in `pi-acp`, read [the Pi effort investigation](references/pi-effort.md).
-
-Resolve the role's permission contract before creating or reusing a session. The ACPX validator contract is fixed in [references/acpx.md](references/acpx.md) and [references/validator-permission-policy.json](references/validator-permission-policy.json); route configuration may choose the provider, but it may not weaken this contract. An adapter that reaches the shell through the ACP `terminal/create` method (for example `codebuddy --acp`) cannot receive `execute` from that policy and needs `--approve-all`; treat such an adapter as a worker-only candidate and keep it out of validator routes. A validator's “read-only” boundary still needs `execute` for `openspec validate`, `git status`, `git diff --check`, and targeted tests. When Herdr is selected, express the same authority boundary through its native read-only sandbox (the JSON policy is ACPX-only). Record the policy path, SHA-256, and effective sandbox evidence in the execution-card handoff.
-
-If the fixed policy is missing, unreadable, or altered, fail closed before creating or prompting a validator session. Never silently fall back to `--approve-reads`, `--approve-all`, or an interactive permission prompt.
-
-## Dispatch a worker
-
-### ACPX golden path
-
-For a normal first dispatch, use this exact sequence after reading the current Story and route. Resolve `<role-permission-flags>` before the first command and reuse the same policy for `sessions new`/`ensure` and the prompt. This placeholder is role-bound, not a free-form guess: a validator always uses the checked-in policy file below; a worker may use only a provider-specific policy justified by independently enforced sandbox evidence. If either contract cannot be proved, fail closed.
+1. 读取适用的 `AGENTS.md`、`SPEC.md`、`STATUS.md`、`agent/plan.json` 与脚本状态；检查当前 branch、
+   `git status --short`、`git worktree list` 和已有提交。保留无关并发改动。
+2. 运行：
 
 ```bash
-acpx --cwd <repo> --timeout <preflight-timeout-seconds> <role-permission-flags> --non-interactive-permissions fail <agent> sessions new --name <role-session>
-acpx --cwd <repo> --timeout <preflight-timeout-seconds> <agent> sessions show <role-session>
-# only when the candidate declares model_preference and the handshake advertises model
-acpx --cwd <repo> <agent> set model <model-preference> -s <role-session>
-# only when the handshake advertises <effort-config-id> and <resolved-effort>
-acpx --cwd <repo> <agent> set <effort-config-id> <resolved-effort> -s <role-session>
-acpx_exit=0
-acpx --cwd <repo> <role-permission-flags> --non-interactive-permissions fail --format json --json-strict <agent> prompt -s <role-session> --file <prompt-path> > <repo>/.local/large-task-orchestrator/<role-session>.ndjson || acpx_exit=$?
-python3 <skill-dir>/scripts/read_acpx_result.py --stream <repo>/.local/large-task-orchestrator/<role-session>.ndjson --expect worker --session <baseline-provider-session-id> --acpx-exit "$acpx_exit"
+python3 <planning-skill>/scripts/epic_story.py check \
+  --plan <topic>/agent/plan.json --stories-dir <topic>/agent/stories
+python3 <planning-skill>/scripts/epic_story.py status \
+  --plan <topic>/agent/plan.json --stories-dir <topic>/agent/stories --json
 ```
 
-Run the model line only when `model_preference` exists and the handshake advertises the `model` option; require `model set: <model-preference>` (or equivalent) before dispatch. A profile may intentionally accept the adapter default; in that case omit the effort line and record `effort=default` plus any observed default. Otherwise run the effort line only when the selected profile resolves an effort and the handshake advertises the selected `<effort-config-id>` and value. Codex uses `reasoning_effort`; Pi ACP uses `thought_level` (not `reasoning_effort`) and the currently advertised values stop at `xhigh`. A candidate that pins a validated native startup flag does not also need an ACP `set` call. Require the matching `config set: <effort-config-id>=<resolved-effort>` confirmation before dispatch. If the option/value is rejected, omit the setting, record `effort=default` and the rejection evidence, and dispatch without probing aliases or synthesizing model IDs.
+3. 对每个 `in_progress` Story，先对照 Story handoff、当前 diff、测试结果和 Git checkpoint。工作仍可用就
+   继续；session 已丢失就把这些事实交给 fresh replacement Worker。不要因为对话压缩而重新领取。
+4. 尽力启动本地 history run。History 是旁路复盘缓存；写入失败只警告，不改变计划状态或交付事实。
 
-A prompt's event stream is NDJSON, so redirect it to that Git-ignored path and read the result with [`scripts/read_acpx_result.py`](scripts/read_acpx_result.py); run `--help` for its contract. Preserve the ACPX process exit code and pass it as `--acpx-exit` when available. Exit code 0 means the turn ended cleanly, the provider session stayed continuous, and the expected role contract validated — including a trusted `blocked`, `failed`, or `quota_exhausted` worker report you route on. Any non-zero ACPX exit makes the stream untrusted even if a conclusion appears; the reader reports `acpx-exit-nonzero` and supplies `failure.classification`, `turn.error`, `permissions`, `tool_calls`, and `warnings` as recovery evidence. For a validator, `failure.classification=permission_policy_mismatch` is a policy-recovery signal, never a validator conclusion or quota result. The reader judges the stream only; inspect the repository separately because output alone cannot prove changes landed.
+## 自主循环
 
-`acpx` has no `preflight` subcommand. `sessions new` is the fresh-session handshake and bootstrap for first dispatch; run it with a bounded timeout, then run `sessions show` immediately and record the provider session identifier, agent, cwd, effective permission flags, and sandbox/capability fingerprint as the baseline before sending any prompt. For a custom `acpx_command`, pass the exact command unchanged to ACPX. Do not append `--help` or `--version` to a long-running ACP stdio adapter: many such adapters treat those tokens as application arguments and wait for ACP stdin instead of exiting, so this is neither a valid capability check nor a safe timeout boundary. A separately documented, terminating native help/version command may be checked only as an optional diagnostic with its own short timeout; it never replaces the ACP handshake. On resume, run `sessions show <role-session>` first and compare all of those fields. Use `sessions ensure` only when the exact session, permission contract, and capability fingerprint are present and resumable; immediately run `sessions show` again and compare before prompting. If the session is missing, closed, mismatched, or changed during ensure, quarantine/reconcile the workspace and create a new attempt with the prior handoff instead of silently replaying under the same attempt. After every strict-JSON prompt, pass the baseline provider session identifier to the reader as `--session`; a `session.continuity` of `mismatch` is a continuity failure. Quarantine and reconcile all workspace side effects from that prompt before any validator or retry, then create a new attempt; do not accept its work. Resolve `<role-permission-flags>` before dispatch: automatic approval (including `--approve-all`) is valid only when the selected provider sandbox independently enforces the Story's repository, command, and network scope, and that evidence is recorded. ACPX permission policies match tools, not reliable file paths, command arguments, or network destinations; they are not a Story boundary. Otherwise choose a route with enforceable isolation or let the worker fail closed under `--non-interactive-permissions fail`; never present a broad tool approval as least-permissive Story isolation. If the handshake advertises no effort option, use the adapter default and dispatch.
+持续执行下面的循环，不在 Story 之间停下来询问是否继续：
 
-For the validator, “read-only” describes its authority, not an absence of command execution: `openspec validate`, `git status`, `git diff --check`, and targeted tests are ACPX `execute` requests. Use the exact policy in [references/validator-permission-policy.json](references/validator-permission-policy.json), including `read`, `search`, and `execute` in `autoApprove`, the edit-related kinds in `autoDeny`, and `defaultAction: deny`; never substitute `--approve-reads`. Apply the policy before `sessions new` or `sessions ensure` and repeat it on every prompt. Automatic `execute` approval requires independently enforced read-only repository/command sandbox evidence; ACPX's tool-kind policy alone cannot provide that boundary.
+1. **选择 frontier。** 从 `status --json` 的 `ready` 中选择最能降低 Goal 风险的 Story；通常取第一项。
+2. **原子领取。** 使用 `transition --expect todo --status in_progress --owner <worker-id>`。若预期状态失败，
+   重新读取计划并协调并发事实。
+3. **派发 fresh Worker。** 用 planning 的 `brief` 命令提取当前 Story、稳定边界、相关黄金案例和直接
+   前置 handoff，再补充仓库规则、当前基线与并发 write scope。要求它先验证现状，在指定公开 seam 上
+   按 red → green 的纵向小循环实现并运行相关测试。不要复制整个会话历史或全部计划。
+4. **核对落盘事实。** Worker 回复不是完成证明。Orchestrator 检查 diff、工作区和命令证据，确认没有
+   越界、丢失并发改动或只修改了报告。
+5. **独立审查。** 派发未参与实现的 Reviewer，并固定本轮基线与 diff。要求分别检查：
+   - `Spec`：Story Outcome/Acceptance 与相关黄金案例是否完整实现，有无漏项、错误或范围蔓延；
+   - `Standards`：适用仓库规则、可维护性和明显 code smell；跳过工具已覆盖的纯格式噪声。
+6. **裁决。** Reviewer 通过则由 orchestrator 运行必要测试；有可操作缺陷则把精确 finding 发回同一
+   Worker 修复，再由 Reviewer 复核。新独立结果用插入 Story 承接；Goal 或用户边界失效才请求用户。
+7. **完成 Story。** 通过 planning 的 `write` 更新 Story JSON：把已证明的 Acceptance 设为 `passed=true`，
+   在 Handoff 中记录可观察结果、命令/证据与 Reviewer 结论、剩余事项、残余风险和下一 Story 输入。
+   随后 `transition --status done`、运行 `check`，并由 orchestrator 创建包含 Story ID 的 Git checkpoint；
+   `SPEC.md` 与 `STATUS.md` 由脚本同步刷新。
+8. **继续。** 重新计算 frontier，直到 `final_story` 完成或没有可推进工作。
 
-Create a fresh worker session whose unique name contains the mission/run, Story ID, `worker`, and attempt number. Never reuse a worker session from a completed Story.
+每次 context compaction 前，先把当前阶段、证据和精确下一步写回 Story Handoff。恢复顺序固定为
+Agent JSON → Git/diff → history；subagent 对话只在仍可访问且确有需要时读取。
 
-Send a self-contained prompt containing:
+## Subagent 报告契约
 
-- Story ID, objective, verified dependencies, and acceptance criteria.
-- Repository path, current branch, owned write scope, and do-not-touch boundaries.
-- Relevant plan context and concurrent changes that must be preserved.
-- Required observable tests or validation commands.
-- Authority boundaries for commits, branches, worktrees, external effects, and destructive actions.
-- Instructions to read applicable `AGENTS.md`, work directly as a leaf executor, leave plan state to the orchestrator, and report blockers without starting other agents.
+不要求 provider 特有 JSON 或事件流。Worker 最终回复应简短包含：
 
-Require the worker's final response to end with this strict JSON block:
-
-```json
-{
-  "story_id": "STORY-ID",
-  "status": "worker_done",
-  "summary": "observable outcome",
-  "files_changed": [],
-  "verification": [{"command": "command", "result": "pass", "evidence": "concise evidence"}],
-  "remaining_work": [],
-  "blocker": null,
-  "handoff": "context needed by a replacement or validator"
-}
+```text
+Result: worker_done | blocked | failed
+Changed: <可观察结果和文件>
+Verified: <命令及结果>
+Remaining: <未完成工作或 none>
+Handoff: <替换 Worker 继续所需上下文>
 ```
 
-`status` is `worker_done`, `blocked`, `failed`, or `quota_exhausted`. When the reader reports `report-missing` or `report-invalid`, ask the same worker session to emit a corrected block. A worker report leaves the execution card `in_progress`; only the validator gate can move it to `done`.
+Reviewer 最终回复保持两个轴，并给出唯一结论：
 
-## Run the lightweight validation gate
+```text
+Spec: pass | <findings>
+Standards: pass | <findings>
+Conclusion: CONTINUE | PATCH | INSERT_STORY | REPLAN
+```
 
-After `worker_done`, create a separate validator session dedicated to that Story using the resolved validator route. Keep the card `in_progress` and record the validator role/session in its existing handoff data. The validator gate is the independent review contract and its observable conclusion; do not reject a review because the provider used a different model than the recommendation.
+格式帮助协调，但事实仍以工作区、测试和计划为准。Reviewer 意外写文件时，不接受其结论；先隔离该
+改动与并发现场，再派发新的只读 Reviewer。
 
-Apply the same model-then-effort sequence from the ACPX golden path to the validator
-session before its first prompt when the profile requests an override. For Pi this
-means `set thought_level` (not `reasoning_effort`); for Codex use `set
-reasoning_effort`. If the profile accepts the adapter default, omit the setting and
-record any observed default. A rejected or unadvertised setting falls back to the
-adapter default with evidence, without alias probing.
+## 计划演化与 blocker
 
-Explicitly invoke the sibling `$story-direction-review` Skill in the validator prompt and follow its fixed output contract. Resolve its `SKILL.md` from this Skill's sibling directory and include that absolute path in the prompt because an external agent's Skill registry may differ from the orchestrator's. Give it the Epic, Story, execution-card handoff, worker evidence, current diff, and remaining Story map. It checks goal direction, acceptance coverage, major omissions, and whether the next Story remains valid. Do not substitute a broad review, `autoreview`, architecture audit, style sweep, or refactor pass unless the plan explicitly requires one.
+Orchestrator 在既定 Goal 和用户边界内拥有实现路径，可以重排、插入、合并或改写未开始的 Story。
+修改 Story 结果或验收时递增 `intent_version`，保留完成证据和既有 ID；插入使用 `STORY-NN.M`。
 
-Grant the validator read/search/execute authority and deny edit/delete/move/fetch/switch_mode authority with the fixed policy in [references/validator-permission-policy.json](references/validator-permission-policy.json). The validator's ACPX flags are exactly `--permission-policy <absolute-skill-dir>/references/validator-permission-policy.json --non-interactive-permissions fail`; apply them on session creation, `sessions ensure`, and every prompt. `--approve-reads` is not a validator policy: it leaves `execute` requests for an interactive prompt and, together with `--non-interactive-permissions fail`, produces `PERMISSION_PROMPT_UNAVAILABLE` (ACPX exit 5) before any conclusion. Automatic `execute` approval is allowed only when the provider sandbox independently enforces the validator's read-only repository and command boundary; otherwise route to an enforceable adapter or fail closed. Read its stream with `--expect validator`; the reader returns the single conclusion in `report.value.conclusion`. Route that conclusion back to the orchestrator:
+只有以下情况询问用户：缺少必要凭据或权限；下一步具有破坏性、难回退、明显外部影响或显著成本；
+选择会改变 Goal、黄金 oracle、公开契约或用户边界；同一语义区域的并发修改无法判断；受影响链的
+安全恢复路径已经耗尽。先继续其他独立 ready Story，只阻塞受影响链。提问时给出证据、已尝试恢复、
+影响范围和一个最小决策。
 
-- `CONTINUE`: reconcile the evidence, patch the card to `done`, render the dashboard, and release newly claimable Stories without repeating a broad review.
-- `PATCH_PROMPT`: keep the card `in_progress`, send the supplied prompt to the same worker session, then reuse the same validator session for another direction check.
-- `INSERT_STORY`: patch affected work to `blocked` and apply the review Skill's insertion and authorization rules before dispatching further dependent work.
-- `REPLAN`: patch affected work to `blocked`, surface the minimum user decision, and resume only after the plan is authorized and rendered.
+普通实现不确定、首次测试失败、subagent 消失或等价技术方案选择都由 orchestrator 解决。最终验收
+失败时保留失败证据：实现缺陷插入修复 Story；fixture/环境错误修复验收环境；Goal 或边界错误才请求
+用户。不得降低黄金判据来获得绿色结果。
 
-## Supervise and recover
+## History 与复盘
 
-Inspect tool state, transcripts, and the working tree before retrying a stalled or failed worker. Treat provider quota, rate-limit, usage-cap, or model-unavailable errors as `quota_exhausted`, distinct from code or test failures:
-
-Treat `PERMISSION_PROMPT_UNAVAILABLE`, `permission prompt unavailable`, or ACPX exit 5 during a validator prompt as `permission_policy_mismatch`, never as a validator conclusion or quota event. Keep the card `in_progress`; inspect the exact session and working tree, confirm the session is idle and no side effect escaped, and compare the dispatched flags with the fixed policy. If the provider's read-only sandbox is independently enforced, use `sessions ensure` (not `sessions new`) for the clean existing session, then resend the unchanged validator prompt once with the fixed policy applied at ensure and prompt, preserving the provider session ID. Record the corrected policy and recovery in the execution card and notebook. If the session identity changed, any workspace side effect exists, or no enforceable read-only sandbox is available, quarantine/reconcile first and create a new attempt or fallback route; do not accept the failed turn.
-If that corrected-policy retry fails again, re-resolve the validator route and create a fresh validator attempt (never a worker session); keep the card `in_progress` until an independent validator conclusion is obtained.
-
-For other worker execution failures (after the validator-policy branch above has been ruled out), use this handoff sequence:
-
-1. Stop assigning new work to that provider for the current wave.
-2. Preserve partial edits and verification evidence.
-3. Record the failed attempt and handoff in the plan.
-4. Create a fresh worker session for the same Story under the next capable agent, with a new attempt number.
-5. Send the original contract, prior result, current diff, completed checks, and precise remaining work.
-
-Do not repurpose failed or exhausted sessions for another Story.
-
-## Integrate waves
-
-After each wave, reconcile the working tree, run proportionate integration checks, checkpoint any validated work that could not be committed safely per Story, and release newly unblocked Stories. If concurrent agents touched the same semantic area despite ownership boundaries, pause that area and resolve only when intent is unambiguous; otherwise ask the user.
-
-## Checkpoint commits and final push
-
-Use Git commits as recoverable execution checkpoints. A phase is complete only when a Story's validator returns `CONTINUE`, the orchestrator reconciles its evidence, updates the card to `done`, renders the dashboard, and runs the Story's required checks. Then the orchestrator commits that Story's authorized changes with its Story ID in the message.
-
-Workers and validators never commit. Do not commit `worker_done`, `PATCH_PROMPT`, quota handoffs, routine notebook checkpoints, failing checks, or an `in_progress` card. Stage only the completed Story's owned files and plan artifacts; preserve unrelated concurrent changes. When parallel Stories or concurrent edits cannot be separated safely at file or hunk level, wait until all affected Stories validate, run the wave checks, and make one wave checkpoint commit listing their Story IDs. Put later cross-Story integration fixes in a separate integration commit after their checks pass. Never rewrite an earlier checkpoint merely to make the history tidier.
-
-Checkpoint commits stay local during execution. After every Story card is `done` and combined integration checks pass, the orchestrator owns the single final push. Do not push a partial mission while a Story is blocked unless the plan explicitly defines that partial delivery or the user accepts it.
-
-1. Recheck the current branch, `git status --short`, `git worktree list`, the complete diff, and commits ahead of the upstream. Confirm the delivery contains only task-authorized changes; preserve unrelated concurrent work and never stage it merely to obtain a clean tree.
-2. If validated task changes remain uncommitted, commit only those changes using the Story, wave, or integration checkpoint rule above. Do not amend or rewrite existing commits unless explicitly authorized.
-3. Push the current branch directly to its configured upstream without asking for another confirmation. If no upstream exists and exactly one suitable remote is unambiguous, set the upstream while pushing the current branch.
-4. Never force-push, push tags, push another branch, bypass hooks, or choose among ambiguous remotes. Treat authentication, protected-branch, non-fast-forward, ambiguous-remote, and inseparable-unrelated-commit failures as blockers instead of expanding scope.
-5. Before the final commit, record the acceptance evidence and intended upstream in the execution card's existing `handoff` or `verification` string. Do not write the later push result back into the tracked plan: that would create a new unvalidated, unpushed HEAD. The history delivery record owns the observed local/remote commit equality. Do not put command-result objects in `verifies`; under the sibling planning schema, `verifies` is only a string array of affected test IDs.
-6. Close history only through the mechanical delivery gate:
+复杂长时运行需要最小可观测性，但不需要第二套状态账本。使用
+[`scripts/orchestration_history.py`](scripts/orchestration_history.py) 维护 Git-ignored 的
+`<repo>/.local/large-task-orchestrator/run-history.json`：
 
 ```bash
-python3 <skill-dir>/scripts/orchestration_history.py --repository <repo> finish \
-  --run-id <run-id> --outcome delivered \
-  --epic <topic/epics/EPIC-ID.md> --stories-dir <topic/stories> \
-  --overview <topic/README.md> --dashboard <topic/项目进展.md>
+python3 <skill-dir>/scripts/orchestration_history.py --repository <repo> start \
+  --run-id <stable-run-id> --plan-ref <topic>
+python3 <skill-dir>/scripts/orchestration_history.py --repository <repo> attempt start \
+  --run-id <run-id> --attempt-id <story-role-attempt> --story <STORY-ID> \
+  --role worker --agent <host-agent> --route host-native \
+  --plan-ref <topic>/agent/stories/<Story.json>
+python3 <skill-dir>/scripts/orchestration_history.py --repository <repo> attempt finish \
+  --run-id <run-id> --attempt-id <story-role-attempt> --outcome worker-done
 ```
 
-Once the card, checks, commit, push, and history delivery gate already satisfy the completion contract, do not create a follow-up commit solely to enrich optional orchestration metadata. Preserve the successful terminal state and report any non-authoritative recovery detail from the local notebook instead.
+Worker 与 Reviewer 每次 turn 各记录一个 attempt；真实 plan change、blocked episode 和 Git checkpoint
+记录 event。只保存 engine/model/耗时/outcome/reason/stable id 等最小事实，不保存 prompt、回复、diff、
+测试日志或密钥。`show` 提供带分母的聚合复盘；记录失败只告警并继续权威流程。
 
-Claim successful completion only when every Story card is `done`, combined integration checks pass, the intended repository changes are pushed, the plan records worker and validator sessions, evidence, quota handoffs and remaining risks, and the history delivery gate records local/remote commit equality. Otherwise report the mission as blocked or partially delivered with its exact reason.
+## 收口与交付
 
-## Regression-test orchestration changes
+完成 `final_story` 前，在同一 acceptance commit 上运行全部黄金案例和跨 Story 整合检查。然后：
 
-When maintaining this Skill, its ACPX lifecycle assumptions, or its route configuration, read [the maintainer black-box regression reference](references/maintainer-testing.md). Do not run the live harness during an ordinary Story mission.
+1. 运行 `completion-check`，确认全部 Story、验收勾选、依赖与黄金覆盖收口。
+2. 检查完整 diff、branch、`git status --short`、`git worktree list` 与待推送提交，只提交授权范围。
+3. 推送当前目标分支到明确 upstream；不 force-push、不绕过 hook、不猜测歧义 remote。
+4. 查询真实 upstream，确认其 commit 等于本地交付 HEAD。
+5. 尽力执行 history `finish --outcome delivered --plan <topic>/agent/plan.json \
+   --stories-dir <topic>/agent/stories`。
+
+只有计划完成门禁、整合测试、授权提交和远端 HEAD 都成立时报告完成。History 写入失败作为遥测告警
+报告，但不推翻已经由 Plan、测试和 Git 证明的交付。

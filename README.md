@@ -46,9 +46,12 @@ common-skills/
 │   └── SKILL.md
 ├── large-task-planning/
 │   ├── SKILL.md
-│   ├── agent-schema.md
 │   ├── agents/
-│   ├── examples/
+│   ├── references/
+│   └── scripts/
+├── large-task-orchestrator/
+│   ├── SKILL.md
+│   ├── agents/
 │   └── scripts/
 ├── mermaid-lint/
 │   ├── SKILL.md
@@ -99,6 +102,7 @@ Agents that discover user-scoped skills from `~/.agents/skills` can link individ
 
 ```bash
 ln -s /path/to/mason-skills/common-skills/large-task-planning ~/.agents/skills/large-task-planning
+ln -s /path/to/mason-skills/common-skills/large-task-orchestrator ~/.agents/skills/large-task-orchestrator
 ln -s /path/to/mason-skills/common-skills/story-direction-review ~/.agents/skills/story-direction-review
 ln -s /path/to/mason-skills/common-skills/worktree-cleanup ~/.agents/skills/worktree-cleanup
 ```
@@ -111,7 +115,8 @@ ln -s /path/to/mason-skills/common-skills/worktree-cleanup ~/.agents/skills/work
 | [article-polish](common-skills/article-polish/) | Article polishing with quick / normal / refined modes. Derivative work based on [baoyu-translate](https://github.com/JimLiu/baoyu-skills/tree/main/skills/baoyu-translate). |
 | [article-workflow](common-skills/article-workflow/) | A phased article optimization workflow with 13 skills — from brief generation through final publication. See [workflow README](common-skills/article-workflow/README.md) for phase order and usage. |
 | [distill](common-skills/distill/) | Reviews one session or a bounded periodic cross-session window for evidence-backed harness and project-knowledge improvements, explicitly auditing repository Skills and AGENTS.md instructions for design and usability problems. |
-| [large-task-planning](common-skills/large-task-planning/) | Builds an executable Epic/Story portal: human Markdown intent, script-owned Agent JSON, and a generated status dashboard. Explicit invocation only. |
+| [large-task-planning](common-skills/large-task-planning/) | Compiles a large engineering goal into reader-friendly SPEC/STATUS views and a JSON execution plan. Explicit invocation only. |
+| [large-task-orchestrator](common-skills/large-task-orchestrator/) | Uses host-native worker and reviewer subagents to execute a plan until delivery or a genuine blocker. Explicit invocation only. |
 | [mermaid-lint](common-skills/mermaid-lint/) | Validates and fixes mermaid diagrams in markdown. Renders every block against the real mermaid renderer and reports all failures in one pass. Original skill design. |
 | [open-source-contribution](common-skills/open-source-contribution/) | Open-source contribution hygiene: identity verification, privacy scanning, Git history cleanup, installer hardening, autoreview, and safe push/PR validation. |
 | [secure-release](common-skills/secure-release/) | Integrates fail-closed release pipelines using a versioned CI kit; npm is the first implemented adapter. |
@@ -176,18 +181,17 @@ it is useful.
 
 ### large-task-planning
 
-Creates a compact project portal for engineering work that continues across sessions or
-agents. Humans read Markdown epics and stories; agents keep structured JSON state that
-scripts alone may write. The skill validates dependencies and coverage ownership,
-requires user-visible confirmation for decisions that change product or release shape,
-supports inserted IDs such as `STORY-03.1`, and generates the status dashboard from JSON.
-It is manually invoked so ordinary tasks stay lightweight.
+Compiles engineering work that exceeds one context into two audience-specific layers.
+`SPEC.md` and `STATUS.md` help people understand the intended outcome and judge progress;
+`agent/plan.json` and `agent/stories/*.json` are the validated source of truth for intent,
+state, dependencies, context, and handoff. The Markdown views are generated around human
+questions instead of mirroring internal Story fields.
 
-The token-login prompt and runner live in
-[`common-skills/large-task-planning/examples/token-login/`](common-skills/large-task-planning/examples/token-login/).
-The planning Skill and its execution counterpart, `large-task-orchestrator`, share a
-[core system design](docs/large-task-system-design.md).
-The latest generated portal is [`docs/largeplan-example/`](docs/largeplan-example/).
+Its execution counterpart, `large-task-orchestrator`, drives fresh host-native worker
+subagents and independent two-axis reviewers, with one writer by default. Plan files and
+Git checkpoints make subagent sessions disposable and long-running work recoverable. The
+two Skills share a [core system design](docs/large-task-system-design.md), and the v2
+token-login example is [`docs/largeplan-example/`](docs/largeplan-example/).
 
 ### mermaid-lint
 
@@ -275,7 +279,10 @@ neither project's code is vendored here.
 
 ### [large-task-planning](common-skills/large-task-planning/)
 
-Original skill design for outcome-sized engineering plans and deterministic Epic/Story status portals.
+Original long-running task system. The v2 design selectively adapts the decision-fog,
+tracer-bullet, observable-test-seam, and separate Standards/Spec review ideas from
+[Matt Pocock's skills](https://github.com/mattpocock/skills) (MIT, Copyright Matt Pocock)
+without vendoring or requiring that package at runtime.
 
 ### [story-direction-review](common-skills/story-direction-review/)
 

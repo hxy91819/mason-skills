@@ -1,0 +1,63 @@
+{
+  "kind": "large-task-story",
+  "schema_version": 2,
+  "id": "STORY-03",
+  "plan": "EPIC-TOKEN-LOGIN",
+  "title": "阻止重放与高频滥用",
+  "intent_version": 1,
+  "status": "todo",
+  "blocked_by": [
+    "STORY-02"
+  ],
+  "covers": [
+    "GC-02"
+  ],
+  "outcome": "令牌使用一次后原子失效，高频申请与连续失败被限制，过期数据可幂等清理且不会持续膨胀。",
+  "acceptance": [
+    {
+      "id": "AC-01",
+      "criterion": "同一令牌第二次使用被拒绝，员工随后仍可重新申请。",
+      "passed": false
+    },
+    {
+      "id": "AC-02",
+      "criterion": "超过邮箱或来源地址频控时，请求被拒绝并显示等待提示。",
+      "passed": false
+    },
+    {
+      "id": "AC-03",
+      "criterion": "连续失败 10 次后锁定 15 分钟，锁定期间不能建立会话。",
+      "passed": false
+    },
+    {
+      "id": "AC-04",
+      "criterion": "清理任务可手工触发且幂等，只删除过期令牌；连续一周后存储体积稳定。",
+      "passed": false
+    }
+  ],
+  "context": {
+    "test_seams": [
+      "登录申请和令牌验证公开入口。",
+      "清理任务公开命令。"
+    ],
+    "code_anchors": [
+      "STORY-02 的验证与会话入口。",
+      "现有任务调度和令牌存储实现。"
+    ],
+    "authoritative_inputs": [
+      "STORY-02 handoff。",
+      "agent/plan.json 中 D-02 的频控参数。"
+    ],
+    "write_scope": [
+      "令牌原子消费、频控、锁定和清理。",
+      "不实现告警和运维查询。"
+    ],
+    "stop_conditions": [
+      "存储后端无法提供原子消费语义，且替代方案会改变部署形态。"
+    ]
+  },
+  "owner": null,
+  "blocker": null,
+  "updated": "2026-09-04",
+  "handoff": null
+}

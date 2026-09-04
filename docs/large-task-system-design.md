@@ -1,83 +1,90 @@
 # 大型任务规划与编排：核心设计
 
-[`large-task-planning`](../common-skills/large-task-planning/SKILL.md) 与
-[`large-task-orchestrator`](../common-skills/large-task-orchestrator/SKILL.md)
-是同一个大型任务系统的两个阶段。前者把目标变成可执行、可恢复的计划；后者把这份计划作为控制面，持续驱动外部 Agent 交付。
+[`large-task-planning`](../common-skills/large-task-planning/SKILL.md) 把大型目标编译成可恢复的计划；
+[`large-task-orchestrator`](../common-skills/large-task-orchestrator/SKILL.md) 使用宿主提供的 subagent 持续执行，
+直到完成交付或遇到真实阻塞。两者共享本页的不变量，字段和命令留在各自 Skill。
 
-本文只维护两者共享的设计理由和不变量。具体文档格式、脚本命令、路由与 session 操作仍由各自 Skill 和
-[`agent-schema.md`](../common-skills/large-task-planning/agent-schema.md) 负责。
+## 两种读者，一份事实
 
-## 一个系统，两种职责
+```text
+<topic>/
+├── SPEC.md                  人：理解目标、体验、取舍和完成证明
+├── STATUS.md                人：判断进展、下一步和是否需要介入
+└── agent/
+    ├── plan.json            Agent：稳定规格、黄金案例和最终收口点
+    └── stories/*.json       Agent：执行状态、依赖、上下文和 handoff
+```
 
-| 角色 | 负责 | 不负责 |
-| --- | --- | --- |
-| Planning | 锁定 Goal、黄金验收和用户边界；设计 Epic/Story、依赖、门禁和状态契约 | 长期调度外部 Agent，或把初版路径冻结成不可修改的承诺 |
-| Orchestrator | 领取既有计划，调度 worker/validator，维护状态、证据、提交和最终交付 | 重新发明 Goal，或绕过计划建立第二套状态账本 |
-| Worker / Validator | 在一个 Story 边界内分别实现和独立验证 | 修改计划状态、跨 Story 调度、提交或推送 |
+JSON 是唯一事实源，由 planning 脚本校验和原子更新。Markdown 也是生成物，但不是 JSON 的逐字段副本：
+生成器按人的阅读任务重新组织事实，隐藏内部 ID、依赖图、代码锚点、owner、session 和命令日志。
 
-Planning 可以独立用于计划交接。Orchestrator 也只从一份已经存在且可领取的计划开始；它不会替代规划阶段。
+`SPEC.md` 帮助首次加入或需要决策的人回答：为什么做、完成后是什么样、对使用者承诺什么、必须守住
+哪些边界、做过哪些关键取舍、怎样证明真的完成，以及大致沿什么结果路线前进。
 
-## 三个核心原则
+`STATUS.md` 帮助正在跟进的人在一分钟内回答：已经得到什么、现在验证什么、下一项结果是什么、后面还
+有什么，以及是否存在需要人工处理的阻塞或残余风险。它不是工单看板，也不机械展开 Agent Story。
 
-### 目标稳定，路径可变
+## 目标稳定，路径可替换
 
-Goal、黄金验收和已确认的产品、发布、运维边界是稳定契约。Epic、Story、顺序、路由和实现方案只是当前证据下的路径。新事实出现时，系统优先调整尚未开始的路径；只有稳定契约本身需要变化时才回到用户决策。
+Problem、最终体验、黄金 oracle 和已确认的产品、兼容、安全、发布、运维边界是稳定契约。Story、依赖、
+顺序、代码路径和实现方案只是当前证据下的执行路线。
 
-因此，计划不是预测未来的静态清单，而是围绕稳定目标持续更新的可执行假设。
+规划先清除会改变终态的决策迷雾，再把清楚的工作拆成纵向 tracer bullet。每张 Agent Story 交付一个
+可观察结果，而不是一个技术层或一串待办。新证据出现后，orchestrator 可以调整尚未开始的路线；只有
+稳定契约本身变化才回到用户决策。因此计划是围绕目标持续更新的假设，不是一次性预测未来的清单。
 
-### 计划是状态协议，不是长提示词
+## Fresh context 是执行边界
 
-人读 Markdown 保存意图和重大取舍；脚本维护的 Agent JSON 保存动态状态、依赖、清单和交接；证据目录与 Git 保存可复核结果。每个事实只有一个权威位置，仪表盘只是生成的投影。
+每张 Story 应由一个 fresh Worker context 完成。`brief` 从 JSON 提取行为结果、公共测试 seam、相关黄金
+案例、稳定边界和直接前置 Handoff；Worker 无需重放历史对话或加载整个计划。
 
-会话可以丢失，计划不能依赖会话记忆。新的执行者应能从一个 Story、其执行卡和直接权威输入恢复工作，而不需要重放历史对话。
+subagent session 不是持久状态，可以在失败、配额耗尽或上下文丢失后替换。恢复顺序固定为 Agent JSON
+→ Git/diff → history。替换 Worker 读取同一执行包和当前工作区继续，不重新发明需求。
 
-### 编排器留在控制面
+## Orchestrator 是唯一控制面
 
-Orchestrator 负责边界、状态和整合，把实现交给 fresh worker session，把方向验证交给独立 validator session。外部 Agent 是叶子执行者，不能再派生 Agent，也不能写计划或交付 Git 状态。
+当前 Agent 使用所在 coding agent 的原生 subagent 接口：
 
-这种分离让实现上下文保持聚焦，也避免“实现者自行宣布完成”。Story 只有在独立验证通过、证据已协调且计划已更新后才进入 `done`。
+- Worker 实现一张 Story；
+- 独立 Reviewer 分开检查 Spec 与 Standards；
+- Orchestrator 裁决证据、更新 JSON、创建 Git checkpoint 并完成最终交付。
+
+默认只有一个 Worker 写共享工作区。只读调查和 Reviewer 可以并行；多个写入 Worker 只有在已经存在
+隔离边界并明确分配 write scope 时才并行。Worker 与 Reviewer 都是叶子，不继续派生 subagent，也不
+拥有计划状态或 Git 交付状态。这套协议不绑定某个 coding agent 或 provider。
 
 ## 端到端闭环
 
-1. Planning 把 Goal 和黄金案例一次写成可领取计划；黄金案例可由 Agent 依据权威资料推导，用户样例优先。
-2. Orchestrator 根据依赖和写入冲突选择一个或一组 ready Story，并记录领取状态。
-3. Worker 在单一 Story session 中实现并给出可观察证据；修复仍留在同一 Story 边界。
-4. 独立 Validator 对不变的验收契约判断继续、补丁、插入 Story 或重规划。
-5. Orchestrator 统一更新计划、运行整合检查，并为已验证结果建立 Git checkpoint。
-6. 系统根据新证据释放下一批 Story；最终 Story 在同一 acceptance commit 上复验全部黄金案例。
-7. 只有全部 Story、综合门禁和远端交付都成立时，Goal 才完成。
+1. Planning 固定目标、黄金案例和边界，生成 Agent JSON 与两份人读视图，并校验依赖图。
+2. Orchestrator 从 frontier 原子领取一张 Story，再用 `brief` 派发 fresh Worker。
+3. Worker 在公共 seam 上以 red → green 纵向小循环实现并报告证据。
+4. 独立 Reviewer 对同一 diff 分别检查 Spec 和 Standards；修复留在同一 Story。
+5. Orchestrator 核对工作区事实，更新验收与 Handoff，刷新人读视图并提交 checkpoint。
+6. 新证据触发最小计划调整，然后继续下一项可执行结果，不在 Story 之间等待人工确认。
+7. `final_story` 在同一 acceptance commit 上重跑全部黄金案例和整合检查。
+8. 完成门禁、测试、授权提交与真实远端 HEAD 同时成立后，目标才算完成。
 
-`worker_done` 和 validator 往返是 `in_progress` 内的执行阶段，不扩展计划的状态词表。Story 完成也不等于整个 Goal 完成。
+`worker_done` 和 Reviewer 往返都属于 `in_progress`，不增加更多状态。
 
-## 权限与失败模型
+## 权限、阻塞与恢复
 
-用户拥有 Goal、黄金判据以及产品、发布和运维形态。Agent 在这些边界内拥有可逆的技术选择、计划调整和恢复动作，并把非显然决定写回权威计划。
+用户拥有稳定目标和边界；orchestrator 在其中拥有可逆技术选择、计划调整和恢复动作。只阻塞耗尽安全
+恢复路径的依赖链，并继续其他 ready 工作。一次 subagent、session 或 provider 故障是 attempt 结果，
+不是 Story 失败；保留已有 diff 与证据后派发 replacement Worker。
 
-失败应尽量局部化：一次模型配额、provider 或 session 故障属于执行 attempt，不等于 Story 失败；只阻塞耗尽恢复路径的依赖链，其他 ready 工作继续。重试必须保留已有工作和证据，并以新的 attempt 恢复同一个 Story，而不是静默换 Story 或降低验收标准。
+需要新凭据或权限、破坏性或明显外部动作、显著成本、稳定契约变化，或无法协调的同区域并发修改时，
+才请求用户作一个最小决定。不得以降低黄金判据作为恢复手段。
 
-本地 notebook 只补充计划尚未覆盖的稀有恢复事实。它不是状态源，也不能成为平行项目日志。
+## 最小可观测性
 
-## 运行历史与复盘
+权威状态已经在 Agent JSON 与 Git 中，运行历史只用于复盘调度质量。checkout-local 的
+`.local/large-task-orchestrator/run-history.json` 保存稳定 attempt ID、角色、agent/model、耗时、outcome、
+固定 reason、计划变化和 checkpoint；不保存 prompt、回复、diff、日志或密钥。
 
-三个载体回答不同问题：Plan 说明目标和当前权威状态；`<repository>/.local/large-task-orchestrator/run-history.json` 说明同一 checkout 最近怎样运行；notebook 只解释异常恢复上下文。恢复和复盘都按 Plan → history → notebook 的顺序读取，冲突时以 Plan、Git 和验收证据为准。
-
-History 由 orchestrator 的确定性脚本维护，只保存 attempt 结果、固定原因码、计划变化、checkpoint 和 Git 交付事实，不保存完整对话、diff、测试日志或计划理由。它最多保留一个 active run、十二个 terminal run 和每 run 最近三十个事件；更老事件进入 run 指标，更老 run 进入固定维度 rollup，避免随任务数量无限增长。
-
-这是同一持久 checkout 的本地复盘缓存，不是跨 clone、跨机器或永久审计。记录失败只产生告警，不改变计划状态或已经证明的交付。复盘 Agent 先运行 `orchestration_history.py show`，再按 `plan_ref` 和近期热点回查权威证据：高 attempt 数检查 Story 拆分和 route；validator 返工检查验收与 worker 输入；反复 plan change 检查应前移的假设验证；blocked episode 检查 readiness、权限和环境预检。确认后的改进写回真正拥有规则的 Skill、配置或测试，不写入 history 充当新状态。
-
-## 完成边界
-
-系统同时满足以下条件才报告完成：
-
-- 所有执行卡均为 `done`，依赖、仪表盘和证据一致；
-- 最终黄金验收在固定 acceptance commit 上全部通过；
-- 跨 Story 整合检查通过，未授权或并发修改未混入交付；
-- 经过验证的提交已到达目标远端，剩余风险和交接可追溯。
-
-普通计划校验允许未完成的工作继续存在，因此不能作为交付证明。收口必须使用 Planning 的完成门禁确认全部 Story、最终黄金案例证据和最新仪表盘，再由 Orchestrator 的交付门禁确认这些计划输入已提交、没有待提交变化且当前 HEAD 与真实 upstream 一致。任一条件失败时，运行历史不得写成 `delivered`。
+历史脚本提供滚动保留、固定维度 rollup、幂等写入和带分母的 review hooks。History 写入失败只告警，
+不改变 Story 状态，也不推翻由计划、测试和 Git 证明的交付。
 
 ## 维护边界
 
-计划产物、schema、readiness 和黄金验收语义由 `large-task-planning` 维护；路由、session 连续性、worker/validator 生命周期、恢复和交付由 `large-task-orchestrator` 维护。跨两者的理由与不变量在本文维护一次，操作细节留在所属 Skill。
-
-修改任一侧时，先判断变化属于单方机制还是共享契约。共享契约变化先更新本文，再在真正负责强制执行的一侧更新规则或测试，避免复制同一规范。
+计划格式、依赖、readiness、黄金验收和人读投影由 Planning 维护；subagent 生命周期、独立 review、恢复、
+checkpoint 和最终交付由 Orchestrator 维护。共享理由只在本文保留一次。

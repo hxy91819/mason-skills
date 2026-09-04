@@ -1,0 +1,65 @@
+{
+  "kind": "large-task-story",
+  "schema_version": 2,
+  "id": "STORY-02",
+  "plan": "EPIC-TOKEN-LOGIN",
+  "title": "让链接和验证码安全建立现有会话",
+  "intent_version": 1,
+  "status": "todo",
+  "blocked_by": [
+    "STORY-01"
+  ],
+  "covers": [
+    "GC-01",
+    "GC-02"
+  ],
+  "outcome": "员工通过邮件链接或验证码登录并沿用现有会话；过期、错误或被篡改的请求不会建立会话，并提示重新申请。",
+  "acceptance": [
+    {
+      "id": "AC-01",
+      "criterion": "有效令牌首次使用时登录成功，现有会话在 12 小时有效期内保持。",
+      "passed": false
+    },
+    {
+      "id": "AC-02",
+      "criterion": "过期令牌、错误验证码和被篡改链接均失败，且没有残留会话。",
+      "passed": false
+    },
+    {
+      "id": "AC-03",
+      "criterion": "登录后页面显示当前员工邮箱，退出登录仍可用。",
+      "passed": false
+    },
+    {
+      "id": "AC-04",
+      "criterion": "共享密码入口保持可用，直到最终灰度阶段执行下线。",
+      "passed": false
+    }
+  ],
+  "context": {
+    "test_seams": [
+      "链接落地页与验证码提交入口。",
+      "现有会话的身份展示和退出行为。"
+    ],
+    "code_anchors": [
+      "现有会话创建、身份展示和退出入口。",
+      "STORY-01 实现的令牌摘要与邮件契约。"
+    ],
+    "authoritative_inputs": [
+      "STORY-01 handoff。",
+      "agent/plan.json 中会话与身份边界。"
+    ],
+    "write_scope": [
+      "摘要校验、到期校验、链接/验证码交互和会话建立。",
+      "不实现频控、清理和审计。"
+    ],
+    "stop_conditions": [
+      "现有会话不能以企业邮箱表达身份。",
+      "实现必须新增账号体系。"
+    ]
+  },
+  "owner": null,
+  "blocker": null,
+  "updated": "2026-09-04",
+  "handoff": null
+}

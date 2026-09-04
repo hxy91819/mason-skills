@@ -1,0 +1,68 @@
+{
+  "kind": "large-task-story",
+  "schema_version": 2,
+  "id": "STORY-05",
+  "plan": "EPIC-TOKEN-LOGIN",
+  "title": "用真实场景验收并安全切换登录入口",
+  "intent_version": 1,
+  "status": "todo",
+  "blocked_by": [
+    "STORY-03",
+    "STORY-04"
+  ],
+  "covers": [
+    "GC-01",
+    "GC-02",
+    "GC-03"
+  ],
+  "outcome": "同一 acceptance commit 在预发通过全部真实场景，随后向行政团队灰度一天并切为默认入口；共享密码对用户隐藏，但 30 天内仍可在一次发布中恢复。",
+  "acceptance": [
+    {
+      "id": "AC-01",
+      "criterion": "在同一 acceptance commit 上一次性通过三个黄金案例并保存证据。",
+      "passed": false
+    },
+    {
+      "id": "AC-02",
+      "criterion": "行政团队灰度一天无高危告警或回退需求，邮件投递成功率至少 99.5%，登录成功率至少 99%。",
+      "passed": false
+    },
+    {
+      "id": "AC-03",
+      "criterion": "全量后共享密码入口对用户不可见。",
+      "passed": false
+    },
+    {
+      "id": "AC-04",
+      "criterion": "回退演练证明共享密码可在一次发布内恢复，且演练副作用已清理。",
+      "passed": false
+    }
+  ],
+  "context": {
+    "test_seams": [
+      "三个黄金案例的完整用户路径。",
+      "生产观测入口和真实回退路径。"
+    ],
+    "code_anchors": [
+      "发布配置、共享密码入口开关和 evidence/。",
+      "STORY-03 与 STORY-04 的最终 handoff。"
+    ],
+    "authoritative_inputs": [
+      "agent/plan.json 的全部黄金案例与灰度阈值。",
+      "STORY-03 和 STORY-04 handoff。"
+    ],
+    "write_scope": [
+      "验收证据、发布配置、灰度与回退演练。",
+      "本阶段不开发新的产品能力。"
+    ],
+    "stop_conditions": [
+      "黄金 oracle 失效。",
+      "指标低于阈值或出现高危告警。",
+      "回退开关不能在一次发布中生效。"
+    ]
+  },
+  "owner": null,
+  "blocker": null,
+  "updated": "2026-09-04",
+  "handoff": null
+}

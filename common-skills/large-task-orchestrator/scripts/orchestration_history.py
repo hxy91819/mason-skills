@@ -9,7 +9,7 @@
 每 run 最近 30 个事件，旧 run 只汇入固定维度 rollup。退出码 0=成功，1=历史/Git 事实错误，
 2=参数错误。脚本不保存 prompt、回复、diff、自由文本错误或 remote URL。
 关键设计：完整读改写持有 flock，stable key 重试幂等，同目录 fsync+replace 原子落盘；
-`delivered` 先验证计划完成且计划目录已提交，再用真实 `git ls-remote` 证明当前 HEAD 已到 upstream。损坏文件原样保留并 fail closed。
+`delivered` 先验证 v2 计划完成且计划目录已提交，再用真实 `git ls-remote` 证明当前 HEAD 已到 upstream。损坏文件原样保留并 fail closed。
 """
 
 from __future__ import annotations
@@ -46,9 +46,10 @@ TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+/@:^~-]{0,127}$")
 STORY_RE = re.compile(r"^STORY-[0-9]+(?:\.[0-9]+)?$")
 HEX_RE = re.compile(r"^[0-9a-f]{7,64}$")
 
-ROLES = ("worker", "validator")
+# `validator` remains readable for existing local history; new runs use `reviewer`.
+ROLES = ("worker", "reviewer", "validator")
 WORKER_OUTCOMES = ("worker-done", "blocked", "failed", "quota-exhausted")
-VALIDATOR_OUTCOMES = (
+REVIEW_OUTCOMES = (
     "continue",
     "patch-prompt",
     "insert-story",
@@ -57,7 +58,7 @@ VALIDATOR_OUTCOMES = (
     "failed",
     "quota-exhausted",
 )
-ATTEMPT_OUTCOMES = tuple(dict.fromkeys((*WORKER_OUTCOMES, *VALIDATOR_OUTCOMES)))
+ATTEMPT_OUTCOMES = tuple(dict.fromkeys((*WORKER_OUTCOMES, *REVIEW_OUTCOMES)))
 REASON_CODES = (
     "none",
     "quota",
@@ -97,8 +98,8 @@ def usage() -> str:
 
 说明:
   在 {HISTORY_RELATIVE.as_posix()} 维护同一 checkout 的复盘缓存。Plan 决定当前工作；
-  history 只解释近期运行模式；notebook 补充异常恢复上下文。文件缺失或记录失败不得改变
-  Story 状态或交付结论。该文件被 Git ignore，不提供跨 clone、跨机器或永久审计保证。
+  history 只解释近期运行模式。文件缺失或记录失败不得改变 Story 状态或交付结论。
+  该文件被 Git ignore，不提供跨 clone、跨机器或永久审计保证。
 
 滚动规则:
   最多 1 个 active run、{MAX_TERMINAL_RUNS} 个 terminal run；每 run 保留最近
@@ -106,7 +107,7 @@ def usage() -> str:
 
 命令:
   start             创建或幂等恢复 active run，并自动采集 Git baseline。
-  attempt start     用稳定 attempt ID 记录 worker/validator 尝试开始。
+  attempt start     用稳定 attempt ID 记录 worker/reviewer 尝试开始。
   attempt finish    自动计算 duration，并记录固定 outcome/reason。
   event             记录 plan-change、blocked 或机械 checkpoint。
   finish            结束为 delivered 或 abandoned；delivered 会校验计划并查询真实远端。
@@ -122,15 +123,14 @@ def usage() -> str:
     --run-id mission-20260830 --plan-ref docs/plan
   python3 {SCRIPT_PATH.name} --repository . attempt start \\
     --run-id mission-20260830 --attempt-id STORY-01-worker-1 \\
-    --story STORY-01 --role worker --agent pi --route default \\
-    --model glm-5.3-flash --effort high --session <provider-session-id> \\
-    --plan-ref docs/plan/agent/STORY-01.json
+    --story STORY-01 --role worker --agent native --route host-native \\
+    --model default --effort high --session <subagent-id> \\
+    --plan-ref docs/plan/agent/stories/STORY-01-example.json
   python3 {SCRIPT_PATH.name} --repository . attempt finish \\
     --run-id mission-20260830 --attempt-id STORY-01-worker-1 --outcome worker-done
   python3 {SCRIPT_PATH.name} --repository . finish \\
     --run-id mission-20260830 --outcome delivered \\
-    --epic docs/plan/epics/EPIC-ID.md --stories-dir docs/plan/stories \\
-    --overview docs/plan/README.md --dashboard docs/plan/项目进展.md
+    --plan docs/plan/agent/plan.json --stories-dir docs/plan/agent/stories
   python3 {SCRIPT_PATH.name} --repository . show
 """
 
@@ -149,7 +149,7 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--plan-ref", required=True)
     start.add_argument("--at", help="带时区 ISO-8601 时间；默认当前 UTC")
 
-    attempt = commands.add_parser("attempt", help="记录一个外部 Agent attempt")
+    attempt = commands.add_parser("attempt", help="记录一个 subagent attempt")
     attempt_commands = attempt.add_subparsers(dest="attempt_command", required=True)
     attempt_start = attempt_commands.add_parser("start", help="开始 attempt")
     attempt_start.add_argument("--run-id", required=True)
@@ -186,10 +186,8 @@ def build_parser() -> argparse.ArgumentParser:
     finish.add_argument("--outcome", required=True, choices=TERMINAL_OUTCOMES)
     finish.add_argument("--reason", default="none", choices=REASON_CODES)
     finish.add_argument("--plan-ref")
-    finish.add_argument("--epic", help="delivered 必填：repository 内 Epic 相对路径")
-    finish.add_argument("--stories-dir", help="delivered 必填：repository 内 Story 目录相对路径")
-    finish.add_argument("--overview", help="delivered 必填：repository 内项目入口相对路径")
-    finish.add_argument("--dashboard", help="delivered 必填：repository 内项目进展相对路径")
+    finish.add_argument("--plan", help="delivered 必填：repository 内 v2 agent/plan.json 相对路径")
+    finish.add_argument("--stories-dir", help="delivered 必填：同一 agent/ 下的 stories/ 相对路径")
     finish.add_argument("--at", help="带时区 ISO-8601 时间；默认当前 UTC")
 
     show = commands.add_parser("show", help="输出聚合历史与复盘关注点")
@@ -385,7 +383,7 @@ def _plan_completion_gate(
     run: dict[str, Any],
     args: argparse.Namespace,
 ) -> dict[str, Any]:
-    option_names = ("epic", "stories_dir", "overview", "dashboard")
+    option_names = ("plan", "stories_dir")
     missing = [f"--{name.replace('_', '-')}" for name in option_names if not getattr(args, name)]
     if missing:
         raise HistoryError(f"delivered 需要计划完成门禁参数: {', '.join(missing)}")
@@ -397,21 +395,18 @@ def _plan_completion_gate(
         for name in option_names
     }
     paths = {name: (repository / value).resolve() for name, value in relative.items()}
-    epic = paths["epic"]
+    plan = paths["plan"]
     stories = paths["stories_dir"]
-    overview = paths["overview"]
-    dashboard = paths["dashboard"]
-    if not epic.is_file() or epic.parent.name != "epics":
-        raise HistoryError("--epic 必须是计划根目录 epics/ 下的普通文件")
+    if not plan.is_file() or plan.name != "plan.json" or plan.parent.name != "agent":
+        raise HistoryError("--plan 必须指向 <topic>/agent/plan.json")
     if not stories.is_dir() or stories.name != "stories":
-        raise HistoryError("--stories-dir 必须是计划根目录下的 stories/ 目录")
-    if not overview.is_file() or not dashboard.is_file():
-        raise HistoryError("--overview 和 --dashboard 必须是计划根目录下的普通文件")
-    plan_root = epic.parent.parent
-    if any(path.parent != plan_root for path in (stories, overview, dashboard)):
-        raise HistoryError("Epic、Story、项目入口和 dashboard 必须属于同一个计划根目录")
+        raise HistoryError("--stories-dir 必须指向 <topic>/agent/stories/")
+    agent_root = plan.parent
+    if stories.parent != agent_root:
+        raise HistoryError("plan.json 与 stories/ 必须属于同一个 agent/ 目录")
+    plan_root = agent_root.parent
     run_plan_ref = (repository / run["plan_ref"]).resolve()
-    if run_plan_ref != plan_root and not run_plan_ref.is_relative_to(plan_root):
+    if run_plan_ref not in {plan_root, plan} and not run_plan_ref.is_relative_to(plan_root):
         raise HistoryError("delivered 计划根目录与 run.plan_ref 不一致")
 
     validated_head = _git_local_facts(repository)["head"]
@@ -421,14 +416,10 @@ def _plan_completion_gate(
                 sys.executable,
                 str(PLANNING_SCRIPT),
                 "completion-check",
-                "--epic",
-                relative["epic"],
+                "--plan",
+                relative["plan"],
                 "--stories-dir",
                 relative["stories_dir"],
-                "--overview",
-                relative["overview"],
-                "--dashboard",
-                relative["dashboard"],
             ],
             cwd=repository,
             capture_output=True,
@@ -442,12 +433,8 @@ def _plan_completion_gate(
         detail = (checked.stderr.strip() or checked.stdout.strip() or "无诊断输出")[:2000]
         raise HistoryError(f"计划完成门禁失败: {detail}")
 
-    agent_dir = plan_root / "agent"
-    if agent_dir.is_symlink() or not agent_dir.is_dir():
-        raise HistoryError("计划 agent/ 必须是本地普通目录，不能是 symlink")
-    critical_paths = [epic, overview, dashboard]
-    critical_paths.extend(sorted(stories.glob("Story-*.md")))
-    critical_paths.extend(sorted(agent_dir.glob("*.json")))
+    critical_paths = [plan, plan_root / "SPEC.md", plan_root / "STATUS.md"]
+    critical_paths.extend(sorted(stories.glob("*.json")))
     unsafe_inputs = [
         path
         for path in critical_paths
@@ -865,7 +852,7 @@ def _validate_recent_event(value: Any, label: str) -> None:
         if not is_nonnegative_int(value["duration_seconds"]):
             raise HistoryError(f"{label}.duration_seconds 非法")
         role = value["role"]
-        allowed = WORKER_OUTCOMES if role == "worker" else VALIDATOR_OUTCOMES
+        allowed = WORKER_OUTCOMES if role == "worker" else REVIEW_OUTCOMES
         if value["outcome"] not in allowed or value["reason"] not in REASON_CODES:
             raise HistoryError(f"{label} outcome/reason 非法")
         return
@@ -1158,7 +1145,7 @@ def _finish_attempt(
     run: dict[str, Any], attempt: dict[str, Any], outcome: str, reason: str, at: str
 ) -> dict[str, Any]:
     role = attempt["role"]
-    allowed = WORKER_OUTCOMES if role == "worker" else VALIDATOR_OUTCOMES
+    allowed = WORKER_OUTCOMES if role == "worker" else REVIEW_OUTCOMES
     if outcome not in allowed:
         raise HistoryError(f"{role} attempt 不允许 outcome={outcome}")
     if outcome not in SUCCESS_ATTEMPT_OUTCOMES and reason == "none":
@@ -1412,7 +1399,7 @@ def _review_focus(combined: dict[str, Any]) -> list[dict[str, Any]]:
                 "numerator": abandoned,
                 "denominator": max(terminal, 1),
                 "window": "lifetime",
-                "question": "对照 plan_ref 与 notebook，区分目标变化、权限和环境导致的放弃。",
+                "question": "对照 plan_ref 与 Git 证据，区分目标变化、权限和环境导致的放弃。",
             }
         )
     route_failures = sum(
@@ -1426,19 +1413,22 @@ def _review_focus(combined: dict[str, Any]) -> list[dict[str, Any]]:
                 "numerator": route_failures,
                 "denominator": max(totals["attempts"], 1),
                 "window": "lifetime",
-                "question": "比较近期 agent/route 与失败原因，检查候选顺序和 profile 预检。",
+                "question": "比较近期 subagent 与失败原因，检查派发边界和恢复策略。",
             }
         )
-    validator_rework = sum(
+    reviewer_rework = sum(
         totals["by_outcome"].get(outcome, 0)
         for outcome in ("patch-prompt", "insert-story", "replan")
     )
-    if validator_rework:
+    if reviewer_rework:
+        review_attempts = sum(
+            totals["by_role"].get(role, 0) for role in ("reviewer", "validator")
+        )
         focus.append(
             {
-                "code": "validator-rework",
-                "numerator": validator_rework,
-                "denominator": max(totals["by_role"].get("validator", 0), 1),
+                "code": "reviewer-rework",
+                "numerator": reviewer_rework,
+                "denominator": max(review_attempts, 1),
                 "window": "lifetime",
                 "question": "回看对应 Story 验收和 worker prompt，判断是拆分、计划输入还是实现偏差。",
             }
@@ -1478,7 +1468,7 @@ def command_show(repository: Path, args: argparse.Namespace) -> dict[str, Any]:
                 path,
                 scope=history["scope"],
                 run=run,
-                recovery_order=["plan", "history", "notebook"],
+                recovery_order=["agent-json", "git", "history"],
             )
         combined = _combined_counts(history)
         runs = [
@@ -1504,7 +1494,7 @@ def command_show(repository: Path, args: argparse.Namespace) -> dict[str, Any]:
             path,
             scope=history["scope"],
             retention=history["retention"],
-            recovery_order=["plan", "history", "notebook"],
+            recovery_order=["agent-json", "git", "history"],
             runs=runs,
             aggregate=combined,
             recent_story_hotspots=[

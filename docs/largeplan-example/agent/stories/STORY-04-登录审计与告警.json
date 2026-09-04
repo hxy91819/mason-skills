@@ -1,0 +1,64 @@
+{
+  "kind": "large-task-story",
+  "schema_version": 2,
+  "id": "STORY-04",
+  "plan": "EPIC-TOKEN-LOGIN",
+  "title": "让运维看见并收到异常登录",
+  "intent_version": 1,
+  "status": "todo",
+  "blocked_by": [
+    "STORY-02"
+  ],
+  "covers": [
+    "GC-03"
+  ],
+  "outcome": "签发、成功、失败和锁定事件都可从现有运维入口查询；异常失败模式会通知现有值班渠道。",
+  "acceptance": [
+    {
+      "id": "AC-01",
+      "criterion": "issue、verify_ok、verify_fail、lockout 都记录时间、邮箱、来源地址和结果。",
+      "passed": false
+    },
+    {
+      "id": "AC-02",
+      "criterion": "运维可按邮箱和时间范围查询并导出结果。",
+      "passed": false
+    },
+    {
+      "id": "AC-03",
+      "criterion": "单邮箱短时间大量失败会触发现有值班渠道告警。",
+      "passed": false
+    },
+    {
+      "id": "AC-04",
+      "criterion": "在线记录保留 180 天后可归档清理，且不影响保留期内查询。",
+      "passed": false
+    }
+  ],
+  "context": {
+    "test_seams": [
+      "现有运维查询入口。",
+      "真实预发告警通知。"
+    ],
+    "code_anchors": [
+      "现有审计存储、运维查询页和告警适配器。",
+      "STORY-02 的签发与验证结果。"
+    ],
+    "authoritative_inputs": [
+      "STORY-02 handoff。",
+      "agent/plan.json 中 D-03 的保留期和运维边界。"
+    ],
+    "write_scope": [
+      "四类登录事件、查询/导出和异常告警。",
+      "不扩展到业务文档访问审计。"
+    ],
+    "stop_conditions": [
+      "必须引入新的外部告警平台。",
+      "必须改变现有运维责任。"
+    ]
+  },
+  "owner": null,
+  "blocker": null,
+  "updated": "2026-09-04",
+  "handoff": null
+}
