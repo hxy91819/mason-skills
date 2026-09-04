@@ -25,13 +25,16 @@
 - Cursor Task：从目录中剔除所有 `claude-*` 型号，也不要通过 inherit 落到 Claude。剩余选项：
   `composer-*-fast` / `cursor-grok-*-fast` → economy；`gpt-*-terra-*` → standard；`gpt-*-sol-*` →
   strong。Validator 只从 economy 里选。
-- Codex `spawn_agent`：模型用当前目录里的 terra（如 `gpt-5.6-terra`），保持 fresh context（如
+- Codex `spawn_agent`：默认模型用当前目录里的 terra（如 `gpt-5.6-terra`），保持 fresh context（如
   `fork_turns: none`）。Worker 按能力档设 effort：economy → `high`，standard → `xhigh`，strong →
-  `max`。Validator 固定 terra `medium`，不升档。
+  `max`。只有 **strong**（非常难：跨模块设计、模糊契约、安全/迁移、terra 已因能力失败、或
+  `final_story` 整合）才允许改用 sol（如 `gpt-5.6-sol`），effort 取 `medium`、`high` 或 `xhigh`；
+  不要默认派 sol，也不要用 sol `max`。Validator 固定 terra `medium`，不升档。
 - Claude Code Task：同样按目录相对分档；未暴露模型选择时 `--model default`。Validator 仍选最低
   成本可用型号。
 
 ## 升级证据
 
 只升级 Worker，且只依据可观察实现失败：越界、漏验收、测试假绿。配额、路由或 session 失败换同等档
-的 replacement。Validator 不升档：Codex 固定 terra `medium`，其他宿主固定 economy。
+的 replacement。Codex 上 terra 因能力失败才升到 sol `medium`，仍不够再升 `high` / `xhigh`。Validator
+不升档：Codex 固定 terra `medium`，其他宿主固定 economy。
