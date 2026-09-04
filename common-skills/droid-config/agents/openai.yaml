@@ -1,0 +1,6 @@
+interface:
+  display_name: "Droid 配置"
+  short_description: "安全升级并配置 Droid 模型与 Mission 路由"
+  default_prompt: "使用 $droid-config 调研、配置并验证当前 Droid。"
+policy:
+  allow_implicit_invocation: false
