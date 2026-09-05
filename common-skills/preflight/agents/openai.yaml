@@ -1,0 +1,5 @@
+interface:
+  display_name: "Preflight"
+  short_description: "Check spec readiness: credentials, tools, access"
+policy:
+  allow_implicit_invocation: false
