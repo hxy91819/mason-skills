@@ -1,11 +1,14 @@
 ---
 name: tech-doc-html
-description: Generate vivid, interactive, easy-to-understand single-file HTML visualizations from technical design documents. Use when the user asks to create technical design HTML, architecture diagram HTML, interactive technical docs, or visualize design documents as web pages.
+description: Generate vivid, interactive, easy-to-understand single-file HTML visualizations from technical design documents.
+disable-model-invocation: true
 ---
 
 # Technical Design HTML Visualization
 
 Turn technical design content into vivid, interactive single-file HTML pages that help readers understand system design quickly.
+
+仅在用户显式调用 `$tech-doc-html` 时运行。
 
 ## Core principles
 

@@ -4,4 +4,4 @@ interface:
   default_prompt: "Use $tech-doc-html to turn this technical design document into an interactive HTML page."
 
 policy:
-  allow_implicit_invocation: true
+  allow_implicit_invocation: false

@@ -5,8 +5,6 @@
 # - 其他电脑 clone 本仓库后同步本机：--mode check 预览，--mode apply 执行
 version: 1
 skills:
-- name: ask-oracle
-  note: 决策前的外部专家咨询简报
 - name: autoreview
   note: 提交/发布前的结构化代码审查
 - name: distill
@@ -25,10 +23,6 @@ skills:
   note: 开源贡献与发布卫生规范
 - name: ppt-visual-review
   note: PPT 式 HTML 逐页视觉验收
-- name: skill-authoring-gate
-  note: 创建或修改任何 skill 前的强制门禁
-- name: skill-manifest-sync
-  note: 本清单的本机同步入口
 - name: skill-test
   note: 用原生 subagent 隔离测试 skill 行为
 - name: spec-leak-review
@@ -37,8 +31,6 @@ skills:
   note: Story 完成后的方向独立检查
 - name: submit-pr-mr
   note: 提交 MR/PR 的统一流程
-- name: tech-doc-html
-  note: 技术设计文档转单文件交互 HTML
 - name: use-worktree
   note: 在隔离 worktree 中完成任务
 - name: what-changed
