@@ -1,0 +1,7 @@
+interface:
+  display_name: "Readiness Report"
+  short_description: "对当前仓库做只读 Agent-Readiness 静态审计并输出本地评分报告"
+  default_prompt: "Use $readiness-report to audit this repository's agent readiness and produce a local scored report."
+
+policy:
+  allow_implicit_invocation: false

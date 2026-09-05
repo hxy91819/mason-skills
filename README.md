@@ -118,6 +118,7 @@ python3 common-skills/skill-manifest-sync/scripts/sync_skill_symlinks.py --mode 
 | [large-task-planning](common-skills/large-task-planning/) | Compiles a large engineering goal into reader-friendly SPEC/STATUS views and a JSON execution plan. Explicit invocation only. |
 | [large-task-orchestrator](common-skills/large-task-orchestrator/) | Uses host-native workers and an economy validator (`$story-direction-review`) to execute a plan until delivery or a genuine blocker. Explicit invocation only. |
 | [mermaid-lint](common-skills/mermaid-lint/) | Validates and fixes mermaid diagrams in markdown. Renders every block against the real mermaid renderer and reports all failures in one pass. Original skill design. |
+| [readiness-report](common-skills/readiness-report/) | Read-only Agent-Readiness audit of the current Git repository with a 1–5 level score and a local JSON report. Adapted from Factory Droid's built-in `/readiness-report` with remote reporting removed. Explicit invocation only. |
 | [open-source-contribution](common-skills/open-source-contribution/) | Open-source contribution hygiene: identity verification, privacy scanning, Git history cleanup, installer hardening, autoreview, and safe push/PR validation. |
 | [secure-release](common-skills/secure-release/) | Integrates fail-closed release pipelines using a versioned CI kit; npm is the first implemented adapter. |
 | [story-direction-review](common-skills/story-direction-review/) | Reviews a completed Story for direction drift, invalidated assumptions, coverage gaps, and necessary plan changes. Explicit invocation only. |
@@ -236,6 +237,15 @@ stable source identity, committed changelog notes, an exact artifact set, and
 SHA-256 handoff. Kit v1 implements npm packaging, OIDC publication commands,
 and clean-install registry smoke; PyPI, Cargo, Go/GitHub binaries, and
 containers remain explicit adapter design targets rather than claimed support.
+
+### readiness-report
+
+A read-only Agent-Readiness audit ported from Factory Droid's built-in `/readiness-report`
+slash command, with the remote (Factory cloud) reporting removed. It statically inspects
+the repository against a catalog of 85 signals across 12 categories (style & validation,
+build system, testing, documentation, dev environment, observability, security, delivery,
+code health, task discovery, product & experimentation), scores the repo on a 1–5 level,
+and stores the report locally under the XDG cache — never on any remote endpoint.
 
 ### story-direction-review
 
