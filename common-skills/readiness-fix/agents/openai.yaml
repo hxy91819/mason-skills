@@ -1,0 +1,7 @@
+interface:
+  display_name: "Readiness Fix"
+  short_description: "修复最近一次本地 readiness 报告中失败的信号"
+  default_prompt: "Use $readiness-fix to fix the failing signals from the latest local readiness report."
+
+policy:
+  allow_implicit_invocation: false

@@ -119,6 +119,7 @@ python3 common-skills/skill-manifest-sync/scripts/sync_skill_symlinks.py --mode 
 | [large-task-orchestrator](common-skills/large-task-orchestrator/) | Uses host-native workers and an economy validator (`$story-direction-review`) to execute a plan until delivery or a genuine blocker. Explicit invocation only. |
 | [mermaid-lint](common-skills/mermaid-lint/) | Validates and fixes mermaid diagrams in markdown. Renders every block against the real mermaid renderer and reports all failures in one pass. Original skill design. |
 | [readiness-report](common-skills/readiness-report/) | Read-only Agent-Readiness audit of the current Git repository with a 1–5 level score and a local JSON report. Adapted from Factory Droid's built-in `/readiness-report` with remote reporting removed. Explicit invocation only. |
+| [readiness-fix](common-skills/readiness-fix/) | Fixes failing signals from the latest local readiness report; asks whether to generate a report first when none exists. Adapted from Factory Droid's built-in `/readiness-fix` with remote report access removed. Explicit invocation only. |
 | [open-source-contribution](common-skills/open-source-contribution/) | Open-source contribution hygiene: identity verification, privacy scanning, Git history cleanup, installer hardening, autoreview, and safe push/PR validation. |
 | [secure-release](common-skills/secure-release/) | Integrates fail-closed release pipelines using a versioned CI kit; npm is the first implemented adapter. |
 | [story-direction-review](common-skills/story-direction-review/) | Reviews a completed Story for direction drift, invalidated assumptions, coverage gaps, and necessary plan changes. Explicit invocation only. |
@@ -246,6 +247,16 @@ the repository against a catalog of 85 signals across 12 categories (style & val
 build system, testing, documentation, dev environment, observability, security, delivery,
 code health, task discovery, product & experimentation), scores the repo on a 1–5 level,
 and stores the report locally under the XDG cache — never on any remote endpoint.
+
+### readiness-fix
+
+The remediation counterpart ported from Factory Droid's built-in `/readiness-fix`, with
+remote report access removed. It reads the latest **local** readiness report (from
+`readiness-report`), lists the failing signals, and fixes them one at a time: named
+signals are matched by criterion ID, name, or meaning and fixed in sequence; otherwise
+the user picks a category, then a single signal. With no local report it asks whether to
+generate one first or fix directly. Ships `scripts/pick_failing.py` to extract the
+failing signals from the local report (no network access anywhere).
 
 ### story-direction-review
 
