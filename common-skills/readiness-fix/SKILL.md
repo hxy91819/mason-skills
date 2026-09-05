@@ -7,91 +7,159 @@ disable-model-invocation: true
 # Readiness Fix
 
 这是流程类 Skill，默认仅在用户显式调用 `$readiness-fix` 时运行。移植自 Factory Droid 内置
-`/readiness-fix`，删除了向 Factory 云端读取/上报报告的部分：报告一律读
-`$readiness-report` 的**本地**存储，修复过程不调用任何远端 API。
+`/readiness-fix`；与原版的唯一差异是删除了云端报告读取：失败信号一律读
+`$readiness-report` 的**本地**存储，不调用任何远端 API。
 
-你是 Readiness 修复执行者。Agent Readiness 评估代码库对自治 agent 的友好程度；本 skill 的工作
-是把其中**失败的信号**逐个修到通过。这是会修改被审仓库的流程类操作，修复前必须让用户选定目标。
+正文为原版提示词原文（三个分支模板已实例化），评估与修复语义以本文为准。
 
-## 0. 数据来源与前提
+**Local report source:** the latest run in
+`${XDG_CACHE_HOME:-~/.cache}/readiness-report/<repo-slug>/history.json` plus its
+`reports/<run-id>.json`. Use [`scripts/pick_failing.py`](scripts/pick_failing.py) to list
+the failing signals (id, name, current score, category) — it reads local files only.
+Wherever the branches below say "the failing signals listed above", that list is the
+output of `pick_failing.py` (the original inlined a Report Summary and Failing Signals
+block from the cloud report; see 本地运行差异 at the end).
 
-- 失败信号来自**最近一次本地报告**：
-  `${XDG_CACHE_HOME:-~/.cache}/readiness-report/<repo-slug>/history.json` 的 `latest` 记录，
-  完整逐信号结果在 `reports/` 下对应 `<run-id>.json`。
-- 用 [`scripts/pick_failing.py`](scripts/pick_failing.py) 读取本地报告并输出失败信号清单
-  （ID、名称、当前分数、类别）。**不发任何网络请求。**
-- 无本地报告 → 走第 3 节的"无报告"分支。
-- 全部信号通过 → 输出"All readiness signals are passing for this repository. No fixes needed."，
-  结束。
+---
 
-## 1. 有报告：确定修复目标
+The following block is the original i2I text the binary appends to every branch:
 
-### 情形 A — 用户指定了信号
+## Fix Instructions
 
-用户点名要修的信号（如 `$readiness-fix lint_config`、"修一下测试那几项"）先做**语义匹配**：
+For each signal you are fixing:
 
-- 按 criterion ID 匹配（如 `lint_config`）、按名称匹配（如 "Linter Configuration"）、按语义匹配
-  （如"圈复杂度那条"匹配 `cyclomatic_complexity`）。
-- 点名的信号已经通过：注明"已通过"，跳过。
-- 点名内容对不上任何已知信号：注明"未匹配到"，跳过。
+1. Explore the repository to understand the current state related to the signal
+2. Make **substantive improvements** to the codebase that genuinely address the signal
+3. Verify your fix addresses the issue (e.g., run linter if fixing lint_config, run tests if adding tests)
+4. Keep changes focused on the signal - don't refactor unrelated code
 
-匹配出的失败信号**逐个按序修复**，修完一个再修下一个。
+## Completion
 
-### 情形 B — 用户未指定信号
+- Provide a succinct summary of what you changed and why it genuinely improves the codebase
 
-两级选择，都用宿主的用户交互工具（AskUser 或等价物），每问只让用户**单选**——
-不要写"可多选"或"选一个或多个"：
+## CRITICAL: Quality Standards
 
-1. **选类别**：把失败信号按 signals.md 的类别分组，只列出至少有一个失败信号的类别，问
-   "Which category of signals would you like to fix?"
-2. **选信号**：选定类别后，单次交互列出该类别**每个失败信号**作为选项（名称 + 当前分数），
-   用户挑一个。**交互工具单题选项上限 10 个**；类别内失败信号超过 10 个时，只列影响最大/
-   最常见的（至多 10 个），以信号目录为参照。
+Your fix must **genuinely improve the codebase**. Do NOT use workarounds or shortcuts:
 
-用户选定信号后，探索仓库并修复它。
+- **NO** empty placeholder files (e.g., empty test files, stub configs)
+- **NO** minimal implementations that technically pass but provide no real value
+- **NO** disabling checks or adding skip markers to pass validation
+- **NO** trivial changes that game the metric without improving quality
 
-## 2. 修复执行
+Examples of BAD fixes:
 
-对每个目标信号：
+- Adding an empty `test.js` file to satisfy "has tests" criterion
+- Creating a `.eslintrc` that disables all rules
+- Adding `// @ts-nocheck` to satisfy TypeScript requirements
 
-1. 重读该信号在 [../readiness-report/signals.md](../readiness-report/signals.md) 的评估口径，
-   修复标准就是"按该口径重新评估会通过"。
-2. 探索仓库，定位缺口，实施最小、贴合项目习惯的修复。配置类信号（如 linter、formatter）
-   通常落在项目标准配置位置；文档类信号落到 README/AGENTS.md 的对应段落。
-3. 有验证命令的信号（如 `unit_tests_runnable`）修复后必须实际运行命令确认退出码为 0。
-4. 一次只修一个信号；修完汇报该信号的修复内容与验证证据，再进入下一个。
+Examples of GOOD fixes:
 
-边界：
+- Writing actual unit tests with meaningful assertions for existing code
+- Configuring ESLint with appropriate rules for the project's language/framework
+- Adding proper TypeScript types to improve type safety
 
-- 修复必须贴合被审仓库的现有技术栈与约定，不为了过信号而引入仓库不需要的工具或文件。
-- Skippable 信号因外部前提不满足（无权限、无 CLI）而失败时，如实报告"本地无法修复原因"，
-  不伪造通过。
-- 修复不得越权：不动用户的并发未提交改动，不提交/推送，除非用户在本次会话明确要求。
+---
 
-## 3. 无报告分支
+## Branch 1 — Previous report exists, user named signals
 
-本地没有任何报告时，先问用户：
+You are fixing failing Agent Readiness signals. Agent Readiness evaluates how well a repository supports autonomous AI agents working on the codebase.
 
-> No readiness report found for this repository. How would you like to proceed?
+**Repository:** `<the git repository this skill runs in>`
 
-- **"Generate a full report first, then fix failing signals"**：先按 `$readiness-report` 的完整
-  流程生成报告（读 [../readiness-report/SKILL.md](../readiness-report/SKILL.md)），再回到
-  第 1 节继续修复。
-- **"Skip the report and fix signals directly"**：
-  - 用户原本点名了信号：探索仓库，定位与该信号相关的缺口，直接修复。
-  - 未点名信号：把信号目录按类别列出（复用 signals.md），按第 1 节情形 B 的两级选择流程
-    让用户挑类别与信号，然后修复。
+## User Requested Signals
 
-## 4. 收尾
+The user asked to fix: "`<signals named by the user, e.g. 'lint_config' or 'the cyclomatic complexity criteria'>`"
 
-- 逐信号汇报：修复内容、验证命令与结果（证据要可复核——命令与退出码）。
-- 全部目标信号修完后，建议用户重跑 `$readiness-report` 生成新报告对比分数；用户同意时
-  可代跑。修复本身不写历史记录——评分与历史归 `$readiness-report` 拥有。
+## Your Task
 
-## 不变量
+1. Semantically match the user's requested signals ("<as named>") to the failing signals listed above.
+   - Match by criterion ID (e.g., "lint_config"), criterion name (e.g., "Linter Configuration"), or semantic meaning (e.g., "the cyclomatic complexity criteria" matches `cyclomatic_complexity`).
+   - If a requested signal already passes, note that it passes and skip it.
+   - If a requested signal doesn't match any known criterion, note that and skip it.
+2. For each matched failing signal, fix it in sequence.
 
-- 失败信号清单只从**本地**报告或 signals.md 目录读取；不调用任何远端上报/查询 API。
-- 用户没选定目标信号前不开始修复；选择交互保持单选语义。
-- 修复证据可复核：每条修复给出文件位置与（有命令时的）验证命令及退出码。
-- 修复保持最小与贴栈：不引入信号通过以外的仓库变更，不顺手重构。
-- 被审仓库中用户已有的未提交改动一律保留，不搬移、不覆盖。
+The repair standard for each signal is its evaluation contract in
+[../readiness-report/signals.md](../readiness-report/signals.md): the fix is done when
+re-evaluating that criterion by its own rules would pass. Fix one signal at a time; after
+each fix, report what changed and the verification evidence (command and exit code when
+the criterion has one). The Fix Instructions and Quality Standards blocks above are
+part of this contract.
+
+## Branch 2 — Previous report exists, no signals named
+
+You are fixing failing Agent Readiness signals. Agent Readiness evaluates how well a repository supports autonomous AI agents working on the codebase.
+
+**Repository:** `<the git repository this skill runs in>`
+
+## Your Task
+
+**Step 1:** Group the failing signals above by their category. Ask the user which category they want to fix using the AskUser tool. Only show categories that have at least one failing signal.
+
+**Step 2:** Based on the chosen category, present each failing signal in that category as an option in a single AskUser call. Each option is exactly one signal (with its name and current score). The user picks one signal to fix. Do NOT say "select all that apply" or "select one or more".
+
+After the user selects a signal, fix it.
+
+The same repair standard as Branch 1 applies: re-evaluation by the criterion's own contract in signals.md must pass.
+
+## Branch 3 — No previous report found
+
+You are fixing failing Agent Readiness signals. Agent Readiness evaluates how well a repository supports autonomous AI agents working on the codebase.
+
+**Repository:** `<the git repository this skill runs in>`
+
+## Context
+
+No previous readiness report was found for this repository.
+
+## Your Task
+
+**Step 1:** Ask the user using the AskUser tool:
+
+> "No readiness report found for this repository. How would you like to proceed?"
+
+Options:
+
+- "Generate a full report first, then fix failing signals"
+- "Skip the report and fix signals directly"
+
+**If the user chooses to generate a report first:**
+
+Follow the readiness report generation instructions in [../readiness-report/SKILL.md](../readiness-report/SKILL.md) to evaluate the repository and store the report locally. Then:
+
+- If the user originally requested specific signals: semantically match the user's requested signals to the failing signals and fix each matched failing signal.
+- Otherwise: present the failing signals to the user via the AskUser tool for selection, and fix the selected ones.
+
+**If the user chooses to skip the report:**
+
+- If the user originally requested specific signals: explore the repository, identify gaps related to "`<as named>`", and fix them directly.
+- Otherwise:
+  - **Step 2:** Ask the user which category to fix using the AskUser tool:
+    "Which category of signals would you like to fix?"
+    Options: the category names from [../readiness-report/signals.md](../readiness-report/signals.md).
+  - **Step 3:** Present the signals from the chosen category in a single AskUser call with one question. Each option is exactly one signal. The user picks one signal to fix. Do NOT say "select all that apply" or "select one or more" -- the user picks a single signal. IMPORTANT: The AskUser tool has a hard limit of 10 options per question. If the category has more than 10 signals, only include the most impactful/common ones (up to 10). Use the catalog below as reference: the signals grouped by category in signals.md.
+  - After the user selects a signal, explore the repository and fix it.
+
+## All passing
+
+If every signal in the latest report passes, output exactly:
+
+> All readiness signals are passing for this repository. No fixes needed.
+
+## Repair rules
+
+- Fixes fit the audited repository's existing stack and conventions; do not introduce tools or files the repository does not need just to pass a signal.
+- A signal that fails only because an external precondition is unmet (no admin access, no CLI) is reported as unfixable locally with the reason — never faked as passing.
+- Do not touch the user's concurrent uncommitted changes; do not commit or push unless the user explicitly asks in this session.
+- After all targeted signals are fixed, suggest re-running `$readiness-report` to compare scores; scoring and history belong to `$readiness-report`, this skill writes neither.
+
+## 本地运行差异（与原版的不同，均已如实记录）
+
+- 原版从 Factory 云端拉取最近报告；本 skill 只读本地 `readiness-report` 缓存
+  （`pick_failing.py` 或直接读 `history.json` / `reports/*.json`）。
+- 原版每个分支内嵌 Report Summary（Repository/Level/Score）与逐条 Failing Signals
+  清单（来自云端报告）；本地版以 `pick_failing.py` 输出替代，正文 "the failing
+  signals listed above" 指该输出。
+- 原版"无报告"分支内嵌的完整 report 生成指令（云端版），本地替换为引用
+  `../readiness-report/SKILL.md` 的本地存储流程。
+- 原版 Fix Instructions / Completion / Quality Standards 块原样保留（见上方），
+  未做删改。
