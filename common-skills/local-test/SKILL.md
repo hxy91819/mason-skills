@@ -90,26 +90,12 @@ http {
 }
 ```
 
-### 启停收敛脚本参考模式 (`bin/dev`)
+### 启停收敛脚本预设模式 (`bin/dev`)
 
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
+复制 [assets/bin-dev-template.sh](assets/bin-dev-template.sh) 为项目 `bin/dev`，只填脚本头部“项目填空区”（compose 文件、nginx 配置、服务清单三要素），机制函数无需改动。预设契约：
 
-cmd="${1:-start}"
-case "$cmd" in
-  start)
-    # 1. 检查并拉起中间件 (Docker)
-    # 2. 生成本地 htpasswd 与 nginx.conf
-    # 3. 启动后端 (127.0.0.1) 并记录 PID
-    # 4. 启动前端 (127.0.0.1) 并记录 PID
-    # 5. 启动 Nginx (对外端口)
-    ;;
-  stop)
-    # 逐个 kill PID，检查端口释放，保留 MySQL/Docker 数据
-    ;;
-  status)
-    # 打印各进程状态与对外访问入口及账号密码
-    ;;
-esac
-```
+* **接口**：`start`（幂等，本环境已拉起的服务跳过）/ `stop`（逆序收敛）/ `status`（含对外访问入口与账号提示）/ `logs <svc>` / `reset --yes`（清数据卷，仅用户明确要求时使用）。
+* **运行状态收敛**：统一落在 `.local-test/`（`run/*.pid`、`logs/*.log`），`status` 能汇报各服务存活状态与 PID。
+* **端口守卫**：启动前预检；端口被未知进程占用时保守失败（退出码 2）不抢端口——可能是其他 Agent 或遗留进程的现场。
+* **停止收敛**：SIGTERM 超时转 SIGKILL，并校验端口释放；compose 用 `stop` 不用 `down`，默认保留数据卷。
+* 偏离模板时保持同等契约；脚本头部注释沿用 script-writing-standard 的契约结构（定义/参数/输出/示例）。
