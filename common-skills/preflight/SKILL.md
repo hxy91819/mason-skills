@@ -4,7 +4,7 @@ description: "Verify before implementation starts that a spec or task instructio
 disable-model-invocation: true
 ---
 
-开工前核查：spec 或当前指令所依赖的凭据、权限、工具和外部环境是否真正可用。目标：让后续执行任务的 worker 能长时间无人值守运行——凡是会让它跑到一半停下来等用户确认的障碍（缺权限、缺工具、缺 token）都在开工前移除或预先授权，而不是开工后撞上。在 to-spec 之后、implement 之前跑最合适。上下文已有 spec 就核查 spec，否则以当前指令为目标；两者都构不成完整目标时，先请用户补充，不做臆测。
+开工前核查：spec 或当前指令所依赖的凭据、权限、工具和外部环境是否真正可用。目标：让后续执行任务的 worker 能长时间无人值守运行——worker 往往用较弱的模型，遇到障碍和歧义无法自行解决，所以凡是会让它跑到一半停下来等用户确认的障碍（缺权限、缺工具、缺 token）都在开工前移除或预先授权，而不是开工后撞上。在 to-spec 之后、implement 之前跑最合适。上下文已有 spec 就核查 spec，否则以当前指令为目标；两者都构不成完整目标时，先请用户补充，不做臆测。
 
 ## 流程
 
