@@ -100,7 +100,7 @@ Skills are plain markdown. You can adapt the instructions for other AI coding to
 
 Agents that discover user-scoped skills from `~/.agents/skills` can link individual skills.
 
-> **Note**: Only 16 core engineering and governance skills are recommended for global user scope. See [docs/recommended-global-skills.md](docs/recommended-global-skills.md) and [`config/skill-symlinks.yaml`](config/skill-symlinks.yaml) for the full list, rationale, and one-command sync instructions.
+> **Note**: Only 19 core engineering and governance skills are recommended for global user scope. See [docs/recommended-global-skills.md](docs/recommended-global-skills.md) and [`config/skill-symlinks.yaml`](config/skill-symlinks.yaml) for the full list, rationale, and one-command sync instructions.
 
 ```bash
 # Sync recommended user-scope skills automatically:

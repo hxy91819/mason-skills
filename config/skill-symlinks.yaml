@@ -23,6 +23,12 @@ skills:
   note: 开源贡献与发布卫生规范
 - name: ppt-visual-review
   note: PPT 式 HTML 逐页视觉验收
+- name: preflight
+  note: 开工前凭据/权限/依赖轻量探针核查
+- name: readiness-fix
+  note: 根据本地 readiness 报告修复失败信号
+- name: readiness-report
+  note: 只读静态代码库 Agent-Readiness 审计与打分报告
 - name: skill-test
   note: 用原生 subagent 隔离测试 skill 行为
 - name: spec-leak-review

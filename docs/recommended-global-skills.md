@@ -25,9 +25,9 @@
 
 ---
 
-## 二、推荐全局技能清单（共 16 个）
+## 二、推荐全局技能清单（共 19 个）
 
-当前清单经严格审计，仅包含以下 16 个核心工程与治理技能：
+当前清单经严格审计，仅包含以下 19 个核心工程与治理技能：
 
 | 序号 | 技能名称 | 用途说明 | 默认触发机制 |
 |:---:|---|---|---|
@@ -40,13 +40,16 @@
 | 7 | `mermaid-lint` | Markdown 中 Mermaid 图表的渲染级批量校验与自动修复 | 显式调用 (`$mermaid-lint`) |
 | 8 | `open-source-contribution` | 开源贡献与发布前的合规与代码卫生审计 | 允许隐式触发 |
 | 9 | `ppt-visual-review` | PPT / 单页视觉效果逐页验收 | 显式调用 (`$ppt-visual-review`) |
-| 10 | `skill-test` | 隔离测试与验证 Skill 自身行为规范 | 显式调用 (`$skill-test`) |
-| 11 | `spec-leak-review` | 界面/对外文本中的 Spec / Prompt 泄漏审查 | 显式调用 (`$spec-leak-review`) |
-| 12 | `story-direction-review` | Story 完成后的方向偏差与未决假设独立复核 | 显式调用 (`$story-direction-review`) |
-| 13 | `submit-pr-mr` | 提交 PR / MR 的标准前置检查与推送流程 | 显式调用 (`$submit-pr-mr`) |
-| 14 | `use-worktree` | 在隔离的 Git worktree 中安全开展并发任务 | 显式调用 (`$use-worktree`) |
-| 15 | `what-changed` | 用平实人读语言说明变更内容 | 显式调用 (`$what-changed`) |
-| 16 | `worktree-cleanup` | 审计并安全清理已完成使命的 Git worktree | 显式调用 (`$worktree-cleanup`) |
+| 10 | `preflight` | 开工前凭据、权限、工具与外部依赖轻量探针核查 | 显式调用 (`$preflight`) |
+| 11 | `readiness-fix` | 根据本地 readiness 报告修复失败的信号项 | 显式调用 (`$readiness-fix`) |
+| 12 | `readiness-report` | 对当前代码库做只读静态 Agent-Readiness 审计并输出本地打分报告 | 显式调用 (`$readiness-report`) |
+| 13 | `skill-test` | 隔离测试与验证 Skill 自身行为规范 | 显式调用 (`$skill-test`) |
+| 14 | `spec-leak-review` | 界面/对外文本中的 Spec / Prompt 泄漏审查 | 显式调用 (`$spec-leak-review`) |
+| 15 | `story-direction-review` | Story 完成后的方向偏差与未决假设独立复核 | 显式调用 (`$story-direction-review`) |
+| 16 | `submit-pr-mr` | 提交 PR / MR 的标准前置检查与推送流程 | 显式调用 (`$submit-pr-mr`) |
+| 17 | `use-worktree` | 在隔离的 Git worktree 中安全开展并发任务 | 显式调用 (`$use-worktree`) |
+| 18 | `what-changed` | 用平实人读语言说明变更内容 | 显式调用 (`$what-changed`) |
+| 19 | `worktree-cleanup` | 审计并安全清理已完成使命的 Git worktree | 显式调用 (`$worktree-cleanup`) |
 
 ---
 
@@ -56,7 +59,7 @@
 ```bash
 python3 common-skills/skill-manifest-sync/scripts/sync_skill_symlinks.py --mode check
 ```
-- 若完全收敛，退出码为 `0` 并报告 `summary: ok=16`。
+- 若完全收敛，退出码为 `0` 并报告 `summary: ok=19`。
 - 若存在漂移或多余/缺失软链，会明确列出漂移项并返回非零退出码。
 
 ### 2. 执行收敛同步
