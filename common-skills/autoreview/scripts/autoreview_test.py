@@ -983,5 +983,133 @@ class AutoreviewCodexCooldownTests(unittest.TestCase):
             self.assertEqual([reviewer.engine for reviewer in reviewers], ["codex"])
 
 
+class AutoreviewSubagentEngineTests(unittest.TestCase):
+    def test_panel_rejects_subagent_reviewer(self) -> None:
+        args = AUTOREVIEW.reviewer_test_args(engine="subagent", panel=True)
+        with self.assertRaises(SystemExit) as error:
+            AUTOREVIEW.reviewer_args(args)
+        self.assertIn("subagent engine cannot join a panel", str(error.exception))
+
+    def test_reviewers_list_rejects_subagent(self) -> None:
+        args = AUTOREVIEW.reviewer_test_args(engine="codex", reviewers="codex,subagent")
+        with self.assertRaises(SystemExit) as error:
+            AUTOREVIEW.reviewer_args(args)
+        self.assertIn("subagent engine cannot join a panel", str(error.exception))
+
+    def test_reviewers_all_excludes_subagent(self) -> None:
+        args = AUTOREVIEW.reviewer_test_args(engine="codex", reviewers="all")
+        engines = [reviewer.engine for reviewer in AUTOREVIEW.reviewer_args(args)]
+        self.assertNotIn("subagent", engines)
+
+    def test_subagent_model_is_a_free_form_history_label(self) -> None:
+        args = AUTOREVIEW.reviewer_test_args(engine="subagent", model=["subagent=claude-fable-5-1"])
+        reviewer = AUTOREVIEW.reviewer_args(args)[0]
+        self.assertEqual(reviewer.model, "claude-fable-5-1")
+        self.assertIsNone(reviewer.thinking)
+
+    def test_subagent_rejects_thinking_level(self) -> None:
+        args = AUTOREVIEW.reviewer_test_args(engine="subagent", thinking=["high"])
+        with self.assertRaises(SystemExit) as error:
+            AUTOREVIEW.reviewer_args(args)
+        self.assertIn("invalid thinking level for subagent", str(error.exception))
+
+    def test_subagent_rejects_fallback_model(self) -> None:
+        args = AUTOREVIEW.reviewer_test_args(
+            engine="subagent", fallback_model=["subagent=other"]
+        )
+        with self.assertRaises(SystemExit) as error:
+            AUTOREVIEW.reviewer_args(args)
+        self.assertIn("--fallback-model is only supported", str(error.exception))
+
+    def test_default_engine_is_not_marked_explicit(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("AUTOREVIEW_ENGINE", None)
+            with mock.patch.object(sys, "argv", ["autoreview"]):
+                args = AUTOREVIEW.parse_args()
+        self.assertEqual(args.engine, "codex")
+        self.assertFalse(args.engine_explicit)
+
+    def test_cli_and_env_engines_are_marked_explicit(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("AUTOREVIEW_ENGINE", None)
+            with mock.patch.object(sys, "argv", ["autoreview", "--engine", "codex"]):
+                cli_args = AUTOREVIEW.parse_args()
+        with mock.patch.dict(os.environ, {"AUTOREVIEW_ENGINE": "claude"}):
+            with mock.patch.object(sys, "argv", ["autoreview"]):
+                env_args = AUTOREVIEW.parse_args()
+        self.assertTrue(cli_args.engine_explicit)
+        self.assertTrue(env_args.engine_explicit)
+        self.assertEqual(env_args.engine, "claude")
+
+    def test_resume_run_forces_the_subagent_engine(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("AUTOREVIEW_ENGINE", None)
+            with mock.patch.object(sys, "argv", ["autoreview", "--resume-run", "run-1"]):
+                args = AUTOREVIEW.parse_args()
+        self.assertEqual(args.engine, "subagent")
+
+    def test_resume_run_rejects_a_conflicting_engine(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("AUTOREVIEW_ENGINE", None)
+            with mock.patch.object(
+                sys, "argv", ["autoreview", "--engine", "codex", "--resume-run", "run-1"]
+            ):
+                with self.assertRaises(SystemExit) as error:
+                    AUTOREVIEW.parse_args()
+        self.assertIn("--resume-run requires --engine subagent", str(error.exception))
+
+    def test_result_without_resume_run_is_rejected(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("AUTOREVIEW_ENGINE", None)
+            with mock.patch.object(sys, "argv", ["autoreview", "--result", "a.json"]):
+                with self.assertRaises(SystemExit) as error:
+                    AUTOREVIEW.parse_args()
+        self.assertIn("--result requires --resume-run", str(error.exception))
+
+    def test_history_summary_flags_non_independent_subagent_runs(self) -> None:
+        history = {
+            "version": 1,
+            "rollup": {},
+            "runs": [
+                {
+                    "run_id": "run-1",
+                    "label": "subagent model=host",
+                    "engine": "subagent",
+                    "model": "host",
+                    "thinking": None,
+                    "outcome": "clean",
+                    "findings": [],
+                    "dispositions": [],
+                    "duration_seconds": 1.0,
+                }
+            ],
+        }
+        summary = AUTOREVIEW.history_summary_text(history, 10)
+        self.assertIn("note: subagent runs are non-independent reviews", summary)
+
+    def test_history_summary_omits_the_note_without_subagent_runs(self) -> None:
+        history = {
+            "version": 1,
+            "rollup": {},
+            "runs": [
+                {
+                    "run_id": "run-1",
+                    "label": "codex",
+                    "engine": "codex",
+                    "model": "gpt-5.6-sol",
+                    "thinking": "high",
+                    "outcome": "clean",
+                    "findings": [],
+                    "dispositions": [],
+                    "duration_seconds": 1.0,
+                }
+            ],
+        }
+        self.assertNotIn(
+            "non-independent",
+            AUTOREVIEW.history_summary_text(history, 10),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

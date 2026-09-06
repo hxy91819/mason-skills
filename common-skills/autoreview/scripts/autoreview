@@ -30,10 +30,28 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, NamedTuple
 
 
-ENGINES = ("codex", "claude", "droid", "copilot", "pi", "opencode", "cursor")
+ENGINES = (
+    "codex",
+    "claude",
+    "droid",
+    "copilot",
+    "pi",
+    "opencode",
+    "cursor",
+    "subagent",
+)
 ENGINE_ALIASES = {"cursor-agent": "cursor"}
 ENGINE_CHOICES = (*ENGINES, *ENGINE_ALIASES)
+# "subagent" stays out of --reviewers all: it reuses the host agent, so it is
+# never a second opinion and must not silently pad a panel.
 ALL_REVIEWERS = ("codex", "claude", "pi")
+# Phase 1 of the subagent handoff finishes without a report; a distinct exit
+# code lets the host agent tell "results awaited" from clean/dirty reviews.
+EXIT_AWAITING_EXTERNAL_RESULT = 3
+SUBAGENT_INDEPENDENCE_NOTE = (
+    "reviewer independence: none (subagent shares the author model/context)"
+)
+MAX_SUBAGENT_RESULT_BYTES = 1_000_000
 # Access-only fallback chains: claude passes --fallback-model to its CLI; pi
 # retries once in-helper when the provider/model is unavailable.
 FALLBACK_SUPPORTED_ENGINES = {"claude", "pi"}
@@ -818,6 +836,7 @@ THINKING_LEVELS_BY_ENGINE = {
     "pi": {"off", "minimal", "low", "medium", "high", "xhigh", "max"},
     "opencode": {"minimal", "low", "medium", "high", "max"},
     "cursor": set(),
+    "subagent": set(),
 }
 CLAUDE_SAFE_MODE_MIN_VERSION = (2, 1, 169)
 CLAUDE_FABLE_MIN_VERSION = (2, 1, 170)
@@ -12240,7 +12259,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mode", choices=["auto", "local", "uncommitted", "branch", "commit"], default="auto")
     parser.add_argument("--base")
     parser.add_argument("--commit", default="HEAD")
-    parser.add_argument("--engine", choices=ENGINE_CHOICES, default=os.environ.get("AUTOREVIEW_ENGINE", "codex"))
+    parser.add_argument(
+        "--engine",
+        choices=ENGINE_CHOICES,
+        default=None,
+        help="Review engine. Env default: AUTOREVIEW_ENGINE. Built-in default: codex.",
+    )
     parser.add_argument("--reviewers", help="Comma-separated review panel, e.g. codex,claude,pi or codex:gpt-5.6-sol:high.")
     parser.add_argument("--panel", action="store_true", help="Run a Codex/Claude review panel unless --engine changes the first reviewer.")
     parser.add_argument(
@@ -12337,6 +12361,22 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--require-finding", action="append", default=[], help="Require finding text to contain this substring.")
     parser.add_argument("--expect-findings", action="store_true", help="Treat findings as success; for harness acceptance tests.")
+    parser.add_argument(
+        "--resume-run",
+        help="Finish a subagent handoff run id using --result files; forces --engine subagent.",
+    )
+    parser.add_argument(
+        "--result",
+        action="append",
+        default=[],
+        help="Subagent review JSON result file, one per handoff prompt, in order. Repeatable.",
+    )
+    parser.add_argument(
+        "--no-engine-fallback",
+        action="store_true",
+        default=env_truthy("AUTOREVIEW_NO_ENGINE_FALLBACK"),
+        help="Fail instead of falling back to the subagent engine when the default CLI is missing.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--self-test-config-defaults", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--self-test-fallback-scope", action="store_true", help=argparse.SUPPRESS)
@@ -12364,9 +12404,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--self-test-json-array-parser", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--self-test-heartbeat-metrics", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
-    args.engine = normalize_engine(args.engine)
+    env_engine = os.environ.get("AUTOREVIEW_ENGINE")
+    args.engine_explicit = args.engine is not None or env_engine is not None
+    args.engine = normalize_engine(
+        args.engine if args.engine is not None else (env_engine if env_engine is not None else "codex")
+    )
     if args.cursor_allow_workspace_instructions is None:
         args.cursor_allow_workspace_instructions = env_truthy("AUTOREVIEW_CURSOR_ALLOW_WORKSPACE_INSTRUCTIONS")
+    if args.resume_run is not None:
+        if args.engine_explicit and args.engine != "subagent":
+            raise SystemExit("--resume-run requires --engine subagent")
+        # A resume call carries its scope in the handoff state, so the engine is
+        # implied and --mode/--base/--commit are ignored.
+        args.engine = "subagent"
+        args.engine_explicit = True
+    elif args.result:
+        raise SystemExit("--result requires --resume-run")
     if args.engine not in ENGINES:
         raise SystemExit(f"invalid --engine/AUTOREVIEW_ENGINE: {args.engine}")
     return args
@@ -12387,6 +12440,10 @@ def run_engine(args: argparse.Namespace, repo: Path, prompt: str) -> str:
         return run_opencode(args, repo, prompt)
     if args.engine == "cursor":
         return run_cursor(args, repo, prompt)
+    if args.engine == "subagent":
+        raise SystemExit(
+            "subagent engine runs no review subprocess; use the handoff and --resume-run"
+        )
     raise SystemExit(f"unsupported engine: {args.engine}")
 
 
@@ -12472,6 +12529,11 @@ def reviewer_args(args: argparse.Namespace) -> list[argparse.Namespace]:
         reviewers = [(engine, None, None) for engine in engines]
     else:
         reviewers = [(args.engine, None, None)]
+
+    if any(engine == "subagent" for engine, _, _ in reviewers) and (
+        len(reviewers) > 1 or args.reviewers or args.panel
+    ):
+        raise SystemExit("subagent engine cannot join a panel; run it alone")
 
     selected_engines = {engine for engine, _, _ in reviewers}
     fallback_engines = set(fallback_by_engine) | set(env_fallback_by_engine)
@@ -12580,7 +12642,8 @@ def run_reviewer(
                 report = extract_json(raw)
                 validate_report(report, repo, changed_paths, required)
                 filter_findings_by_priority(report, args.max_priority)
-                annotate_finding_ids(report)
+                # Ids are attached once by the caller after any panel/chunk
+                # merge, because validate_report rejects them as unexpected keys.
                 return report
             except SystemExit as exc:
                 if attempt >= attempts or not is_structured_output_failure(str(exc)):
@@ -13529,6 +13592,8 @@ def history_summary_text(history: dict[str, Any], last: int) -> str:
             f"{bucket['accepted']:>8} {bucket['rejected']:>8} {rate:>11} "
             f"{avg:>5.0f} {bucket['fallback_triggered']:>7}"
         )
+    if any(key.startswith("subagent|") for key in buckets):
+        lines.append("note: subagent runs are non-independent reviews")
     recent = history["runs"][-last:]
     if recent:
         lines.append("")
@@ -13550,6 +13615,317 @@ def history_summary_text(history: dict[str, Any], last: int) -> str:
         if bucket["runs"] >= 3 and bucket["fallback_triggered"] / bucket["runs"] >= 0.3:
             lines.append(f"  - {key}: fallback triggered in {bucket['fallback_triggered']}/{bucket['runs']} runs; check primary availability")
     return "\n".join(lines)
+
+
+def helper_script_path() -> str:
+    try:
+        return str(Path(__file__).resolve())
+    except NameError:  # pragma: no cover - only when the module lacks __file__
+        return str(Path(sys.argv[0]).resolve())
+
+
+def subagent_handoff_dir(repo: Path, run_id: str) -> Path:
+    return autoreview_state_dir(repo) / "handoff" / run_id
+
+
+def validate_run_id(run_id: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,120}", run_id or ""):
+        raise SystemExit(f"invalid --resume-run id: {display_escape(run_id, 200)}")
+    return run_id
+
+
+def write_private_text(path: Path, content: str) -> None:
+    """Handoff files hold the full review bundle, so keep them owner-only."""
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(content)
+
+
+def write_subagent_handoff(
+    repo: Path,
+    run_id: str,
+    prompts: list[str],
+    state: dict[str, Any],
+) -> tuple[Path, list[Path]]:
+    handoff = subagent_handoff_dir(repo, run_id)
+    handoff.mkdir(parents=True, exist_ok=True)
+    for directory in (handoff, handoff.parent):
+        try:
+            os.chmod(directory, 0o700)
+        except OSError:
+            pass
+    prompt_paths: list[Path] = []
+    for index, prompt in enumerate(prompts, start=1):
+        prompt_path = handoff / f"prompt-{index}.md"
+        write_private_text(prompt_path, prompt)
+        prompt_paths.append(prompt_path)
+    write_private_text(handoff / "schema.json", json.dumps(SCHEMA, indent=2) + "\n")
+    write_private_text(handoff / "state.json", json.dumps(state, indent=2) + "\n")
+    return handoff, prompt_paths
+
+
+def print_subagent_handoff(
+    run_id: str,
+    handoff: Path,
+    prompt_paths: list[Path],
+) -> None:
+    print(f"subagent handoff: {handoff}")
+    print(f"subagent prompts: {len(prompt_paths)}")
+    for index, prompt_path in enumerate(prompt_paths, start=1):
+        print(f"subagent prompt {index}: {prompt_path}")
+    results = " ".join(
+        f"--result <result-{index}.json>" for index in range(1, len(prompt_paths) + 1)
+    )
+    print(
+        f"subagent resume: python3 {helper_script_path()} --engine subagent "
+        f"--resume-run {run_id} {results}"
+    )
+    print(SUBAGENT_INDEPENDENCE_NOTE)
+    print("subagent instructions:")
+    print("  1. Spawn one general-purpose subagent per prompt file listed above.")
+    print(
+        "  2. Give it only that prompt file's contents; the bundle is self-contained, "
+        "so the subagent must not read the repository or run commands."
+    )
+    print(
+        "  3. Require its final answer to be a single JSON object matching "
+        f"{handoff / 'schema.json'} and nothing else."
+    )
+    print("  4. Save each answer to its own file outside the reviewed repository.")
+    print("  5. Run the resume command above with one --result per prompt, in order.")
+
+
+def run_subagent_handoff(
+    args: argparse.Namespace,
+    reviewer: argparse.Namespace,
+    repo: Path,
+    run_id: str,
+    prompts: list[str],
+    changed_paths: set[str],
+    target: str,
+    target_ref: str | None,
+    input_truncated: bool,
+    tests_status: int | None,
+) -> int:
+    ensure_reviewer_input_complete(reviewer, input_truncated)
+    state = {
+        "run_id": run_id,
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "created_at_epoch": time.time(),
+        "repo": str(repo.resolve()),
+        "target": target,
+        "target_ref": target_ref,
+        "commit": args.commit,
+        "changed_paths": sorted(changed_paths),
+        "max_priority": args.max_priority,
+        "require_finding": list(args.require_finding or []),
+        "expect_findings": bool(args.expect_findings),
+        "input_truncated": bool(input_truncated),
+        "prompt_count": len(prompts),
+        "tests_status": tests_status,
+        "model_label": reviewer.model,
+        "tools": bool(reviewer.tools),
+        "web_search": bool(args.web_search),
+        "json_output": args.json_output,
+        "output": args.output,
+    }
+    handoff, prompt_paths = write_subagent_handoff(repo, run_id, prompts, state)
+    print_subagent_handoff(run_id, handoff, prompt_paths)
+    return EXIT_AWAITING_EXTERNAL_RESULT
+
+
+def load_subagent_state(repo: Path, run_id: str) -> tuple[Path, dict[str, Any]]:
+    handoff = subagent_handoff_dir(repo, validate_run_id(run_id))
+    state_path = handoff / "state.json"
+    if not state_path.is_file():
+        raise SystemExit(
+            f"unknown subagent run: {display_escape(run_id, 200)} "
+            f"(no handoff state at {handoff})"
+        )
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(
+            f"subagent handoff state is unreadable: {display_escape(str(exc), 300)}"
+        ) from None
+    if not isinstance(state, dict) or not isinstance(state.get("prompt_count"), int):
+        raise SystemExit(f"subagent handoff state is malformed: {state_path}")
+    recorded_repo = str(state.get("repo") or "")
+    if not recorded_repo or Path(recorded_repo).resolve() != repo.resolve():
+        raise SystemExit(
+            "subagent handoff was created for a different repository: "
+            f"{display_escape(recorded_repo, 500)}"
+        )
+    return handoff, state
+
+
+def read_subagent_result(repo: Path, raw_path: str) -> str:
+    path = Path(raw_path).expanduser()
+    resolved = (path if path.is_absolute() else Path.cwd() / path).resolve()
+    if not external_env_path(repo, str(resolved)):
+        raise SystemExit(
+            "--result must point outside the reviewed repository: "
+            f"{display_escape(raw_path, 500)}"
+        )
+    if not resolved.is_file():
+        raise SystemExit(f"--result file not found: {display_escape(raw_path, 500)}")
+    size = resolved.stat().st_size
+    if size > MAX_SUBAGENT_RESULT_BYTES:
+        raise SystemExit(
+            f"--result file is {size} bytes, exceeding the "
+            f"{MAX_SUBAGENT_RESULT_BYTES}-byte limit: {display_escape(raw_path, 500)}"
+        )
+    return resolved.read_text(encoding="utf-8", errors="replace")
+
+
+def resume_subagent_review(args: argparse.Namespace, repo: Path) -> int:
+    global _CURRENT_RUN_ID
+    handoff, state = load_subagent_state(repo, args.resume_run)
+    prompt_count = int(state["prompt_count"])
+    results = list(args.result or [])
+    if len(results) != prompt_count:
+        raise SystemExit(
+            f"--result count {len(results)} does not match the {prompt_count} "
+            f"handoff prompt(s); handoff: {handoff}"
+        )
+    effective = copy.copy(args)
+    effective.json_output = args.json_output or state.get("json_output")
+    effective.output = args.output or state.get("output")
+    effective.expect_findings = bool(args.expect_findings) or bool(state.get("expect_findings"))
+    reject_repo_output_paths(effective, repo)
+
+    changed_paths = set(state.get("changed_paths") or [])
+    max_priority = str(state.get("max_priority") or args.max_priority)
+    require_finding = list(state.get("require_finding") or [])
+    input_truncated = bool(state.get("input_truncated"))
+    elapsed = max(0.0, time.time() - float(state.get("created_at_epoch") or time.time()))
+
+    reviewer = copy.copy(args)
+    reviewer.engine = "subagent"
+    reviewer.model = state.get("model_label")
+    reviewer.thinking = None
+    reviewer.fallback_model = None
+    reviewer.max_priority = max_priority
+
+    _CURRENT_RUN_ID = str(state.get("run_id") or args.resume_run)
+    print(f"history run: {_CURRENT_RUN_ID}")
+    chunk_reports: list[tuple[str, dict[str, Any]]] = []
+    try:
+        for index, raw_path in enumerate(results, start=1):
+            report = extract_json(read_subagent_result(repo, raw_path))
+            required = require_finding if prompt_count == 1 else []
+            validate_report(report, repo, changed_paths, required)
+            filter_findings_by_priority(report, max_priority)
+            # The whole handoff took one wall-clock span; charge it to the first
+            # chunk so the history duration is not multiplied by the pass count.
+            accumulate_reviewer_run(
+                reviewer,
+                report,
+                elapsed if index == 1 else 0.0,
+                input_truncated,
+            )
+            chunk_reports.append((f"chunk {index}/{prompt_count}", report))
+        label = "autoreview subagent"
+        if len(chunk_reports) == 1:
+            report = chunk_reports[0][1]
+        else:
+            report = merge_chunk_reports(chunk_reports)
+            validate_report(report, repo, changed_paths, require_finding)
+            label += " chunked"
+        # Ids are attached after the merge because validate_report rejects them
+        # as unexpected finding keys.
+        annotate_finding_ids(report)
+    except SystemExit as exc:
+        if isinstance(exc.code, str):
+            raise SystemExit(
+                f"{exc.code}\nsubagent handoff kept for retry: {handoff}"
+            ) from None
+        raise
+    finally:
+        flush_review_history(repo, str(state.get("target") or "local"), state.get("target_ref"))
+
+    shutil.rmtree(handoff, ignore_errors=True)
+    print(SUBAGENT_INDEPENDENCE_NOTE)
+    tests_status = state.get("tests_status")
+    return finish_report(
+        effective,
+        report,
+        label=label,
+        tests_status=int(tests_status or 0),
+    )
+
+
+def engine_fallback_disabled(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "no_engine_fallback", False)) or env_truthy(
+        "AUTOREVIEW_NO_ENGINE_FALLBACK"
+    )
+
+
+def apply_missing_engine_fallback(
+    args: argparse.Namespace,
+    reviewers: list[argparse.Namespace],
+    repo: Path,
+) -> list[argparse.Namespace]:
+    """Fall back to the in-host subagent when a non-requested CLI is missing.
+
+    An engine the user asked for is never overridden; this only rescues the
+    built-in default and the cooldown substitute.
+    """
+    if engine_fallback_disabled(args) or len(reviewers) != 1 or args.reviewers or args.panel:
+        return reviewers
+    engine = reviewers[0].engine
+    if engine not in {"codex", "claude"}:
+        return reviewers
+    if getattr(args, "engine_explicit", True) and engine == getattr(args, "engine", None):
+        return reviewers
+    binary = args.codex_bin if engine == "codex" else args.claude_bin
+    if find_command(binary, repo) is not None:
+        return reviewers
+    print(f"engine_fallback: {engine} CLI not found; using subagent (non-independent)")
+    fallback = copy.copy(reviewers[0])
+    fallback.engine = "subagent"
+    fallback.model = None
+    fallback.thinking = None
+    fallback.fallback_model = None
+    fallback.tools = args.tools
+    return [fallback]
+
+
+def finish_report(
+    args: argparse.Namespace,
+    report: dict[str, Any],
+    *,
+    label: str,
+    tests_status: int,
+) -> int:
+    """Shared tail: emit the report to stdout/files and map it to an exit code."""
+    if args.json_output:
+        atomic_write_text(
+            Path(args.json_output),
+            json.dumps(report, indent=2) + "\n",
+        )
+
+    if args.output:
+        rendered = io.StringIO()
+        original_stdout = sys.stdout
+        try:
+            sys.stdout = rendered
+            print_report(report, label=label)
+        finally:
+            sys.stdout = original_stdout
+        output = rendered.getvalue()
+        print(output, end="")
+        atomic_write_text(Path(args.output), output)
+    else:
+        print_report(report, label=label)
+
+    has_findings = bool(report["findings"])
+    overall_incorrect = report["overall_correctness"] == "patch is incorrect"
+    if tests_status != 0:
+        return 1
+    if args.expect_findings:
+        return 0 if has_findings else 1
+    return 1 if has_findings or overall_incorrect else 0
 
 
 def main() -> int:
@@ -13600,9 +13976,12 @@ def main() -> int:
         return self_test_engine_isolation()
     if args.self_test_json_array_parser:
         return self_test_json_array_parser()
+    if args.resume_run:
+        return resume_subagent_review(args, repo_root())
     reviewers = reviewer_args(args)
     repo = repo_root()
     reviewers = apply_codex_usage_cooldown(args, reviewers, repo)
+    reviewers = apply_missing_engine_fallback(args, reviewers, repo)
     reject_repo_output_paths(args, repo)
     target, target_ref = choose_target(repo, args.mode, args.base)
     print(f"autoreview target: {target}")
@@ -13615,6 +13994,8 @@ def main() -> int:
             print(f"fallback_model: {reviewers[0].fallback_model}")
         if reviewers[0].thinking:
             print(f"thinking: {reviewers[0].thinking}")
+        if reviewers[0].engine == "subagent":
+            print("independence: none")
         if reviewers[0].engine == "codex":
             config_keys = codex_config_keys(reviewers[0])
             if config_keys:
@@ -13695,6 +14076,20 @@ def main() -> int:
     tests_proc: tuple[subprocess.Popen, float] | None = None
     if args.parallel_tests:
         tests_proc = start_parallel_tests(args.parallel_tests, repo, args.parallel_tests_shell)
+    if reviewers[0].engine == "subagent":
+        # Tests run during phase 1; phase 2 reuses the recorded status.
+        return run_subagent_handoff(
+            args,
+            reviewers[0],
+            repo,
+            _CURRENT_RUN_ID,
+            prompts,
+            changed_paths,
+            target,
+            target_ref,
+            input_truncated,
+            finish_parallel_tests(*tests_proc) if tests_proc else None,
+        )
     try:
         chunk_reports: list[tuple[str, dict[str, Any]]] = []
         for index, prompt in enumerate(prompts, start=1):
@@ -13729,6 +14124,7 @@ def main() -> int:
         else:
             report = merge_chunk_reports(chunk_reports)
             validate_report(report, repo, changed_paths, args.require_finding)
+        annotate_finding_ids(report)
         label = "autoreview panel" if len(reviewers) > 1 else "autoreview"
         if len(chunk_reports) > 1:
             label += " chunked"
@@ -13744,33 +14140,7 @@ def main() -> int:
             file=sys.stderr,
         )
 
-    if args.json_output:
-        atomic_write_text(
-            Path(args.json_output),
-            json.dumps(report, indent=2) + "\n",
-        )
-
-    if args.output:
-        rendered = io.StringIO()
-        original_stdout = sys.stdout
-        try:
-            sys.stdout = rendered
-            print_report(report, label=label)
-        finally:
-            sys.stdout = original_stdout
-        output = rendered.getvalue()
-        print(output, end="")
-        atomic_write_text(Path(args.output), output)
-    else:
-        print_report(report, label=label)
-
-    has_findings = bool(report["findings"])
-    overall_incorrect = report["overall_correctness"] == "patch is incorrect"
-    if tests_status != 0:
-        return 1
-    if args.expect_findings:
-        return 0 if has_findings else 1
-    return 1 if has_findings or overall_incorrect else 0
+    return finish_report(args, report, label=label, tests_status=tests_status)
 
 
 def sanitized_main() -> int:

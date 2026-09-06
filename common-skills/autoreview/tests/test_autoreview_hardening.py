@@ -5240,6 +5240,49 @@ class AutoreviewHardeningTests(unittest.TestCase):
             )
             self.assertFalse(os.path.samefile(tracked, outside))
 
+    def test_panel_merge_accepts_findings_from_every_reviewer(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            repo = init_repo(Path(tempdir))
+            reviewers = [
+                argparse.Namespace(
+                    engine=engine,
+                    model=None,
+                    fallback_model=None,
+                    thinking=None,
+                    max_priority="P3",
+                )
+                for engine in ("codex", "claude")
+            ]
+            args = argparse.Namespace(allow_partial_panel=False, require_finding=[])
+            raw = json.dumps(
+                {
+                    "findings": [
+                        {
+                            "title": "off by one",
+                            "body": "loop bound",
+                            "priority": "P1",
+                            "confidence": 0.9,
+                            "category": "bug",
+                            "code_location": {"file_path": "m.py", "line": 3},
+                        }
+                    ],
+                    "overall_correctness": "patch is incorrect",
+                    "overall_explanation": "bug",
+                    "overall_confidence": 0.9,
+                }
+            )
+            with mock.patch.dict(
+                self.helper["run_reviewer"].__globals__,
+                {"run_engine": lambda *_a, **_k: raw, "ensure_reviewer_input_complete": lambda *_a: None},
+            ):
+                report = self.helper["run_panel"](args, reviewers, repo, "prompt", {"m.py"}, False)
+            # Validation after the merge must not reject reviewer-provided reports;
+            # identical findings from both reviewers collapse into one.
+            self.assertEqual(len(report["findings"]), 1)
+            self.assertNotIn("id", report["findings"][0])
+            self.helper["annotate_finding_ids"](report)
+            self.assertTrue(all(finding["id"] for finding in report["findings"]))
+
     def test_partial_panel_failure_output_is_terminal_escaped(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             repo = init_repo(Path(tempdir))
@@ -7823,6 +7866,541 @@ class AutoreviewHardeningTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("autoreview engine isolation self-test: ok", result.stdout)
+
+
+def subagent_result(
+    *,
+    findings: list[dict[str, object]],
+    correctness: str,
+    explanation: str = "reviewed",
+) -> str:
+    return json.dumps(
+        {
+            "findings": findings,
+            "overall_correctness": correctness,
+            "overall_explanation": explanation,
+            "overall_confidence": 0.8,
+        }
+    )
+
+
+def subagent_finding(title: str, line: int = 2) -> dict[str, object]:
+    return {
+        "title": title,
+        "body": f"{title} details",
+        "priority": "P0",
+        "confidence": 0.9,
+        "category": "bug",
+        "code_location": {"file_path": "app.py", "line": line},
+    }
+
+
+class AutoreviewSubagentEngineTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.helper = load_helper()
+
+    def prepare_repo(self, root: Path) -> tuple[Path, dict[str, str]]:
+        repo = init_repo(root)
+        source = repo / "app.py"
+        source.write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+        git(repo, "add", "app.py")
+        git(repo, "commit", "-qm", "initial")
+        source.write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
+        env = os.environ.copy()
+        add_fake_trufflehog(self.helper, root, env)
+        env.update(
+            {
+                "HOME": str(root),
+                "USERPROFILE": str(root),
+                "AUTOREVIEW_STATE_DIR": str(root / "state"),
+            }
+        )
+        env.pop("AUTOREVIEW_ENGINE", None)
+        return repo, env
+
+    def run_cli(
+        self,
+        repo: Path,
+        env: dict[str, str],
+        *arguments: str,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(SCRIPT), *arguments],
+            cwd=repo,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    def handoff_of(self, result: subprocess.CompletedProcess[str]) -> Path:
+        for line in result.stdout.splitlines():
+            if line.startswith("subagent handoff: "):
+                return Path(line.split(": ", 1)[1])
+        self.fail(f"no subagent handoff line in output:\n{result.stdout}")
+
+    def run_id_of(self, handoff: Path) -> str:
+        return json.loads((handoff / "state.json").read_text(encoding="utf-8"))["run_id"]
+
+    def start_handoff(
+        self,
+        repo: Path,
+        env: dict[str, str],
+        *extra: str,
+    ) -> tuple[Path, str]:
+        result = self.run_cli(
+            repo,
+            env,
+            "--mode",
+            "local",
+            "--engine",
+            "subagent",
+            *extra,
+        )
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        handoff = self.handoff_of(result)
+        return handoff, self.run_id_of(handoff)
+
+    def repo_files(self, repo: Path) -> set[str]:
+        return {
+            str(path.relative_to(repo))
+            for path in repo.rglob("*")
+            if ".git" not in path.relative_to(repo).parts
+        }
+
+    def test_handoff_writes_state_outside_the_repo_and_exits_three(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            repo, env = self.prepare_repo(root)
+            before = self.repo_files(repo)
+
+            result = self.run_cli(
+                repo,
+                env,
+                "--mode",
+                "local",
+                "--engine",
+                "subagent",
+                "--model",
+                "subagent=host-model",
+            )
+
+            self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+            self.assertEqual(self.helper["EXIT_AWAITING_EXTERNAL_RESULT"], 3)
+            handoff = self.handoff_of(result)
+            self.assertTrue((handoff / "prompt-1.md").is_file())
+            self.assertTrue((handoff / "schema.json").is_file())
+            state = json.loads((handoff / "state.json").read_text(encoding="utf-8"))
+            self.assertEqual(state["repo"], str(repo.resolve()))
+            self.assertEqual(state["prompt_count"], 1)
+            self.assertEqual(state["changed_paths"], ["app.py"])
+            self.assertEqual(state["model_label"], "host-model")
+            self.assertIsNone(state["tests_status"])
+            self.assertIn("subagent prompts: 1", result.stdout)
+            self.assertIn(
+                f"subagent prompt 1: {handoff / 'prompt-1.md'}",
+                result.stdout,
+            )
+            self.assertIn(
+                f"--resume-run {state['run_id']} --result <result-1.json>",
+                result.stdout,
+            )
+            self.assertIn(
+                "reviewer independence: none (subagent shares the author model/context)",
+                result.stdout,
+            )
+            self.assertEqual(
+                json.loads((handoff / "schema.json").read_text(encoding="utf-8")),
+                self.helper["SCHEMA"],
+            )
+            self.assertEqual(self.repo_files(repo), before)
+
+    def test_handoff_records_parallel_test_status_for_the_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            repo, env = self.prepare_repo(root)
+
+            handoff, run_id = self.start_handoff(
+                repo,
+                env,
+                "--parallel-tests",
+                f"{sys.executable} -c \"raise SystemExit(2)\"",
+            )
+            state = json.loads((handoff / "state.json").read_text(encoding="utf-8"))
+            self.assertEqual(state["tests_status"], 2)
+
+            result_path = root / "result-1.json"
+            result_path.write_text(
+                subagent_result(findings=[], correctness="patch is correct"),
+                encoding="utf-8",
+            )
+            resumed = self.run_cli(
+                repo,
+                env,
+                "--resume-run",
+                run_id,
+                "--result",
+                str(result_path),
+            )
+
+            self.assertEqual(resumed.returncode, 1, resumed.stdout + resumed.stderr)
+
+    def test_resume_reports_findings_and_records_subagent_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            repo, env = self.prepare_repo(root)
+            handoff, run_id = self.start_handoff(
+                repo, env, "--model", "subagent=host-model"
+            )
+            result_path = root / "result-1.json"
+            result_path.write_text(
+                "```json\n"
+                + subagent_result(
+                    findings=[subagent_finding("add() subtracts")],
+                    correctness="patch is incorrect",
+                )
+                + "\n```\n",
+                encoding="utf-8",
+            )
+
+            resumed = self.run_cli(
+                repo,
+                env,
+                "--resume-run",
+                run_id,
+                "--result",
+                str(result_path),
+            )
+
+            self.assertEqual(resumed.returncode, 1, resumed.stdout + resumed.stderr)
+            self.assertIn(
+                "reviewer independence: none (subagent shares the author model/context)",
+                resumed.stdout,
+            )
+            self.assertIn("autoreview subagent findings: 1", resumed.stdout)
+            self.assertIn("add() subtracts", resumed.stdout)
+            self.assertFalse(handoff.exists())
+
+            history = json.loads(
+                (root / "state" / "run-history.json").read_text(encoding="utf-8")
+            )
+            runs = [run for run in history["runs"] if run["run_id"] == run_id]
+            self.assertEqual(len(runs), 1)
+            self.assertEqual(runs[0]["engine"], "subagent")
+            self.assertEqual(runs[0]["model"], "host-model")
+            self.assertEqual(runs[0]["outcome"], "findings")
+
+            summary = self.run_cli(repo, env, "--history-summary")
+            self.assertEqual(summary.returncode, 0, summary.stderr)
+            self.assertIn("note: subagent runs are non-independent reviews", summary.stdout)
+
+    def test_resume_with_a_clean_result_exits_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            repo, env = self.prepare_repo(root)
+            _handoff, run_id = self.start_handoff(repo, env)
+            result_path = root / "result-1.json"
+            result_path.write_text(
+                subagent_result(findings=[], correctness="patch is correct"),
+                encoding="utf-8",
+            )
+
+            resumed = self.run_cli(
+                repo,
+                env,
+                "--resume-run",
+                run_id,
+                "--result",
+                str(result_path),
+            )
+
+            self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
+            self.assertIn("autoreview subagent clean", resumed.stdout)
+
+    def test_resume_preserves_expect_findings_semantics(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            repo, env = self.prepare_repo(root)
+            _handoff, run_id = self.start_handoff(repo, env, "--expect-findings")
+            result_path = root / "result-1.json"
+            result_path.write_text(
+                subagent_result(findings=[], correctness="patch is correct"),
+                encoding="utf-8",
+            )
+
+            resumed = self.run_cli(
+                repo,
+                env,
+                "--resume-run",
+                run_id,
+                "--result",
+                str(result_path),
+            )
+
+            self.assertEqual(resumed.returncode, 1, resumed.stdout + resumed.stderr)
+
+    def test_resume_rejects_an_unknown_run_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            repo, env = self.prepare_repo(root)
+            result_path = root / "result-1.json"
+            result_path.write_text(
+                subagent_result(findings=[], correctness="patch is correct"),
+                encoding="utf-8",
+            )
+
+            resumed = self.run_cli(
+                repo,
+                env,
+                "--resume-run",
+                "20200101T000000Z-abcdef",
+                "--result",
+                str(result_path),
+            )
+
+            self.assertEqual(resumed.returncode, 1)
+            self.assertIn("unknown subagent run", resumed.stderr)
+
+    def test_resume_rejects_a_result_inside_the_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            repo, env = self.prepare_repo(root)
+            handoff, run_id = self.start_handoff(repo, env)
+            result_path = repo / "result-1.json"
+            result_path.write_text(
+                subagent_result(findings=[], correctness="patch is correct"),
+                encoding="utf-8",
+            )
+
+            resumed = self.run_cli(
+                repo,
+                env,
+                "--resume-run",
+                run_id,
+                "--result",
+                str(result_path),
+            )
+
+            self.assertEqual(resumed.returncode, 1)
+            self.assertIn(
+                "--result must point outside the reviewed repository",
+                resumed.stderr,
+            )
+            self.assertTrue(handoff.is_dir())
+
+    def test_resume_rejects_a_result_count_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            repo, env = self.prepare_repo(root)
+            handoff, run_id = self.start_handoff(repo, env)
+            first = root / "result-1.json"
+            second = root / "result-2.json"
+            for path in (first, second):
+                path.write_text(
+                    subagent_result(findings=[], correctness="patch is correct"),
+                    encoding="utf-8",
+                )
+
+            resumed = self.run_cli(
+                repo,
+                env,
+                "--resume-run",
+                run_id,
+                "--result",
+                str(first),
+                "--result",
+                str(second),
+            )
+
+            self.assertEqual(resumed.returncode, 1)
+            self.assertIn("--result count 2 does not match the 1", resumed.stderr)
+            self.assertTrue(handoff.is_dir())
+
+    def test_resume_rejects_a_handoff_from_another_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            repo, env = self.prepare_repo(root)
+            handoff, run_id = self.start_handoff(repo, env)
+            state_path = handoff / "state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state["repo"] = str(root / "other-repo")
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+            result_path = root / "result-1.json"
+            result_path.write_text(
+                subagent_result(findings=[], correctness="patch is correct"),
+                encoding="utf-8",
+            )
+
+            resumed = self.run_cli(
+                repo,
+                env,
+                "--resume-run",
+                run_id,
+                "--result",
+                str(result_path),
+            )
+
+            self.assertEqual(resumed.returncode, 1)
+            self.assertIn(
+                "subagent handoff was created for a different repository",
+                resumed.stderr,
+            )
+
+    def test_resume_keeps_the_handoff_when_the_result_is_not_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            repo, env = self.prepare_repo(root)
+            handoff, run_id = self.start_handoff(repo, env)
+            result_path = root / "result-1.json"
+            result_path.write_text("sorry, no JSON here", encoding="utf-8")
+
+            resumed = self.run_cli(
+                repo,
+                env,
+                "--resume-run",
+                run_id,
+                "--result",
+                str(result_path),
+            )
+
+            self.assertEqual(resumed.returncode, 1)
+            self.assertIn("subagent handoff kept for retry", resumed.stderr)
+            self.assertTrue((handoff / "state.json").is_file())
+
+    def test_resume_merges_chunked_prompt_results(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            repo, env = self.prepare_repo(root)
+            handoff, run_id = self.start_handoff(repo, env)
+            state_path = handoff / "state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state["prompt_count"] = 2
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+            shutil.copyfile(handoff / "prompt-1.md", handoff / "prompt-2.md")
+            first = root / "result-1.json"
+            first.write_text(
+                subagent_result(
+                    findings=[subagent_finding("first half bug", line=1)],
+                    correctness="patch is incorrect",
+                ),
+                encoding="utf-8",
+            )
+            second = root / "result-2.json"
+            second.write_text(
+                subagent_result(
+                    findings=[subagent_finding("second half bug", line=2)],
+                    correctness="patch is incorrect",
+                ),
+                encoding="utf-8",
+            )
+
+            resumed = self.run_cli(
+                repo,
+                env,
+                "--resume-run",
+                run_id,
+                "--result",
+                str(first),
+                "--result",
+                str(second),
+            )
+
+            self.assertEqual(resumed.returncode, 1, resumed.stdout + resumed.stderr)
+            self.assertIn("autoreview subagent chunked findings: 2", resumed.stdout)
+            self.assertIn("first half bug", resumed.stdout)
+            self.assertIn("second half bug", resumed.stdout)
+            self.assertFalse(handoff.exists())
+
+    def test_panel_and_reviewer_lists_reject_the_subagent_engine(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            repo, env = self.prepare_repo(root)
+
+            panel = self.run_cli(repo, env, "--dry-run", "--panel", "--engine", "subagent")
+            listed = self.run_cli(repo, env, "--dry-run", "--reviewers", "codex,subagent")
+
+            for result in (panel, listed):
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(
+                    "subagent engine cannot join a panel; run it alone",
+                    result.stderr,
+                )
+
+    def test_missing_default_codex_cli_falls_back_to_the_subagent(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            repo, env = self.prepare_repo(root)
+            missing = root / "absent" / "codex"
+
+            result = self.run_cli(repo, env, "--dry-run", "--codex-bin", str(missing))
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(
+                "engine_fallback: codex CLI not found; using subagent (non-independent)",
+                result.stdout,
+            )
+            self.assertIn("engine: subagent", result.stdout)
+
+    def test_explicit_engine_is_never_replaced_by_the_subagent(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            repo, env = self.prepare_repo(root)
+            missing = root / "absent" / "codex"
+
+            result = self.run_cli(
+                repo,
+                env,
+                "--dry-run",
+                "--engine",
+                "codex",
+                "--codex-bin",
+                str(missing),
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("engine_fallback", result.stdout)
+            self.assertIn("engine: codex", result.stdout)
+
+    def test_no_engine_fallback_flag_disables_the_subagent_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            repo, env = self.prepare_repo(root)
+            missing = root / "absent" / "codex"
+
+            flagged = self.run_cli(
+                repo,
+                env,
+                "--dry-run",
+                "--no-engine-fallback",
+                "--codex-bin",
+                str(missing),
+            )
+            env_disabled = dict(env, AUTOREVIEW_NO_ENGINE_FALLBACK="1")
+            from_env = self.run_cli(
+                repo,
+                env_disabled,
+                "--dry-run",
+                "--codex-bin",
+                str(missing),
+            )
+
+            for result in (flagged, from_env):
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("engine_fallback", result.stdout)
+                self.assertIn("engine: codex", result.stdout)
+
+    def test_dry_run_reports_subagent_independence_without_a_handoff(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            repo, env = self.prepare_repo(root)
+
+            result = self.run_cli(repo, env, "--dry-run", "--engine", "subagent")
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("engine: subagent", result.stdout)
+            self.assertIn("independence: none", result.stdout)
+            self.assertNotIn("subagent handoff:", result.stdout)
+            self.assertFalse((root / "state" / "handoff").exists())
 
 
 if __name__ == "__main__":
