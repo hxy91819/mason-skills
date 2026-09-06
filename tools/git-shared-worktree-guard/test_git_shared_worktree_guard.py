@@ -1,3 +1,4 @@
+import os
 import subprocess
 import tempfile
 import unittest
@@ -35,8 +36,21 @@ class SharedWorktreeGuardTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return result
 
-    def guard(self, *args: str) -> subprocess.CompletedProcess[str]:
-        return run(str(GUARD), *args, cwd=self.root)
+    def guard(self, *args: str, env_overrides: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+        env = {**os.environ, **(env_overrides or {})}
+        return subprocess.run(
+            [str(GUARD), *args],
+            cwd=self.root,
+            text=True,
+            capture_output=True,
+            check=False,
+            env=env,
+        )
+
+    def temp_index_path(self) -> Path:
+        path = Path(self.temp.name) / "bb-untracked-index" / "index"
+        path.parent.mkdir()
+        return path
 
     def assert_blocked(self, result: subprocess.CompletedProcess[str]) -> None:
         self.assertEqual(result.returncode, 77, result.stderr)
@@ -631,6 +645,79 @@ class SharedWorktreeGuardTest(unittest.TestCase):
     def test_read_only_bisect_and_sparse_checkout_commands_are_not_blocked(self) -> None:
         self.assert_not_blocked(self.guard("bisect", "log"))
         self.assert_not_blocked(self.guard("sparse-checkout", "list"))
+
+    def test_read_tree_into_shared_index_is_blocked(self) -> None:
+        self.assert_blocked(self.guard("read-tree", "--empty"))
+        self.assert_blocked(self.guard("read-tree", "HEAD"))
+
+    def test_read_tree_with_redirected_temp_index_is_allowed(self) -> None:
+        # BB/IDE diff 工具用 GIT_INDEX_FILE 指向私有临时 index 计算未跟踪文件 diff
+        result = self.guard(
+            "read-tree", "--empty",
+            env_overrides={"GIT_INDEX_FILE": str(self.temp_index_path())},
+        )
+
+        self.assert_not_blocked(result)
+
+    def test_read_tree_with_temp_index_keeps_shared_staging_intact(self) -> None:
+        (self.root / "staged.txt").write_text("staged\n", encoding="utf-8")
+        self.git("add", "staged.txt")
+        result = self.guard(
+            "read-tree", "--empty",
+            env_overrides={"GIT_INDEX_FILE": str(self.temp_index_path())},
+        )
+
+        self.assert_not_blocked(result)
+        self.assertIn("staged.txt", self.git("diff", "--cached", "--name-only").stdout)
+
+    def test_read_tree_update_with_redirected_index_is_blocked(self) -> None:
+        # -u 会把结果展开到 working tree，index 重定向也不放行
+        env = {"GIT_INDEX_FILE": str(self.temp_index_path())}
+        self.assert_blocked(self.guard("read-tree", "-u", "--reset", "HEAD", env_overrides=env))
+
+    def test_read_tree_bundled_short_flags_with_u_are_blocked(self) -> None:
+        env = {"GIT_INDEX_FILE": str(self.temp_index_path())}
+        self.assert_blocked(self.guard("read-tree", "-mu", "HEAD", env_overrides=env))
+
+    def test_read_tree_index_output_to_temp_file_is_allowed(self) -> None:
+        output = Path(self.temp.name) / "index-out"
+        result = self.guard("read-tree", f"--index-output={output}", "HEAD")
+
+        self.assert_not_blocked(result)
+        self.assertTrue(output.exists())
+
+    def test_read_tree_index_output_targeting_shared_index_is_blocked(self) -> None:
+        git_dir = self.git("rev-parse", "--absolute-git-dir").stdout.strip()
+        result = self.guard("read-tree", f"--index-output={git_dir}/index", "HEAD")
+
+        self.assert_blocked(result)
+
+    def test_read_tree_with_git_index_file_equal_to_shared_index_is_blocked(self) -> None:
+        git_dir = self.git("rev-parse", "--absolute-git-dir").stdout.strip()
+        env = {"GIT_INDEX_FILE": f"{git_dir}/index"}
+
+        self.assert_blocked(self.guard("read-tree", "--empty", env_overrides=env))
+
+    def test_read_tree_with_relative_git_index_file_is_blocked(self) -> None:
+        # 相对路径的解析依赖 git 内部 chdir 行为，无法静态判定，保守拦截
+        env = {"GIT_INDEX_FILE": "index.tmp"}
+
+        self.assert_blocked(self.guard("read-tree", "--empty", env_overrides=env))
+
+    def test_read_tree_with_symlinked_git_index_file_to_shared_index_is_blocked(self) -> None:
+        git_dir = self.git("rev-parse", "--absolute-git-dir").stdout.strip()
+        link = Path(self.temp.name) / "link-index"
+        link.symlink_to(f"{git_dir}/index")
+        env = {"GIT_INDEX_FILE": str(link)}
+
+        self.assert_blocked(self.guard("read-tree", "--empty", env_overrides=env))
+
+    def test_checkout_index_stays_blocked_even_with_redirected_index(self) -> None:
+        # checkout-index 会把 index 内容抽取进 working tree，无条件拦截
+        env = {"GIT_INDEX_FILE": str(self.temp_index_path())}
+
+        self.assert_blocked(self.guard("checkout-index", "-a", env_overrides=env))
+        self.assert_blocked(self.guard("checkout-index", "-a"))
 
 
 if __name__ == "__main__":

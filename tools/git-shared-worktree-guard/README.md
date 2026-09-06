@@ -18,7 +18,7 @@
 | --- | --- | --- |
 | 只读或保留现场 | 透明转发给 Git | `status`、`stash list/show`、`clean -n`、`reset --soft` |
 | 由 Git 原生冲突检查保护的正常工作流 | 透明转发给 Git，由 Git 成功或报错 | `commit`、无 autostash 的 `rebase/merge/pull`、普通 `revert`、普通 `apply`、非强制 `rm` |
-| 会隐藏、重置、覆盖或删除共享现场 | 返回 77；除 stash 外可在目标已获明确授权时使用单次 `--user-approved` | `restore`、mixed/hard reset、实际 clean、切换分支、force push |
+| 会隐藏、重置、覆盖或删除共享现场 | 返回 77；除 stash 外可在目标已获明确授权时使用单次 `--user-approved` | `restore`、mixed/hard reset、实际 clean、切换分支、`read-tree`/`checkout-index` 写共享现场 |
 
 stash 与 autostash 单独采用不可绕过的硬拦截，因为它们的目的就是把当前现场移出 working tree。即使预检时没有 diff，另一个 Agent 也可能在真实 Git 命令开始前保存文件；因此“当前无影响”不是可靠的放行条件。
 
@@ -30,12 +30,14 @@ stash 与 autostash 单独采用不可绕过的硬拦截，因为它们的目的
 - `git reset --soft`：只移动本地 HEAD，保留 working tree 与 index，符合“本地历史可改写”的约束。
 - `git apply`：普通补丁应用属于有上下文校验的编辑动作，现有内容不匹配时由 Git 拒绝或产生显式冲突。整体封禁会阻止正常工作，却不能解决所有编辑器和 shell 写入之间的协作问题；会越出 worktree 的 `--unsafe-paths` 写入仍需拦截，只读 `--check` 不受影响。
 - 本地分支创建和查询、所有帮助与 dry-run 命令：不会移除现有内容或引用，允许执行。
+- `git read-tree`（写入目标被重定向时）：BB、IDE 插件一类 diff 工具用 `GIT_INDEX_FILE` 指向私有临时 index、或用 `--index-output=<file>` 把结果写到指定文件，来计算未跟踪文件的 diff；只要不带 `-u`（把结果展开到 working tree），写入目标就不是共享 index，允许执行。写入共享 index（默认、显式同路径、相对路径或软链指向共享 index）、目标无法静态判定、或带 `-u` 时仍按破坏性语义拦截。`checkout-index` 不适用此例外：它的语义就是把 index 内容抽取进 working tree，即使 index 被重定向也会覆盖工作区文件，无条件拦截。
 - 普通 Git alias：先安全展开，再按真实子命令应用同一套规则。无法静态判断副作用的 `!shell` alias 默认拦截，但在准确命令已经人工审查后可使用单次授权。
 
 ### 应拦截的破坏性动作
 
 - 所有产生副作用的 stash，以及 `--autostash`、`rebase.autoStash=true`、`merge.autoStash=true`。`pull` 根据实际选择的 merge/rebase 策略读取相应配置。
 - `restore`、path checkout、mixed/hard/merge/keep/patch reset、真实执行的 clean。这些动作会恢复或删除 working tree/index，且基于 diff 的预检存在竞态。
+- `read-tree` 与 `checkout-index` 默认都写共享现场：`read-tree` 把 tree 写进 index（`--empty` 直接清空暂存区），`checkout-index` 把 index 内容抽取进 working tree。
 - rebase、merge、cherry-pick 和 am 的 `--abort`、`--skip`、`--quit`。它们会丢弃冲突处理结果或改变另一个参与者可能正在推进的序列状态；`--continue` 和只读查看仍放行。`revert` 不在此列：经用户决定全程放行，理由见放行清单。
 - 强制 `rm`、强制 `mv`、分支删除/改名/强制重置、会改变当前 worktree 的 checkout/switch，以及 worktree 管理写操作。
 - force/force-with-lease push、远端 ref 删除、mirror 和 prune push，包括配置在 `remote.<name>.push` 或 `remote.<name>.mirror` 中的等价行为。临时保全 commit 不得借这些路径改写或删除远端共享历史；对应 dry-run 仍放行。

@@ -937,6 +937,88 @@ sparse_checkout_is_read_only() {
   esac
 }
 
+# 判定候选 index 路径是否就是共享 index 本体。git 目录无法解析、路径为空
+# 或是相对路径时保守判定为共享；比较前用 readlink 归一化，防止用软链指向
+# 共享 index 绕过判定。
+index_path_is_shared() {
+  local candidate="$1"
+
+  if [[ -z "$candidate" ]]; then
+    return 0
+  fi
+  case "$candidate" in
+    /*) ;;
+    *)
+      return 0
+      ;;
+  esac
+
+  local git_dir
+  git_dir="$($REAL_GIT rev-parse --absolute-git-dir 2>/dev/null)" || return 0
+
+  local shared="${git_dir%/}/index"
+  if [[ "$candidate" == "$shared" ]]; then
+    return 0
+  fi
+
+  local candidate_norm shared_norm
+  candidate_norm="$(readlink -f -- "$candidate" 2>/dev/null)" || candidate_norm="$candidate"
+  shared_norm="$(readlink -f -- "$shared" 2>/dev/null)" || shared_norm="$shared"
+  [[ "$candidate_norm" == "$shared_norm" ]]
+}
+
+# read-tree 默认把 tree 写进共享 index，因此拦截；但 BB、IDE 插件一类 diff 工具
+# 会用 GIT_INDEX_FILE 指向私有临时 index，或用 --index-output=<file> 把结果写到
+# 指定文件，来计算未跟踪文件的 diff。写入目标不是共享 index、且不带 -u（把结果
+# 展开到 working tree）时不触碰共享现场，放行。
+read_tree_preserves_shared_state() {
+  local arg
+  local index_output=""
+  local pending_output=0
+
+  for arg in "$@"; do
+    if ((pending_output == 1)); then
+      index_output="$arg"
+      pending_output=0
+      continue
+    fi
+    case "$arg" in
+      --)
+        break
+        ;;
+      -u|--update)
+        return 1
+        ;;
+      -[^-]*)
+        # 短旗标可合并（如 -mu），任一组合含 u 都会更新 working tree
+        [[ "${arg#-}" == *u* ]] && return 1
+        ;;
+      --index-output=?*)
+        index_output="${arg#--index-output=}"
+        ;;
+      --index-output)
+        pending_output=1
+        ;;
+    esac
+  done
+
+  if ((pending_output == 1)); then
+    return 1
+  fi
+
+  if [[ -n "$index_output" ]]; then
+    if index_path_is_shared "$index_output"; then
+      return 1
+    fi
+    return 0
+  fi
+
+  if index_path_is_shared "${GIT_INDEX_FILE:-}"; then
+    return 1
+  fi
+  return 0
+}
+
 is_hard_blocked() {
   local command="$1"
   shift
@@ -1000,8 +1082,13 @@ is_blocked() {
     sparse-checkout)
       ! sparse_checkout_is_read_only "$@"
       ;;
-    checkout-index|read-tree)
+    checkout-index)
+      # checkout-index 的语义就是把 index 内容抽取进 working tree，即使 index
+      # 被重定向也会覆盖工作区文件，无条件拦截。
       return 0
+      ;;
+    read-tree)
+      ! read_tree_preserves_shared_state "$@"
       ;;
     branch)
       branch_is_disruptive "$@"
