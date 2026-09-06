@@ -4,4 +4,4 @@ interface:
   default_prompt: "Use $project-stage to declare this repository's lifecycle stage in its agent instruction file."
 
 policy:
-  allow_implicit_invocation: true
+  allow_implicit_invocation: false

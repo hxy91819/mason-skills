@@ -1,6 +1,7 @@
 ---
 name: project-stage
-description: Declare a repository's lifecycle stage (experimental or production) in its agent instruction file so agents stop adding compatibility layers that no consumer needs. Use when starting a new project, when the user says a project is experimental / a prototype / not yet released, when a project graduates to production, or when the user asks to add or update the stage declaration.
+description: Declare a repository's lifecycle stage (experimental or production) in its agent instruction file so agents stop adding compatibility layers that no consumer needs. Use only when the user explicitly invokes $project-stage, typically once when starting a project, once more when it graduates to production, or when adding the declaration to an existing project.
+disable-model-invocation: true
 ---
 
 # Project Stage
@@ -12,6 +13,9 @@ and "v2" paths that nobody consumes. The fix is not a global "be simple" instruc
 a short, factual declaration in the repository itself of **who consumes this code**.
 
 ## Procedure
+
+This skill runs only on explicit `$project-stage` invocation. It edits the repository's
+instruction file, so a passing mention of "this is experimental" must not trigger it.
 
 1. Locate the repository's agent instruction file: `AGENTS.md`, `CLAUDE.md`, or whatever
    the project already uses. Create `AGENTS.md` at the repo root if none exists.
