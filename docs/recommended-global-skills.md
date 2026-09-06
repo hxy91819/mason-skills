@@ -4,6 +4,8 @@
 
 单一事实源文件为 [`config/skill-symlinks.yaml`](../config/skill-symlinks.yaml)。其他工作区或新环境克隆本仓库后，均依据该清单和规范进行全局收敛，严禁随意将仓库内所有技能全量软链至全局。
 
+user 级 prompt 正文不在此清单范围内：由 [`config/user-agents.md`](../config/user-agents.md) 托管，经 `$harness-config-sync` 软链接入 `~/.agents/AGENTS.md`。
+
 ---
 
 ## 一、推荐原则与准入标准

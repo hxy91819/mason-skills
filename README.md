@@ -79,6 +79,11 @@ See [common-skills/README.md](common-skills/README.md) for authoring guidelines.
 Repository tooling includes the [shared-worktree Git guard](tools/git-shared-worktree-guard/README.md),
 which preserves concurrent Agent work without blocking safe local history operations.
 
+`config/` holds the facts for reproducing a user-scope setup on a new machine:
+[`skill-symlinks.yaml`](config/skill-symlinks.yaml) is the recommended global-skills manifest
+(applied by `$skill-manifest-sync`), and [`user-agents.md`](config/user-agents.md) is the shared
+user-scope `AGENTS.md`, linked to `~/.agents/AGENTS.md` by `$harness-config-sync`.
+
 ## Usage
 
 ### Cursor IDE
