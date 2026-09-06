@@ -66,6 +66,8 @@ skills:
 - name: prototype
   source: mattpocock-skills
   note: 用一次性原型回答设计问题
+- name: project-stage
+  note: 声明仓库实验期/线上期，杜绝无消费者的兼容代码
 - name: readiness-fix
   note: 根据本地 readiness 报告修复失败信号
 - name: readiness-report
