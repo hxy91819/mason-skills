@@ -1,16 +1,54 @@
 # mason-skills 推荐 user-scope 软链清单
 # 维护规则见仓库 AGENTS.md「Skill 清单维护」；skill 入口为 $skill-manifest-sync。
-# - 新增 skill 且要求软链到 user scope：--mode register --skill <name> [--note "..."]
+# - 本仓库新增 skill 且要求软链到 user scope：--mode register --skill <name> [--note "..."]
+# - 外部项目 skill：先在 sources 声明项目名，再 register --source <项目> --skill <name>
 # - 删除/重命名 skill：--mode remove --skill <name>
 # - 其他电脑 clone 本仓库后同步本机：--mode check 预览，--mode apply 执行
+# 外部项目位置按序解析：$SKILL_SOURCE_<NAME>_DIR > $SKILL_SOURCES_DIR/<项目名> > 本仓库
+# 同级目录 <项目名>；清单只写项目名，不写机器绝对路径。
 version: 1
+sources:
+- name: mattpocock-skills
 skills:
+- name: ask-matt
+  source: mattpocock-skills
+  note: 路由：问哪个 skill 或流程适合当前处境
 - name: autoreview
   note: 提交/发布前的结构化代码审查
+- name: code-review
+  source: mattpocock-skills
+  note: 双轴审查：仓库编码规范 + 规格符合度
+- name: codebase-design
+  source: mattpocock-skills
+  note: 深模块设计的共享词汇与改进时机
+- name: diagnosing-bugs
+  source: mattpocock-skills
+  note: 疑难 bug 与性能回归的系统诊断循环
 - name: distill
   note: 从会话中蒸馏可沉淀的经验
+- name: domain-modeling
+  source: mattpocock-skills
+  note: 构建领域模型并维护 CONTEXT.md 与 ADR
+- name: grill-me
+  source: mattpocock-skills
+  note: 连环追问打磨计划或设计(路由到 grilling)
+- name: grill-with-docs
+  source: mattpocock-skills
+  note: 连环追问打磨设计并沉淀 ADR 与术语表
+- name: grilling
+  source: mattpocock-skills
+  note: 对计划/决策/想法做 design tree 式连环追问
 - name: harness-config-sync
   note: 跨宿主收敛 prompts/skills 软链布局(含 agy)
+- name: handoff
+  source: mattpocock-skills
+  note: 把当前会话压缩成交接文档交给下一个 agent
+- name: implement
+  source: mattpocock-skills
+  note: 按规格或工单实现，缝合处驱动 tdd
+- name: improve-codebase-architecture
+  source: mattpocock-skills
+  note: 扫描架构深化机会并产出 HTML 报告
 - name: large-task-orchestrator
   note: 用宿主原生 subagent 持续编排大型任务
 - name: large-task-planning
@@ -25,10 +63,22 @@ skills:
   note: PPT 式 HTML 逐页视觉验收
 - name: preflight
   note: 开工前凭据/权限/依赖轻量探针核查
+- name: prototype
+  source: mattpocock-skills
+  note: 用一次性原型回答设计问题
 - name: readiness-fix
   note: 根据本地 readiness 报告修复失败信号
 - name: readiness-report
   note: 只读静态代码库 Agent-Readiness 审计与打分报告
+- name: research
+  source: mattpocock-skills
+  note: 高可信一手来源调研并沉淀 Markdown
+- name: resolving-merge-conflicts
+  source: mattpocock-skills
+  note: 解决进行中的 merge/rebase 冲突
+- name: setup-matt-pocock-skills
+  source: mattpocock-skills
+  note: 该仓库工程技能的一次性初始配置
 - name: skill-test
   note: 用原生 subagent 隔离测试 skill 行为
 - name: spec-leak-review
@@ -37,9 +87,39 @@ skills:
   note: Story 完成后的方向独立检查
 - name: submit-pr-mr
   note: 提交 MR/PR 的统一流程
+- name: tdd
+  source: mattpocock-skills
+  note: 测试驱动开发 red-green-refactor
+- name: teach
+  source: mattpocock-skills
+  note: 在当前工作区多会话教学一个主题
+- name: to-questionnaire
+  source: mattpocock-skills
+  note: 把独自答不了的决策变成给知情人的问卷
+- name: to-spec
+  source: mattpocock-skills
+  note: 把已讨论的内容合成 spec 并发布到 tracker
+- name: to-tickets
+  source: mattpocock-skills
+  note: 把计划拆成声明阻塞边的 tracer-bullet 工单
+- name: triage
+  source: mattpocock-skills
+  note: 按角色状态机分诊 issue 与外部 PR
 - name: use-worktree
   note: 在隔离 worktree 中完成任务
+- name: wait-what
+  source: mattpocock-skills
+  note: 消息没接住时让 agent 用平实语言重讲
+- name: wayfinder
+  source: mattpocock-skills
+  note: 把超大工作规划成 tracker 决策工单地图
 - name: what-changed
   note: 用平实语言说明改动内容
+- name: wizard
+  source: mattpocock-skills
+  note: 生成引导人工完成操作的 bash 向导
 - name: worktree-cleanup
   note: 审计并清理干净 worktree
+- name: writing-for-agents
+  source: mattpocock-skills
+  note: 为 agent 写文档(skill/AGENTS.md)的写作参考

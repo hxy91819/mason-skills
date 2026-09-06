@@ -4,15 +4,17 @@ r"""按仓库清单同步本机 user-scope skill 软链。
 脚本定义：
     读取仓库 `config/skill-symlinks.yaml`（推荐 user-scope 软链清单），把当前电脑的
     user-scope skills 目录（默认 `~/.agents/skills`）收敛到清单描述的状态：
-    创建缺失的软链、修复指向错误的软链、把「指向本仓库但不在清单里」的软链作为
-    删除候选提示用户，并维护一份不提交 Git 的本机白名单。
+    创建缺失的软链、修复指向错误的软链、把「指向已声明来源项目但不在清单里」的软链
+    作为删除候选提示用户，并维护一份不提交 Git 的本机白名单。
     适用场景：一台新电脑 clone 本仓库后，一条命令完成 skill 软链同步；或日常校验漂移。
 
 参数定义：
     --mode check|apply|register|remove   check=只报告不改（默认）；apply=执行同步，
                                         删除候选交互提示（--yes 跳过提示直接删）；
                                         register/remove=维护清单本身
-    --skill <name>                       register/remove 模式必填；须存在于 common-skills/
+    --skill <name>                       register/remove 模式必填；须存在于来源项目
+    --source <project>                   register 可选：登记外部项目 skill（项目须已在
+                                        清单 sources 声明，缺省会自动补一条声明）
     --note <text>                        register 模式可选备注
     --manifest <path>                    清单路径（默认 <repo>/config/skill-symlinks.yaml）
     --skills-dir <path>                  user-scope skills 目录（默认 $AGENTS_HOME/skills，再退 ~/.agents/skills）
@@ -29,10 +31,16 @@ r"""按仓库清单同步本机 user-scope skill 软链。
     python3 scripts/sync_skill_symlinks.py --mode check
     python3 scripts/sync_skill_symlinks.py --mode apply --yes
     printf 'k\n' | python3 scripts/sync_skill_symlinks.py --mode apply   # 交互保留并加白名单
-    python3 scripts/sync_skill_symlinks.py --mode register --skill my-skill --note "收尾审查"
+    python3 scripts/sync_skill_symlinks.py --mode register --skill my-skill
+    python3 scripts/sync_skill_symlinks.py --mode register --source mattpocock-skills --skill handoff
 
 关键设计决策：
-    - 只管理「指向本仓库 checkout」的软链；指向其他仓库的同名链接视为外部占用
+    - 清单 sources 只声明外部项目名，绝不写机器绝对路径；外部项目根按序解析：
+      $SKILL_SOURCE_<NAME>_DIR > $SKILL_SOURCES_DIR/<项目名> > 本仓库同级目录 <项目名>。
+      解析不到时相关条目按 stale 保守失败，不自动 clone。
+    - 外部项目里的 skill 约定位于 skills/<bucket>/<name> 且含 SKILL.md；同名多 bucket
+      视为歧义，保守失败。本仓库条目仍位于 common-skills/<name>。
+    - 只管理「指向已声明来源项目 checkout」的软链；指向其他仓库的同名链接视为外部占用
       （conflict），绝不覆盖或删除，避免破坏用户其他工作区的配置。
     - 真实目录（非软链）一律不动，只报告 conflict；脚本永不递归删除。
     - 白名单记录在用户主目录（~/.agents/）而非仓库内，因为它属于本机环境偏好，
@@ -66,9 +74,12 @@ DEFAULT_MANIFEST = REPO_ROOT / "config" / "skill-symlinks.yaml"
 MANIFEST_HEADER = """\
 # mason-skills 推荐 user-scope 软链清单
 # 维护规则见仓库 AGENTS.md「Skill 清单维护」；skill 入口为 $skill-manifest-sync。
-# - 新增 skill 且要求软链到 user scope：--mode register --skill <name> [--note "..."]
+# - 本仓库新增 skill 且要求软链到 user scope：--mode register --skill <name> [--note "..."]
+# - 外部项目 skill：先在 sources 声明项目名，再 register --source <项目> --skill <name>
 # - 删除/重命名 skill：--mode remove --skill <name>
 # - 其他电脑 clone 本仓库后同步本机：--mode check 预览，--mode apply 执行
+# 外部项目位置按序解析：$SKILL_SOURCE_<NAME>_DIR > $SKILL_SOURCES_DIR/<项目名> > 本仓库
+# 同级目录 <项目名>；清单只写项目名，不写机器绝对路径。
 """
 NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 WHITELIST_HEADER = """\
@@ -92,8 +103,12 @@ def whitelist_path(args: argparse.Namespace, root: Path) -> Path:
     return root.parent / "skill-sync-whitelist.yaml"
 
 
-def load_manifest(path: Path) -> list[dict]:
-    """读取并校验清单；schema 错误按用法错误（退出码 2）保守失败。"""
+def load_manifest(path: Path) -> tuple[list[dict], list[dict]]:
+    """读取并校验清单；schema 错误按用法错误（退出码 2）保守失败。
+
+    返回 (sources, skills)。sources 声明外部项目名；skills 条目可用 `source`
+    指向某个已声明项目（缺省为本仓库 common-skills/<name>）。
+    """
     if not path.is_file():
         raise SystemExit(f"manifest not found: {path}")
     try:
@@ -102,6 +117,17 @@ def load_manifest(path: Path) -> list[dict]:
         raise SystemExit(f"invalid manifest YAML ({path}): {exc}") from exc
     if not isinstance(data, dict) or data.get("version") != 1:
         raise SystemExit(f"invalid manifest ({path}): expected top-level 'version: 1'")
+    sources = data.get("sources", [])
+    if not isinstance(sources, list):
+        raise SystemExit(f"invalid manifest ({path}): 'sources' must be a list")
+    source_names: set[str] = set()
+    for src in sources:
+        name = src.get("name") if isinstance(src, dict) else None
+        if not isinstance(name, str) or not NAME_PATTERN.fullmatch(name):
+            raise SystemExit(f"invalid manifest ({path}): every source needs a kebab-case string 'name'")
+        if name in source_names:
+            raise SystemExit(f"invalid manifest ({path}): duplicate source {name!r}")
+        source_names.add(name)
     entries = data.get("skills", [])
     if not isinstance(entries, list):
         raise SystemExit(f"invalid manifest ({path}): 'skills' must be a list")
@@ -115,45 +141,116 @@ def load_manifest(path: Path) -> list[dict]:
         if name in names:
             raise SystemExit(f"invalid manifest ({path}): duplicate skill {name!r}")
         names.add(name)
-    return sorted(entries, key=lambda item: item["name"])
+        source = entry.get("source")
+        if source is not None and (not isinstance(source, str) or source not in source_names):
+            raise SystemExit(f"invalid manifest ({path}): skill {name!r} references undeclared source {source!r}")
+    return sources, sorted(entries, key=lambda item: item["name"])
 
 
-def dump_manifest(path: Path, entries: list[dict]) -> None:
+def dump_manifest(path: Path, sources: list[dict], entries: list[dict]) -> None:
     """重写清单：保留头部注释（skills: 键之前的注释/空行），条目规范化排序。"""
     header_lines: list[str] = []
     if path.is_file():
         for line in path.read_text(encoding="utf-8").splitlines():
             if line.lstrip().startswith("skills:"):
                 break
-            # 只保留注释与空行，避免把旧的 version 等结构性内容吸进 header
+            # 只保留注释与空行，避免把 version/sources 等结构性内容吸进 header
             if line.strip() == "" or line.lstrip().startswith("#"):
                 header_lines.append(line)
     header = "\n".join(header_lines).rstrip() if header_lines else MANIFEST_HEADER.rstrip()
-    body = yaml.dump(
-        {"version": 1, "skills": sorted(entries, key=lambda item: item["name"])},
-        allow_unicode=True,
-        sort_keys=False,
-        default_flow_style=False,
-    ).strip("\n")
+    data: dict = {"version": 1}
+    if sources:
+        data["sources"] = sources
+    data["skills"] = sorted(entries, key=lambda item: item["name"])
+    body = yaml.dump(data, allow_unicode=True, sort_keys=False, default_flow_style=False).strip("\n")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(f"{header}\n{body}\n", encoding="utf-8")
 
 
+def source_env_var(source_name: str) -> str:
+    return "SKILL_SOURCE_" + source_name.upper().replace("-", "_") + "_DIR"
+
+
+def resolve_source_roots(sources: list[dict]) -> dict[str, Path | None]:
+    """解析各来源项目根：'' 恒为本仓库；外部项目按环境变量 > $SKILL_SOURCES_DIR >
+    本仓库同级目录解析，找不到返回 None（保守失败，不自动 clone）。"""
+    roots: dict[str, Path | None] = {"": REPO_ROOT}
+    for src in sources:
+        name = src["name"]
+        candidates: list[Path] = []
+        override = os.environ.get(source_env_var(name), "").strip()
+        if override:
+            candidates.append(Path(override).expanduser())
+        shared = os.environ.get("SKILL_SOURCES_DIR", "").strip()
+        if shared:
+            candidates.append(Path(shared).expanduser() / name)
+        candidates.append(REPO_ROOT.parent / name)  # 约定：skill 仓库 clone 在同一父目录
+        roots[name] = next((c.resolve() for c in candidates if c.is_dir()), None)
+    return roots
+
+
+def find_external_skill_dirs(project_root: Path, name: str) -> list[Path]:
+    """外部项目里 name 的候选目录：skills/<bucket>/<name> 且含 SKILL.md。
+
+    name 已过 kebab-case 校验（无 glob 元字符）；命中多个视为歧义，由调用方保守失败。
+    """
+    return [
+        d
+        for d in sorted(project_root.glob(f"skills/*/{name}"))
+        if d.is_dir() and (d / "SKILL.md").is_file()
+    ]
+
+
+def entry_source_dir(entry: dict, roots: dict[str, Path | None]) -> Path:
+    """解析条目的 skill 源目录；仅供 plan 已判定可解析（create/fix）的条目使用。"""
+    source_name = entry.get("source") or ""
+    project_root = roots[source_name]
+    if source_name:
+        return find_external_skill_dirs(project_root, entry["name"])[0]
+    return COMMON_SKILLS / entry["name"]
+
+
 def plan(root: Path, manifest: Path) -> list[tuple[str, str, str]]:
     """对比清单与现状，产出 (kind, name, detail) 列表；check/apply 共用。"""
-    entries = load_manifest(manifest)
+    sources, entries = load_manifest(manifest)
+    roots = resolve_source_roots(sources)
     names = {entry["name"] for entry in entries}
+    managed_roots = [r for r in roots.values() if r is not None]
     findings: list[tuple[str, str, str]] = []
 
     for entry in entries:
         name = entry["name"]
-        source = COMMON_SKILLS / name
+        source_name = entry.get("source") or ""
+        project_root = roots[source_name]
         link = root / name
         note = entry.get("note") or ""
         suffix = f" ({note})" if note else ""
-        if not source.is_dir():
-            findings.append(("stale", name, f"manifest lists {source} but it does not exist{suffix}"))
+        if project_root is None:
+            findings.append(
+                (
+                    "stale",
+                    name,
+                    f"source project {source_name!r} not found on this machine "
+                    f"(tried ${source_env_var(source_name)}, $SKILL_SOURCES_DIR/{source_name}, "
+                    f"{REPO_ROOT.parent / source_name})",
+                )
+            )
             continue
+        if source_name:
+            matches = find_external_skill_dirs(project_root, name)
+            if not matches:
+                findings.append(("stale", name, f"no skills/*/{name} with SKILL.md under {project_root}{suffix}"))
+                continue
+            if len(matches) > 1:
+                found = ", ".join(str(m) for m in matches)
+                findings.append(("stale", name, f"ambiguous skill dirs under {project_root}: {found}{suffix}"))
+                continue
+            source = matches[0]
+        else:
+            source = COMMON_SKILLS / name
+            if not source.is_dir():
+                findings.append(("stale", name, f"manifest lists {source} but it does not exist{suffix}"))
+                continue
         stored = link_target(link)
         if stored is None:
             if not link.exists():
@@ -173,7 +270,7 @@ def plan(root: Path, manifest: Path) -> list[tuple[str, str, str]]:
         if through is not None and _same_file(through, source):
             # 链接经中间路径最终落到事实源（软链中转）时同样视为已收敛。
             findings.append(("ok", name, "already linked"))
-        elif _is_inside(stored, REPO_ROOT):
+        elif _is_inside(stored, project_root):
             findings.append(("fix", name, f"link points to {stored}, expected {source}"))
         else:
             findings.append(
@@ -183,13 +280,15 @@ def plan(root: Path, manifest: Path) -> list[tuple[str, str, str]]:
     if root.is_dir():
         for child in sorted(root.iterdir()):
             first_hop = link_target(child)
-            if first_hop is None:
+            if first_hop is None or child.name in names:
                 continue
-            # 只管「直接指向本仓库」的链接：经其他工作区软链中转再落到本仓库的，
-            # 第一跳在 repo 外，属于那套体系的管辖区，这里不碰也不提示。
-            if not _is_inside(first_hop, REPO_ROOT) or child.name in names:
+            # 只管「直接指向已声明来源项目」的链接：经其他工作区软链中转再落入的，
+            # 第一跳在来源项目外，属于那套体系的管辖区，这里不碰也不提示。
+            owner = next((mr for mr in managed_roots if _is_inside(first_hop, mr)), None)
+            if owner is None:
                 continue
-            findings.append(("extra", child.name, f"user-scope link into this repo not in manifest: {first_hop}"))
+            label = owner.name or REPO_ROOT.name
+            findings.append(("extra", child.name, f"user-scope link into managed source {label} not in manifest: {first_hop}"))
     return findings
 
 
@@ -301,7 +400,9 @@ def run_apply(args: argparse.Namespace) -> int:
     root = skills_root(args)
     manifest = Path(args.manifest).expanduser().resolve()
     whitelist = whitelist_path(args, root)
-    entries = load_manifest(manifest)
+    sources, entries = load_manifest(manifest)
+    roots = resolve_source_roots(sources)
+    entry_by_name = {entry["name"]: entry for entry in entries}
     whitelisted = {entry["name"] for entry in load_whitelist(whitelist)}
     findings = plan(root, manifest)
 
@@ -312,14 +413,15 @@ def run_apply(args: argparse.Namespace) -> int:
 
     unresolved = 0
     for kind, name, detail in findings:
-        source = COMMON_SKILLS / name
         link = root / name
         if kind == "ok":
             print(f"[ok] {name}: already linked")
         elif kind == "create":
+            source = entry_source_dir(entry_by_name[name], roots)
             make_link(source, link)
             print(f"[created] {name}: {link} -> {source}")
         elif kind == "fix":
+            source = entry_source_dir(entry_by_name[name], roots)
             relink(link, source)
             print(f"[fixed] {name}: now {link} -> {source}")
         elif kind == "extra":
@@ -382,24 +484,51 @@ def run_register(args: argparse.Namespace) -> int:
     name = args.skill
     if not NAME_PATTERN.fullmatch(name):
         raise SystemExit(f"invalid --skill {name!r}: use kebab-case like 'my-skill'")
-    source = COMMON_SKILLS / name
-    if not source.is_dir():
-        raise SystemExit(f"skill directory not found: {source}; nothing to register")
-    if not manifest.is_file():
+    if manifest.is_file():
+        sources, entries = load_manifest(manifest)
+    else:
         # 首次使用：用默认头部初始化空清单，避免要求手工准备文件。
-        dump_manifest(manifest, [])
+        sources, entries = [], []
+        dump_manifest(manifest, sources, entries)
         print(f"[initialized] empty manifest at {manifest}")
-    entries = load_manifest(manifest)
+    source_name = args.source or ""
+    if source_name:
+        if not NAME_PATTERN.fullmatch(source_name):
+            raise SystemExit(f"invalid --source {source_name!r}: use kebab-case like 'my-project'")
+        if not any(src["name"] == source_name for src in sources):
+            sources.append({"name": source_name})
+            print(f"[declared] source project {source_name} in {manifest}")
+    roots = resolve_source_roots(sources)
+    if source_name:
+        project_root = roots[source_name]
+        if project_root is None:
+            print(f"[warning] source project {source_name!r} not found on this machine; registered without local verification")
+        else:
+            matches = find_external_skill_dirs(project_root, name)
+            if len(matches) != 1:
+                raise SystemExit(
+                    f"expected exactly one skills/*/{name} with SKILL.md under {project_root}, "
+                    f"found {len(matches)}; nothing to register"
+                )
+    elif not (COMMON_SKILLS / name).is_dir():
+        raise SystemExit(f"skill directory not found: {COMMON_SKILLS / name}; nothing to register")
     note = (args.note or "").strip()
     for entry in entries:
         if entry["name"] == name:
             entry["note"] = note or entry.get("note") or ""
-            dump_manifest(manifest, entries)
+            if source_name:
+                entry["source"] = source_name
+            dump_manifest(manifest, sources, entries)
             print(f"[updated] manifest entry for {name}" + (f" ({note})" if note else ""))
             return 0
-    entries.append({"name": name, "note": note})
-    dump_manifest(manifest, entries)
-    print(f"[registered] {name} in {manifest}" + (f" ({note})" if note else ""))
+    new_entry: dict = {"name": name}
+    if source_name:
+        new_entry["source"] = source_name
+    new_entry["note"] = note
+    entries.append(new_entry)
+    dump_manifest(manifest, sources, entries)
+    label = f" ({source_name})" if source_name else ""
+    print(f"[registered] {name} in {manifest}{label}" + (f" ({note})" if note else ""))
     return 0
 
 
@@ -408,18 +537,18 @@ def run_remove(args: argparse.Namespace) -> int:
     name = args.skill
     if not manifest.is_file():
         raise SystemExit(f"manifest not found: {manifest}")
-    entries = load_manifest(manifest)
+    sources, entries = load_manifest(manifest)
     remaining = [entry for entry in entries if entry["name"] != name]
     if len(remaining) == len(entries):
         raise SystemExit(f"skill {name!r} is not in {manifest}")
-    dump_manifest(manifest, remaining)
+    dump_manifest(manifest, sources, remaining)
     print(f"[removed] {name} from {manifest} (user-scope symlink, if any, is left untouched)")
     return 0
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     epilog = """输出结果定义:
-  stdout 逐条报告 [ok|created|fixed|deleted|whitelisted|skipped|created|conflict|stale] 与 summary 计数
+  stdout 逐条报告 [ok|created|fixed|deleted|whitelisted|skipped|conflict|stale] 与 summary 计数
   退出码: 0=已收敛; 1=存在漂移或未解决 conflict/stale; 2=用法或环境错误
 
 调用范例:
@@ -427,7 +556,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
   %(prog)s --mode apply                      # 执行同步，删除候选交互确认
   printf 'k\\n' | %(prog)s --mode apply      # 非交互保留并写入白名单
   %(prog)s --mode apply --yes                # 非交互直接删除 extra
-  %(prog)s --mode register --skill my-skill --note "一句话用途"
+  %(prog)s --mode register --skill my-skill
+  %(prog)s --mode register --source mattpocock-skills --skill handoff
   %(prog)s --mode remove --skill my-skill"""
     parser = argparse.ArgumentParser(
         description="Sync user-scope skill symlinks per config/skill-symlinks.yaml (see module docstring for the full contract).",
@@ -436,6 +566,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--mode", choices=("check", "apply", "register", "remove"), default="check")
     parser.add_argument("--skill", help="skill name for register/remove (required for those modes)")
+    parser.add_argument("--source", default="", help="register: external source project (must be declared in manifest sources; auto-declared when missing)")
     parser.add_argument("--note", default="", help="optional note recorded with register")
     parser.add_argument("--manifest", default=str(DEFAULT_MANIFEST))
     parser.add_argument("--skills-dir", default="", help="user-scope skills dir (default: $AGENTS_HOME/skills or ~/.agents/skills)")
