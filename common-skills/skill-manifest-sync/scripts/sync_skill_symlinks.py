@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""按仓库清单同步本机 user-scope skill 软链。
+r"""按仓库清单同步本机 user-scope skill 软链。
 
 脚本定义：
     读取仓库 `config/skill-symlinks.yaml`（推荐 user-scope 软链清单），把当前电脑的
@@ -39,6 +39,9 @@
       提交进仓库会把一台电脑的特殊决定强加给所有其他电脑。
     - register/remove 重写清单时保留 `skills:` 之前的头部注释，其余结构由脚本规范化
       （按 name 排序），保证 diff 稳定可读。
+    - Windows 兼容：优先创建 NTFS 符号链接（需管理员或开发者模式）；无特权时对目录
+      退回 Junction（等价 mklink /J，无需特权）。链接识别用 os.readlink 而非
+      Path.is_symlink()——后者不识别 Junction；Junction 存储目标带 \\?\ 前缀，比较前归一化。
 """
 
 from __future__ import annotations
@@ -151,37 +154,40 @@ def plan(root: Path, manifest: Path) -> list[tuple[str, str, str]]:
         if not source.is_dir():
             findings.append(("stale", name, f"manifest lists {source} but it does not exist{suffix}"))
             continue
-        if not link.exists() and not link.is_symlink():
-            findings.append(("create", name, f"link {link} -> {source}"))
+        stored = link_target(link)
+        if stored is None:
+            if not link.exists():
+                findings.append(("create", name, f"link {link} -> {source}"))
+            else:
+                findings.append(
+                    ("conflict", name, f"{link} is a real directory/file, not managed here{suffix}")
+                )
             continue
-        if not link.is_symlink():
-            findings.append(
-                ("conflict", name, f"{link} is a real directory/file, not managed here{suffix}")
-            )
+        if _same_file(stored, source):
+            findings.append(("ok", name, "already linked"))
             continue
         try:
-            target = link.resolve()
+            through = link.resolve()
         except OSError:
-            target = Path(os.readlink(link))
-        if target == source.resolve():
+            through = None
+        if through is not None and _same_file(through, source):
+            # 链接经中间路径最终落到事实源（软链中转）时同样视为已收敛。
             findings.append(("ok", name, "already linked"))
-        elif target.is_relative_to(REPO_ROOT):
-            findings.append(("fix", name, f"link points to {target}, expected {source}"))
+        elif _is_inside(stored, REPO_ROOT):
+            findings.append(("fix", name, f"link points to {stored}, expected {source}"))
         else:
             findings.append(
-                ("conflict", name, f"{link} is owned by another checkout: {target}{suffix}")
+                ("conflict", name, f"{link} is owned by another checkout: {stored}{suffix}")
             )
 
     if root.is_dir():
         for child in sorted(root.iterdir()):
-            if not child.is_symlink():
+            first_hop = link_target(child)
+            if first_hop is None:
                 continue
             # 只管「直接指向本仓库」的链接：经其他工作区软链中转再落到本仓库的，
             # 第一跳在 repo 外，属于那套体系的管辖区，这里不碰也不提示。
-            first_hop = Path(os.readlink(child))
-            if not first_hop.is_absolute():
-                first_hop = (child.parent / first_hop).resolve()
-            if not first_hop.is_relative_to(REPO_ROOT) or child.name in names:
+            if not _is_inside(first_hop, REPO_ROOT) or child.name in names:
                 continue
             findings.append(("extra", child.name, f"user-scope link into this repo not in manifest: {first_hop}"))
     return findings
@@ -219,8 +225,52 @@ def add_to_whitelist(path: Path, name: str, reason: str) -> None:
     path.write_text(f"{WHITELIST_HEADER}{body}\n", encoding="utf-8")
 
 
+def link_target(link: Path) -> Path | None:
+    r"""链接的存储目标（首跳，绝对化并去掉 Windows \\?\ 前缀）；非链接返回 None。
+
+    用 os.readlink 而非 Path.is_symlink() 判定：Windows 上 Junction 不是符号链接，
+    is_symlink() 会漏判；os.readlink 对符号链接和 Junction 都有效。
+    """
+    try:
+        raw = os.readlink(link)
+    except (OSError, ValueError):
+        return None
+    target = Path(raw)
+    if not target.is_absolute():
+        target = link.parent / target
+        try:
+            target = target.resolve()
+        except OSError:
+            pass
+    text = str(target)
+    if text.startswith("\\\\?\\"):
+        text = text[4:]
+    return Path(text)
+
+
+def _normkey(path: Path) -> str:
+    return os.path.normcase(os.path.normpath(str(path)))
+
+
+def _same_file(a: Path, b: Path) -> bool:
+    return _normkey(a) == _normkey(b)
+
+
+def _is_inside(child: Path, parent: Path) -> bool:
+    c, p = _normkey(child), _normkey(parent)
+    return c == p or c.startswith(p.rstrip(os.sep) + os.sep)
+
+
 def make_link(source: Path, link: Path) -> None:
-    link.symlink_to(source, target_is_directory=True)
+    try:
+        link.symlink_to(source, target_is_directory=True)
+    except OSError:
+        if sys.platform != "win32":
+            raise
+        # 无符号链接特权时的 Windows 回退：目录用 Junction，等价 mklink /J，无需特权。
+        import _winapi
+
+        _winapi.CreateJunction(str(source), str(link))
 
 
 def relink(link: Path, source: Path) -> None:
