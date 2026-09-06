@@ -105,12 +105,12 @@ class AutoreviewCursorTests(unittest.TestCase):
 
 
 class AutoreviewPriorityTests(unittest.TestCase):
-    def test_default_priority_is_p0_when_env_unset(self) -> None:
+    def test_default_priority_is_p1_when_env_unset(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("AUTOREVIEW_MAX_PRIORITY", None)
             with mock.patch.object(sys, "argv", ["autoreview"]):
                 args = AUTOREVIEW.parse_args()
-        self.assertEqual(args.max_priority, "P0")
+        self.assertEqual(args.max_priority, "P1")
 
     def test_env_max_priority_is_honored(self) -> None:
         with mock.patch.dict(os.environ, {"AUTOREVIEW_MAX_PRIORITY": "P1"}):

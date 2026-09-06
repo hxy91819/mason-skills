@@ -9671,6 +9671,142 @@ def codex_auth_config_flags(repo: Path, *, force_file: bool = False) -> list[str
     return flags
 
 
+# `--ignore-user-config` also drops a custom `model_provider`, which silently
+# sends the review to api.openai.com. Rebuild that provider from the user's own
+# external CODEX_HOME config with a fixed key allowlist so proxy setups keep
+# working without forwarding capability-bearing settings.
+CODEX_PROVIDER_FORWARDED_KEYS = {
+    "name": str,
+    "base_url": str,
+    "wire_api": str,
+    "requires_openai_auth": bool,
+    "supports_websockets": bool,
+    "request_max_retries": int,
+    "stream_max_retries": int,
+    "stream_idle_timeout_ms": int,
+    "websocket_connect_timeout_ms": int,
+}
+CODEX_PROVIDER_AUTH_COMMAND_ENV = "AUTOREVIEW_CODEX_PROVIDER_API_KEY"
+CODEX_PROVIDER_AUTH_COMMAND_TIMEOUT_SECONDS = 30
+
+
+class CodexProviderConfig(NamedTuple):
+    name: str
+    flags: list[str]
+    env: dict[str, str]
+
+
+def safe_provider_base_url(value: str) -> bool:
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        _ = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.scheme.lower() in {"http", "https"}
+        and bool(parsed.hostname)
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.query
+        and not parsed.fragment
+    )
+
+
+def resolve_codex_provider_auth_command(repo: Path, provider: str, raw: Any) -> str:
+    argv = [raw] if isinstance(raw, str) else raw
+    if (
+        not isinstance(argv, list)
+        or not argv
+        or not all(isinstance(item, str) and item for item in argv)
+    ):
+        raise SystemExit(
+            f"codex provider {provider} auth.command must be a non-empty string or string list"
+        )
+    executable = Path(argv[0])
+    if not executable.is_absolute() or not external_env_path(repo, str(executable)):
+        raise SystemExit(
+            f"codex provider {provider} auth.command must be an absolute path outside the reviewed repository"
+        )
+    if not executable.is_file() or not os.access(executable, os.X_OK):
+        raise SystemExit(f"codex provider {provider} auth.command is not executable: {executable}")
+    # Runs with the caller's real HOME on purpose: the isolated Codex home would
+    # hide the credential files a user-owned helper typically reads.
+    try:
+        result = subprocess.run(
+            argv,
+            cwd=safe_temp_root(repo),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=CODEX_PROVIDER_AUTH_COMMAND_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise SystemExit(f"codex provider {provider} auth.command failed: {exc}") from exc
+    if result.returncode != 0:
+        raise SystemExit(
+            f"codex provider {provider} auth.command exited {result.returncode}\n{result.stderr.strip()}"
+        )
+    token = result.stdout.strip()
+    if not token:
+        raise SystemExit(f"codex provider {provider} auth.command printed no credential")
+    return token
+
+
+def codex_provider_config(repo: Path) -> CodexProviderConfig | None:
+    codex_home = codex_source_home(repo)
+    if codex_home is None:
+        return None
+    config = load_codex_auth_config(codex_home / "config.toml")
+    provider = config.get("model_provider")
+    if not isinstance(provider, str) or not provider.strip() or provider == "openai":
+        return None
+    # Codex `-c` does not parse quoted key segments, so only bare TOML keys can
+    # be rebuilt on the command line.
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", provider):
+        raise SystemExit(
+            f"codex model_provider {provider!r} cannot be forwarded to the review run; "
+            "rename it to letters, digits, '_' or '-' in CODEX_HOME/config.toml"
+        )
+    providers = config.get("model_providers")
+    settings = providers.get(provider) if isinstance(providers, dict) else None
+    if not isinstance(settings, dict):
+        raise SystemExit(
+            f"codex config selects model_provider {provider!r} but defines no matching model_providers entry"
+        )
+    base_url = settings.get("base_url")
+    if not isinstance(base_url, str) or not safe_provider_base_url(base_url):
+        raise SystemExit(
+            f"codex provider {provider} base_url must be a credential-free http(s) URL"
+        )
+    prefix = f"model_providers.{provider}"
+    flags = ["-c", f"model_provider={json.dumps(provider)}"]
+    for key, expected in CODEX_PROVIDER_FORWARDED_KEYS.items():
+        value = settings.get(key)
+        if value is None or isinstance(value, bool) != (expected is bool) or not isinstance(value, expected):
+            continue
+        rendered = json.dumps(value) if expected is str else str(value).lower()
+        flags.extend(["-c", f"{prefix}.{key}={rendered}"])
+    env: dict[str, str] = {}
+    env_key = settings.get("env_key")
+    auth = settings.get("auth")
+    auth_command = auth.get("command") if isinstance(auth, dict) else None
+    if auth_command is not None:
+        env[CODEX_PROVIDER_AUTH_COMMAND_ENV] = resolve_codex_provider_auth_command(
+            repo, provider, auth_command
+        )
+        env_key = CODEX_PROVIDER_AUTH_COMMAND_ENV
+    elif isinstance(env_key, str) and env_key:
+        value = os.environ.get(env_key)
+        if not value:
+            raise SystemExit(
+                f"codex provider {provider} expects credential variable {env_key}, which is not set"
+            )
+        env[env_key] = value
+    if isinstance(env_key, str) and env_key:
+        flags.extend(["-c", f"{prefix}.env_key={json.dumps(env_key)}"])
+    return CodexProviderConfig(provider, flags, env)
+
+
 def prepare_codex_runtime_auth(
     repo: Path,
     runtime_codex_home: Path,
@@ -10061,6 +10197,7 @@ def codex_command(
     model: str | None,
     *,
     force_file_auth: bool = False,
+    provider_flags: list[str] | None = None,
 ) -> list[str]:
     cmd = [resolve_command(args.codex_bin, source_repo), "--ask-for-approval", "never"]
     if args.web_search:
@@ -10079,6 +10216,7 @@ def codex_command(
         cmd.extend(["-c", speed_override])
     cmd.extend(codex_config_isolation_flags(review_root, runtime_root))
     cmd.extend(codex_auth_config_flags(source_repo, force_file=force_file_auth))
+    cmd.extend(provider_flags or [])
     cmd.append("exec")
     if args.stream_engine_output:
         cmd.append("--json")
@@ -10148,10 +10286,14 @@ def run_codex(args: argparse.Namespace, repo: Path, prompt: str) -> str:
             ):
                 path.mkdir(parents=True, exist_ok=True)
             file_auth_linked = prepare_codex_runtime_auth(repo, runtime_codex_home)
+            provider = codex_provider_config(repo)
             source_codex_home = codex_source_home(repo)
+            # A custom provider authenticates through env/auth.command, so it
+            # never needs the source home; keeping it would also load the
+            # user's global AGENTS.md into the review prompt.
             active_codex_home = (
                 runtime_codex_home
-                if file_auth_linked or source_codex_home is None
+                if file_auth_linked or source_codex_home is None or provider is not None
                 else source_codex_home
             )
             for index, model in enumerate(models):
@@ -10165,6 +10307,7 @@ def run_codex(args: argparse.Namespace, repo: Path, prompt: str) -> str:
                     output_path,
                     model,
                     force_file_auth=file_auth_linked,
+                    provider_flags=provider.flags if provider else None,
                 )
                 result = run_with_heartbeat(
                     cmd,
@@ -10188,6 +10331,7 @@ def run_codex(args: argparse.Namespace, repo: Path, prompt: str) -> str:
                             # Linked file auth uses the isolated home; keyring/auto must
                             # retain the source namespace until Codex supports an auth split.
                             "CODEX_HOME": str(active_codex_home),
+                            **(provider.env if provider else {}),
                         },
                     ),
                     resolve_root=repo,
@@ -12160,8 +12304,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-priority",
         choices=["P0", "P1", "P2", "P3"],
-        default=os.environ.get("AUTOREVIEW_MAX_PRIORITY", "P0"),
-        help="Widest finding priority to report. Env default: AUTOREVIEW_MAX_PRIORITY. Built-in default: P0.",
+        default=os.environ.get("AUTOREVIEW_MAX_PRIORITY", "P1"),
+        help="Widest finding priority to report. Env default: AUTOREVIEW_MAX_PRIORITY. Built-in default: P1.",
     )
     parser.add_argument("--output", help="Write human output to a file as well as stdout.")
     parser.add_argument("--json-output", help="Write validated structured review JSON.")

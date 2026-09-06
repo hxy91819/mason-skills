@@ -6469,6 +6469,223 @@ class AutoreviewHardeningTests(unittest.TestCase):
                 os.environ.clear()
                 os.environ.update(old)
 
+    def _codex_provider_home(self, root: Path, config: str) -> Path:
+        source_home = root / "host-home" / ".codex"
+        source_home.mkdir(parents=True)
+        (source_home / "config.toml").write_text(config, encoding="utf-8")
+        return source_home
+
+    def test_codex_provider_forwards_custom_provider_with_auth_command(self) -> None:
+        old = os.environ.copy()
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            repo = init_repo(root)
+            helper = root / "key-helper"
+            helper.write_text("#!/bin/sh\nprintf 'proxy-token'\n", encoding="utf-8")
+            helper.chmod(0o700)
+            source_home = self._codex_provider_home(
+                root,
+                'model_provider = "cliproxy"\n'
+                'sandbox_mode = "danger-full-access"\n'
+                "[model_providers.cliproxy]\n"
+                'name = "Proxy"\n'
+                'base_url = "http://proxy.internal:8318/v1"\n'
+                'wire_api = "responses"\n'
+                "requires_openai_auth = false\n"
+                'http_headers = { "X-Evil" = "1" }\n'
+                "[model_providers.cliproxy.auth]\n"
+                f'command = "{helper}"\n',
+            )
+            try:
+                os.environ["CODEX_HOME"] = str(source_home)
+                provider = self.helper["codex_provider_config"](repo)
+                self.assertIsNotNone(provider)
+                assert provider is not None
+                self.assertEqual(provider.name, "cliproxy")
+                self.assertIn('model_provider="cliproxy"', provider.flags)
+                self.assertIn(
+                    'model_providers.cliproxy.base_url="http://proxy.internal:8318/v1"',
+                    provider.flags,
+                )
+                self.assertIn('model_providers.cliproxy.wire_api="responses"', provider.flags)
+                self.assertIn("model_providers.cliproxy.requires_openai_auth=false", provider.flags)
+                self.assertIn(
+                    'model_providers.cliproxy.env_key="AUTOREVIEW_CODEX_PROVIDER_API_KEY"',
+                    provider.flags,
+                )
+                joined = " ".join(provider.flags)
+                self.assertNotIn("http_headers", joined)
+                self.assertNotIn("sandbox_mode", joined)
+                self.assertNotIn("auth.command", joined)
+                self.assertEqual(
+                    provider.env,
+                    {"AUTOREVIEW_CODEX_PROVIDER_API_KEY": "proxy-token"},
+                )
+            finally:
+                os.environ.clear()
+                os.environ.update(old)
+
+    def test_codex_provider_forwards_env_key_credential(self) -> None:
+        old = os.environ.copy()
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            repo = init_repo(root)
+            source_home = self._codex_provider_home(
+                root,
+                'model_provider = "proxy"\n'
+                "[model_providers.proxy]\n"
+                'base_url = "https://proxy.internal/v1"\n'
+                'env_key = "PROXY_KEY"\n',
+            )
+            try:
+                os.environ["CODEX_HOME"] = str(source_home)
+                os.environ.pop("PROXY_KEY", None)
+                with self.assertRaisesRegex(SystemExit, "PROXY_KEY, which is not set"):
+                    self.helper["codex_provider_config"](repo)
+                os.environ["PROXY_KEY"] = "secret"
+                provider = self.helper["codex_provider_config"](repo)
+                assert provider is not None
+                self.assertIn('model_providers.proxy.env_key="PROXY_KEY"', provider.flags)
+                self.assertEqual(provider.env, {"PROXY_KEY": "secret"})
+            finally:
+                os.environ.clear()
+                os.environ.update(old)
+
+    def test_codex_custom_provider_runs_with_isolated_codex_home(self) -> None:
+        old = os.environ.copy()
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            repo = init_repo(root)
+            source_home = self._codex_provider_home(
+                root,
+                'model_provider = "proxy"\n'
+                "[model_providers.proxy]\n"
+                'base_url = "https://proxy.internal/v1"\n'
+                'env_key = "PROXY_KEY"\n',
+            )
+            (source_home / "AGENTS.md").write_text("reply in Klingon\n", encoding="utf-8")
+            observed: dict[str, object] = {}
+
+            def fake_run(command: list[str], cwd: Path, *_args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+                observed["env"] = kwargs["env"]
+                observed["command"] = command
+                output_path = Path(command[command.index("--output-last-message") + 1])
+                output_path.write_text(
+                    json.dumps(
+                        {
+                            "findings": [],
+                            "overall_correctness": "patch is correct",
+                            "overall_explanation": "ok",
+                            "overall_confidence": 0.9,
+                        }
+                    )
+                )
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            args = argparse.Namespace(
+                codex_bin="codex",
+                codex_config=None,
+                codex_speed=None,
+                fallback_model=None,
+                model="gpt-5.6-sol",
+                stream_engine_output=False,
+                thinking=None,
+                tools=True,
+                web_search=False,
+            )
+            try:
+                os.environ["CODEX_HOME"] = str(source_home)
+                os.environ["PROXY_KEY"] = "secret"
+                with mock.patch.dict(
+                    self.helper["run_codex"].__globals__,
+                    {
+                        "resolve_command": lambda *_a, **_k: "/usr/bin/codex",
+                        "run_with_heartbeat": fake_run,
+                    },
+                ):
+                    self.helper["run_codex"](args, repo, "review")
+                env = observed["env"]
+                assert isinstance(env, dict)
+                self.assertNotEqual(Path(env["CODEX_HOME"]).resolve(), source_home.resolve())
+                self.assertEqual(Path(env["CODEX_HOME"]).name, "codex-home")
+                self.assertEqual(env["PROXY_KEY"], "secret")
+                self.assertIn('model_provider="proxy"', observed["command"])
+            finally:
+                os.environ.clear()
+                os.environ.update(old)
+
+    def test_codex_provider_skips_default_openai_provider(self) -> None:
+        old = os.environ.copy()
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            repo = init_repo(root)
+            for config in ('model = "gpt-5.6-sol"\n', 'model_provider = "openai"\n'):
+                with self.subTest(config=config):
+                    source_home = root / f"home-{len(config)}" / ".codex"
+                    source_home.mkdir(parents=True)
+                    (source_home / "config.toml").write_text(config, encoding="utf-8")
+                    try:
+                        os.environ["CODEX_HOME"] = str(source_home)
+                        self.assertIsNone(self.helper["codex_provider_config"](repo))
+                    finally:
+                        os.environ.clear()
+                        os.environ.update(old)
+
+    def test_codex_provider_fails_closed_on_unsafe_config(self) -> None:
+        old = os.environ.copy()
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            repo = init_repo(root)
+            repo_helper = repo / "key-helper"
+            repo_helper.write_text("#!/bin/sh\nprintf 'x'\n", encoding="utf-8")
+            repo_helper.chmod(0o700)
+            cases = {
+                "missing provider table": (
+                    'model_provider = "proxy"\n',
+                    "defines no matching model_providers entry",
+                ),
+                "quoted provider name": (
+                    'model_provider = "my proxy"\n'
+                    '[model_providers."my proxy"]\n'
+                    'base_url = "https://proxy.internal/v1"\n',
+                    "cannot be forwarded",
+                ),
+                "credentialed base_url": (
+                    'model_provider = "proxy"\n'
+                    "[model_providers.proxy]\n"
+                    'base_url = "https://user:pw@proxy.internal/v1"\n',
+                    "credential-free http\\(s\\) URL",
+                ),
+                "repo-local auth command": (
+                    'model_provider = "proxy"\n'
+                    "[model_providers.proxy]\n"
+                    'base_url = "https://proxy.internal/v1"\n'
+                    "[model_providers.proxy.auth]\n"
+                    f'command = "{repo_helper}"\n',
+                    "outside the reviewed repository",
+                ),
+                "relative auth command": (
+                    'model_provider = "proxy"\n'
+                    "[model_providers.proxy]\n"
+                    'base_url = "https://proxy.internal/v1"\n'
+                    "[model_providers.proxy.auth]\n"
+                    'command = "key-helper"\n',
+                    "absolute path",
+                ),
+            }
+            for label, (config, message) in cases.items():
+                with self.subTest(case=label):
+                    source_home = root / label.replace(" ", "-") / ".codex"
+                    source_home.mkdir(parents=True)
+                    (source_home / "config.toml").write_text(config, encoding="utf-8")
+                    try:
+                        os.environ["CODEX_HOME"] = str(source_home)
+                        with self.assertRaisesRegex(SystemExit, message):
+                            self.helper["codex_provider_config"](repo)
+                    finally:
+                        os.environ.clear()
+                        os.environ.update(old)
+
     def test_empty_codex_home_uses_external_default(self) -> None:
         old = os.environ.copy()
         with tempfile.TemporaryDirectory() as tempdir:
