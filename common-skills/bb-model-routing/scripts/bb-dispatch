@@ -55,6 +55,16 @@ def unique(items, key, value, label):
     return matches[0]
 
 
+def thread_title(title, task):
+    text = " ".join((title or "").split()) or " ".join(task.split())
+    while text == "[Agent]" or text.startswith("[Agent] "):
+        text = text[len("[Agent]"):].strip()
+    text = text or "任务"
+    if len(text) > 80:
+        text = text[:79] + "…"
+    return "[Agent] " + text
+
+
 def dispatch(args, call=bb):
     try:
         config = mapping(yaml.safe_load(Path(args.config).expanduser().read_text()), "config")
@@ -106,8 +116,8 @@ def dispatch(args, call=bb):
                "--permission-mode", permission, "--prompt", args.task]
     if reasoning is not None:
         command += ["--reasoning-level", reasoning]
-    if args.title:
-        command += ["--title", args.title]
+    title = thread_title(args.title, args.task)
+    command += ["--title", title]
     # 当前线程属于目标项目和环境时才自动关联，跨项目派发不能误继承父线程。
     parent = context.get("thread") or {}
     if not parent and os.environ.get("BB_THREAD_ID"):
@@ -120,7 +130,7 @@ def dispatch(args, call=bb):
         command += ["--parent-thread", parent["id"]]
     plan = dict(project=project, environment=environment, agent=alias, provider=provider,
                 model=model, reasoning=reasoning, permission_mode=permission,
-                difficulty=args.difficulty, kind=args.kind)
+                difficulty=args.difficulty, kind=args.kind, title=title)
     if args.dry_run:
         return {"dry_run": True, "selection": plan, "argv": ["bb", *command, "--json"]}
     result = call(*command)
@@ -140,7 +150,7 @@ def parser():
     p.add_argument("--project", help="项目 ID；默认目标环境所属项目")
     p.add_argument("--environment", help="现有环境 ID；默认当前 BB 环境")
     p.add_argument("--permission-mode", choices=["accept-edits", "auto", "full"], help="已获授权的权限；默认用户配置或 accept-edits")
-    p.add_argument("--title", help="可选线程标题")
+    p.add_argument("--title", help="可选标题正文；自动加 [Agent] 前缀，省略时从任务文本截取")
     p.add_argument("--dry-run", action="store_true", help="只读校验并输出启动参数，不创建线程")
     return p
 

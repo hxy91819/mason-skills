@@ -32,6 +32,8 @@ bb-dispatch --difficulty medium --kind debug --task '<任务目标、范围与�
 
 并发任务可能产生修改冲突时，可以使用 `use-worktree` 隔离；无冲突时沿用当前环境。操作前检查分支、工作区和 worktree，遵守用户授权及当前 git wrapper；拦截时按 stderr 和 `git --wrapper-help` 处理，不绕过。隔离环境准备好后用 `--environment` 指定，脚本只使用已有 BB 环境。
 
+派发标题由脚本统一加 `[Agent]` 前缀；需要简短标题时传 `--title`，省略时从任务文本截取。
+
 根据返回结果报告线程 ID、实际选择和状态。创建成功不代表任务完成；创建结果不明时先查询线程，避免重复派发。
 
 ## 可观测性

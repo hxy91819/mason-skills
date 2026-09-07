@@ -121,6 +121,23 @@ environments:
         self.assertIsNone(result['selection']['reasoning'])
         self.assertNotIn('--reasoning-level', result['argv'])
 
+    def test_titles_are_prefixed_in_preview_and_spawn(self):
+        cases = [(None, '[Agent] literal $(touch nope) "text"'),
+                 ('修复登录', '[Agent] 修复登录'),
+                 ('  [Agent] [Agent] 修复\n登录 ', '[Agent] 修复 登录'),
+                 ('[Agent]', '[Agent] 任务'),
+                 ('文' * 100, '[Agent] ' + '文' * 79 + '…')]
+        for supplied, expected in cases:
+            for dry_run in (False, True):
+                with self.subTest(title=supplied, dry_run=dry_run):
+                    extra = ['--title', supplied] if supplied is not None else []
+                    if dry_run:
+                        extra += ['--dry-run']
+                    result = m.dispatch(self.args(*extra), self.fake)
+                    command = result['argv'] if dry_run else self.calls[-1]
+                    self.assertEqual(command[command.index('--title') + 1], expected)
+                    self.assertEqual(result['selection']['title'], expected)
+
     def test_spawn_failure_is_not_retried(self):
         def failing(*args):
             if args[:2] == ('thread', 'spawn'):
