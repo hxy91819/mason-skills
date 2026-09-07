@@ -1,24 +1,27 @@
 ---
 name: local-test
-description: Set up, run, and cleanly shut down a multi-service local test environment (DB/backend/frontend) for integration testing and verification. Use exclusively when the task requires spinning up or managing a local testing environment before deployment. Do not use for unit testing, ordinary code editing, code review, or remote-only deployment.
+description: Use only when actually starting, reusing, checking, or stopping a local multi-service integration or project-preview environment, or modifying its unified startup script. Do not use for ordinary code edits, unit tests, static HTML publishing, code review, or remote-only deployment.
 ---
 
 # Local Test 环境规范与治理
+
+流程类 skill；按用户明确要求允许隐式触发，也可显式调用 `$local-test`。只有任务实际涉及本地联调或项目预览环境的启停、复用、检查及统一脚本维护时才采用。
 
 ## 门禁适用范围
 
 **仅在以下场景触发**：
 * 需要在本地搭建或启动多服务联调环境（包含数据库、后端、前端等）进行本地集成测试与功能验收；
-* 远端/云上发布或验证受阻，需要切换为在本地闭环验证功能；
+* 已决定转为本地联调，并实际需要启动或复用该环境（仅远端发布受阻本身不触发）；
 * 编写或维护项目的本地统一启停与生命周期脚本（如 `bin/dev`）。
 
 **非目标（严禁触发）**：
 * 单纯运行单元测试（如 `go test ./...`、`npm test`、`pytest`）；
 * 普通的代码逻辑修改、重构或 Bug 修复；
 * 代码评审（Code Review）或文档编写；
+* 发布生成的静态 HTML 给用户查看（使用 `html-preview`，不启动项目服务）；
 * 纯远端服务器部署或云端 CI/CD 配置。
 
-在面对复杂业务交付、云端流程阻塞或多服务联调时，**优先在本地构建测试环境完成功能闭环与验收**。通过统一脚本收敛本地服务的启动、停止与安全访问。
+触发后，通过统一脚本管理本地服务并完成所需联调验收；不因代码变更或一般验证需求自动搭建多服务环境。
 
 ## 1. 启动策略与服务选型
 
@@ -29,73 +32,56 @@ description: Set up, run, and cleanly shut down a multi-service local test envir
 
 ## 2. 进程生命周期与数据保留
 
-* **启停完整性**：管理脚本必须同时支持启动（`start`）、停止（`stop`）与状态检查（`status`），或者支持前台模式通过 `trap` 捕获 `INT/TERM` 优雅退出。
-* **彻底干净收敛**：
+### 何时复用、保留与停止
+
+环境生命周期覆盖同一项目需求的开发、联调和用户预览验收，可跨多轮对话持续运行。每次继续任务先检查 `status` 和必要的健康状态，复用归属明确、适用于当前工作目录与配置的服务；仅补启缺失服务，代码热更新可生效时直接复用，确需重启时只重启受影响服务。
+
+* **保持运行**：需求仍在开发或修复、后续仍需联调、用户仍需预览、正在等待用户反馈或验收时，保留所需服务及其依赖。单轮回复结束、一次测试通过、提交或推送完成、短暂无请求，都不代表环境已无用途。
+* **停止资源**：用户明确要求停止，或上下文已明确该需求结束/取消且没有后续预览、验收、联调或其他使用者依赖时，停止本环境不再需要的服务。可独立释放已完成用途的一次性测试进程；仍支撑预览的数据库等依赖继续保留。
+* **用途不明确**：暂时保留并在交付中简短说明运行状态与预览地址，不为每轮保留重复询问。后续上下文明确不再需要时再停止；不凭空设定空闲超时或定时回收。
+* **交接**：交付时说明环境保留还是停止；保留时给出预览 URL、入口登录 URL 和停止命令，停止时说明原因。检查资源归属及共享依赖，只操作本环境拥有且不再被使用的资源。
+
+### 确定停止后的执行约束
+
+* **启停完整性**：管理脚本必须同时支持启动（`start`）、停止（`stop`）与状态检查（`status`）。需跨轮预览的服务采用能持续运行的托管方式；前台 `trap` 清理仅适用于结束后确实不再需要的一次性任务。
+* **停止完整性**：
   - 记录各服务 PID，停止时通过 `SIGTERM`（超时转 `SIGKILL`）确保所有进程退出；
   - 检查并清理对应端口，杜绝后台孤儿进程与端口僵死占用。
 * **默认保留数据**：
   - 停止环境时仅关闭服务与容器，默认保留数据库数据文件与 Docker Volume；
   - 仅在用户明确提出“彻底重置本地测试数据”时，才清理数据卷。
 
-## 3. 安全隔离与对外网络暴露
+## 3. 子域名根路径预览
 
-在服务器环境调测时，必须防范未授权访问：
+默认架构：Mac 通配符 DNS + 受信任开发 CA + 服务器常驻共享 Caddy 与 Cookie 认证。每个环境使用独立的一级子域，如 `https://task-123.preview.test/`，共用 443。应用保持正式部署的根路径和 API 约定。
 
-* **内部服务严格隔离**：所有后端 API、数据库、缓存及监控端口，**强制仅监听 `127.0.0.1`**，严禁绑定 `0.0.0.0`，禁止直接对公网或内网其他机器暴露。
-* **前端暴露与可视化判断**：
-  - 检查当前环境是否具备本地可视化桌面环境；
-  - 若为无桌面服务器环境（Server/Cloud VM），前端页面必须通过统一的本地 Nginx 对外暴露。
-* **Nginx 统一反代与密码保护**：
-  - 仅允许 Nginx 监听对外端口（如 `18800` 等非敏感放通端口）；
-  - 对外入口必须强制启用统一密码保护（HTTP Basic Auth），拦截一切未经授权的探测。
-* **多服务路由命名空间（禁止独占根路径）**：
-  - Nginx 统一反代面向多服务共存设计，**严禁单一服务独占根路径 `/` 或全局 `/api/`**；
-  - 每个服务必须分配清晰的独立业务路由前缀（例如 `/operations/`、`/harness/`）；
-  - 服务内部的前端构建与路由必须适配该 base 前缀（如 Vite `base: '/service-name/'`、React Router `basename`），接口请求统一收敛在 `/service-name/api/`；
-  - 通过各自的独立 location 前缀路由转发，支持同一 Nginx 实例同端口平滑挂载多个微服务与工具，互不干扰。
+1. **检查前置条件**：确认域名后缀、证书位置、共享网关管理方式、认证方式和环境归属清单。首次配置 Mac 或解析/信任异常时读 [Mac 配置指引](references/macos-preview-setup.md)；首次配置服务器、注册/注销环境、代理或证书排障时读 [服务器配置方法](references/server-preview-setup.md)。缺少基础设施时报告具体缺口，继续可进行的本机测试，不擅自改成子路径预览。
+2. **分配环境**：登记唯一一级子域、前后端及认证实例本机端口、工作目录和归属；检查冲突，保留其他环境。注册配置按服务器文档的共享锁、校验和配置加载流程执行。
+3. **保持应用部署语义**：页面从 `/` 访问，Caddy 按 Host 分流，API/WS 保持原路径。不得仅为预览修改 Vite base、Router basename、业务 API 路径或生产默认配置。正式部署原本使用子路径或用户明确要求时才采用子路径；已有为旧预览添加的前缀须先确认用途，再移除仅用于预览的部分。
+4. **限定开发配置**：按需通过开发环境配置注入 allowed host、外部 URL、可信代理、HMR/WSS 地址和登录回调。Cookie 默认 host-only，不设置共享父域。无法完成真实认证回调时说明验收缺口，不将预览域名硬编码进业务代码。
+5. **网络与认证**：仅共享 Caddy 对外暴露，先用 OAuth2 Proxy Cookie 会话校验，再代理页面、API、静态资源和 WS。各项目共用账号库、独立 host-only 会话，平台自身登录不能替代入口认证。仅认证子请求清除 Authorization，业务 Bearer 头照常传递；认证失败或不可用时拒绝业务访问。宿主机服务监听 `127.0.0.1`，容器端口不发布或仅绑定宿主 loopback；旧 Nginx 可作为本机上游，旧对外端口不得绕过认证。各客户端单独配置 CA 信任，验收不跳过 TLS 校验。
+6. **验证和交接**：验证认证、页面/静态资源、深层路由刷新、API、WS/HMR、登录和 TLS，报告实际覆盖与缺口。按第 2 节判断环境保留或停止，收尾不自动执行 stop。验证停止隔离性时使用可停止的测试环境，不中断仍需使用的预览。共享网关常驻，项目 stop 只停自己的服务并保留数据；销毁环境才注销自己的路由。
 
-## 4. 架构与实现参考
+无桌面服务器上的浏览器预览采用以上入口；本机桌面调试可直接使用 localhost。用户明确选择独立端口等替代方式时遵从，同时说明 Cookie、解析和 TLS 的实际限制。
 
-脚本设计应保持精简，重点在于收敛与容错，Agent 可根据具体技术栈自由发挥。
+### 用户可访问地址的单一来源
 
-### Nginx 多服务统一反代骨架（带命名空间与密码保护）
+将内部监听地址、用户预览地址和入口登录地址分开记录。服务器的 `127.0.0.1`、`localhost`、`0.0.0.0` 和容器地址只用于内部诊断；除非确认浏览器就在同机或用户已建立对应本机隧道，否则不得作为交付链接。
 
-```nginx
-events { worker_connections 1024; }
-http {
-    server {
-        listen 18800;
-        server_name _;
+在启动脚本附近明确记录地址来源：推荐 `.local-test/preview-url` 保存一行完整的实际访问 URL，包含协议、主机、必要端口、页面路径及非敏感查询参数，脚本注释指出该文件用途，并由 `status` 输出。写入前确认 `.local-test/` 已被 `.gitignore` 或 `.git/info/exclude` 排除，使用 `git check-ignore` 验证；若文件已被跟踪，忽略规则不会生效，先报告并处理本次范围内的跟踪问题。也可在不提交 Git 的本机脚本中注释记录真实 URL；可提交模板只放通用示例和配置入口。入口登录地址另存 `.local-test/preview-login-url`，由 `status` 同时输出；未登录访问业务会返回 401，交付时同时提供 `[入口登录](实际登录URL)` 和目标页面链接。不要在 URL 中记录密码、token 或登录凭据。
 
-        auth_basic "Local Dev Area";
-        auth_basic_user_file /path/to/dev-htpasswd;
+给用户链接前，读取当前配置或 `status`，核对其对应当前环境和真实网关路由。按用户访问方式验证 DNS、TLS、认证入口及目标页面；只能在服务器验证时明确客户端尚未验证。缺少实际入口则说明缺口，不从开发服务器日志复制 localhost，也不编造未配置的子域名。交付使用 Markdown 完整链接 `[打开预览](实际URL)`；环境迁移、端口或目标页面改变时同步更新地址记录。停止后说明不可用，不将保存的 URL 当作运行证明。
 
-        # 业务服务 A (例如 operations: 前端 Vite + 后端 API)
-        location ^~ /operations/api/ {
-            proxy_pass http://127.0.0.1:8001/api/;
-            proxy_set_header Host $host;
-        }
-        location ^~ /operations/ {
-            proxy_pass http://127.0.0.1:5173/operations/;
-            proxy_http_version 1.1;
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection "upgrade";
-        }
-
-        # 业务服务 B (后续其他扩展服务示例)
-        # location ^~ /harness/ {
-        #     proxy_pass http://127.0.0.1:5174/harness/;
-        # }
-    }
-}
-```
+## 4. 启停模板与可观测性
 
 ### 启停收敛脚本预设模式 (`bin/dev`)
 
-复制 [assets/bin-dev-template.sh](assets/bin-dev-template.sh) 为项目 `bin/dev`，只填脚本头部“项目填空区”（compose 文件、nginx 配置、服务清单三要素），机制函数无需改动。预设契约：
+复制 [assets/bin-dev-template.sh](assets/bin-dev-template.sh) 为项目 `bin/dev`，只填脚本头部“项目填空区”（compose 文件、预览 URL、服务清单等配置项），共享网关的路由登记按服务器文档单独管理，脚本不启停网关或认证基础设施。预设契约：
 
 * **接口**：`start`（幂等，本环境已拉起的服务跳过）/ `stop`（逆序收敛）/ `status`（含对外访问入口与账号提示）/ `logs <svc>` / `reset --yes`（清数据卷，仅用户明确要求时使用）。
 * **运行状态收敛**：统一落在 `.local-test/`（`run/*.pid`、`logs/*.log`），`status` 能汇报各服务存活状态与 PID。
 * **端口守卫**：启动前预检；端口被未知进程占用时保守失败（退出码 2）不抢端口——可能是其他 Agent 或遗留进程的现场。
 * **停止收敛**：SIGTERM 超时转 SIGKILL，并校验端口释放；compose 用 `stop` 不用 `down`，默认保留数据卷。
 * 偏离模板时保持同等契约；脚本头部注释沿用 script-writing-standard 的契约结构（定义/参数/输出/示例）。
+
+`status` 是只读汇总入口：展示当前服务、PID、端口、预览 URL 和代理配置位置，不显示凭据。当前模板没有运行历史、裁决回写或滚动聚合，仅提供即时状态和本地日志；不得将即时状态当作历史成功率或完整验收证据。将 `.local-test/` 加入被测项目的 Git ignore，本地环境文件和日志不提交。

@@ -2,6 +2,10 @@
 
 适用于有公网服务器、希望在手机浏览器查看私人 HTML 的个人工作空间。无需 Tailscale、额外中继或自行编写认证系统。本文是部署配方，不是自动安装器；执行前核对本机端口、目录和已有服务。
 
+动态应用（前端、API、WebSocket）的子域名预览使用 [local-test 服务器配置](../common-skills/local-test/references/server-preview-setup.md)。两者可共用 Caddy 实例和账号库；动态应用通过 forward_auth 校验 Cookie，保留业务 Authorization，不直接套用本文删除 Authorization 的静态代理链路。项目服务生命周期不受本文 HTML 到期清理器管理。
+
+Agent 发布生成的 HTML 时使用 [html-preview skill](../common-skills/html-preview/SKILL.md)，按其配置运行带文件锁的发布、续期和清理命令。新脚本与本文简易清理器不能同时管理同一目录，迁移方法见 [部署与清理](../common-skills/html-preview/references/setup.md)。
+
 ## 架构
 
 ```text
