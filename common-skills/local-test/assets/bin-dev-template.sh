@@ -13,7 +13,8 @@ readonly STOP_TIMEOUT=10
 
 # ==== 项目填空区（唯一需要修改的地方）================================
 DOCKER_COMPOSE_FILE=""   # 中间件 docker compose 文件；留空则跳过中间件
-PREVIEW_URL=""           # 已登记的入口，例如 https://task-123.preview.test/
+PREVIEW_URL="${PREVIEW_URL:-}" # 可用环境变量覆盖；默认从下方 Git-ignored 文件读取真实地址
+PREVIEW_URL_FILE="$STATE_DIR/preview-url" # 单行完整 URL，纯文本读取，不作为 shell 执行
 NGINX_CONF=""            # 本环境代理配置路径，仅供 status 展示；共享 Nginx 由管理员维护
 SERVICES=(
   # 名称|监听地址(仅 127.0.0.1)|启动命令|日志文件名
@@ -43,9 +44,15 @@ usage() {
   服务日志: .local-test/logs/<service>.log
   退出码:   0 成功; 1 参数错误; 2 环境预检失败(端口被未知进程占用等); 3 服务启动失败
 
+本机预览地址配置:
+  在项目根目录执行脚本；将 .local-test/ 加入 .gitignore 或 .git/info/exclude。
+  .local-test/preview-url 保存单行用户实际可访问的完整 URL（不含凭据）。
+  PREVIEW_URL 环境变量可覆盖该文件；status 显示配置地址，不代表已验证可达。
+
 示例:
   bin/dev start
   bin/dev logs backend
+  PREVIEW_URL=https://task-123.preview.test/ bin/dev status
   bin/dev reset --yes
 EOF
 }
@@ -157,12 +164,16 @@ cmd_status() {
     printf '%-12s %s\n' "$svc" "$state"
   done
   echo "== 对外入口 =="
-  if [[ -n "$PREVIEW_URL" ]]; then
-    printf '  %s\n' "$PREVIEW_URL"
+  local preview_url="$PREVIEW_URL"
+  if [[ -z "$preview_url" && -f "$PREVIEW_URL_FILE" ]]; then
+    preview_url="$(cat "$PREVIEW_URL_FILE")" || return 2
+  fi
+  if [[ -n "$preview_url" ]]; then
+    printf '  用户预览地址（配置值，需单独验证可达）: %s\n' "$preview_url"
     printf '  代理配置: %s\n' "${NGINX_CONF:-由管理员登记}"
     echo "  入口凭据由管理员提供；共享 Nginx 不随本环境启停"
   else
-    echo "  (未登记预览 URL，服务仅限本机访问)"
+    echo "  (未登记用户预览地址；请配置 $PREVIEW_URL_FILE，勿将内部监听地址当作预览链接)"
   fi
 }
 
