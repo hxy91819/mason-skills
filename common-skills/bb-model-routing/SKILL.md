@@ -39,6 +39,8 @@ bb-dispatch --difficulty medium --kind debug --task '<任务目标、范围与�
 
 调用前根据任务判定 simple/medium/complex；排查问题、找 bug 传 `--kind debug`。用户指定工具时传 `--agent`，明确推理要求时传 `--reasoning`。需要预览用 `--dry-run`。脚本未安装为命令时直接调用技能目录中的路径。默认权限是 `accept-edits`，配置和命令行的权限须符合任务授权；权限不兼容时不擅自升权。保留现有自然语言触发策略，只为用户已要求的 BB 派发执行脚本。
 
+并发任务可能修改同一处代码或相互影响时，可以使用 `use-worktree` 创建隔离 worktree 后派发；这是可选手段，无并发冲突时直接沿用当前环境。操作前检查当前分支、工作区和 worktree，遵守用户授权及当前环境的 git wrapper 规则；遇到拦截按 stderr 和 `git --wrapper-help` 指引处理，不绕过 wrapper。`bb-dispatch` 只使用已有 BB 环境，隔离环境准备好后通过 `--environment` 指定。
+
 脚本已完成的上下文和目录查询无需再次执行；手工派发时按以下步骤：
 
 1. 用 `bb status --json` 确认上下文；缺少项目或环境时从 BB 查询并匹配用户指定的目标，不猜 ID。默认沿用目标现有环境。
