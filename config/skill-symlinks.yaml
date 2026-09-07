@@ -40,11 +40,13 @@ skills:
 - name: grilling
   source: mattpocock-skills
   note: 对计划/决策/想法做 design tree 式连环追问
-- name: harness-config-sync
-  note: 跨宿主收敛 prompts/skills 软链布局(含 agy)
 - name: handoff
   source: mattpocock-skills
   note: 把当前会话压缩成交接文档交给下一个 agent
+- name: harness-config-sync
+  note: 跨宿主收敛 prompts/skills 软链布局(含 agy)
+- name: html-preview
+  note: 将生成的静态 HTML 发布为带认证和有效期的用户预览链接
 - name: implement
   source: mattpocock-skills
   note: 按规格或工单实现，缝合处驱动 tdd
@@ -65,11 +67,11 @@ skills:
   note: PPT 式 HTML 逐页视觉验收
 - name: preflight
   note: 开工前凭据/权限/依赖轻量探针核查
+- name: project-stage
+  note: 声明仓库实验期/线上期，杜绝无消费者的兼容代码
 - name: prototype
   source: mattpocock-skills
   note: 用一次性原型回答设计问题
-- name: project-stage
-  note: 声明仓库实验期/线上期，杜绝无消费者的兼容代码
 - name: readiness-fix
   note: 根据本地 readiness 报告修复失败信号
 - name: readiness-report

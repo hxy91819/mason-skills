@@ -27,9 +27,9 @@ user 级 prompt 正文不在此清单范围内：由 [`config/user-agents.md`](.
 
 ---
 
-## 二、推荐全局技能清单（共 19 个）
+## 二、推荐全局技能清单（共 20 个）
 
-当前清单经严格审计，仅包含以下 19 个核心工程与治理技能：
+当前清单经严格审计，仅包含以下 20 个核心工程与治理技能：
 
 | 序号 | 技能名称 | 用途说明 | 默认触发机制 |
 |:---:|---|---|---|
@@ -38,7 +38,7 @@ user 级 prompt 正文不在此清单范围内：由 [`config/user-agents.md`](.
 | 3 | `harness-config-sync` | 跨 Agent 宿主（Codex/Claude/Pi 等）收敛 prompts 与 skills 布局 | 显式调用 (`$harness-config-sync`) |
 | 4 | `large-task-orchestrator` | 用原生子 Agent 持续编排推进大型工程任务 | 显式调用 (`$large-task-orchestrator`) |
 | 5 | `large-task-planning` | 大型工程任务的双层规划（人读 SPEC/STATUS + Agent 机器执行 plan.json） | 显式调用 (`$large-task-planning`) |
-| 6 | `local-test` | 本地测试执行与环境启停安全规范 | 显式调用 (`$local-test`) |
+| 6 | `local-test` | 实际搭建、复用或管理本地联调/项目预览环境 | 允许隐式触发（窄条件） |
 | 7 | `mermaid-lint` | Markdown 中 Mermaid 图表的渲染级批量校验与自动修复 | 显式调用 (`$mermaid-lint`) |
 | 8 | `open-source-contribution` | 开源贡献与发布前的合规与代码卫生审计 | 允许隐式触发 |
 | 9 | `ppt-visual-review` | PPT / 单页视觉效果逐页验收 | 显式调用 (`$ppt-visual-review`) |
@@ -52,6 +52,7 @@ user 级 prompt 正文不在此清单范围内：由 [`config/user-agents.md`](.
 | 17 | `use-worktree` | 在隔离的 Git worktree 中安全开展并发任务 | 显式调用 (`$use-worktree`) |
 | 18 | `what-changed` | 用平实人读语言说明变更内容 | 显式调用 (`$what-changed`) |
 | 19 | `worktree-cleanup` | 审计并安全清理已完成使命的 Git worktree | 显式调用 (`$worktree-cleanup`) |
+| 20 | `html-preview` | 将生成的静态 HTML 发布为带认证和有效期的浏览器链接 | 允许隐式触发（窄条件） |
 
 ---
 
@@ -61,7 +62,7 @@ user 级 prompt 正文不在此清单范围内：由 [`config/user-agents.md`](.
 ```bash
 python3 common-skills/skill-manifest-sync/scripts/sync_skill_symlinks.py --mode check
 ```
-- 若完全收敛，退出码为 `0` 并报告 `summary: ok=19`。
+- 若完全收敛，退出码为 `0` 并报告实际匹配的 `summary: ok=...` 计数。
 - 若存在漂移或多余/缺失软链，会明确列出漂移项并返回非零退出码。
 
 ### 2. 执行收敛同步
