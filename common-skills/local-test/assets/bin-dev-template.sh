@@ -13,7 +13,8 @@ readonly STOP_TIMEOUT=10
 
 # ==== 项目填空区（唯一需要修改的地方）================================
 DOCKER_COMPOSE_FILE=""   # 中间件 docker compose 文件；留空则跳过中间件
-NGINX_CONF=""            # nginx 配置路径（对外入口，见 SKILL.md 第 3 节）；留空则跳过
+PREVIEW_URL=""           # 已登记的入口，例如 https://task-123.preview.test/
+NGINX_CONF=""            # 本环境代理配置路径，仅供 status 展示；共享 Nginx 由管理员维护
 SERVICES=(
   # 名称|监听地址(仅 127.0.0.1)|启动命令|日志文件名
   # "backend|127.0.0.1:8000|uvicorn app:app --host 127.0.0.1 --port 8000|backend.log"
@@ -31,7 +32,7 @@ usage() {
   裸进程启动并仅监听 127.0.0.1；对外暴露统一交给 Nginx（本脚本只管进程与容器）。
 
 选项:
-  start            按中间件 -> 业务服务 -> Nginx 顺序拉起；幂等，本环境已拉起的服务跳过
+  start            按中间件 -> 业务服务顺序拉起，共享 Nginx 常驻；幂等，本环境已拉起的服务跳过
   stop             逆序收敛：SIGTERM 超时转 SIGKILL，校验端口释放；默认保留数据
   status           打印各服务存活状态、PID 与对外访问入口
   logs <service>   跟踪指定服务日志（Ctrl-C 退出不影响服务）
@@ -111,30 +112,19 @@ stop_one() {
 }
 
 compose_action() {
-  local action="$1"
   [[ -z "$DOCKER_COMPOSE_FILE" ]] && return 0
   [[ -f "$DOCKER_COMPOSE_FILE" ]] || { log_error "找不到 $DOCKER_COMPOSE_FILE"; return 2; }
   # stop 用 stop 不用 down：容器与卷保留，符合"默认保留数据"
-  docker compose -f "$DOCKER_COMPOSE_FILE" "$action"
-}
-
-nginx_action() {
-  local action="$1"
-  [[ -z "$NGINX_CONF" ]] && return 0
-  case "$action" in
-    start) nginx -c "$NGINX_CONF" ;;
-    stop)  nginx -s quit -c "$NGINX_CONF" 2>/dev/null || true ;;
-  esac
+  docker compose -f "$DOCKER_COMPOSE_FILE" "$@"
 }
 
 cmd_start() {
   local row r rc=0
-  compose_action "up -d" || rc=3
+  compose_action up -d || rc=3
   for row in "${SERVICES[@]}"; do
     IFS='|' read -r svc addr cmd logfile <<<"$row"
     start_one "$svc" "$addr" "$cmd" "$logfile" || rc=$?
   done
-  nginx_action "start" || rc=3
   ((rc == 0)) && log_info "环境已就绪，入口见 bin/dev status"
   ((rc == 2)) && log_info "存在被未知进程占用的端口，处置前先 bin/dev status 人工确认"
   return $rc
@@ -142,7 +132,6 @@ cmd_start() {
 
 cmd_stop() {
   local row rc=0
-  nginx_action "stop"
   local reversed=()
   local i
   for ((i=${#SERVICES[@]}-1; i>=0; i--)); do reversed+=("${SERVICES[i]}"); done
@@ -168,11 +157,12 @@ cmd_status() {
     printf '%-12s %s\n' "$svc" "$state"
   done
   echo "== 对外入口 =="
-  if [[ -n "$NGINX_CONF" ]]; then
-    grep -E 'listen|auth_basic_user_file' "$NGINX_CONF" | sed 's/^/  /'
-    echo "  账号密码见 $NGINX_CONF 引用的 htpasswd 文件"
+  if [[ -n "$PREVIEW_URL" ]]; then
+    printf '  %s\n' "$PREVIEW_URL"
+    printf '  代理配置: %s\n' "${NGINX_CONF:-由管理员登记}"
+    echo "  入口凭据由管理员提供；共享 Nginx 不随本环境启停"
   else
-    echo "  (未配置 Nginx，服务仅限本机访问)"
+    echo "  (未登记预览 URL，服务仅限本机访问)"
   fi
 }
 
