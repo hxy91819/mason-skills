@@ -3,57 +3,27 @@ name: bb-model-routing
 description: 仅当用户明确要求使用 BB 启动或创建线程（thread）执行任务时使用，例如“用 bb 开一个 codexl 线程来编码”或“用 bb 开线程找 bug”。未要求启动线程的编码、排障或模型咨询，查看或继续已有线程，以及编写或修改本技能时不触发。
 ---
 
-# BB 线程模型选择
+# BB 任务派发
 
-为用户已要求启动的 BB 线程选择 provider、模型与推理级别。这是用户的派发偏好，不是通用模型能力排名；不负责拆分任务或自动增加线程。
+为用户已要求的任务调用 `scripts/bb-dispatch`。工具别名、模型、推理级别和环境映射以用户配置为准；首次配置或调整映射时读取 [配置与派发](references/dispatch.md)，使用其中的配置模板。参数细节查 `bb-dispatch --help`。
 
-## 选择规则
+## 判断与调用
 
-已有用户派发配置时，以配置为实际路由依据；下表为初始配置偏好，不覆盖用户的环境映射。
-
-用户本次明确指定的配置优先；未指定的字段按下表补齐。用户只说 CodexL 时，将其解析为 BB provider `acp-codexl`，不传 `codexl`。
-
-| 用户指定的工具 | BB provider ID | 默认模型 | 推理级别 | 通常分配的任务 |
-| --- | --- | --- | --- | --- |
-| Codex | `codex` | Astra（`gpt-6-astra`） | `low` 或 `medium` | 排查问题、找 bug，以及复杂任务 |
-| CodexL | `acp-codexl` | Astra（`gpt-6-astra`） | `low` 或 `medium` | 排查问题、找 bug，以及复杂任务 |
-| Pi | `pi` | GLM 5.3 Flash（优先 `zai/glm-5.3-flash`） | `max` | 简单和中等任务 |
-| Cursor | `acp-cursor` | Grok 4.6（`grok-4.6`） | `high` | 简单和中等任务 |
-| AGY / Antigravity | `acp-agy` | Gemini 3.8 Flash High（`gemini-3.8-flash-high`） | `medium`（ACP 独立字段） | 简单和中等任务 |
-
-- **排查问题、找 bug 优先**：未指定工具时优先 Codex/CodexL，即使问题看起来简单，也不按下面的普通任务规则分给 Pi、Cursor 或 AGY。已有 CodexL 偏好或上下文时用 CodexL，否则默认 Codex。
-- **其他简单任务**：局部改动、明确步骤、容易验证。未指定工具时优先 Pi；用户偏好 AGY 或任务已有 AGY 上下文时可选 AGY。
-- **其他中等任务**：范围明确、涉及少量模块、方案较清楚。未指定工具时仍优先 Pi；用户偏好 Cursor、AGY 或任务已有对应工具上下文时选对应工具。
-- **复杂**：跨模块设计、难复现问题、较多不确定性或约束。未指定工具时优先 Codex；用户指定 CodexL 时使用 CodexL。
-- Astra 选 `low`：排查范围局部、复现明确、线索集中；或方案、边界和验收已经清楚，主要是按既定方案实现。选 `medium`：问题难复现、根因不明、多个假设需验证，或涉及设计取舍、跨模块约束。按分析难度选择，不因出现“bug”或“排查”就一律选 `medium`。默认策略最高为 `medium`，不因任务难就自行升到更高档。
-- 难度是未指定配置时的推荐依据；用户指定 Pi、Cursor、AGY、Codex 或 CodexL 时保留其选择，不按难度擅自换工具。
-- AGY 的 `high` 已包含在模型 ID 中，不代表独立的 `--reasoning-level high`；当前 ACP 目录中的独立推理级别是 `medium`，启动前仍须核对目录。本地 AGY provider 仅支持 Full Access，仅在目标任务已获准使用该权限时选用；不为采用 AGY 自动提升权限，权限不匹配时说明限制并询问替代选择。
-
-## 将推荐变成准确的启动参数
-
-优先使用本技能的 `scripts/bb-dispatch`，由脚本读取用户配置并执行以下校验与创建，避免 Agent 每次重写命令。首次配置或调整环境别名时读取 [配置与派发](references/dispatch.md)，模板见 [config.example.yaml](references/config.example.yaml)。
+- `simple`：局部改动，步骤与验收清楚。
+- `medium`：范围明确，涉及少量模块或需要比较方案。
+- `complex`：跨模块设计、根因难定位或较多不确定性。
+- 排查问题、找 bug 额外传 `--kind debug`，即使任务简单也保留该类型。
 
 ```bash
 bb-dispatch --difficulty medium --kind debug --task '<任务目标、范围与验收要求>'
 ```
 
-调用前根据任务判定 simple/medium/complex；排查问题、找 bug 传 `--kind debug`。用户指定工具时传 `--agent`，明确推理要求时传 `--reasoning`。需要预览用 `--dry-run`。脚本未安装为命令时直接调用技能目录中的路径。默认权限是 `accept-edits`，配置和命令行的权限须符合任务授权；权限不兼容时不擅自升权。保留现有自然语言触发策略，只为用户已要求的 BB 派发执行脚本。
+用户指定工具或已有对应工具上下文时用 `--agent <配置别名>`；明确推理要求时用 `--reasoning`，其余交给配置。命令未安装时直接执行本技能的 `scripts/bb-dispatch`。需要预览用 `--dry-run`，脚本已完成的环境与模型校验无需重复查询。
 
-并发任务可能修改同一处代码或相互影响时，可以使用 `use-worktree` 创建隔离 worktree 后派发；这是可选手段，无并发冲突时直接沿用当前环境。操作前检查当前分支、工作区和 worktree，遵守用户授权及当前环境的 git wrapper 规则；遇到拦截按 stderr 和 `git --wrapper-help` 指引处理，不绕过 wrapper。`bb-dispatch` 只使用已有 BB 环境，隔离环境准备好后通过 `--environment` 指定。
+## 派发边界
 
-脚本已完成的上下文和目录查询无需再次执行；手工派发时按以下步骤：
+权限须符合任务授权；配置缺失或校验失败时说明缺口，不静默换模型或升权。
 
-1. 用 `bb status --json` 确认上下文；缺少项目或环境时从 BB 查询并匹配用户指定的目标，不猜 ID。默认沿用目标现有环境。
-2. 在目标环境执行 `bb provider list --environment <environment-id> --json`，确认选中的精确 ID 存在且可用，然后执行 `bb provider models <provider-id> --environment <environment-id> --json`。按模型名称匹配目录中的精确 ID，核对推理级别；需要 provider 前缀的模型 ID 原样保留。
-3. **模型列表返回成功不代表 provider 有效。** 先以 provider 列表校验 ID；BB 某些版本对未知 provider 仍返回模型列表。目标模型或级别缺失、匹配有歧义时，说明具体缺口并询问替代选择，不静默换模型、升级推理或修改插件配置。
-4. 简短说明任务难度和选择理由。启动时显式传入 `--provider`、`--model`、`--reasoning-level`，避免项目记忆默认值覆盖推荐。BB 操作细节按可用的 `bb-cli` 技能或 `bb thread spawn --help` 查询；本技能不改变权限、分支或 worktree 策略。
+并发任务可能产生修改冲突时，可以使用 `use-worktree` 隔离；无冲突时沿用当前环境。操作前检查分支、工作区和 worktree，遵守用户授权及当前 git wrapper；拦截时按 stderr 和 `git --wrapper-help` 处理，不绕过。隔离环境准备好后用 `--environment` 指定，脚本只使用已有 BB 环境。
 
-启动参数示例（先解析项目与环境 ID）：
-
-```bash
-bb thread spawn --project <project-id> --environment <environment-id> \
-  --provider acp-codexl --model gpt-6-astra --reasoning-level medium \
-  --prompt '<任务目标、范围与验收要求>' --json
-```
-
-派发后用 `bb thread show <thread-id> --json` 核对实际配置与状态，报告线程 ID、provider、模型、推理级别和选择理由。排队或 provisioning 尚未完成时如实报告；不要仅凭创建成功声称任务已经运行，也不要重复派发。
+根据返回结果报告线程 ID、实际选择和状态。创建成功不代表任务完成；创建结果不明时先查询线程，避免重复派发。
