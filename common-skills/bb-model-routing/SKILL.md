@@ -1,6 +1,6 @@
 ---
 name: bb-model-routing
-description: 仅当用户明确要求使用 BB 启动或创建线程（thread）执行任务时使用，例如“用 bb 开一个 codexl 线程来编码”。普通编码、泛泛的模型咨询、BB 配置排障、查看或继续已有线程，以及编写或修改本技能时不触发。
+description: 仅当用户明确要求使用 BB 启动或创建线程（thread）执行任务时使用，例如“用 bb 开一个 codexl 线程来编码”或“用 bb 开线程找 bug”。未要求启动线程的编码、排障或模型咨询，查看或继续已有线程，以及编写或修改本技能时不触发。
 ---
 
 # BB 线程模型选择
@@ -13,15 +13,16 @@ description: 仅当用户明确要求使用 BB 启动或创建线程（thread）
 
 | 用户指定的工具 | BB provider ID | 默认模型 | 推理级别 | 通常分配的任务 |
 | --- | --- | --- | --- | --- |
-| Codex | `codex` | Astra（`gpt-6-astra`） | `low` 或 `medium` | 复杂任务 |
-| CodexL | `acp-codexl` | Astra（`gpt-6-astra`） | `low` 或 `medium` | 复杂任务 |
+| Codex | `codex` | Astra（`gpt-6-astra`） | `low` 或 `medium` | 排查问题、找 bug，以及复杂任务 |
+| CodexL | `acp-codexl` | Astra（`gpt-6-astra`） | `low` 或 `medium` | 排查问题、找 bug，以及复杂任务 |
 | Pi | `pi` | GLM 5.3 Flash（优先 `zai/glm-5.3-flash`） | `max` | 简单和中等任务 |
 | Cursor | `acp-cursor` | Grok 4.6（`grok-4.6`） | `high` | 简单和中等任务 |
 
-- **简单**：局部改动、明确步骤、容易验证。未指定工具时优先 Pi。
-- **中等**：范围明确、涉及少量模块、方案较清楚。未指定工具时仍优先 Pi；用户偏好 Cursor 或任务已有 Cursor 上下文时选 Cursor。
+- **排查问题、找 bug 优先**：未指定工具时优先 Codex/CodexL，即使问题看起来简单，也不按下面的普通任务规则分给 Pi 或 Cursor。已有 CodexL 偏好或上下文时用 CodexL，否则默认 Codex。
+- **其他简单任务**：局部改动、明确步骤、容易验证。未指定工具时优先 Pi。
+- **其他中等任务**：范围明确、涉及少量模块、方案较清楚。未指定工具时仍优先 Pi；用户偏好 Cursor 或任务已有 Cursor 上下文时选 Cursor。
 - **复杂**：跨模块设计、难复现问题、较多不确定性或约束。未指定工具时优先 Codex；用户指定 CodexL 时使用 CodexL。
-- Astra 选 `low`：任务虽复杂，但方案、边界和验收已经清楚，主要是按既定方案实现。选 `medium`：仍需设计取舍、根因分析或梳理跨模块约束。默认策略最高为 `medium`，不因任务难就自行升到更高档。
+- Astra 选 `low`：排查范围局部、复现明确、线索集中；或方案、边界和验收已经清楚，主要是按既定方案实现。选 `medium`：问题难复现、根因不明、多个假设需验证，或涉及设计取舍、跨模块约束。按分析难度选择，不因出现“bug”或“排查”就一律选 `medium`。默认策略最高为 `medium`，不因任务难就自行升到更高档。
 - 难度是未指定配置时的推荐依据；用户指定 Pi、Cursor、Codex 或 CodexL 时保留其选择，不按难度擅自换工具。
 
 ## 将推荐变成准确的启动参数
