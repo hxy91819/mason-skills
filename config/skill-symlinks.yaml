@@ -7,6 +7,8 @@ version: 1
 skills:
 - name: autoreview
   note: 提交/发布前的结构化代码审查
+- name: bb-model-routing
+  note: BB 新建线程时的模型选择偏好
 - name: distill
   note: 从会话中蒸馏可沉淀的经验
 - name: harness-config-sync
