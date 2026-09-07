@@ -26,6 +26,8 @@ bb-dispatch --difficulty medium --kind debug --task '定位登录失败，给出
 bb-dispatch --difficulty medium --agent primary --task '执行已授权的任务' --dry-run
 ```
 
+`--task` 只传递任务本身：目标、范围、必要输入和验收要求。provider、模型、推理级别、权限和目录校验由脚本和配置处理，不能写进子线程 prompt，也不要求子 agent 重复检查。用户直接给出 provider 或模型要求时，调用方须把它转换为匹配的配置别名或配置变更，再调用脚本。
+
 默认权限为 `accept-edits`。用户可在顶层或环境配置中设置已授权的 `permission_mode`；权限不兼容时报告错误，不自动升级。
 
 配置 `version: 1`。`defaults` 将 simple/medium/complex/debug 映射到工具别名，`agents` 为别名定义 provider/model/reasoning。reasoning 可省略或设为 null，也可以是固定字符串或按 simple/medium/complex 配置的映射；映射中缺失的难度使用 provider 默认值。显式值仍须通过模型目录校验。`environments.<精确环境 ID>` 可覆盖 defaults、agents、permission_mode；同名工具配置整体替换，必须写出 provider 和 model；reasoning 可省略或设为 null，表示使用 provider 默认值。无环境覆盖时使用顶层配置；实际可用性仍向目标环境校验。
