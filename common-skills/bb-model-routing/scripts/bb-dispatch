@@ -84,7 +84,9 @@ def dispatch(args, call=bb):
     reasoning = agent.get("reasoning")
     if isinstance(reasoning, dict):
         reasoning = reasoning.get(args.difficulty)
-    reasoning = string(args.reasoning or reasoning, "reasoning")
+    reasoning = args.reasoning if args.reasoning is not None else reasoning
+    if reasoning is not None:
+        reasoning = string(reasoning, "reasoning")
     permission = args.permission_mode or override.get("permission_mode", config.get("permission_mode", "accept-edits"))
     if permission not in ("accept-edits", "auto", "full"):
         raise DispatchError("permission_mode 必须是 accept-edits、auto 或 full。")
@@ -96,12 +98,14 @@ def dispatch(args, call=bb):
         raise DispatchError(f"{provider} 不支持权限 {permission}；请选用兼容工具，或在任务已授权后显式指定权限。")
     models = call("provider", "models", provider, "--environment", environment)
     selected_model = unique(models, "id", model, "模型")
-    levels = [entry.get("reasoningEffort") for entry in selected_model.get("supportedReasoningEfforts", [])]
-    if reasoning not in levels:
+    levels = [entry.get("reasoningEffort") for entry in (selected_model.get("supportedReasoningEfforts") or [])]
+    if reasoning is not None and reasoning not in levels:
         raise DispatchError(f"模型 {model} 不支持 reasoning={reasoning}；可用值：{levels}。")
     command = ["thread", "spawn", "--project", project, "--environment", environment,
-               "--provider", provider, "--model", model, "--reasoning-level", reasoning,
+               "--provider", provider, "--model", model,
                "--permission-mode", permission, "--prompt", args.task]
+    if reasoning is not None:
+        command += ["--reasoning-level", reasoning]
     if args.title:
         command += ["--title", args.title]
     # 当前线程属于目标项目和环境时才自动关联，跨项目派发不能误继承父线程。

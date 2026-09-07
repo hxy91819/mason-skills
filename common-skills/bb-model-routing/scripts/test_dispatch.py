@@ -19,17 +19,17 @@ class DispatchTests(unittest.TestCase):
         self.config = Path(self.temp.name) / 'config.yaml'
         self.config.write_text('''version: 1
 permission_mode: accept-edits
-defaults: {simple: pi, medium: pi, complex: codex, debug: codex}
+defaults: {simple: primary, medium: primary, complex: specialist, debug: specialist}
 agents:
-  pi: {provider: pi, model: glm, reasoning: max}
-  codex: {provider: codex, model: astra, reasoning: {simple: low, medium: medium, complex: medium}}
+  primary: {provider: primary, model: fast-model, reasoning: max}
+  specialist: {provider: specialist, model: deep-model, reasoning: {simple: low, medium: medium, complex: medium}}
 environments:
   env_other:
     agents:
-      codex: {provider: local-codex, model: local-astra, reasoning: medium}
+      specialist: {provider: remote-provider, model: remote-model, reasoning: medium}
 ''')
         self.calls = []
-        self.providers = [{'id': name, 'available': True, 'capabilities': {'permissionModes': ['accept-edits']}} for name in ['pi', 'codex', 'local-codex']]
+        self.providers = [{'id': name, 'available': True, 'capabilities': {'permissionModes': ['accept-edits']}} for name in ['primary', 'specialist', 'remote-provider']]
 
     def fake(self, *args):
         self.calls.append(args)
@@ -40,7 +40,7 @@ environments:
         if args[:2] == ('provider', 'list'):
             return self.providers
         if args[:2] == ('provider', 'models'):
-            model = {'pi': 'glm', 'codex': 'astra', 'local-codex': 'local-astra'}[args[2]]
+            model = {'primary': 'fast-model', 'specialist': 'deep-model', 'remote-provider': 'remote-model'}[args[2]]
             return [{'id': model, 'supportedReasoningEfforts': [{'reasoningEffort': x} for x in ['low', 'medium', 'max']]}]
         if args[:2] == ('thread', 'spawn'):
             return {'thread': {'id': 'created', 'status': 'queued'}}
@@ -51,27 +51,27 @@ environments:
 
     def test_dry_run_never_spawns_and_preserves_task(self):
         result = m.dispatch(self.args('--dry-run'), self.fake)
-        self.assertEqual(result['selection']['agent'], 'pi')
+        self.assertEqual(result['selection']['agent'], 'primary')
         self.assertIn('literal $(touch nope) "text"', result['argv'])
         self.assertIn('parent', result['argv'])
         self.assertFalse(any(c[:2] == ('thread', 'spawn') for c in self.calls))
 
-    def test_simple_debug_uses_codex_low_and_spawns_once(self):
+    def test_simple_debug_uses_specialist_low_and_spawns_once(self):
         result = m.dispatch(self.args('--kind', 'debug'), self.fake)
-        self.assertEqual(result['selection']['provider'], 'codex')
+        self.assertEqual(result['selection']['provider'], 'specialist')
         self.assertEqual(result['selection']['reasoning'], 'low')
         self.assertEqual(result['result']['thread']['status'], 'queued')
         self.assertEqual(sum(c[:2] == ('thread', 'spawn') for c in self.calls), 1)
 
     def test_environment_alias_override(self):
         result = m.dispatch(self.args('--environment', 'env_other', '--kind', 'debug', '--dry-run'), self.fake)
-        self.assertEqual(result['selection']['provider'], 'local-codex')
-        self.assertEqual(result['selection']['model'], 'local-astra')
+        self.assertEqual(result['selection']['provider'], 'remote-provider')
+        self.assertEqual(result['selection']['model'], 'remote-model')
         self.assertNotIn('--parent-thread', result['argv'])
 
     def test_explicit_alias_overrides_debug(self):
-        result = m.dispatch(self.args('--kind', 'debug', '--agent', 'pi', '--dry-run'), self.fake)
-        self.assertEqual(result['selection']['agent'], 'pi')
+        result = m.dispatch(self.args('--kind', 'debug', '--agent', 'primary', '--dry-run'), self.fake)
+        self.assertEqual(result['selection']['agent'], 'primary')
 
     def test_unknown_provider_rejected_before_model_query(self):
         self.providers = []
@@ -91,10 +91,35 @@ environments:
         for extra in [('--reasoning', 'high'), ('--project', 'wrong')]:
             with self.assertRaises(m.DispatchError):
                 m.dispatch(self.args(*extra), self.fake)
-        self.config.write_text(self.config.read_text().replace('model: glm', 'model: missing'))
+        self.config.write_text(self.config.read_text().replace('model: fast-model', 'model: missing'))
         with self.assertRaises(m.DispatchError):
             m.dispatch(self.args(), self.fake)
         self.assertFalse(any(c[:2] == ('thread', 'spawn') for c in self.calls))
+
+    def test_provider_without_reasoning_uses_default(self):
+        self.config.write_text(self.config.read_text().replace(', reasoning: max', ''))
+        def no_levels(*args):
+            if args[:2] == ('provider', 'models'):
+                return [{'id': 'fast-model'}]
+            return self.fake(*args)
+        result = m.dispatch(self.args('--dry-run'), no_levels)
+        self.assertIsNone(result['selection']['reasoning'])
+        self.assertNotIn('--reasoning-level', result['argv'])
+        with self.assertRaises(m.DispatchError):
+            m.dispatch(self.args('--reasoning', 'max'), no_levels)
+        self.assertFalse(any(c[:2] == ('thread', 'spawn') for c in self.calls))
+
+    def test_missing_config_does_not_call_bb(self):
+        self.config.unlink()
+        with self.assertRaises(m.DispatchError):
+            m.dispatch(self.args(), self.fake)
+        self.assertEqual(self.calls, [])
+
+    def test_partial_reasoning_map_uses_default(self):
+        self.config.write_text(self.config.read_text().replace('simple: low, ', ''))
+        result = m.dispatch(self.args('--kind', 'debug', '--dry-run'), self.fake)
+        self.assertIsNone(result['selection']['reasoning'])
+        self.assertNotIn('--reasoning-level', result['argv'])
 
     def test_spawn_failure_is_not_retried(self):
         def failing(*args):

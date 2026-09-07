@@ -2,17 +2,33 @@
 
 依赖 Python 3.10+、PyYAML、PATH 中的 `bb`。入口为技能目录内的 `scripts/bb-dispatch`，也可将它软链为用户命令 `~/.local/bin/bb-dispatch`。
 
-首次使用，将 [config.example.yaml](config.example.yaml) 复制到 `~/.config/bb-dispatch/config.yaml`，按实际环境修改。脚本只读取配置，不自动安装 provider 或覆盖用户配置。用 `--config` 或 `BB_DISPATCH_CONFIG` 指向另一份配置。
+## 首次配置与迁移
+
+配置路径优先级：`--config` > `BB_DISPATCH_CONFIG` > `~/.config/bb-dispatch/config.yaml`。先读取已有配置；没有时，以 [config.example.yaml](config.example.yaml) 为模板创建用户配置。模板中的尖括号值必须替换，不能直接派发。配置不含凭据，认证由 BB provider 管理。
+
+先使用以下只读命令发现目标环境实际提供的能力（ID 使用返回值）：
+
+```bash
+bb status --json
+bb provider list --environment <environment-id> --json
+bb provider models <provider-id> --environment <environment-id> --json
+```
+
+从可用 provider 中选择符合用户要求的模型，检查 `permissionModes` 和模型的 `supportedReasoningEfforts`；多个候选缺乏选择依据时询问用户。目录能证明可用性，不能证明价格和任务质量。将选择写入任意别名，例如 `primary`，然后配置各难度和 debug 的默认别名；不要求安装特定 provider 或购买特定渠道。
+
+迁移时保留已有别名和无关设置，将失效路由替换为目标环境的实际 ID；同一配置服务多个环境时使用 `environments` 覆盖。脚本只读取配置，不安装 provider 或覆盖配置。新配置先运行 `--dry-run` 验证，再派发。模型目录不会自动生成用户的模型偏好。
+
+## 派发与配置规则
 
 ```bash
 bb-dispatch --difficulty simple --task '补充 README 示例' --dry-run
 bb-dispatch --difficulty medium --kind debug --task '定位登录失败，给出复现和修复'
-bb-dispatch --difficulty medium --agent agy --permission-mode full --task '执行已授权的任务'
+bb-dispatch --difficulty medium --agent primary --task '执行已授权的任务' --dry-run
 ```
 
-最后一个示例仅适用于任务已授权 Full Access。默认 `accept-edits`，本机 Pi 和 AGY 仅支持 full，权限不匹配会报错；用户可以在配置顶层或特定环境设置已授权的 `permission_mode`，脚本不会自动升级权限。
+默认权限为 `accept-edits`。用户可在顶层或环境配置中设置已授权的 `permission_mode`；权限不兼容时报告错误，不自动升级。
 
-配置 `version: 1`。`defaults` 将 simple/medium/complex/debug 映射到工具别名，`agents` 为别名定义 provider/model/reasoning。reasoning 可以是固定字符串，也可以按 simple/medium/complex 配置。`environments.<精确环境 ID>` 可覆盖 defaults、agents、permission_mode；同名工具配置整体替换，必须完整写出三项。无环境覆盖时使用顶层配置；实际可用性仍向目标环境校验。
+配置 `version: 1`。`defaults` 将 simple/medium/complex/debug 映射到工具别名，`agents` 为别名定义 provider/model/reasoning。reasoning 可省略或设为 null，也可以是固定字符串或按 simple/medium/complex 配置的映射；映射中缺失的难度使用 provider 默认值。显式值仍须通过模型目录校验。`environments.<精确环境 ID>` 可覆盖 defaults、agents、permission_mode；同名工具配置整体替换，必须写出 provider 和 model；reasoning 可省略或设为 null，表示使用 provider 默认值。无环境覆盖时使用顶层配置；实际可用性仍向目标环境校验。
 
 优先级：命令行覆盖 > 环境配置 > 顶层配置。`--kind debug` 优先难度路由，`--agent` 优先 debug。脚本不从任务文本猜测类型；调用 Agent 负责识别排障任务。模型和思考深度的明确要求用配置别名、`--reasoning` 表达，缺失配置时先补齐，不静默替换。
 
@@ -22,17 +38,6 @@ bb-dispatch --difficulty medium --agent agy --permission-mode full --task '执�
 
 验证：`python3 -m unittest discover -s scripts -p 'test_*.py'`（从技能目录运行）。
 
-## Pi 额度切换
+## 路由不可用
 
-初始配置中 `pi` 默认指向 Ollama Cloud；`pi-ollama` 和 `pi-zai` 分别固定选择两条 GLM 5.3 Flash 路由，推理级别均为 `max`。具体模型 ID 以用户配置为准，环境覆盖时同步维护这些别名。
-
-新任务可用 `--agent pi-zai` 或 `--agent pi-ollama` 选择渠道。脚本只负责启动前校验，不监控额度，也不自动重派；Agent 需要查看线程状态与错误。明确的余额不足、套餐额度耗尽可触发切换，单独的 HTTP 429、短时限速、超时或认证失败不构成此依据。用户限定渠道时先遵循限制。
-
-已有任务耗尽额度时，先确认原回合已结束，检查已完成工作和剩余目标，避免重复副作用。告知用户切换原因，读取原环境下另一条路由的模型目录确认可用，然后在原 Pi 线程继续：
-
-```bash
-bb thread tell <thread-id> '<已完成工作与剩余目标；避免重复操作>' \
-  --model <另一条路由的完整模型ID> --reasoning-level max --json
-```
-
-该命令在下一回合选择替代模型；若还希望后续回合默认使用它，执行 `bb thread update <thread-id> --model <完整模型ID> --reasoning-level max --json`。只更新属于当前任务的 Pi 线程，不改权限或全局默认。两条路由均耗尽时报告等待重置，不在它们之间循环切换。脚本的 `--agent` 用于新建线程，不能用它重新派发整个未完成任务来冒充续接。
+脚本不自动 fallback。provider 不可用、模型被移除或额度耗尽时，报告原路由和错误；用户选定替代别名后重新校验。创建结果未知时先查询原线程，避免重复派发。继续已有线程前，确认原回合结束并核对已完成工作，按该 provider 支持的续接方式操作；不要以重新创建整个任务冒充续接。

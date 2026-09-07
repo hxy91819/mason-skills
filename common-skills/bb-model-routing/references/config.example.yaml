@@ -1,46 +1,24 @@
 version: 1
-# 此值应符合用户对派发任务的授权。脚本不会因工具只支持 full 而自动升级。
 permission_mode: accept-edits
+# 别名是用户自定义标签；可先让所有任务共用一个已验证的路由。
 defaults:
-  simple: pi
-  medium: pi
-  complex: codex
-  debug: codex
+  simple: primary
+  medium: primary
+  complex: primary
+  debug: primary
 agents:
-  pi:
-    provider: pi
-    model: ollama-cloud/glm-5.3-flash:cloud
-    reasoning: max
-  pi-ollama:
-    provider: pi
-    model: ollama-cloud/glm-5.3-flash:cloud
-    reasoning: max
-  pi-zai:
-    provider: pi
-    model: zai/glm-5.3-flash
-    reasoning: max
-  codex:
-    provider: codex
-    model: gpt-6-astra
-    reasoning: {simple: low, medium: medium, complex: medium}
-  codexl:
-    provider: acp-codexl
-    model: gpt-6-astra
-    reasoning: {simple: low, medium: medium, complex: medium}
-  cursor:
-    provider: acp-cursor
-    model: grok-4.6
-    reasoning: high
-  agy:
-    provider: acp-agy
-    model: gemini-3.8-flash-high
-    reasoning: medium
+  primary:
+    provider: <provider-id>
+    model: <model-id>
+    # 可选：从该模型目录选择支持的值；省略时使用 provider 默认值。
+    # reasoning: <reasoning-level>
+    # 也可按难度配置：{simple: <level>, medium: <level>, complex: <level>}
 environments: {}
+# 环境 ID 来自 bb；同名别名整体替换，不继承顶层的模型设置。
 # environments:
-#   env_your_environment:
-#     defaults: {debug: codexl}
+#   <environment-id>:
+#     defaults: {complex: specialist, debug: specialist}
 #     agents:
-#       codexl:
-#         provider: your-provider-id
-#         model: gpt-6-astra
-#         reasoning: medium
+#       specialist:
+#         provider: <provider-id>
+#         model: <model-id>
