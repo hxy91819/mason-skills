@@ -17,13 +17,15 @@ description: 仅当用户明确要求使用 BB 启动或创建线程（thread）
 | CodexL | `acp-codexl` | Astra（`gpt-6-astra`） | `low` 或 `medium` | 排查问题、找 bug，以及复杂任务 |
 | Pi | `pi` | GLM 5.3 Flash（优先 `zai/glm-5.3-flash`） | `max` | 简单和中等任务 |
 | Cursor | `acp-cursor` | Grok 4.6（`grok-4.6`） | `high` | 简单和中等任务 |
+| AGY / Antigravity | `acp-agy` | Gemini 3.8 Flash High（`gemini-3.8-flash-high`） | `medium`（ACP 独立字段） | 简单和中等任务 |
 
-- **排查问题、找 bug 优先**：未指定工具时优先 Codex/CodexL，即使问题看起来简单，也不按下面的普通任务规则分给 Pi 或 Cursor。已有 CodexL 偏好或上下文时用 CodexL，否则默认 Codex。
-- **其他简单任务**：局部改动、明确步骤、容易验证。未指定工具时优先 Pi。
-- **其他中等任务**：范围明确、涉及少量模块、方案较清楚。未指定工具时仍优先 Pi；用户偏好 Cursor 或任务已有 Cursor 上下文时选 Cursor。
+- **排查问题、找 bug 优先**：未指定工具时优先 Codex/CodexL，即使问题看起来简单，也不按下面的普通任务规则分给 Pi、Cursor 或 AGY。已有 CodexL 偏好或上下文时用 CodexL，否则默认 Codex。
+- **其他简单任务**：局部改动、明确步骤、容易验证。未指定工具时优先 Pi；用户偏好 AGY 或任务已有 AGY 上下文时可选 AGY。
+- **其他中等任务**：范围明确、涉及少量模块、方案较清楚。未指定工具时仍优先 Pi；用户偏好 Cursor、AGY 或任务已有对应工具上下文时选对应工具。
 - **复杂**：跨模块设计、难复现问题、较多不确定性或约束。未指定工具时优先 Codex；用户指定 CodexL 时使用 CodexL。
 - Astra 选 `low`：排查范围局部、复现明确、线索集中；或方案、边界和验收已经清楚，主要是按既定方案实现。选 `medium`：问题难复现、根因不明、多个假设需验证，或涉及设计取舍、跨模块约束。按分析难度选择，不因出现“bug”或“排查”就一律选 `medium`。默认策略最高为 `medium`，不因任务难就自行升到更高档。
-- 难度是未指定配置时的推荐依据；用户指定 Pi、Cursor、Codex 或 CodexL 时保留其选择，不按难度擅自换工具。
+- 难度是未指定配置时的推荐依据；用户指定 Pi、Cursor、AGY、Codex 或 CodexL 时保留其选择，不按难度擅自换工具。
+- AGY 的 `high` 已包含在模型 ID 中，不代表独立的 `--reasoning-level high`；当前 ACP 目录中的独立推理级别是 `medium`，启动前仍须核对目录。本地 AGY provider 仅支持 Full Access，仅在目标任务已获准使用该权限时选用；不为采用 AGY 自动提升权限，权限不匹配时说明限制并询问替代选择。
 
 ## 将推荐变成准确的启动参数
 
