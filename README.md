@@ -83,6 +83,8 @@ which preserves concurrent Agent work without blocking safe local history operat
 [`skill-symlinks.yaml`](config/skill-symlinks.yaml) is the recommended global-skills manifest
 (applied by `$skill-manifest-sync`), and [`user-agents.md`](config/user-agents.md) is the shared
 user-scope `AGENTS.md`, linked to `~/.agents/AGENTS.md` by `$harness-config-sync`.
+On Windows the manifest script falls back to NTFS junctions when symbolic-link privilege is
+missing, and file-level prompt links are created with `mklink` (admin or Developer Mode).
 
 ## Usage
 

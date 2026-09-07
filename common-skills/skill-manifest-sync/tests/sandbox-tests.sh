@@ -23,14 +23,32 @@ assert_out() { # 期望 stdout 匹配 grep 模式；先捕获输出再 grep，�
   if printf '%s\n' "$out" | grep -q "$pattern"; then echo "PASS: $desc"; PASS=$((PASS+1)); else echo "FAIL: $desc (pattern not found: $pattern; rc=$rc)"; FAIL=$((FAIL+1)); fi
 }
 
+echo "=== 准备：按清单 sources 造同级外部假项目（/work 是仓库父目录）==="
+python3 - <<'EOF'
+import yaml
+from pathlib import Path
+
+data = yaml.safe_load(Path("/work/repo/config/skill-symlinks.yaml").read_text(encoding="utf-8"))
+for src in data.get("sources") or []:
+    root = Path("/work") / src["name"]
+    for entry in data["skills"]:
+        if entry.get("source") == src["name"]:
+            d = root / "skills" / "engineering" / entry["name"]
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(f"---\nname: {entry['name']}\n---\n", encoding="utf-8")
+EOF
+
 echo "=== 场景 1: 全新电脑（无 user scope），apply --yes 一次到位 ==="
 rm -rf /root/.agents
 apply_out=$(python3 "$SCRIPT" --mode apply --yes); rc=$?
 assert_ok "apply 在空机器上退出 0" test "$rc" -eq 0
+expected=$(python3 -c "import yaml;print(len(yaml.safe_load(open('$MANIFEST'))['skills']))")
 count=$(find "$SKILLS" -type l | wc -l)
-assert_ok "创建了 16 个软链（15 清单项 + skill-manifest-sync）" test "$count" -eq 16
-assert_ok "ask-oracle 链接指向容器内仓库" test "$(readlink "$SKILLS/ask-oracle")" = "/work/repo/common-skills/ask-oracle"
+assert_ok "创建了 $expected 个软链（= 清单条目数）" test "$count" -eq "$expected"
+assert_ok "autoreview 链接指向容器内仓库" test "$(readlink "$SKILLS/autoreview")" = "/work/repo/common-skills/autoreview"
+assert_ok "ask-matt 链接指向同级外部项目" test "$(readlink "$SKILLS/ask-matt")" = "/work/mattpocock-skills/skills/engineering/ask-matt"
 assert_ok "链接目标真实存在且含 SKILL.md" test -f "$SKILLS/autoreview/SKILL.md"
+assert_ok "外部链接目标真实存在且含 SKILL.md" test -f "$SKILLS/handoff/SKILL.md"
 
 echo "=== 场景 2: check 无漂移 ==="
 assert_ok "check 退出 0" python3 "$SCRIPT" --mode check
@@ -98,6 +116,16 @@ assert_ok "--help 正常输出" bash -c "python3 $SCRIPT --help | grep -qi 'usag
 assert_ok "--help 含输出定义与范例" bash -c "python3 $SCRIPT --help | grep -q '输出结果定义'"
 assert_fail "非法 --mode 退出 2" python3 "$SCRIPT" --mode bogus
 assert_fail "register 缺 --skill 退出 2" python3 "$SCRIPT" --mode register
+
+echo "=== 场景 11: 外部项目来源——extra 检测、删除与 register --source 恢复 ==="
+python3 "$SCRIPT" --mode remove --skill handoff >/dev/null
+assert_out "指向外部项目但不在清单的链报告为 extra" "into managed source mattpocock-skills" python3 "$SCRIPT" --mode check
+python3 "$SCRIPT" --mode apply --yes >/dev/null
+assert_ok "apply --yes 删除了外部项目 extra 链接" test ! -e "$SKILLS/handoff"
+python3 "$SCRIPT" --mode register --source mattpocock-skills --skill handoff --note "把当前会话压缩成交接文档交给下一个 agent" >/dev/null
+python3 "$SCRIPT" --mode apply --yes >/dev/null
+assert_ok "register --source 重新登记后链接恢复" test "$(readlink "$SKILLS/handoff")" = "/work/mattpocock-skills/skills/productivity/handoff"
+assert_ok "最终 check 收敛" python3 "$SCRIPT" --mode check
 
 echo
 echo "结果：PASS=$PASS FAIL=$FAIL"

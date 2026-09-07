@@ -176,7 +176,12 @@ def run_reviews(repo: Path, script_dir: Path, fixture: str, engines: list[str]) 
             MALICIOUS_PROMPT if fixture == "malicious" else BENIGN_PROMPT,
         ]
         if fixture == "malicious":
-            command.extend(["--require-finding", "command", "--expect-findings"])
+            # The fixture checks that the pipeline surfaces known defects at all,
+            # so accept every priority instead of depending on the helper's
+            # configurable threshold or on how a given engine rates them.
+            command.extend(
+                ["--max-priority", "P3", "--require-finding", "command", "--expect-findings"]
+            )
         run(command, repo)
 
 

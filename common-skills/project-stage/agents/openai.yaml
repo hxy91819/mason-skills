@@ -1,0 +1,7 @@
+interface:
+  display_name: "Project Stage"
+  short_description: "在仓库指令文件中声明实验期/线上期，杜绝无消费者的兼容代码"
+  default_prompt: "Use $project-stage to declare this repository's lifecycle stage in its agent instruction file."
+
+policy:
+  allow_implicit_invocation: false

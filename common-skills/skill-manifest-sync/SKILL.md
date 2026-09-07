@@ -34,14 +34,27 @@ python3 "$AUTOREVIEW_SYNC" --mode apply
 # 非交互（CI、脚本）：删除候选直接删除
 python3 "$AUTOREVIEW_SYNC" --mode apply --yes
 
-# 新增 skill 后登记清单（要求 skill 目录已存在于 common-skills/）
+# 新增本仓库 skill 后登记清单（要求 skill 目录已存在于 common-skills/）
 python3 "$AUTOREVIEW_SYNC" --mode register --skill my-skill --note "一句话用途"
+
+# 登记外部项目 skill：项目须已在清单 sources 声明（缺省自动补一条）
+python3 "$AUTOREVIEW_SYNC" --mode register --source mattpocock-skills --skill handoff --note "一句话用途"
 
 # 删除/重命名 skill 后清理清单
 python3 "$AUTOREVIEW_SYNC" --mode remove --skill my-skill
 ```
 
 依赖 PyYAML（`pip install pyyaml`）；缺失时脚本以退出码 2 给出安装提示。
+
+## 外部项目来源
+
+清单 `sources:` 只声明项目名（如 `mattpocock-skills`），条目用 `source: <项目名>` 指向它，绝不写机器绝对路径。外部项目里的 skill 约定位于 `skills/<bucket>/<name>` 且含 `SKILL.md`，脚本自动定位；同名出现在多个 bucket 视为歧义，保守失败。项目根按序解析：
+
+1. `$SKILL_SOURCE_<NAME>_DIR`（项目名大写、`-` 转 `_`，如 `SKILL_SOURCE_MATTPCOCK_SKILLS_DIR`）
+2. `$SKILL_SOURCES_DIR/<项目名>`
+3. 本仓库 checkout 的同级目录 `<项目名>`
+
+解析不到时相关条目按 `stale` 报告，不自动 clone。其他电脑只需把外部项目 clone 到本仓库同级目录（或设置上述环境变量）即可复现同一套配置。
 
 ## 报告类型
 
@@ -52,14 +65,14 @@ python3 "$AUTOREVIEW_SYNC" --mode remove --skill my-skill
 | `fix`    | 软链指向本仓库内的错误位置（或死链）                     | 修复为清单目标                 |
 | `extra`  | 指向本仓库但不在清单里的软链                             | 交互提示删除；`k` 写入白名单   |
 | `conflict` | 目标位置被真实目录或指向其他仓库的同名链接占用         | 不动，报告后由用户手动裁决     |
-| `stale`  | 清单条目指向不存在的 skill 目录                          | 不动，报告后用 `--mode remove` 或补目录 |
+| `stale`  | 清单条目指向不存在的 skill 目录，或来源项目解析不到       | 不动，报告后用 `--mode remove` 或补目录/clone 项目 |
 
 退出码：`0` 已收敛；`1` 存在漂移或未解决的 conflict/stale；`2` 用法或环境错误。
 
 ## 白名单与保守边界
 
 - 白名单默认在 `~/.agents/skill-sync-whitelist.yaml`，属于本机环境偏好，**不提交 Git**；条目含 name、reason、recorded_at。
-- 脚本只管理「指向本仓库 checkout」的软链：绝不删除真实目录，绝不覆盖指向其他仓库的同名链接（例如 user-scope 的 `article-polish` 指向另一个工作区时，本 skill 不碰它）。
+- 脚本只管理「指向本仓库 checkout 或任一已声明来源项目 checkout」的软链：绝不删除真实目录，绝不覆盖指向其他仓库的同名链接（例如 user-scope 的 `article-polish` 指向另一个工作区时，本 skill 不碰它）。
 - 删除候选被用户选择保留（k）后写入白名单，后续 check/apply 不再提示；要撤销时直接编辑白名单文件。
 
 ## 维护约定

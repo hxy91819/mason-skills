@@ -1,6 +1,6 @@
 ---
 name: autoreview
-description: "Pre-commit/ship code review: Codex default; optional Claude or Pi."
+description: "Pre-commit/ship code review: Codex default; optional Claude or Pi; zero-config subagent fallback."
 disable-model-invocation: true
 ---
 
@@ -19,6 +19,7 @@ Use when:
 - user asks for Codex review / Claude review / Pi review / autoreview / second-model review
 - after non-trivial code edits, before final/commit/ship
 - reviewing a local branch or PR branch after fixes
+- no reviewer CLI is installed: the `subagent` engine reviews through the host agent, but it is a non-independent self-review (see Subagent Engine)
 
 Do not require autoreview for a change whose entire diff is prose-only internal notes or `SKILL.md` documentation. Still inspect the diff directly and run the repository's lightweight documentation validation, if any. This exception does not cover user-facing documentation, executable examples, configuration, scripts, generated files, or behavior changes.
 
@@ -26,12 +27,16 @@ Do not require autoreview for a change whose entire diff is prose-only internal 
 
 - Honor `--max-priority` and `AUTOREVIEW_MAX_PRIORITY`. Do not pass
   `--max-priority` unless the user asked for a specific threshold. Built-in
-  default is P0 when neither is set. P0 means issues worth blocking the
+  default is P1 when neither is set. P0 means issues worth blocking the
   current change because they materially break the normal flow, outcome, or
-  safety boundary. Wider thresholds include those findings plus the extra
+  safety boundary; P1 means real defects in the changed code that should be
+  fixed before shipping even if the main flow still works. Reviewers rate the
+  same defect P0 or P1 inconsistently, so a P0-only threshold silently drops
+  real bugs. Wider thresholds include those findings plus the extra
   priorities. Treat helper output at the configured threshold as the review
   result; do not drop in-threshold findings just because they are not P0.
 - Treat review output as advisory. Never blindly apply it.
+- The `subagent` engine is a non-independent review: the reviewer is the host agent, sharing the author model and context. Prefer codex/claude/pi whenever one is available, and keep the `reviewer independence: none (subagent shares the author model/context)` line in the final report.
 - Close the feedback loop: after verifying findings, record each accepted/rejected decision with `--record-dispositions` (see Review History And Retrospective) so reviewer quality is measurable over time.
 - Verify every finding by reading the real code path and adjacent files.
 - Read dependency docs/source/types when the finding depends on external behavior.
@@ -42,7 +47,7 @@ Do not require autoreview for a change whose entire diff is prose-only internal 
 - Keep going until structured review returns no accepted/actionable findings only while the work remains inside the authorized architectural and task scope.
 - If a review-triggered fix changes code, rerun focused tests and rerun the structured review helper.
 - For security-audit suppression changes, verify accepted findings remain auditable: suppressed findings stay in structured output, active output keeps an unsuppressible suppression notice, and aggregate findings cannot hide unrelated active risk.
-- Never switch or override the requested review engine/model except for the documented Codex Sol-to-Terra account-access fallback, the documented pi access-only fallback-model retry, and a recorded Codex usage-limit cooldown. Capacity and unrelated failures keep the same engine/model. A Codex usage-limit failure records a fixed cooldown (default 1 hour, `AUTOREVIEW_CODEX_COOLDOWN_HOURS`) and later runs skip Codex in favor of Claude instead of waiting on reset. Do not retry Codex during that window. `--ignore-codex-cooldown` forces Codex.
+- Never switch or override the requested review engine/model except for the documented Codex Sol-to-Terra account-access fallback, the documented pi access-only fallback-model retry, and a recorded Codex usage-limit cooldown. Capacity and unrelated failures keep the same engine/model. A Codex usage-limit failure records a fixed cooldown (default 1 hour, `AUTOREVIEW_CODEX_COOLDOWN_HOURS`) and later runs skip Codex in favor of Claude instead of waiting on reset. Do not retry Codex during that window. `--ignore-codex-cooldown` forces Codex. When the engine was never requested (no `--engine`, no `AUTOREVIEW_ENGINE`) and the default or cooldown-substituted CLI is not installed, the helper switches to the `subagent` engine and says so; an explicitly requested engine is still never replaced. `--no-engine-fallback` or `AUTOREVIEW_NO_ENGINE_FALLBACK=1` disables that switch.
 - Be patient with large bundles. Structured review can take up to 30 minutes while the model call is active, especially with Codex tools or web search.
 - Treat heartbeat lines like `review still running: ... elapsed=... pid=...` as healthy progress, not a hang. Let the helper continue while heartbeats are advancing. Pass `--stream-engine-output` when live engine text is useful; Codex and Claude filter tool/file chatter, other runnable engines pass raw output through.
 - Do not kill a review just because it has been quiet for 2-5 minutes, or because it is still running under the 30-minute window. Inspect the process only after missing multiple expected heartbeats, after 30 minutes, or after an obviously failed subprocess; prefer letting the same helper command finish.
@@ -307,7 +312,31 @@ For models with slashes or extra colons, prefer keyed form:
 "$AUTOREVIEW" --reviewers codex,pi --model codex=gpt-5.6-sol --model pi=anthropic/claude-sonnet-4
 ```
 
-`--reviewers all` covers Codex, Claude, and Pi. Droid, Copilot, Cursor, and OpenCode selections fail closed because their current CLI contracts cannot confine project instructions, filesystem reads, or network fetches to the review boundary.
+`--reviewers all` covers Codex, Claude, and Pi. Droid, Copilot, Cursor, and OpenCode selections fail closed because their current CLI contracts cannot confine project instructions, filesystem reads, or network fetches to the review boundary. `subagent` is refused in `--panel` and `--reviewers` because it is not an independent opinion; run it alone.
+
+## Subagent Engine (zero-config fallback)
+
+Use when no reviewer CLI is installed. The host agent (Claude Code, Codex, ...) supplies the reviewer through its own subagent while the helper still builds and redacts the bundle, validates structured output, filters priorities, assigns finding ids, and records history. This is **not** an independent second opinion: the reviewer shares the author model and context, so prefer codex/claude/pi whenever one is available.
+
+Phase 1 writes the handoff and exits **3** (`EXIT_AWAITING_EXTERNAL_RESULT`, distinct from 0 clean and 1 findings):
+
+```bash
+"$AUTOREVIEW" --engine subagent --model subagent=claude-fable-5-1
+```
+
+It prints `subagent handoff: <dir>`, `subagent prompts: <n>`, one `subagent prompt <n>: <path>` line per prompt, and the exact `subagent resume:` command. The handoff directory lives under `AUTOREVIEW_STATE_DIR` (default `~/.cache/autoreview/handoff/<run-id>`), never inside the reviewed repository, and holds `prompt-<n>.md`, `schema.json`, and `state.json` with owner-only permissions.
+
+Then, for each prompt file: spawn one general-purpose subagent of the host (no repository access, no commands, no tools needed) and give it only that prompt file's contents; the bundle is self-contained. Require its final answer to be a single JSON object matching `schema.json` and nothing else, and save each answer to its own file outside the reviewed repository.
+
+Phase 2 validates the answers, prints the report, and exits with the usual codes:
+
+```bash
+"$AUTOREVIEW" --engine subagent --resume-run <run-id> --result /tmp/result-1.json
+```
+
+Pass one `--result` per prompt, in order. A failed validation keeps the handoff directory so a corrected result can be resumed again; a successful resume deletes it. `--model subagent=<label>` is only a history label. Parallel tests run during phase 1 and their status is applied to the phase 2 exit code.
+
+Automatic fallback: with no `--engine` and no `AUTOREVIEW_ENGINE`, a missing Codex CLI (or a missing Claude CLI after a Codex cooldown) prints `engine_fallback: codex CLI not found; using subagent (non-independent)` and continues as a subagent handoff. An explicitly requested engine is never replaced. `--no-engine-fallback` / `AUTOREVIEW_NO_ENGINE_FALLBACK=1` turns it off.
 
 ## Models and thinking
 
@@ -331,6 +360,7 @@ CLI flags and environment variables override these defaults. Claude inherits the
 | **pi**              | `pi --model X`             | `zai/glm-5.3-flash`, `anthropic/claude-sonnet-4`, `openai/gpt-4o`              | `--thinking Y`                | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`   |
 | **cursor**          | currently refused          | Cursor model aliases                                                         | not supported                 | n/a                                                        |
 | **opencode**        | currently refused          | OpenCode provider/model IDs                                                  | not supported                 | n/a                                                        |
+| **subagent**        | `--model subagent=X`       | free-form history label, e.g. `claude-fable-5-1`                             | not supported                 | n/a                                                        |
 
 Claude also supports `--fallback-model a,b` for availability-based fallback chains ([model-config](https://code.claude.com/docs/en/model-config)). Current Claude docs note that auth, billing, rate-limit, request-size, and transport errors do not trigger fallback, and the changelog documents interactive-session support in `v2.1.166`.
 
@@ -397,7 +427,7 @@ default without editing it.
 | `AUTOREVIEW_ENGINE`                | Default engine when `--engine` is omitted; built-in default is `codex`                                                            |
 | `AUTOREVIEW_MODEL`                 | Override the built-in default `--model` for all engines                                                                          |
 | `AUTOREVIEW_THINKING`              | Default `--thinking` for all engines                                                                                             |
-| `AUTOREVIEW_MAX_PRIORITY`          | Default `--max-priority` (`P0`–`P3`). Built-in default is `P0` when unset                                                        |
+| `AUTOREVIEW_MAX_PRIORITY`          | Default `--max-priority` (`P0`–`P3`). Built-in default is `P1` when unset                                                        |
 | `AUTOREVIEW_FALLBACK_MODEL`        | Default `--fallback-model` chain for Claude/pi reviewers                                                                         |
 | `AUTOREVIEW_<ENGINE>_MODEL`        | Per-engine model override, for example `AUTOREVIEW_CODEX_MODEL=gpt-5.6-sol`                                                      |
 | `AUTOREVIEW_<ENGINE>_THINKING`     | Per-engine thinking override                                                                                                     |
@@ -405,7 +435,8 @@ default without editing it.
 | `AUTOREVIEW_CODEX_SPEED`           | Codex service tier override: `fast` (priority), `flex`, or `default`; silently standard when the model does not list the tier    |
 | `AUTOREVIEW_CODEX_COOLDOWN_HOURS`  | Hours to skip Codex after a usage-limit failure. Built-in default is `1`                                                             |
 | `AUTOREVIEW_IGNORE_CODEX_COOLDOWN` | Set to `1` to invoke Codex even during a recorded usage-limit cooldown                                                               |
-| `AUTOREVIEW_STATE_DIR`             | Directory for helper state such as the Codex cooldown file; must stay outside the reviewed repository                                |
+| `AUTOREVIEW_STATE_DIR`             | Directory for helper state such as the Codex cooldown file and subagent handoffs; must stay outside the reviewed repository          |
+| `AUTOREVIEW_NO_ENGINE_FALLBACK`    | Set to `1` to disable the automatic switch to the `subagent` engine when a non-requested reviewer CLI is missing                     |
 | `AUTOREVIEW_CLAUDE_FALLBACK_MODEL` | Claude-only fallback chain                                                                                                       |
 | `AUTOREVIEW_PI_FALLBACK_MODEL`     | Pi-only access-failure fallback model                                                                                            |
 | `AUTOREVIEW_PROVIDER_ENV_ALLOW`    | Comma-separated custom Pi/OpenCode credential variable names; names must end in a recognized credential suffix                   |
@@ -425,8 +456,9 @@ When autoreview runs inside the repository under review, external reviewer CLIs 
 | **pi**       | `--no-approve --no-session --no-context-files --no-extensions --no-skills --no-prompt-templates --no-themes --no-tools`                                                                          | Pi CLI `--help`; requires Pi `v0.79.0+`                                     |
 | **opencode** | Fails closed: project/global config isolation and private-network fetch denial are not both proven                                                                                               | OpenCode CLI contract                                                       |
 | **cursor**   | Fails closed: documented read permissions can target absolute host paths and no proven repository-only filesystem sandbox is exposed                                                             | Cursor CLI [permissions](https://cursor.com/docs/cli/reference/permissions) |
+| **subagent** | Not isolated: runs inside the host agent; treat as author-side self-review                                                                                                                      | this skill, Subagent Engine section                                         |
 
-Codex `--ignore-user-config` skips config loading for the exec run. Autoreview reconstructs only the documented `cli_auth_credentials_store`, `forced_login_method`, and `forced_chatgpt_workspace_id` settings from `CODEX_HOME/config.toml`, keeping authentication usable without forwarding unrelated user configuration. Codex runs in an empty temporary workspace: the validated bundle is its sole repository input, ignored files and linked-worktree metadata remain unreadable, and the zero project-doc budget keeps workspace instructions out of the prompt. `--ignore-rules` skips user/project execpolicy rules. Claude `--safe-mode` disables project hooks, skills, plugins, MCP servers, and CLAUDE.md; autoreview supplies WebSearch by default, permits only explicitly domain-constrained WebFetch rules, and exposes no filesystem or shell tools. Pi runs from a neutral temporary directory with project resources disabled and `--no-tools`. Droid, Copilot, Cursor, and OpenCode fail closed because their current CLI contracts cannot isolate untrusted review input from host, project, or private-network trust surfaces.
+Codex `--ignore-user-config` skips config loading for the exec run. Autoreview reconstructs only the documented `cli_auth_credentials_store`, `forced_login_method`, and `forced_chatgpt_workspace_id` settings from `CODEX_HOME/config.toml`, keeping authentication usable without forwarding unrelated user configuration. When that config selects a custom `model_provider` (for example a local CLI proxy), autoreview also rebuilds that provider from a fixed allowlist: `base_url` (credential-free http/https only), `wire_api`, `name`, `requires_openai_auth`, `supports_websockets`, and retry/timeout counters. Credentials come from the provider's `env_key` variable or its `auth.command`, which must be an absolute executable outside the reviewed repository; the command runs once with the real `HOME` and its output is passed to the isolated run through `AUTOREVIEW_CODEX_PROVIDER_API_KEY`. Headers, query params, and any other provider keys are never forwarded, and provider names must be bare TOML keys because Codex `-c` cannot parse quoted key segments. A custom provider always runs with the isolated runtime `CODEX_HOME`, so the user's global `AGENTS.md` and other home-level instructions stay out of the review prompt. Codex runs in an empty temporary workspace: the validated bundle is its sole repository input, ignored files and linked-worktree metadata remain unreadable, and the zero project-doc budget keeps workspace instructions out of the prompt. `--ignore-rules` skips user/project execpolicy rules. Claude `--safe-mode` disables project hooks, skills, plugins, MCP servers, and CLAUDE.md; autoreview supplies WebSearch by default, permits only explicitly domain-constrained WebFetch rules, and exposes no filesystem or shell tools. Pi runs from a neutral temporary directory with project resources disabled and `--no-tools`. Droid, Copilot, Cursor, and OpenCode fail closed because their current CLI contracts cannot isolate untrusted review input from host, project, or private-network trust surfaces.
 
 Codex uses a named permission profile that grants read access only to an empty temporary workspace. This is narrower than repository-root access, which would expose ignored credentials, and narrower than the legacy `read-only` sandbox, which permits reads across the host filesystem.
 
@@ -467,7 +499,7 @@ The helper:
 - otherwise uses current PR base if `gh pr view` works
 - otherwise uses `origin/main` for non-main branches
 - does not fetch automatically during branch review; the selected base ref must already resolve locally
-- recognizes `--engine droid`, `copilot`, `cursor`, and `opencode` only to fail closed with isolation errors; runnable engines are `codex`, `claude`, and `pi`; default is `AUTOREVIEW_ENGINE` or `codex`
+- recognizes `--engine droid`, `copilot`, `cursor`, and `opencode` only to fail closed with isolation errors; runnable engines are `codex`, `claude`, and `pi`, plus the non-independent `subagent` engine; default is `AUTOREVIEW_ENGINE` or `codex`
 - resolves bare `git`, `gh`, reviewer, and PowerShell shell commands from absolute `PATH` entries only, never from the reviewed checkout; explicit `--*-bin` paths are interpreted from the reviewed repository root when relative and accepted only when both the supplied path and resolved target stay outside the reviewed repository
 - use `--mode commit --commit <ref>` for already-committed work, especially clean `main` after landing
 - scans safe Git patches in full, recognizes synthetic fixture values tied to their credential field, reviews them in one pass up to the aggregate prompt limit, and automatically uses complete bounded passes above it
@@ -478,6 +510,7 @@ The helper:
 - supports opt-in review panels with `--panel` / `--reviewers`, plus per-engine `--model`, `--thinking`, and Claude/pi `--fallback-model`
 - uses built-in defaults `codex=gpt-5.6-sol` with `high` reasoning and an access-only `gpt-5.6-terra` retry; Claude inherits the current Claude Code model and effort unless `--model`/`--thinking` or env overrides are set; honors `AUTOREVIEW_MODEL`, `AUTOREVIEW_THINKING`, `AUTOREVIEW_MAX_PRIORITY`, `AUTOREVIEW_FALLBACK_MODEL`, and per-engine `AUTOREVIEW_<ENGINE>_MODEL` / `AUTOREVIEW_<ENGINE>_THINKING` environment overrides when CLI flags are omitted
 - after a Codex usage-limit failure, records a fixed cooldown (default 1 hour) outside the reviewed repository and skips Codex on later runs, switching a Codex-only review to Claude; `--ignore-codex-cooldown` or `AUTOREVIEW_IGNORE_CODEX_COOLDOWN=1` forces Codex
+- forwards a custom Codex `model_provider` from `CODEX_HOME/config.toml` (allowlisted keys plus `env_key`/`auth.command` credentials) so `--ignore-user-config` does not silently route the review to api.openai.com
 - gives Codex the bundle in an empty workspace with web search available; Claude receives the bundle plus WebSearch by default and optional domain-constrained WebFetch, and Pi receives the bundle with no tools
 - runs Claude with `--safe-mode` (`v2.1.169+`), `--setting-sources user`, MCP and auto-memory disabled, no filesystem/shell tools, an empty external workspace, and `--fallback-model` when set; omits `--model`/`--effort` by default so user Claude Code model selection still applies
 - refuses Droid, Copilot, Cursor, and OpenCode reviews until their CLIs expose the required project, filesystem, and network isolation
@@ -485,6 +518,9 @@ The helper:
 - prints `review still running: <engine> elapsed=<seconds>s pid=<pid>` to stderr at long-running intervals while waiting for the selected review engine, unless streamed output or compact Codex activity has been visible recently
 - prints `autoreview clean: no accepted/actionable findings reported` when the selected review command exits 0
 - records one review-history entry per (run, reviewer) in a git-ignored local cache under `AUTOREVIEW_STATE_DIR` (default `~/.cache/autoreview/run-history.json`): engine, model, thinking, fallback usage, duration, outcome, and each finding's stable id, priority, category, and location — never prompts, bodies, diffs, or logs; `--history-summary` aggregates acceptance rates and retrospective hooks, and `--record-dispositions --run-id <id> --disposition <finding-id>=accepted|rejected[:reason]` records the main agent's per-finding decisions
+- supports `--engine subagent` for a zero-config, non-independent review: phase 1 writes `prompt-<n>.md`, `schema.json`, and `state.json` into an owner-only handoff directory under `AUTOREVIEW_STATE_DIR`, prints the resume command, and exits 3 (`EXIT_AWAITING_EXTERNAL_RESULT`) without recording history
+- finishes a handoff with `--resume-run <run-id>` plus one `--result <file>` per prompt (each a regular file outside the repository, at most 1 MB); it validates, priority-filters, merges chunks, records history as `engine=subagent`, prints `reviewer independence: none (subagent shares the author model/context)`, deletes the handoff on success, and keeps it for retry on failure
+- falls back to the `subagent` engine only when the engine was not requested and its CLI is missing, printing `engine_fallback: ...`; `--no-engine-fallback` / `AUTOREVIEW_NO_ENGINE_FALLBACK=1` disables it
 - exits nonzero when accepted/actionable findings are present
 
 ## Review History And Retrospective
@@ -513,5 +549,6 @@ Include:
 - tests/proof run
 - findings accepted/rejected, briefly why
 - the clean review result from the final helper/review run, or why a remaining finding was consciously rejected
+- for `subagent` runs, the `reviewer independence: none (subagent shares the author model/context)` line, so the reader knows the review was not independent
 
 Do not run another review solely to improve the final report wording. If the final helper run exited 0 and produced no accepted/actionable findings, report that exact run as clean.

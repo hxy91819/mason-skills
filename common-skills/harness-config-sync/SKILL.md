@@ -73,6 +73,8 @@ Kimi 专有路径只保留真正的 Kimi-only 增量。把其中可跨宿主共�
 4. 两者内容不同：停止该项，报告双方路径与差异，由用户裁决以哪边为准（常见做法：先把线上最新内容提交进仓库并推送，再接入软链）；其他独立项可继续。
 5. 无 checkout 或仓库无该文件：保持普通文件现状作为事实源，最终报告说明仓库托管未启用。
 
+Windows 注意：prompt 是文件级链接，Junction 不适用；按第 4 步的 Windows 建链规则用 `mklink` 建立文件符号链接（需管理员或开发者模式）。无特权且不能建链时按第 4 条停止该项报告，不得用普通文件副本替代事实源；Git Bash 的 `ln -s` 默认执行复制，禁止用于建链。
+
 接入后 prompt 正文的修改都落在仓库 checkout 内，按仓库规则提交推送；其他环境 pull 后由本 skill 重建软链完成收敛。
 
 ### 4. 建立宿主入口
@@ -88,6 +90,8 @@ Skills 优先使用目录级软链，因为新增 Skill 可自动出现：
 - user：Codex、CodeBuddy、Claude 和 Kiro 的 skills 根目录指向 `~/.agents/skills/`，agy 经 `~/.gemini/config/skills` 软链指向同一目录；Kimi Code 原生扫描该目录。
 - project 无 `.agents/skill-catalog.json` 时：需要专有入口的目标目录可完全由共享 Skill 管理，就让整个宿主 skills 目录指向 `.agents/skills/`；Kimi Code、Codex 和 agy 不需要专有入口。
 - project 有 catalog，或宿主目录需要只暴露选定 Skill 时：对需要专有入口的宿主直接运行一次脚本并带 `--apply`；脚本会先完成全量冲突预检，有任一冲突则零写入，不需要先 dry run 再征求确认。
+
+Windows 建链规则：目录级 skills 入口用 `mklink /J`（Junction，无需特权）；文件级 prompt 入口用 `mklink`（需管理员或开发者模式）。Git Bash 的 `ln -s` 默认执行复制而非建链，禁止使用；`readlink -f` 在 Git Bash 中可解析符号链接与 Junction，第 1 步盘点命令通用。`sync_skill_symlinks.py` 在 Windows 无符号链接特权时对目录自动退回 Junction，链接识别兼容两种形态。
 
 ```bash
 python3 ~/.kiro/skills/harness-config-sync/scripts/sync_project_agent_skills.py \
