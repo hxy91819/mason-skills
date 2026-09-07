@@ -1,6 +1,6 @@
 ---
 name: bb-model-routing
-description: 仅当用户明确要求使用 BB 启动或创建线程（thread）执行任务时使用，例如“用 bb 开一个 codexl 线程来编码”或“用 bb 开线程找 bug”。未要求启动线程的编码、排障或模型咨询，查看或继续已有线程，以及编写或修改本技能时不触发。
+description: 用户要求用 BB 派发任务或开线程时使用，例如“用 bb 派发任务”“用 bb 派发 codexl 做 xxx”“用 bb 派发 pi 做 xx”。查看或继续已有线程、模型咨询及修改本技能时不触发。
 ---
 
 # BB 任务派发
@@ -18,7 +18,7 @@ description: 仅当用户明确要求使用 BB 启动或创建线程（thread）
 bb-dispatch --difficulty medium --kind debug --task '<任务目标、范围与验收要求>'
 ```
 
-用户指定工具或已有对应工具上下文时用 `--agent <配置别名>`；明确推理要求时用 `--reasoning`，其余交给配置。命令未安装时直接执行本技能的 `scripts/bb-dispatch`。需要预览用 `--dry-run`，脚本已完成的环境与模型校验无需重复查询。
+用户指定工具或已有对应工具上下文时用 `--agent <配置别名>`，例如 codexl 或 pi。只有用户明确指定推理级别时才传 `--reasoning`；其余由脚本读取配置，尤其 GLM 5.3 Flash 的 `max` 不要按任务难度自行改写。命令未安装时直接执行本技能的 `scripts/bb-dispatch`。需要预览用 `--dry-run`，脚本已完成的环境与模型校验无需重复查询。
 
 ## 派发边界
 
