@@ -1,0 +1,38 @@
+version: 1
+# 此值应符合用户对派发任务的授权。脚本不会因工具只支持 full 而自动升级。
+permission_mode: accept-edits
+defaults:
+  simple: pi
+  medium: pi
+  complex: codex
+  debug: codex
+agents:
+  pi:
+    provider: pi
+    model: zai/glm-5.3-flash
+    reasoning: max
+  codex:
+    provider: codex
+    model: gpt-6-astra
+    reasoning: {simple: low, medium: medium, complex: medium}
+  codexl:
+    provider: acp-codexl
+    model: gpt-6-astra
+    reasoning: {simple: low, medium: medium, complex: medium}
+  cursor:
+    provider: acp-cursor
+    model: grok-4.6
+    reasoning: high
+  agy:
+    provider: acp-agy
+    model: gemini-3.8-flash-high
+    reasoning: medium
+environments: {}
+# environments:
+#   env_your_environment:
+#     defaults: {debug: codexl}
+#     agents:
+#       codexl:
+#         provider: your-provider-id
+#         model: gpt-6-astra
+#         reasoning: medium

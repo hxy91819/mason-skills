@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+"""按用户配置校验 BB 路由并创建一个线程；不拆任务、不重试创建、不修改环境。
+
+参数见 --help。stdout 为 JSON；stderr 为错误；退出码 0 成功、2 失败。
+依赖 Python 3.10+、PyYAML 和 PATH 上的 bb。
+"""
+import argparse
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+import yaml
+
+
+class DispatchError(Exception):
+    pass
+
+
+def bb(*args):
+    creating = args[:2] == ("thread", "spawn")
+    try:
+        result = subprocess.run(["bb", *args, "--json"], capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        suffix = " 创建结果未知，请先查询线程，勿直接重试。" if creating else ""
+        raise DispatchError(f"BB 调用失败：{exc}.{suffix}") from exc
+    if result.returncode:
+        suffix = " 请先查询线程确认是否已创建，勿直接重试。" if creating else ""
+        raise DispatchError(f"bb {' '.join(args[:2])} 失败：{result.stderr.strip()[:1000]}{suffix}")
+    try:
+        return json.loads(result.stdout)
+    except ValueError as exc:
+        raise DispatchError("BB 返回非 JSON。" + ("创建结果未知，勿直接重试。" if creating else "")) from exc
+
+
+def mapping(value, where):
+    if not isinstance(value, dict):
+        raise DispatchError(f"{where} 必须是映射。")
+    return value
+
+
+def string(value, where):
+    if not isinstance(value, str) or not value.strip():
+        raise DispatchError(f"{where} 必须是非空字符串。")
+    return value
+
+
+def unique(items, key, value, label):
+    if not isinstance(items, list):
+        raise DispatchError(f"{label} 目录格式未知。")
+    matches = [item for item in items if isinstance(item, dict) and item.get(key) == value]
+    if len(matches) != 1:
+        raise DispatchError(f"{label} {value!r} 缺失或不唯一；请检查用户配置。")
+    return matches[0]
+
+
+def dispatch(args, call=bb):
+    try:
+        config = mapping(yaml.safe_load(Path(args.config).expanduser().read_text()), "config")
+    except (OSError, yaml.YAMLError) as exc:
+        raise DispatchError(f"无法读取配置 {args.config}：{exc}") from exc
+    if config.get("version") != 1:
+        raise DispatchError("配置必须包含 version: 1。")
+    context = call("status") if not (args.project and args.environment) else {}
+    current_project = (context.get("project") or {}).get("id")
+    current_env = ((context.get("thread") or {}).get("environment") or {}).get("display", {}).get("id")
+    environment = args.environment or current_env
+    if not environment:
+        raise DispatchError("无法确定环境，请提供 --environment <id>。")
+    env = mapping(call("environment", "show", environment), "environment")
+    project = args.project or env.get("projectId") or current_project
+    if not project or env.get("projectId") != project or env.get("id") != environment:
+        raise DispatchError("项目与环境不匹配；只接受现有环境的精确 ID。")
+    # 环境块中的同名别名整体替换，避免混用另一台机器的模型和推理设置。
+    override = mapping(mapping(config.get("environments", {}), "environments").get(environment, {}), "environment config")
+    defaults = {**mapping(config.get("defaults", {}), "defaults"), **mapping(override.get("defaults", {}), "environment defaults")}
+    agents = {**mapping(config.get("agents", {}), "agents"), **mapping(override.get("agents", {}), "environment agents")}
+    route = "debug" if args.kind == "debug" else args.difficulty
+    alias = string(args.agent or defaults.get(route), f"defaults.{route}")
+    agent = mapping(agents.get(alias), f"agents.{alias}")
+    provider = string(agent.get("provider"), "provider")
+    model = string(agent.get("model"), "model")
+    reasoning = agent.get("reasoning")
+    if isinstance(reasoning, dict):
+        reasoning = reasoning.get(args.difficulty)
+    reasoning = string(args.reasoning or reasoning, "reasoning")
+    permission = args.permission_mode or override.get("permission_mode", config.get("permission_mode", "accept-edits"))
+    if permission not in ("accept-edits", "auto", "full"):
+        raise DispatchError("permission_mode 必须是 accept-edits、auto 或 full。")
+    providers = call("provider", "list", "--environment", environment)
+    selected = unique(providers, "id", provider, "provider")
+    if selected.get("available") is not True:
+        raise DispatchError(f"provider {provider} 在目标环境不可用。")
+    if permission not in selected.get("capabilities", {}).get("permissionModes", []):
+        raise DispatchError(f"{provider} 不支持权限 {permission}；请选用兼容工具，或在任务已授权后显式指定权限。")
+    models = call("provider", "models", provider, "--environment", environment)
+    selected_model = unique(models, "id", model, "模型")
+    levels = [entry.get("reasoningEffort") for entry in selected_model.get("supportedReasoningEfforts", [])]
+    if reasoning not in levels:
+        raise DispatchError(f"模型 {model} 不支持 reasoning={reasoning}；可用值：{levels}。")
+    command = ["thread", "spawn", "--project", project, "--environment", environment,
+               "--provider", provider, "--model", model, "--reasoning-level", reasoning,
+               "--permission-mode", permission, "--prompt", args.task]
+    if args.title:
+        command += ["--title", args.title]
+    # 当前线程属于目标项目和环境时才自动关联，跨项目派发不能误继承父线程。
+    parent = context.get("thread") or {}
+    if not parent and os.environ.get("BB_THREAD_ID"):
+        parent = (call("thread", "show", os.environ["BB_THREAD_ID"]).get("thread") or {})
+        if parent.get("projectId") != project or parent.get("environmentId") != environment:
+            parent = {}
+    elif project != current_project or environment != current_env:
+        parent = {}
+    if parent.get("id"):
+        command += ["--parent-thread", parent["id"]]
+    plan = dict(project=project, environment=environment, agent=alias, provider=provider,
+                model=model, reasoning=reasoning, permission_mode=permission,
+                difficulty=args.difficulty, kind=args.kind)
+    if args.dry_run:
+        return {"dry_run": True, "selection": plan, "argv": ["bb", *command, "--json"]}
+    result = call(*command)
+    # 返回完整创建回执，包括排队状态；不把创建成功宣称为任务完成。
+    return {"dry_run": False, "selection": plan, "result": result}
+
+
+def parser():
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="示例：\n  bb-dispatch --difficulty simple --task '补充 README' --dry-run\n  bb-dispatch --difficulty medium --kind debug --task '定位登录失败'\n输出：stdout JSON，stderr 错误；退出码 0 成功，2 失败。")
+    p.add_argument("--config", default=os.environ.get("BB_DISPATCH_CONFIG", str(Path.home() / ".config/bb-dispatch/config.yaml")), help="用户 YAML 配置路径，也可设置 BB_DISPATCH_CONFIG")
+    p.add_argument("--difficulty", required=True, choices=["simple", "medium", "complex"], help="任务难度")
+    p.add_argument("--task", required=True, help="任务目标、范围和验收要求")
+    p.add_argument("--kind", choices=["general", "debug"], default="general", help="排障任务必须选 debug")
+    p.add_argument("--agent", help="配置中的工具别名，覆盖默认路由")
+    p.add_argument("--reasoning", help="覆盖推理级别，仍校验模型目录")
+    p.add_argument("--project", help="项目 ID；默认目标环境所属项目")
+    p.add_argument("--environment", help="现有环境 ID；默认当前 BB 环境")
+    p.add_argument("--permission-mode", choices=["accept-edits", "auto", "full"], help="已获授权的权限；默认用户配置或 accept-edits")
+    p.add_argument("--title", help="可选线程标题")
+    p.add_argument("--dry-run", action="store_true", help="只读校验并输出启动参数，不创建线程")
+    return p
+
+
+def main():
+    args = parser().parse_args()
+    try:
+        string(args.task, "task")
+        print(json.dumps(dispatch(args), ensure_ascii=False, indent=2))
+    except DispatchError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

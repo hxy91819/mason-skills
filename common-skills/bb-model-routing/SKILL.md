@@ -9,6 +9,8 @@ description: 仅当用户明确要求使用 BB 启动或创建线程（thread）
 
 ## 选择规则
 
+已有用户派发配置时，以配置为实际路由依据；下表为初始配置偏好，不覆盖用户的环境映射。
+
 用户本次明确指定的配置优先；未指定的字段按下表补齐。用户只说 CodexL 时，将其解析为 BB provider `acp-codexl`，不传 `codexl`。
 
 | 用户指定的工具 | BB provider ID | 默认模型 | 推理级别 | 通常分配的任务 |
@@ -28,6 +30,16 @@ description: 仅当用户明确要求使用 BB 启动或创建线程（thread）
 - AGY 的 `high` 已包含在模型 ID 中，不代表独立的 `--reasoning-level high`；当前 ACP 目录中的独立推理级别是 `medium`，启动前仍须核对目录。本地 AGY provider 仅支持 Full Access，仅在目标任务已获准使用该权限时选用；不为采用 AGY 自动提升权限，权限不匹配时说明限制并询问替代选择。
 
 ## 将推荐变成准确的启动参数
+
+优先使用本技能的 `scripts/bb-dispatch`，由脚本读取用户配置并执行以下校验与创建，避免 Agent 每次重写命令。首次配置或调整环境别名时读取 [配置与派发](references/dispatch.md)，模板见 [config.example.yaml](references/config.example.yaml)。
+
+```bash
+bb-dispatch --difficulty medium --kind debug --task '<任务目标、范围与验收要求>'
+```
+
+调用前根据任务判定 simple/medium/complex；排查问题、找 bug 传 `--kind debug`。用户指定工具时传 `--agent`，明确推理要求时传 `--reasoning`。需要预览用 `--dry-run`。脚本未安装为命令时直接调用技能目录中的路径。默认权限是 `accept-edits`，配置和命令行的权限须符合任务授权；权限不兼容时不擅自升权。保留现有自然语言触发策略，只为用户已要求的 BB 派发执行脚本。
+
+脚本已完成的上下文和目录查询无需再次执行；手工派发时按以下步骤：
 
 1. 用 `bb status --json` 确认上下文；缺少项目或环境时从 BB 查询并匹配用户指定的目标，不猜 ID。默认沿用目标现有环境。
 2. 在目标环境执行 `bb provider list --environment <environment-id> --json`，确认选中的精确 ID 存在且可用，然后执行 `bb provider models <provider-id> --environment <environment-id> --json`。按模型名称匹配目录中的精确 ID，核对推理级别；需要 provider 前缀的模型 ID 原样保留。
