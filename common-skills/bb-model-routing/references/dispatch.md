@@ -21,3 +21,18 @@ bb-dispatch --difficulty medium --agent agy --permission-mode full --task '执�
 每次调用会校验 provider 是否存在且可用、权限是否兼容、模型及 reasoning 是否在目录中。`--dry-run` 同样执行只读校验并输出参数数组，不创建线程。实际派发返回 JSON 的 `selection` 和 BB 原始 `result`，只调用一次 spawn；超时或响应异常时先查线程，避免重复创建。目录不做持久缓存，防止安装、账号或环境变化后继续使用过期配置。
 
 验证：`python3 -m unittest discover -s scripts -p 'test_*.py'`（从技能目录运行）。
+
+## Pi 额度切换
+
+初始配置中 `pi` 默认指向 Ollama Cloud；`pi-ollama` 和 `pi-zai` 分别固定选择两条 GLM 5.3 Flash 路由，推理级别均为 `max`。具体模型 ID 以用户配置为准，环境覆盖时同步维护这些别名。
+
+新任务可用 `--agent pi-zai` 或 `--agent pi-ollama` 选择渠道。脚本只负责启动前校验，不监控额度，也不自动重派；Agent 需要查看线程状态与错误。明确的余额不足、套餐额度耗尽可触发切换，单独的 HTTP 429、短时限速、超时或认证失败不构成此依据。用户限定渠道时先遵循限制。
+
+已有任务耗尽额度时，先确认原回合已结束，检查已完成工作和剩余目标，避免重复副作用。告知用户切换原因，读取原环境下另一条路由的模型目录确认可用，然后在原 Pi 线程继续：
+
+```bash
+bb thread tell <thread-id> '<已完成工作与剩余目标；避免重复操作>' \
+  --model <另一条路由的完整模型ID> --reasoning-level max --json
+```
+
+该命令在下一回合选择替代模型；若还希望后续回合默认使用它，执行 `bb thread update <thread-id> --model <完整模型ID> --reasoning-level max --json`。只更新属于当前任务的 Pi 线程，不改权限或全局默认。两条路由均耗尽时报告等待重置，不在它们之间循环切换。脚本的 `--agent` 用于新建线程，不能用它重新派发整个未完成任务来冒充续接。

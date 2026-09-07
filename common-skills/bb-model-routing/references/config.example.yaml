@@ -9,6 +9,14 @@ defaults:
 agents:
   pi:
     provider: pi
+    model: ollama-cloud/glm-5.3-flash:cloud
+    reasoning: max
+  pi-ollama:
+    provider: pi
+    model: ollama-cloud/glm-5.3-flash:cloud
+    reasoning: max
+  pi-zai:
+    provider: pi
     model: zai/glm-5.3-flash
     reasoning: max
   codex:

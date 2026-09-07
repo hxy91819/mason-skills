@@ -22,6 +22,8 @@ bb-dispatch --difficulty medium --kind debug --task '<任务目标、范围与�
 
 ## 派发边界
 
+Pi 的 GLM 5.3 Flash 默认走 Ollama Cloud，另有 Zai 路由，两者均用 `max`。观察到当前路由明确额度耗尽时，可以告知用户并切到另一条；具体别名和原线程续接方法见 [Pi 额度切换](references/dispatch.md#pi-额度切换)。用户限定渠道时保留其限制，普通超时或限速不视为额度耗尽。
+
 权限须符合任务授权；配置缺失或校验失败时说明缺口，不静默换模型或升权。
 
 并发任务可能产生修改冲突时，可以使用 `use-worktree` 隔离；无冲突时沿用当前环境。操作前检查分支、工作区和 worktree，遵守用户授权及当前 git wrapper；拦截时按 stderr 和 `git --wrapper-help` 处理，不绕过。隔离环境准备好后用 `--environment` 指定，脚本只使用已有 BB 环境。
