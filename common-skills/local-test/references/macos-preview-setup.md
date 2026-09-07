@@ -95,13 +95,13 @@ openssl x509 -in preview.test.pem -noout -subject -dates -ext subjectAltName
 curl --cacert "$(mkcert -CAROOT)/rootCA.pem" -I https://operations.preview.test/
 ```
 
-未提供入口凭据时应返回 `401`，而不是证书或解析错误。在浏览器打开该地址，输入服务器管理员设置的入口账号后应正常显示页面。再注册另一个一级子域并访问，确认 Mac 无需新增配置。
+未提供入口凭据时应返回 `401`，而不是证书或解析错误。在浏览器打开该地址，先打开服务器提供的入口登录链接（如 `/oauth2/sign_in?rd=/`），输入统一账号后应正常显示页面。再注册另一个一级子域并访问，确认 Mac 无需新增配置。
 
 这是一次配置、长期使用，不是永久证书：
 
 - 新增项目：只改服务器反向代理。
 - 服务器 IP 改变：改一次 dnsmasq 的 IP 并重启服务。
-- 叶证书到期前：在同一 Mac、同一 CA 下重新执行签发命令，替换服务器证书并验证 reload；Mac 不需重新信任。可定期用 `openssl x509 -checkend 2592000 -noout -in preview.test.pem` 检查是否将在 30 天内到期。
+- 叶证书到期前：在同一 Mac、同一 CA 下重新执行签发命令，替换服务器证书并按服务器实际方式加载、验证；Mac 不需重新信任。可定期用 `openssl x509 -checkend 2592000 -noout -in preview.test.pem` 检查是否将在 30 天内到期。
 - CA 到期或更换 Mac：需迁移可信 CA 或建立新 CA、重新信任和签发；不要通过不安全渠道搬运 CA 私钥。
 - 撤销配置：仅删除自己添加的 resolver 与 dnsmasq 条目；共享 dnsmasq 不应被直接卸载。`mkcert -uninstall` 会影响所有依赖该 CA 的开发站点，确认范围后再使用。
 

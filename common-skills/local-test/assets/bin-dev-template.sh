@@ -15,7 +15,9 @@ readonly STOP_TIMEOUT=10
 DOCKER_COMPOSE_FILE=""   # 中间件 docker compose 文件；留空则跳过中间件
 PREVIEW_URL="${PREVIEW_URL:-}" # 可用环境变量覆盖；默认从下方 Git-ignored 文件读取真实地址
 PREVIEW_URL_FILE="$STATE_DIR/preview-url" # 单行完整 URL，纯文本读取，不作为 shell 执行
-NGINX_CONF=""            # 本环境代理配置路径，仅供 status 展示；共享 Nginx 由管理员维护
+PREVIEW_LOGIN_URL="${PREVIEW_LOGIN_URL:-}" # 可覆盖本机入口登录链接
+PREVIEW_LOGIN_URL_FILE="$STATE_DIR/preview-login-url"
+GATEWAY_CONF=""          # 本环境 Caddy 配置路径，仅供 status 展示；共享网关由管理员维护
 SERVICES=(
   # 名称|监听地址(仅 127.0.0.1)|启动命令|日志文件名
   # "backend|127.0.0.1:8000|uvicorn app:app --host 127.0.0.1 --port 8000|backend.log"
@@ -30,10 +32,10 @@ usage() {
 
 说明:
   本地多服务联调环境的统一启停入口。中间件走 docker compose，业务服务以
-  裸进程启动并仅监听 127.0.0.1；对外暴露统一交给 Nginx（本脚本只管进程与容器）。
+  裸进程启动并仅监听 127.0.0.1；对外暴露统一交给 Caddy（本脚本只管进程与容器）。
 
 选项:
-  start            按中间件 -> 业务服务顺序拉起，共享 Nginx 常驻；幂等，本环境已拉起的服务跳过
+  start            按中间件 -> 业务服务顺序拉起，共享网关常驻；幂等，本环境已拉起的服务跳过
   stop             逆序收敛：SIGTERM 超时转 SIGKILL，校验端口释放；默认保留数据
   status           打印各服务存活状态、PID 与对外访问入口
   logs <service>   跟踪指定服务日志（Ctrl-C 退出不影响服务）
@@ -47,7 +49,8 @@ usage() {
 本机预览地址配置:
   在项目根目录执行脚本；将 .local-test/ 加入 .gitignore 或 .git/info/exclude。
   .local-test/preview-url 保存单行用户实际可访问的完整 URL（不含凭据）。
-  PREVIEW_URL 环境变量可覆盖该文件；status 显示配置地址，不代表已验证可达。
+  .local-test/preview-login-url 保存入口登录链接；首次访问先登录再打开目标页面。
+  PREVIEW_URL / PREVIEW_LOGIN_URL 可分别覆盖文件；status 显示配置值，不代表已验证可达。
 
 示例:
   bin/dev start
@@ -164,14 +167,22 @@ cmd_status() {
     printf '%-12s %s\n' "$svc" "$state"
   done
   echo "== 对外入口 =="
-  local preview_url="$PREVIEW_URL"
+  local preview_url="$PREVIEW_URL" login_url="$PREVIEW_LOGIN_URL"
   if [[ -z "$preview_url" && -f "$PREVIEW_URL_FILE" ]]; then
     preview_url="$(cat "$PREVIEW_URL_FILE")" || return 2
   fi
+  if [[ -z "$login_url" && -f "$PREVIEW_LOGIN_URL_FILE" ]]; then
+    login_url="$(cat "$PREVIEW_LOGIN_URL_FILE")" || return 2
+  fi
+  if [[ -n "$login_url" ]]; then
+    printf '  入口登录地址（首次访问先登录）: %s\n' "$login_url"
+  else
+    echo "  (未登记入口登录地址，请核对本机网关配置)"
+  fi
   if [[ -n "$preview_url" ]]; then
     printf '  用户预览地址（配置值，需单独验证可达）: %s\n' "$preview_url"
-    printf '  代理配置: %s\n' "${NGINX_CONF:-由管理员登记}"
-    echo "  入口凭据由管理员提供；共享 Nginx 不随本环境启停"
+    printf '  代理配置: %s\n' "${GATEWAY_CONF:-由管理员登记}"
+    echo "  入口凭据由管理员提供；共享网关不随本环境启停"
   else
     echo "  (未登记用户预览地址；请配置 $PREVIEW_URL_FILE，勿将内部监听地址当作预览链接)"
   fi
