@@ -1,0 +1,33 @@
+{
+  "name": "bb-plugin-account-limits",
+  "version": "0.2.0",
+  "type": "module",
+  "engines": {
+    "bb": ">=0.42",
+    "bbPluginSdk": ">=0.4.47"
+  },
+  "bb": {
+    "name": "Account Limits",
+    "description": "Local ACP providers: CodexL and Kiro account limits, plus Antigravity.",
+    "branding": {
+      "icon": "ChartColumn"
+    },
+    "server": "./server.ts",
+    "host": "./host.ts",
+    "skills": []
+  },
+  "dependencies": {
+    "@get-bb/plugin-sdk": "0.4.47",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0",
+    "tsx": "^4.20.0"
+  },
+  "scripts": {
+    "test": "node --import ./test-runtime.mjs --import tsx --test *.test.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "bb plugin build"
+  }
+}

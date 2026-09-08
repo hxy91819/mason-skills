@@ -6,6 +6,8 @@ Skills are reusable instruction sets that teach AI agents how to perform special
 
 ## What's inside
 
+可移植的 BB 配额与 ACP 入口插件见 [tools/bb-account-limits](tools/bb-account-limits/README.md)，包含目标环境配置、安装与回退说明。
+
 Skills live under `common-skills/`. Each skill is a directory with a required `SKILL.md` file.
 
 ```
