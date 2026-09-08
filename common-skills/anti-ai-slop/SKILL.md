@@ -1,6 +1,6 @@
 ---
 name: anti-ai-slop
-description: 检查当前 diff 或已提交 commit（代码与文档）里的 AI slop：补偿性授权、格式 echo、否定式免责、元文案、提示词残留。
+description: 检查当前 diff 或已提交 commit（代码与文档）里的 AI slop：补偿性授权、格式 echo、否定式免责、元文案、提示词残留、没人要的抽象和重复实现。
 disable-model-invocation: true
 ---
 
@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 未指定时先 `git status --short` 和 `git diff HEAD`（含暂存、未跟踪的文本）。工作区干净则 `git show HEAD`。用户点了文件或 commit，就只看那些。
 
-删掉之后代码或文档照样执行得了，多半就是。优先删。
+删掉之后代码或文档照样执行得了，多半就是。先看懂这段在干什么，再优先删。
 
 - 禁令删了，换成「可自行 X / 无需授权」
 - 还在说解禁、不再禁止、本文不做什么
@@ -18,6 +18,9 @@ disable-model-invocation: true
 - 实现细节、验收/核对目的，写成给读者的介绍
 - 注释、help、测试说明在讲「现在允许」
 - TODO、调试打印、占位符留在要提交的内容里
+- 没人要的抽象、配置、新依赖、脚手架
+- 手写了标准库或平台已经有的能力
+- 仓库里已有同样的东西，又写了一份
 
 工具的 allow/block 清单、仍然有效的约束、行为测试，留着。改写用陈述句写要做什么。判不准就留。
 
