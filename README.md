@@ -12,6 +12,8 @@ Skills live under `common-skills/`. Each skill is a directory with a required `S
 
 ```
 common-skills/
+├── anti-ai-slop/
+│   └── SKILL.md
 ├── ask-oracle/
 │   └── SKILL.md
 ├── article-polish/
@@ -109,7 +111,7 @@ Skills are plain markdown. You can adapt the instructions for other AI coding to
 
 Agents that discover user-scoped skills from `~/.agents/skills` can link individual skills.
 
-> **Note**: Only 19 core engineering and governance skills are recommended for global user scope. See [docs/recommended-global-skills.md](docs/recommended-global-skills.md) and [`config/skill-symlinks.yaml`](config/skill-symlinks.yaml) for the full list, rationale, and one-command sync instructions.
+> **Note**: Only 21 core engineering and governance skills are recommended for global user scope. See [docs/recommended-global-skills.md](docs/recommended-global-skills.md) and [`config/skill-symlinks.yaml`](config/skill-symlinks.yaml) for the full list, rationale, and one-command sync instructions.
 
 ```bash
 # Sync recommended user-scope skills automatically:
@@ -120,6 +122,7 @@ python3 common-skills/skill-manifest-sync/scripts/sync_skill_symlinks.py --mode 
 
 | Skill | Description |
 |-------|-------------|
+| [anti-ai-slop](common-skills/anti-ai-slop/) | Reviews the current diff or latest commit for AI slop in code and docs, then deletes it. Explicit invocation only. |
 | [ask-oracle](common-skills/ask-oracle/) | Produces a concise brief containing the original request and all decision-relevant context, reserving technical judgment for an expert oracle. |
 | [article-polish](common-skills/article-polish/) | Article polishing with quick / normal / refined modes. Derivative work based on [baoyu-translate](https://github.com/JimLiu/baoyu-skills/tree/main/skills/baoyu-translate). |
 | [article-workflow](common-skills/article-workflow/) | A phased article optimization workflow with 13 skills — from brief generation through final publication. See [workflow README](common-skills/article-workflow/README.md) for phase order and usage. |
@@ -135,6 +138,10 @@ python3 common-skills/skill-manifest-sync/scripts/sync_skill_symlinks.py --mode 
 | [story-direction-review](common-skills/story-direction-review/) | Reviews a completed Story for direction drift, invalidated assumptions, coverage gaps, and necessary plan changes. Explicit invocation only. |
 | [tech-doc-html](common-skills/tech-doc-html/) | Interactive single-file HTML from technical design docs. Original skill design; visual style inspired by [html-effectiveness](https://github.com/ThariqS/html-effectiveness). |
 | [worktree-cleanup](common-skills/worktree-cleanup/) | Audits clean worktrees, proves their HEAD is durable on GitHub, and removes one reviewed report in a resilient batch. Explicit invocation only. |
+
+### anti-ai-slop
+
+Looks at the current uncommitted diff, or `HEAD` if the worktree is clean, and deletes AI slop in both code and docs: leftover permission grants, format echo, negative disclaimers, meta copy, and one-off prompt residue.
 
 ### ask-oracle
 

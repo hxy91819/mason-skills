@@ -10,6 +10,8 @@ version: 1
 sources:
 - name: mattpocock-skills
 skills:
+- name: anti-ai-slop
+  note: 检查刚改的 diff 或 commit 里的 AI slop
 - name: ask-matt
   source: mattpocock-skills
   note: 路由：问哪个 skill 或流程适合当前处境

@@ -12,7 +12,7 @@
 - **被动型 skill**：提供可在请求自然匹配时由 agent 主动采用的通用能力，通常是低风险的格式化、生成、查询或验证。默认允许隐式触发，设置 `policy.allow_implicit_invocation: true`。
 - **无法明确分类或两者混合**：采用流程类的保守默认值 `false`，并向用户说明不确定性和可选覆盖方式，不得静默选择。
 
-分类依据是 skill 的实际工作流和风险，不是目录名称。可参考仓库现有设置：`distill`、`autoreview`、`large-task-planning`、`use-worktree`、`story-direction-review` 和 `ask-oracle` 为显式触发；`open-source-contribution` 为允许隐式触发。
+分类依据是 skill 的实际工作流和风险，不是目录名称。可参考仓库现有设置：`anti-ai-slop`、`distill`、`autoreview`、`large-task-planning`、`use-worktree`、`story-direction-review` 和 `ask-oracle` 为显式触发；`open-source-contribution` 为允许隐式触发。
 
 仓库存在两种触发标记：Codex 优先读取 `agents/openai.yaml` 的 `policy.allow_implicit_invocation`；部分兼容旧技能还在 `SKILL.md` frontmatter 使用 `disable-model-invocation: true`。流程类 skill 必须以 `allow_implicit_invocation: false` 为 Codex 默认值，并保留或同步已有的 `disable-model-invocation: true`；被动型 skill 不得遗留与允许隐式触发相冲突的禁用标记。
 

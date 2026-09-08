@@ -27,32 +27,33 @@ user 级 prompt 正文不在此清单范围内：由 [`config/user-agents.md`](.
 
 ---
 
-## 二、推荐全局技能清单（共 20 个）
+## 二、推荐全局技能清单（共 21 个）
 
-当前清单经严格审计，仅包含以下 20 个核心工程与治理技能：
+当前清单经严格审计，仅包含以下 21 个核心工程与治理技能：
 
 | 序号 | 技能名称 | 用途说明 | 默认触发机制 |
 |:---:|---|---|---|
-| 1 | `autoreview` | 提交/发布前的结构化代码审查 | 显式调用 (`$autoreview`) |
-| 2 | `distill` | 从会话历史与实践中蒸馏可沉淀的规则与经验 | 显式调用 (`$distill`) |
-| 3 | `harness-config-sync` | 跨 Agent 宿主（Codex/Claude/Pi 等）收敛 prompts 与 skills 布局 | 显式调用 (`$harness-config-sync`) |
-| 4 | `large-task-orchestrator` | 用原生子 Agent 持续编排推进大型工程任务 | 显式调用 (`$large-task-orchestrator`) |
-| 5 | `large-task-planning` | 大型工程任务的双层规划（人读 SPEC/STATUS + Agent 机器执行 plan.json） | 显式调用 (`$large-task-planning`) |
-| 6 | `local-test` | 实际搭建、复用或管理本地联调/项目预览环境 | 允许隐式触发（窄条件） |
-| 7 | `mermaid-lint` | Markdown 中 Mermaid 图表的渲染级批量校验与自动修复 | 显式调用 (`$mermaid-lint`) |
-| 8 | `open-source-contribution` | 开源贡献与发布前的合规与代码卫生审计 | 允许隐式触发 |
-| 9 | `ppt-visual-review` | PPT / 单页视觉效果逐页验收 | 显式调用 (`$ppt-visual-review`) |
-| 10 | `preflight` | 开工前凭据、权限、工具与外部依赖轻量探针核查 | 显式调用 (`$preflight`) |
-| 11 | `readiness-fix` | 根据本地 readiness 报告修复失败的信号项 | 显式调用 (`$readiness-fix`) |
-| 12 | `readiness-report` | 对当前代码库做只读静态 Agent-Readiness 审计并输出本地打分报告 | 显式调用 (`$readiness-report`) |
-| 13 | `skill-test` | 隔离测试与验证 Skill 自身行为规范 | 显式调用 (`$skill-test`) |
-| 14 | `spec-leak-review` | 界面/对外文本中的 Spec / Prompt 泄漏审查 | 显式调用 (`$spec-leak-review`) |
-| 15 | `story-direction-review` | Story 完成后的方向偏差与未决假设独立复核 | 显式调用 (`$story-direction-review`) |
-| 16 | `submit-pr-mr` | 提交 PR / MR 的标准前置检查与推送流程 | 显式调用 (`$submit-pr-mr`) |
-| 17 | `use-worktree` | 在隔离的 Git worktree 中安全开展并发任务 | 显式调用 (`$use-worktree`) |
-| 18 | `what-changed` | 用平实人读语言说明变更内容 | 显式调用 (`$what-changed`) |
-| 19 | `worktree-cleanup` | 审计并安全清理已完成使命的 Git worktree | 显式调用 (`$worktree-cleanup`) |
-| 20 | `html-preview` | 将生成的静态 HTML 发布为带认证和有效期的浏览器链接 | 允许隐式触发（窄条件） |
+| 1 | `anti-ai-slop` | 检查刚改的 diff 或 commit 里的 AI slop 并改到干净 | 显式调用 (`$anti-ai-slop`) |
+| 2 | `autoreview` | 提交/发布前的结构化代码审查 | 显式调用 (`$autoreview`) |
+| 3 | `distill` | 从会话历史与实践中蒸馏可沉淀的规则与经验 | 显式调用 (`$distill`) |
+| 4 | `harness-config-sync` | 跨 Agent 宿主（Codex/Claude/Pi 等）收敛 prompts 与 skills 布局 | 显式调用 (`$harness-config-sync`) |
+| 5 | `large-task-orchestrator` | 用原生子 Agent 持续编排推进大型工程任务 | 显式调用 (`$large-task-orchestrator`) |
+| 6 | `large-task-planning` | 大型工程任务的双层规划（人读 SPEC/STATUS + Agent 机器执行 plan.json） | 显式调用 (`$large-task-planning`) |
+| 7 | `local-test` | 实际搭建、复用或管理本地联调/项目预览环境 | 允许隐式触发（窄条件） |
+| 8 | `mermaid-lint` | Markdown 中 Mermaid 图表的渲染级批量校验与自动修复 | 显式调用 (`$mermaid-lint`) |
+| 9 | `open-source-contribution` | 开源贡献与发布前的合规与代码卫生审计 | 允许隐式触发 |
+| 10 | `ppt-visual-review` | PPT / 单页视觉效果逐页验收 | 显式调用 (`$ppt-visual-review`) |
+| 11 | `preflight` | 开工前凭据、权限、工具与外部依赖轻量探针核查 | 显式调用 (`$preflight`) |
+| 12 | `readiness-fix` | 根据本地 readiness 报告修复失败的信号项 | 显式调用 (`$readiness-fix`) |
+| 13 | `readiness-report` | 对当前代码库做只读静态 Agent-Readiness 审计并输出本地打分报告 | 显式调用 (`$readiness-report`) |
+| 14 | `skill-test` | 隔离测试与验证 Skill 自身行为规范 | 显式调用 (`$skill-test`) |
+| 15 | `spec-leak-review` | 界面/对外文本中的 Spec / Prompt 泄漏审查 | 显式调用 (`$spec-leak-review`) |
+| 16 | `story-direction-review` | Story 完成后的方向偏差与未决假设独立复核 | 显式调用 (`$story-direction-review`) |
+| 17 | `submit-pr-mr` | 提交 PR / MR 的标准前置检查与推送流程 | 显式调用 (`$submit-pr-mr`) |
+| 18 | `use-worktree` | 在隔离的 Git worktree 中安全开展并发任务 | 显式调用 (`$use-worktree`) |
+| 19 | `what-changed` | 用平实人读语言说明变更内容 | 显式调用 (`$what-changed`) |
+| 20 | `worktree-cleanup` | 审计并安全清理已完成使命的 Git worktree | 显式调用 (`$worktree-cleanup`) |
+| 21 | `html-preview` | 将生成的静态 HTML 发布为带认证和有效期的浏览器链接 | 允许隐式触发（窄条件） |
 
 ---
 

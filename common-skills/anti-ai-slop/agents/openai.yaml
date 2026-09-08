@@ -1,0 +1,7 @@
+interface:
+  display_name: "Anti AI Slop"
+  short_description: "检查刚改的 diff 或 commit 里的 AI slop 并改到干净"
+  default_prompt: "Use $anti-ai-slop to review the current diff or latest commit and remove AI slop."
+
+policy:
+  allow_implicit_invocation: false
