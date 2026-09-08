@@ -1,10 +1,6 @@
 {
   "name": "bb-plugin-account-limits",
-<<<<<<< HEAD
-  "version": "0.2.0",
-=======
   "version": "0.2.1",
->>>>>>> 48a7ed5 (Add bb-account-limits plugin: Codex account quota providers with machine-local JSON config)
   "type": "module",
   "engines": {
     "bb": ">=0.42",

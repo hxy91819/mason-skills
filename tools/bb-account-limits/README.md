@@ -6,20 +6,38 @@ BB 本地 provider 插件：将 CodexL、Kiro、AGY 账户额度接入原生 `sy
 
 ## 配置
 
-先在执行机器安装并登录需要的 CLI，然后编辑 [config.ts](config.ts)：
+先在执行机器安装并登录需要的 CLI，然后创建机器级覆盖文件 **`$XDG_CONFIG_HOME/bb/account-limits/local.json`**（默认 `~/.config/bb/account-limits/local.json`，不属于本仓库、不会提交）；格式不合法或字段缺失时退回内置默认并写警告日志：
+
+```json
+{
+  "enabledProviders": ["acp-codex-saiens", "acp-codex-omnidrome"],
+  "codex": "codex",
+  "codexAcp": "/home/me/.local/share/codex-acp/node_modules/.bin/codex-acp",
+  "codexAccounts": [
+    { "id": "acp-codex-saiens", "displayName": "🟦 Codex · saiens", "command": "codex-saiens-bb", "icon": "./icons/codex-saiens.svg" }
+  ]
+}
+```
 
 | 配置 | 用途 |
 |---|---|
 | `enabledProviders` | 注册的 provider ID；默认仅 CodexL、Kiro |
 | `codex` | CodexL 无权限参数包装入口，或直接指定 `codex` |
 | `codexAcp` | `@agentclientprotocol/codex-acp` 的可执行文件 |
+| `codexAccounts` | 额外 Codex 账号：与 `acp-codexl` 同构注册，`command` 是该账号的包装 CLI，`icon` 可填内置 glyph 或插件相对 SVG 路径 |
 | `kiro` / `agy` | 对话和额度查询共同使用的 CLI 路径 |
 | `bun` / `agyEntry` | AGY ACP 启动器；后者必须是执行机器上的绝对路径 |
 | `copilot` / `codebuddy` | 可选的原生 ACP CLI 路径 |
 
-命令默认从 **BB 执行进程的 PATH** 查找；找不到时填写绝对路径。修改配置后重新构建、reload；配置会打包进入 server/host，不依赖当前 shell 的临时变量。多个执行机器必须有兼容的命令路径，单份插件配置不做每机器映射。
+`config.ts` 只保留机器无关的默认值；上表所有键都可在 local JSON 里覆盖，未知键忽略。命令默认从 **BB 执行进程的 PATH** 查找；找不到时在 local JSON 里填绝对路径。修改配置后重新构建、reload；local JSON 是运行时读取的，只改它时 reload 即可、无需重新构建。多个执行机器必须有兼容的命令路径，单份插件配置不做每机器映射。
 
-可启用 ID：`acp-codexl`、`acp-kiro`、`acp-agy`、`acp-copilot`、`acp-codebuddy`。仅启用已准备好的入口。不要把账号、token、原机器认证目录放入源码。
+覆盖文件的解析顺序（命中即停）：
+
+1. `ACCOUNT_LIMITS_LOCAL_CONFIG` 环境变量指向的文件；
+2. `$XDG_CONFIG_HOME/bb/account-limits/local.json` —— 推荐位置；host bundle 会被 BB 复制到 `plugin-host-artifacts` 的哈希目录运行，插件内相对路径在 host 侧不可靠；
+3. 插件根 `account-limits.local.json`（已在 `.gitignore`）—— 仅作上游兼容与本地开发；server 侧可用，host 侧不可依赖。
+
+可启用 ID：`acp-codexl`、`acp-kiro`、`acp-agy`、`acp-copilot`、`acp-codebuddy`，以及 `codexAccounts` 里自定义的 ID。仅启用已准备好的入口。不要把账号、token、原机器认证目录放入源码；机器相关配置全部留在 local JSON。
 
 CodexL 包装脚本应原样转发参数，不固定注入 `danger-full-access` 或 `approval=never`。如果不需要账户隔离，`codex` 配置可直接填已登录的 `codex` 命令；provider ID 仍为 `acp-codexl`。
 
@@ -77,7 +95,7 @@ Copilot 使用 `--acp`，Full Access 映射 `--yolo`；CodeBuddy 使用 `--acp`�
 
 ## 更新和回退
 
-修改 `config.ts` 后：`bb plugin build .`，再 `bb plugin reload account-limits`。验证模型发现和额度查询，不仅检查安装成功。
+修改 `config.ts` 或 local JSON 后：只改 JSON 时 `bb plugin reload account-limits`；改了代码则 `bb plugin build .` 再 reload。验证模型发现和额度查询，不仅检查安装成功。
 
 回退到旧路径插件时重新安装原路径。回退为普通 ACP 条目时先禁用本插件，再将备份条目合并回当前 `customAgents`，避免重复 ID；不删除线程、认证或原生会话数据。
 

@@ -1,6 +1,21 @@
+import { config } from "./config.js";
 import { experimental_acpProviderBridge } from "@get-bb/plugin-sdk/provider-bridge/acp";
 import { bridgeRequestEnvelopeSchema, createBridgeIo, experimental_defineProviderBridge, providerMaintenanceParamsSchema, type ProviderBridgeEntry, type ProviderUsageResult } from "@get-bb/plugin-sdk/provider-bridge";
 import { readAgyUsage, readCodexUsage, readKiroUsage, usageError } from "./usage.js";
+
+// usage 查询支持的本插件 provider ID：三个原生入口 + config.codexAccounts 里的额外 Codex 账号。
+const usageProviderIds = new Set([
+  "acp-codexl", "acp-kiro", "acp-agy",
+  ...config.codexAccounts.map(account => account.id),
+]);
+
+export function resolveUsageReader(id: string, signal: AbortSignal): Promise<ProviderUsageResult> {
+  const account = config.codexAccounts.find(entry => entry.id === id);
+  if (account) return readCodexUsage(account.command, { signal });
+  return id === "acp-codexl" ? readCodexUsage(undefined, { signal })
+    : id === "acp-agy" ? readAgyUsage(undefined, { signal })
+    : readKiroUsage(undefined, { signal });
+}
 
 export function withAccountLimits(delegate: ProviderBridgeEntry, read: (id: string, signal: AbortSignal) => Promise<ProviderUsageResult>, write?: (line: string) => void): ProviderBridgeEntry {
   const io = createBridgeIo({ write });
@@ -25,7 +40,7 @@ export function withAccountLimits(delegate: ProviderBridgeEntry, read: (id: stri
       const params = providerMaintenanceParamsSchema.safeParse(request.data.params);
       if (!params.success) { io.sendError(request.data.id, -32602, "Invalid provider usage parameters."); return; }
       const id = params.data.providerId;
-      if (!["acp-codexl", "acp-kiro", "acp-agy"].includes(id)) { io.sendResult(request.data.id, { supported: false }); return; }
+      if (!usageProviderIds.has(id)) { io.sendResult(request.data.id, { supported: false }); return; }
       let query = pending.get(id);
       if (!query) {
         query = Promise.resolve().then(() => read(id, controller.signal)).catch(() => usageError("Account limits query failed."));
@@ -41,4 +56,4 @@ export function withAccountLimits(delegate: ProviderBridgeEntry, read: (id: stri
 }
 
 export const experimental_providerBridge = withAccountLimits(experimental_acpProviderBridge, (id, signal) =>
-  id === "acp-codexl" ? readCodexUsage(undefined, { signal }) : id === "acp-agy" ? readAgyUsage(undefined, { signal }) : readKiroUsage(undefined, { signal }));
+  resolveUsageReader(id, signal));
