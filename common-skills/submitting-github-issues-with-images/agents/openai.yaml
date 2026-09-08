@@ -1,0 +1,7 @@
+interface:
+  display_name: "Submit GitHub Evidence With Images"
+  short_description: "把本機截圖等附件經 GitHub Release Asset 上傳並嵌入 issue／PR，形成可驗證證據鏈"
+  default_prompt: "Use $submitting-github-issues-with-images to upload this evidence and publish it to the target GitHub issue or PR."
+
+policy:
+  allow_implicit_invocation: false

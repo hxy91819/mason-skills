@@ -93,6 +93,8 @@ skills:
   note: Story 完成后的方向独立检查
 - name: submit-pr-mr
   note: 提交 MR/PR 的统一流程
+- name: submitting-github-issues-with-images
+  note: 把本機截圖等附件上傳 GitHub Release Asset 並嵌入 issue／PR，形成可驗證證據鏈
 - name: tdd
   source: mattpocock-skills
   note: 测试驱动开发 red-green-refactor
