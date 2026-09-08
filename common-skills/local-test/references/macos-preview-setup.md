@@ -95,7 +95,7 @@ openssl x509 -in preview.test.pem -noout -subject -dates -ext subjectAltName
 curl --cacert "$(mkcert -CAROOT)/rootCA.pem" -I https://operations.preview.test/
 ```
 
-未提供入口凭据时应返回 `401`，而不是证书或解析错误。在浏览器打开该地址，先打开服务器提供的入口登录链接（如 `/oauth2/sign_in?rd=/`），输入统一账号后应正常显示页面。再注册另一个一级子域并访问，确认 Mac 无需新增配置。
+无凭据的非页面请求应返回 `401`，而不是证书或解析错误；浏览器的页面导航应自动跳转到服务器提供的登录页，并在登录后回到原路径。输入统一账号后应正常显示页面。再注册另一个一级子域并访问，确认 Mac 无需新增配置且不需要重复登录。
 
 这是一次配置、长期使用，不是永久证书：
 

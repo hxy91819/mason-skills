@@ -1,11 +1,12 @@
 ---
 name: local-test
 description: Use only when actually starting, reusing, checking, or stopping a local multi-service integration or project-preview environment, or modifying its unified startup script. Do not use for ordinary code edits, unit tests, static HTML publishing, code review, or remote-only deployment.
+disable-model-invocation: true
 ---
 
 # Local Test 环境规范与治理
 
-流程类 skill；按用户明确要求允许隐式触发，也可显式调用 `$local-test`。只有任务实际涉及本地联调或项目预览环境的启停、复用、检查及统一脚本维护时才采用。
+流程类 skill；仅在用户明确调用 `$local-test` 时采用。只有任务实际涉及本地联调或项目预览环境的启停、复用、检查及统一脚本维护时才适用。
 
 ## 门禁适用范围
 
@@ -58,8 +59,8 @@ description: Use only when actually starting, reusing, checking, or stopping a l
 1. **检查前置条件**：确认域名后缀、证书位置、共享网关管理方式、认证方式和环境归属清单。首次配置 Mac 或解析/信任异常时读 [Mac 配置指引](references/macos-preview-setup.md)；首次配置服务器、注册/注销环境、代理或证书排障时读 [服务器配置方法](references/server-preview-setup.md)。缺少基础设施时报告具体缺口，继续可进行的本机测试，不擅自改成子路径预览。
 2. **分配环境**：登记唯一一级子域、前后端及认证实例本机端口、工作目录和归属；检查冲突，保留其他环境。注册配置按服务器文档的共享锁、校验和配置加载流程执行。
 3. **保持应用部署语义**：页面从 `/` 访问，Caddy 按 Host 分流，API/WS 保持原路径。不得仅为预览修改 Vite base、Router basename、业务 API 路径或生产默认配置。正式部署原本使用子路径或用户明确要求时才采用子路径；已有为旧预览添加的前缀须先确认用途，再移除仅用于预览的部分。
-4. **限定开发配置**：按需通过开发环境配置注入 allowed host、外部 URL、可信代理、HMR/WSS 地址和登录回调。Cookie 默认 host-only，不设置共享父域。无法完成真实认证回调时说明验收缺口，不将预览域名硬编码进业务代码。
-5. **网络与认证**：仅共享 Caddy 对外暴露，先用 OAuth2 Proxy Cookie 会话校验，再代理页面、API、静态资源和 WS。各项目共用账号库、独立 host-only 会话，平台自身登录不能替代入口认证。仅认证子请求清除 Authorization，业务 Bearer 头照常传递；认证失败或不可用时拒绝业务访问。宿主机服务监听 `127.0.0.1`，容器端口不发布或仅绑定宿主 loopback；旧 Nginx 可作为本机上游，旧对外端口不得绕过认证。各客户端单独配置 CA 信任，验收不跳过 TLS 校验。
+4. **限定开发配置**：按需通过开发环境配置注入 allowed host、外部 URL、可信代理、HMR/WSS 地址和登录回调。默认由一个外部网关会话覆盖 `*.preview.test`：Cookie 使用 `Domain=.preview.test` 与 `__Secure-` 前缀，不能使用只允许 host-only 的 `__Host-` 前缀。只有所有接入子域同属可信预览边界时才启用共享父域；无法完成真实认证回调时说明验收缺口，不将预览域名硬编码进业务代码。
+5. **网络与认证**：仅共享 Caddy 对外暴露，所有项目复用一个 OAuth2 Proxy、账号库和 Cookie 会话，再代理页面、API、静态资源和 WS；平台自身登录不能替代入口认证。未登录的浏览器文档导航跳转到 `/oauth2/sign_in?rd=<同站相对路径>`，API、资源与 WS 仍返回 401。仅认证子请求清除 Authorization，业务 Bearer 头照常传递；认证失败或不可用时拒绝业务访问。宿主机服务监听 `127.0.0.1`，容器端口不发布或仅绑定宿主 loopback；旧 Nginx 可作为本机上游，旧对外端口不得绕过认证。各客户端单独配置 CA 信任，验收不跳过 TLS 校验。
 6. **验证和交接**：验证认证、页面/静态资源、深层路由刷新、API、WS/HMR、登录和 TLS，报告实际覆盖与缺口。按第 2 节判断环境保留或停止，收尾不自动执行 stop。验证停止隔离性时使用可停止的测试环境，不中断仍需使用的预览。共享网关常驻，项目 stop 只停自己的服务并保留数据；销毁环境才注销自己的路由。
 
 无桌面服务器上的浏览器预览采用以上入口；本机桌面调试可直接使用 localhost。用户明确选择独立端口等替代方式时遵从，同时说明 Cookie、解析和 TLS 的实际限制。
@@ -68,7 +69,7 @@ description: Use only when actually starting, reusing, checking, or stopping a l
 
 将内部监听地址、用户预览地址和入口登录地址分开记录。服务器的 `127.0.0.1`、`localhost`、`0.0.0.0` 和容器地址只用于内部诊断；除非确认浏览器就在同机或用户已建立对应本机隧道，否则不得作为交付链接。
 
-在启动脚本附近明确记录地址来源：推荐 `.local-test/preview-url` 保存一行完整的实际访问 URL，包含协议、主机、必要端口、页面路径及非敏感查询参数，脚本注释指出该文件用途，并由 `status` 输出。写入前确认 `.local-test/` 已被 `.gitignore` 或 `.git/info/exclude` 排除，使用 `git check-ignore` 验证；若文件已被跟踪，忽略规则不会生效，先报告并处理本次范围内的跟踪问题。也可在不提交 Git 的本机脚本中注释记录真实 URL；可提交模板只放通用示例和配置入口。入口登录地址另存 `.local-test/preview-login-url`，由 `status` 同时输出；未登录访问业务会返回 401，交付时同时提供 `[入口登录](实际登录URL)` 和目标页面链接。不要在 URL 中记录密码、token 或登录凭据。
+在启动脚本附近明确记录地址来源：推荐 `.local-test/preview-url` 保存一行完整的实际访问 URL，包含协议、主机、必要端口、页面路径及非敏感查询参数，脚本注释指出该文件用途，并由 `status` 输出。写入前确认 `.local-test/` 已被 `.gitignore` 或 `.git/info/exclude` 排除，使用 `git check-ignore` 验证；若文件已被跟踪，忽略规则不会生效，先报告并处理本次范围内的跟踪问题。也可在不提交 Git 的本机脚本中注释记录真实 URL；可提交模板只放通用示例和配置入口。入口登录地址另存 `.local-test/preview-login-url`，由 `status` 同时输出；未登录的页面导航会跳转登录，非页面请求仍返回 401，交付时同时提供 `[入口登录](实际登录URL)` 和目标页面链接。不要在 URL 中记录密码、token 或登录凭据。
 
 给用户链接前，读取当前配置或 `status`，核对其对应当前环境和真实网关路由。按用户访问方式验证 DNS、TLS、认证入口及目标页面；只能在服务器验证时明确客户端尚未验证。缺少实际入口则说明缺口，不从开发服务器日志复制 localhost，也不编造未配置的子域名。交付使用 Markdown 完整链接 `[打开预览](实际URL)`；环境迁移、端口或目标页面改变时同步更新地址记录。停止后说明不可用，不将保存的 URL 当作运行证明。
 

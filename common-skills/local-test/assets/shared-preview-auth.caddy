@@ -1,0 +1,69 @@
+(preview_shared_login) {
+	@login {
+		path /oauth2/sign_in /oauth2/sign_out
+		method GET HEAD POST
+	}
+	@authPath path /oauth2 /oauth2/*
+	@loginPost {
+		path /oauth2/sign_in /oauth2/sign_out
+		method POST
+	}
+	# Only document navigations redirect; programmatic endpoints retain 401 semantics.
+	@browserNavigation {
+		method GET HEAD
+		header_regexp htmlAccept Accept (?i)(^|,)\s*text/html\s*(;\s*q=(1(\.0{1,3})?|0\.[0-9]{0,2}[1-9][0-9]{0,2}))?\s*(,|$)
+		not header Upgrade *
+		not path /api /api/* /assets /assets/* /internal /internal/* /oauth2 /oauth2/* /static /static/* /ws /ws/*
+		not path_regexp asset (?i)\.[a-z0-9]{1,10}$
+	}
+	# Return paths stay relative and exclude the authentication namespace to prevent redirect loops.
+	@badReturn expression `{query.rd} != '' && (!{query.rd}.matches('^/([A-Za-z0-9_-]+/)*[A-Za-z0-9_-]*(\\?[A-Za-z0-9_~%+,:@/&=.-]*)?$') || {query.rd}.matches('^/oauth2(/|\\?|$)'))`
+
+	request_body @loginPost {
+		max_size 16KB
+	}
+	handle @login {
+		respond @badReturn "Invalid return path" 400
+		reverse_proxy 127.0.0.1:4190 {
+			header_up -Authorization
+			header_up -Proxy-Authorization
+			header_up X-Forwarded-Proto https
+			@redirect status 3xx
+			handle_response @redirect {
+				@safeLocation expression `{http.reverse_proxy.header.Location}.matches('^/([A-Za-z0-9_-]+/)*[A-Za-z0-9_-]*(\\?[A-Za-z0-9_~%+,:@/&=.-]*)?$') && !{http.reverse_proxy.header.Location}.matches('^/oauth2(/|\\?|$)')`
+				copy_response @safeLocation
+				respond "Invalid return path" 400
+			}
+		}
+	}
+	handle @authPath {
+		respond "Not found" 404
+	}
+}
+
+(preview_shared_check) {
+	reverse_proxy 127.0.0.1:4190 {
+		method GET
+		rewrite /oauth2/auth
+		header_up -Authorization
+		header_up -Proxy-Authorization
+		header_up X-Forwarded-Proto https
+		header_up X-Forwarded-Method {method}
+		header_up X-Forwarded-Uri {uri}
+		@authenticated status 2xx
+		handle_response @authenticated {
+		}
+		@unauthenticated status 401
+		handle_response @unauthenticated {
+			handle @browserNavigation {
+				route {
+					vars return_uri {http.request.orig_uri}
+					rewrite * /oauth2/sign_in?
+					uri query +rd {vars.return_uri}
+					redir {uri} 302
+				}
+			}
+			copy_response
+		}
+	}
+}
