@@ -3,16 +3,31 @@ import type { BbPluginApi, PluginProviderDeclaration } from "@get-bb/plugin-sdk"
 import { agyProvider } from "./agy-provider.js";
 import { extraProviders } from "./extra-providers.js";
 
+<<<<<<< HEAD
 const agents: Array<{ id: string; displayName: string; command: string; args: string[]; env: Record<string, string>; login: string }> = [
   { id: "acp-codexl", displayName: "CodexL", command: config.codexAcp, args: [], env: { CODEX_PATH: config.codex }, login: "codexl-bb login" },
   { id: "acp-kiro", displayName: "Kiro", command: config.kiro, args: ["acp"], env: {}, login: "kiro-cli login" },
+=======
+const agents: Array<{ id: string; displayName: string; command: string; args: string[]; env: Record<string, string>; login: string; icon: string }> = [
+  { id: "acp-codexl", displayName: "CodexL", command: config.codexAcp, args: [], env: { CODEX_PATH: config.codex }, login: "codexl-bb login", icon: "Terminal" },
+  // 额外 Codex 账号与 acp-codexl 同构：codex-acp 通过 CODEX_PATH 拿到账号隔离的 codex 包装 CLI。
+  ...config.codexAccounts.map(account => ({
+    id: account.id, displayName: account.displayName, command: config.codexAcp, args: [] as string[],
+    env: { CODEX_PATH: account.command }, login: `${account.command} login`, icon: account.icon,
+  })),
+  { id: "acp-kiro", displayName: "Kiro", command: config.kiro, args: ["acp"], env: {}, login: "kiro-cli login", icon: "Bug" },
+>>>>>>> 48a7ed5 (Add bb-account-limits plugin: Codex account quota providers with machine-local JSON config)
 ];
 
 export const providers = agents.map((agent): PluginProviderDeclaration => ({
   id: agent.id,
   displayName: agent.displayName,
   family: "acp",
+<<<<<<< HEAD
   icon: agent.id === "acp-codexl" ? "Terminal" : "Bug",
+=======
+  icon: agent.icon,
+>>>>>>> 48a7ed5 (Add bb-account-limits plugin: Codex account quota providers with machine-local JSON config)
   strings: {
     installUrl: agent.id === "acp-kiro" ? "https://kiro.dev/docs/cli/" : "https://github.com/agentclientprotocol/codex-acp",
     signInHint: `Run \`${agent.login}\` on the machine, then reload usage.`,
