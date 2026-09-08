@@ -29,7 +29,7 @@ stash 与 autostash 单独采用不可绕过的硬拦截，因为它们的目的
 - `git revert`：产生一个新的反向 commit，不隐藏 working tree 内容、不改写已有提交，与 commit 同属创建类动作。序列进行中的 `--abort`、`--skip`、`--quit` 同样放行，这是用户的明确决策：revert 序列只会由本 worktree 内主动发起的 revert 创建，通常由同一参与者立即收尾；若中止了另一个参与者的冲突处理，按共享工作区规则先重新读取现场、恢复兼容内容。
 - `git reset --soft`：只移动本地 HEAD，保留 working tree 与 index，符合“本地历史可改写”的约束。
 - `git apply`：普通补丁应用属于有上下文校验的编辑动作，现有内容不匹配时由 Git 拒绝或产生显式冲突。整体封禁会阻止正常工作，却不能解决所有编辑器和 shell 写入之间的协作问题；会越出 worktree 的 `--unsafe-paths` 写入仍需拦截，只读 `--check` 不受影响。
-- 本地分支创建和查询、创建独立 worktree（`git worktree add`）、所有帮助与 dry-run 命令：不会移除现有内容或引用；新建 worktree 拥有独立的私有工作区与 index，不影响共享工作区，允许执行。
+- 本地分支创建和查询、`git worktree add`、所有帮助与 dry-run 命令：不会移除现有内容或引用，允许执行。
 - `git read-tree`（写入目标被重定向时）：BB、IDE 插件一类 diff 工具用 `GIT_INDEX_FILE` 指向私有临时 index、或用 `--index-output=<file>` 把结果写到指定文件，来计算未跟踪文件的 diff；只要不带 `-u`（把结果展开到 working tree），写入目标就不是共享 index，允许执行。写入共享 index（默认、显式同路径、相对路径或软链指向共享 index）、目标无法静态判定、或带 `-u` 时仍按破坏性语义拦截。`checkout-index` 不适用此例外：它的语义就是把 index 内容抽取进 working tree，即使 index 被重定向也会覆盖工作区文件，无条件拦截。
 - 普通 Git alias：先安全展开，再按真实子命令应用同一套规则。无法静态判断副作用的 `!shell` alias 默认拦截，但在准确命令已经人工审查后可使用单次授权。
 
@@ -39,7 +39,7 @@ stash 与 autostash 单独采用不可绕过的硬拦截，因为它们的目的
 - `restore`、path checkout、mixed/hard/merge/keep/patch reset、真实执行的 clean。这些动作会恢复或删除 working tree/index，且基于 diff 的预检存在竞态。
 - `read-tree` 与 `checkout-index` 默认都写共享现场：`read-tree` 把 tree 写进 index（`--empty` 直接清空暂存区），`checkout-index` 把 index 内容抽取进 working tree。
 - rebase、merge、cherry-pick 和 am 的 `--abort`、`--skip`、`--quit`。它们会丢弃冲突处理结果或改变另一个参与者可能正在推进的序列状态；`--continue` 和只读查看仍放行。`revert` 不在此列：经用户决定全程放行，理由见放行清单。
-- 强制 `rm`、强制 `mv`、分支删除/改名/强制重置、会改变当前 worktree 的 checkout/switch，以及会破坏或删除已有 worktree 的管理操作（如 `worktree remove`、非 dry-run 的 `worktree prune`）。创建 worktree（`worktree add`）不受此限。
+- 强制 `rm`、强制 `mv`、分支删除/改名/强制重置、会改变当前 worktree 的 checkout/switch，以及破坏或删除已有 worktree 的管理操作（如 `worktree remove`、非 dry-run 的 `worktree prune`）。
 - force/force-with-lease push、远端 ref 删除、mirror 和 prune push，包括配置在 `remote.<name>.push` 或 `remote.<name>.mirror` 中的等价行为。临时保全 commit 不得借这些路径改写或删除远端共享历史；对应 dry-run 仍放行。
 - `git prune`、显式 `git gc --prune...` 和 reflog 删除/过期。commit 对象并非永久备份：一旦失去 ref/reflog 可达性并被清理，仍可能物理消失。
 

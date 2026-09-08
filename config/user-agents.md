@@ -22,9 +22,6 @@ alwaysApply: true
 
 - 始终假定当前工作区有其他用户或 Agent 并行修改；开始工作及提交、合并前检查当前分支、`git status --short` 和 `git worktree list`。
 - 默认在当前工作区和当前分支持续完成任务。无关改动是正常的并行现场；保留它们并继续工作，不要为了干净工作区而停止任务。
-- 解禁分支与 Worktree，严格限制 Stash 与破坏性操作：
-  - **允许自主创建分支与 Worktree**：当需要隔离并行改动、避免干扰共享工作区或任务适合独立分支时，Agent **可自行新建分支**（`git branch <name>`）或**新建独立 worktree**（`git worktree add`，推荐位于 `.worktrees/<task-name>`），无需向用户索取授权。
-  - **严格禁止 Stash**：绝对禁止执行任何产生副作用的 `stash` 或 `autostash`（此为硬红线，避免卷走他人未提交修改）。
-  - **严禁破坏性清场**：严禁自行使用 `clean`、破坏性 `reset`（如 `--hard`、覆盖他人暂存的 `--mixed`）、`restore` 等操作搬移、隐藏、删除或覆盖现有工作；不得在主工作区擅自切换已有分支，不得清理或删除非本任务所有的分支与 worktree。
+- 绝对禁止产生副作用的 stash 与 autostash（硬拦截无授权通道）；严禁使用 clean、破坏性 reset/restore 等操作搬移、隐藏、删除或覆盖现有工作；不得在主工作区擅自切换已有分支，不得清理或删除非本任务所有的分支与 worktree。
 - Git 命令被本机 git wrapper 拦截（退出码 77）时，按 wrapper 的规则处理：以其 stderr 指引、`git --wrapper-help` 和维护源 `mason-skills/tools/git-shared-worktree-guard/README.md` 为准。合规通道只有两条：任务已明确授权该目标时用 `git --user-approved='<理由>'`；stash/autostash 类硬拦截没有授权通道。跑仓内测试时被误拦（如临时测试仓的 `branch -M`）同样按此处理，不得重排 PATH、改用 /usr/bin/git 或别名绕过。
-- 发现并发修改时先重新读取并合并可兼容的改动；若同一处存在语义冲突且无法安全裁决，或冲突复杂，可直接新建独立 worktree 隔离推进，仅在确实存在无法自主判断的破坏性冲突时才向用户求助。
+- 发现并发修改时先重新读取并合并可兼容的改动；只有同一处语义冲突且无法安全判断保留哪一方时，才停止受影响文件并询问用户。
