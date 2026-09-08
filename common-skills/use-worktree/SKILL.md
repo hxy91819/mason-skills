@@ -6,24 +6,54 @@ disable-model-invocation: true
 
 # Use Worktree
 
-Use this skill only when the user explicitly invokes it. The invocation authorizes creating and managing one worktree and branch owned by the current task.
+Use this skill only when the user explicitly invokes it. The invocation authorizes creating, managing, and cleaning up one worktree and branch owned by the current task.
 
 ## Start
 
-1. Check the current branch, `git status --short`, and `git worktree list`. Preserve unrelated work and continue when the current task has not yet modified the shared workspace.
-2. Resolve the repository root and create the task worktree at `<repo-root>/.worktrees/<task-name>`. Use a short, recognizable task name and a branch name consistent with the repository.
-3. Add `/.worktrees/` to the repository's `.git/info/exclude` if it is not already present. Preserve the file's existing contents and add the entry only once.
-4. Select a clean base commit. By default, fetch and use the target remote's default branch, such as `upstream/main` or `origin/main`; when no remote exists, use the local default branch. Use another branch only when the user explicitly requests it or the repository or task requires it.
-5. Create the task branch and worktree from that exact base. Before editing, confirm the path and branch with `git worktree list` and require `git status --short` in the new worktree to be empty.
+1. Preflight the shared workspace. Check the current branch, status, and active worktrees:
+   ```bash
+   git status --short && git branch --show-current && git worktree list
+   ```
+   Preserve unrelated work and proceed when the current task has not yet altered the shared workspace.
+2. Resolve the repository root and register the worktrees exclusion once:
+   ```bash
+   git rev-parse --show-toplevel
+   grep -qxF '/.worktrees/' .git/info/exclude 2>/dev/null || echo '/.worktrees/' >> .git/info/exclude
+   ```
+3. Fetch the clean base commit (e.g. `origin/main`):
+   ```bash
+   git fetch origin main
+   ```
+4. Create the isolated task worktree under `.worktrees/<task-name>`. The git wrapper forwards `worktree add` transparently:
+   ```bash
+   git worktree add -b <task-branch> .worktrees/<task-name> origin/main
+   ```
+5. Verify the new worktree is registered and clean:
+   ```bash
+   git worktree list
+   git -C .worktrees/<task-name> status --short
+   ```
 
 ## Work And Deliver
 
-Perform all task edits, tests, commits, pushes, and requested PR/MR operations inside the task worktree. Do not alter another worktree or include unrelated changes.
+1. Perform all edits, tests, commits, and pushes inside `.worktrees/<task-name>`:
+   ```bash
+   cd .worktrees/<task-name>
+   ```
+   (In environments supporting workspace directory switching like `bb`, call `update_environment_directory` with the absolute path.)
+2. Do not touch files in the parent checkout. Never run `git stash` (strictly blocked by the git wrapper in all worktrees).
 
 ## Clean Up
 
-After delivery, check the task worktree status. When a PR/MR was requested, also confirm that it exists and its remote branch contains the worktree's `HEAD`.
-
-Remove only the task-owned worktree without `--force`. Delete its local branch only after its commit is verified on the remote, then remove the `.worktrees` directory only if it is empty. Leave `.git/info/exclude` configured for future use.
-
-If the worktree is dirty, its commit is not durably stored, or ownership is unclear, keep it and report the exact path and reason instead of forcing cleanup.
+1. After delivery, confirm the worktree is clean and its `HEAD` is durably stored on the remote:
+   ```bash
+   git -C .worktrees/<task-name> status --short
+   git branch -r --contains HEAD
+   ```
+2. The git wrapper blocks `worktree remove` and `branch -d` by default (exit 77). Because invoking this skill already authorized managing this task's worktree, use `--user-approved` directly without asking the user again:
+   ```bash
+   git --user-approved='clean delivered task worktree' worktree remove .worktrees/<task-name>
+   git --user-approved='clean delivered task branch' branch -d <task-branch>
+   rmdir .worktrees 2>/dev/null || true
+   ```
+3. If the worktree is dirty, uncommitted, or not durably pushed, keep it intact and report the exact path and status instead of forcing cleanup.
