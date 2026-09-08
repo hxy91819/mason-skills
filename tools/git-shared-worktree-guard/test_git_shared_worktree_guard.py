@@ -63,6 +63,13 @@ class SharedWorktreeGuardTest(unittest.TestCase):
         self.git("add", name)
         self.git("commit", "-m", message)
 
+    def test_worktree_add_is_allowed(self) -> None:
+        target = Path(self.temp.name) / "allowed-worktree"
+        result = self.guard("worktree", "add", "-b", "allowed-branch", str(target))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(target.exists())
+
     def test_worktree_remove_without_authorization_is_blocked(self) -> None:
         result = self.guard("worktree", "remove", str(self.worktree))
 

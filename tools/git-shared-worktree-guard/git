@@ -831,7 +831,7 @@ worktree_is_destructive() {
   local dry_run=0
 
   case "$action" in
-    ""|list)
+    ""|list|add)
       return 1
       ;;
     prune)
