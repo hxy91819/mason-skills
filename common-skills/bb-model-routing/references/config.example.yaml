@@ -6,6 +6,7 @@ defaults:
   medium: primary
   complex: primary
   debug: primary
+  test: primary
 agents:
   primary:
     provider: <provider-id>

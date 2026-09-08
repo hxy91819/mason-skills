@@ -16,9 +16,11 @@ disable-model-invocation: true
 - `medium`：范围明确，涉及少量模块或需要比较方案。
 - `complex`：跨模块设计、根因难定位或较多不确定性。
 - 排查问题、找 bug 额外传 `--kind debug`，即使任务简单也保留该类型。
+- 专门做测试验证、单测编写或执行验证额外传 `--kind test`。
 
 ```bash
 bb-dispatch --difficulty medium --kind debug --task '<任务目标、范围与验收要求>'
+bb-dispatch --difficulty medium --kind test --task '<测试目标、范围与验收要求>'
 ```
 
 `--task` 只写任务目标、范围、输入和验收要求。provider、模型、推理级别和可用性检查是派发元数据：由 `bb-dispatch` 根据配置和目录决定，不写入子线程 prompt，也不要求子 agent 在开始前重新查询或确认。用户明确指定 provider 或模型时，将该要求映射到配置别名或配置调整，仍不把路由要求带入 `--task`。

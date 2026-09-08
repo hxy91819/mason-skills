@@ -19,7 +19,7 @@ class DispatchTests(unittest.TestCase):
         self.config = Path(self.temp.name) / 'config.yaml'
         self.config.write_text('''version: 1
 permission_mode: accept-edits
-defaults: {simple: primary, medium: primary, complex: specialist, debug: specialist}
+defaults: {simple: primary, medium: primary, complex: specialist, debug: specialist, test: primary}
 agents:
   primary: {provider: primary, model: fast-model, reasoning: max}
   specialist: {provider: specialist, model: deep-model, reasoning: {simple: low, medium: medium, complex: medium}}
@@ -60,6 +60,13 @@ environments:
         result = m.dispatch(self.args('--kind', 'debug'), self.fake)
         self.assertEqual(result['selection']['provider'], 'specialist')
         self.assertEqual(result['selection']['reasoning'], 'low')
+        self.assertEqual(result['result']['thread']['status'], 'queued')
+        self.assertEqual(sum(c[:2] == ('thread', 'spawn') for c in self.calls), 1)
+
+    def test_kind_test_uses_test_default_and_spawns_once(self):
+        result = m.dispatch(self.args('--kind', 'test'), self.fake)
+        self.assertEqual(result['selection']['agent'], 'primary')
+        self.assertEqual(result['selection']['kind'], 'test')
         self.assertEqual(result['result']['thread']['status'], 'queued')
         self.assertEqual(sum(c[:2] == ('thread', 'spawn') for c in self.calls), 1)
 
