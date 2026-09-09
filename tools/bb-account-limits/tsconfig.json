@@ -4,9 +4,10 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "jsx": "react-jsx",
     "types": ["node"],
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["*.ts"]
+  "include": ["*.ts", "*.tsx"]
 }

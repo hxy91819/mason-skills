@@ -8,12 +8,13 @@
   },
   "bb": {
     "name": "Account Limits",
-    "description": "Local and Cliproxy account limits in BB's native provider-usage surface.",
+    "description": "Native provider limits plus a dedicated Cliproxy account-limits panel.",
     "branding": {
       "icon": "ChartColumn"
     },
     "server": "./server.ts",
     "host": "./host.ts",
+    "app": "./app.tsx",
     "skills": []
   },
   "dependencies": {
@@ -21,12 +22,19 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@testing-library/react": "^16.3.3",
+    "@types/jsdom": "^21.1.7",
     "@types/node": "^22.0.0",
-    "typescript": "^5.7.0",
-    "tsx": "^4.20.0"
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "jsdom": "^26.1.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "tsx": "^4.20.0",
+    "typescript": "^5.7.0"
   },
   "scripts": {
-    "test": "node --import ./test-runtime.mjs --import tsx --test *.test.ts",
+    "test": "node --import ./test-runtime.mjs --import tsx --test *.test.ts *.test.tsx",
     "typecheck": "tsc --noEmit",
     "build": "bb plugin build"
   }

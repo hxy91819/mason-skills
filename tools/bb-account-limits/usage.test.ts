@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { normalizeAgyUsage, normalizeClaudeUsage, normalizeCliproxyCachedUsage, normalizeGrokUsage, readAgyUsage, readCliproxyProviderUsage, readCliproxyUsage, normalizeCodexLimits, normalizeKiroUsage, readCodexUsage, readKiroUsage } from "./usage.js";
+import { normalizeAgyUsage, normalizeAntigravityUsage, normalizeClaudeUsage, normalizeCliproxyCachedUsage, normalizeGrokUsage, readAgyUsage, readCliproxyProviderUsage, readCliproxyUsage, normalizeCodexLimits, normalizeKiroUsage, readCodexUsage, readKiroUsage } from "./usage.js";
 
 const agy = "Gemini Models\tWeekly Limit Remaining\t94%\t2026-09-11T02:49:57Z\nClaude and GPT models\tFive Hour Limit Remaining\t99.5%\t2026-09-07T08:07:15Z\n";
 
@@ -114,6 +114,28 @@ test("Grok usage exposes both the current period and product quota", () => {
   ]);
 });
 
+test("Antigravity converts each authoritative quota bucket from remaining to used", () => {
+  const result = normalizeAntigravityUsage({ groups: [
+    { displayName: "Gemini Models", buckets: [
+      { window: "weekly", remainingFraction: 0.79, resetTime: "2026-09-12T10:00:00Z" },
+      { window: "5h", remainingFraction: 0.84, resetTime: "2026-09-09T11:00:00Z" },
+    ] },
+    { displayName: "Claude and GPT models", buckets: [
+      { window: "weekly", remainingFraction: 1, resetTime: "2026-09-12T10:00:00Z" },
+    ] },
+  ] }, { provider: "antigravity", authIndex: "account-1", label: "Gemini · 账号 1" });
+  assert.ok(result.supported && result.usage.status === "ok");
+  assert.deepEqual(result.usage.windows, [
+    { label: "Gemini Models: Weekly limit", usedPercent: 21, resetsAt: "2026-09-12T10:00:00.000Z" },
+    { label: "Gemini Models: 5-hour limit", usedPercent: 16, resetsAt: "2026-09-09T11:00:00.000Z" },
+    { label: "Claude and GPT models: Weekly limit", usedPercent: 0, resetsAt: "2026-09-12T10:00:00.000Z" },
+  ]);
+  for (const invalid of [{}, { groups: [{ buckets: [{ remainingFraction: 1.01 }] }] }]) {
+    const invalidResult = normalizeAntigravityUsage(invalid, { provider: "antigravity", authIndex: "account-1" });
+    assert.ok(invalidResult.supported && invalidResult.usage.status === "error");
+  }
+});
+
 test("cached Claude rate-limit signals are a safe fallback and deduplicate model snapshots", () => {
   const result = normalizeCliproxyCachedUsage({ model_quotas: {
     latest: { observed_at: "2026-09-09T10:00:00Z", signals: {
@@ -214,6 +236,38 @@ test("Cliproxy provider aggregation keeps successful account limits when another
       { label: "账号 1 · Weekly limit", usedPercent: 42, resetsAt: "2026-09-12T10:00:00.000Z" },
     ]);
     assert.equal(requests.filter(url => url.endsWith("/auth-files")).length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Antigravity gets a project before requesting the provider quota summary", async () => {
+  const originalFetch = globalThis.fetch;
+  const apiCalls: Array<Record<string, unknown>> = [];
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url.endsWith("/auth-files")) return new Response(JSON.stringify({ files: [{ provider: "antigravity", auth_index: "account-1" }] }), { status: 200 });
+    const call = JSON.parse(String(init?.body));
+    apiCalls.push(call);
+    if (call.url.endsWith(":loadCodeAssist")) {
+      return new Response(JSON.stringify({ status_code: 200, body: JSON.stringify({ cloudaicompanionProject: "project-1" }) }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ status_code: 200, body: JSON.stringify({ groups: [{ displayName: "Gemini Models", buckets: [
+      { window: "weekly", remainingFraction: 0.5, resetTime: "2026-09-12T10:00:00Z" },
+    ] }] }) }), { status: 200 });
+  };
+  try {
+    const result = await readCliproxyUsage({ provider: "antigravity", authIndex: "account-1", label: "Gemini · 账号 1" }, {
+      managementBaseUrl: "http://cliproxy.test/v0/management",
+    });
+    assert.ok(result.supported && result.usage.status === "ok");
+    assert.deepEqual(result.usage.windows, [
+      { label: "Gemini Models: Weekly limit", usedPercent: 50, resetsAt: "2026-09-12T10:00:00.000Z" },
+    ]);
+    assert.equal(apiCalls.length, 2);
+    assert.match(String(apiCalls[0].url), /daily-cloudcode-pa\.googleapis\.com\/v1internal:loadCodeAssist$/);
+    assert.match(String(apiCalls[1].url), /daily-cloudcode-pa\.googleapis\.com\/v1internal:retrieveUserQuotaSummary$/);
+    assert.deepEqual(JSON.parse(String(apiCalls[1].data)), { project: "project-1" });
   } finally {
     globalThis.fetch = originalFetch;
   }

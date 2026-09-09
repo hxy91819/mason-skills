@@ -15,6 +15,10 @@ test("plugin ACP providers expose full access only", () => {
   }
 });
 
+test("Cliproxy quota sources do not register as executable providers", () => {
+  assert.ok(providers.every(provider => !provider.id.startsWith("cliproxy-")));
+});
+
 test("Codex ACP providers start with Codex full access", () => {
   const codexProviders = providers.filter(provider => provider.id.startsWith("acp-codex"));
   assert.ok(codexProviders.length > 0);

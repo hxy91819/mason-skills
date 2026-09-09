@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { promisify } from "node:util";
 import { execFile } from "node:child_process";
-import { withAccountLimits } from "./host.js";
+import { readCliproxyUsageSnapshot, withAccountLimits } from "./host.js";
 import { usageError } from "./usage.js";
 
 test("usage replies use BB's protocol; concurrent queries share work, other methods pass through", async () => {
@@ -28,37 +28,26 @@ test("usage replies use BB's protocol; concurrent queries share work, other meth
   assert.equal(JSON.parse(forwarded[0]).params.providerThreadId, "preserved");
 });
 
-test("usage-only Cliproxy providers expose no models", async () => {
-  const output: any[] = [];
-  const bridge = withAccountLimits(
-    { experimental_apiVersion: 1, handleLine() {} },
-    async () => usageError("unused"),
-    line => output.push(JSON.parse(line)),
-    new Set(["cliproxy-claude-work"]),
-  );
+test("model discovery remains delegated after Cliproxy moves to the panel", () => {
+  const forwarded: string[] = [];
+  const bridge = withAccountLimits({ experimental_apiVersion: 1, handleLine: line => forwarded.push(line) }, async () => usageError("unused"));
   bridge.handleLine(JSON.stringify({
     jsonrpc: "2.0",
     id: 1,
     method: "model/list",
-    params: { providerId: "cliproxy-claude-work" },
+    params: { providerId: "acp-codexl" },
   }));
-  assert.deepEqual(output, [{ jsonrpc: "2.0", id: 1, result: { models: [], selectedOnlyModels: [] } }]);
+  assert.deepEqual(forwarded, [JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "model/list",
+    params: { providerId: "acp-codexl" },
+  })]);
 });
 
-test("usage-only provider flag also works when BB omits providerId from model/list", () => {
-  const output: any[] = [];
-  const bridge = withAccountLimits(
-    { experimental_apiVersion: 1, handleLine() {} },
-    async () => usageError("unused"),
-    line => output.push(JSON.parse(line)),
-  );
-  bridge.handleLine(JSON.stringify({
-    jsonrpc: "2.0",
-    id: 1,
-    method: "model/list",
-    params: { providerOptions: { usageOnly: true } },
-  }));
-  assert.deepEqual(output, [{ jsonrpc: "2.0", id: 1, result: { models: [], selectedOnlyModels: [] } }]);
+test("Cliproxy snapshot accepts an empty enabled group set", async () => {
+  const snapshot = await readCliproxyUsageSnapshot(new Map(), { managementKey: "test" });
+  assert.deepEqual(snapshot, { providers: [] });
 });
 
 test("provider bridge passes SDK conformance with an offline ACP agent", { timeout: 25000 }, async () => {

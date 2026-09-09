@@ -1,4 +1,4 @@
-import { config } from "./config.js";
+import { cliproxyProviderDisplayName, config } from "./config.js";
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -328,6 +328,34 @@ export function normalizeGrokUsage(raw: unknown, account: CliproxyUsageAccount):
   return { supported: true, usage: { status: "ok", accountEmail: null, planLabel: usageLabel(account), windows } };
 }
 
+function antigravityBucketLabel(group: JsonRecord, bucket: JsonRecord): string {
+  const groupLabel = asString(group.displayName) ?? "Antigravity";
+  const window = asString(bucket.window)?.toLowerCase();
+  const limitLabel = window === "weekly" ? "Weekly limit"
+    : window === "5h" ? "5-hour limit"
+      : (asString(bucket.displayName) ?? "Quota").replace(/\s+remaining$/i, "");
+  return `${groupLabel}: ${limitLabel}`;
+}
+
+export function normalizeAntigravityUsage(raw: unknown, account: CliproxyUsageAccount): ProviderUsageResult {
+  const response = asRecord(raw);
+  const groups = response && Array.isArray(response.groups) ? response.groups.map(asRecord).filter((value): value is JsonRecord => value !== null) : [];
+  const windows = groups.flatMap(group => {
+    const buckets = Array.isArray(group.buckets) ? group.buckets.map(asRecord).filter((value): value is JsonRecord => value !== null) : [];
+    return buckets.flatMap(bucket => {
+      const remainingFraction = Number(bucket.remainingFraction);
+      if (!Number.isFinite(remainingFraction) || remainingFraction < 0 || remainingFraction > 1) return [];
+      return [{
+        label: antigravityBucketLabel(group, bucket),
+        usedPercent: Number(((1 - remainingFraction) * 100).toFixed(10)),
+        resetsAt: parseReset(bucket.resetTime),
+      }];
+    });
+  });
+  if (!windows.length) return usageError("Cliproxy returned an unrecognized Antigravity quota response.");
+  return { supported: true, usage: { status: "ok", accountEmail: null, planLabel: usageLabel(account), windows } };
+}
+
 function cachedQuotaSignals(record: JsonRecord): JsonRecord[] {
   const sources: JsonRecord[] = [];
   const quota = asRecord(record.quota);
@@ -442,10 +470,18 @@ async function fetchCliproxy(
   }
 }
 
-async function readClaudeUsageThroughCliproxy(
+interface CliproxyApiCall {
+  method: string;
+  url: string;
+  header: Record<string, string>;
+  data?: string;
+}
+
+async function callCliproxyApi(
   managementBaseUrl: string,
   managementKey: string | undefined,
   authIndex: string,
+  request: CliproxyApiCall,
   signal: AbortSignal | undefined,
   timeoutMs: number,
 ): Promise<{ status: number; body: unknown }> {
@@ -454,15 +490,27 @@ async function readClaudeUsageThroughCliproxy(
     headers: { ...managementHeaders(managementKey), "content-type": "application/json" },
     body: JSON.stringify({
       auth_index: authIndex,
-      method: "GET",
-      url: "https://api.anthropic.com/api/oauth/usage",
-      header: { Authorization: "Bearer $TOKEN$", "anthropic-beta": "oauth-2025-04-20" },
+      ...request,
     }),
   }, signal, timeoutMs);
   const envelope = asRecord(await readJson(response));
   const status = typeof envelope?.status_code === "number" ? envelope.status_code : response.status;
   const body = typeof envelope?.body === "string" ? (() => { try { return JSON.parse(envelope.body); } catch { return null; } })() : envelope?.body;
   return { status, body };
+}
+
+async function readClaudeUsageThroughCliproxy(
+  managementBaseUrl: string,
+  managementKey: string | undefined,
+  authIndex: string,
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+): Promise<{ status: number; body: unknown }> {
+  return callCliproxyApi(managementBaseUrl, managementKey, authIndex, {
+    method: "GET",
+    url: "https://api.anthropic.com/api/oauth/usage",
+    header: { Authorization: "Bearer $TOKEN$", "anthropic-beta": "oauth-2025-04-20" },
+  }, signal, timeoutMs);
 }
 
 async function readGrokUsageThroughCliproxy(
@@ -472,26 +520,41 @@ async function readGrokUsageThroughCliproxy(
   signal: AbortSignal | undefined,
   timeoutMs: number,
 ): Promise<{ status: number; body: unknown }> {
-  const response = await fetchCliproxy(`${managementBaseUrl}/api-call`, {
-    method: "POST",
-    headers: { ...managementHeaders(managementKey), "content-type": "application/json" },
-    body: JSON.stringify({
-      auth_index: authIndex,
-      method: "GET",
-      url: "https://cli-chat-proxy.grok.com/v1/billing?format=credits",
-      header: {
-        Authorization: "Bearer $TOKEN$",
-        "x-xai-token-auth": "xai-grok-cli",
-        "x-grok-client-version": "0.2.91",
-        accept: "*/*",
-        "user-agent": "grok-pager/0.2.91 grok-shell/0.2.91 (linux; x86_64)",
-      },
-    }),
+  return callCliproxyApi(managementBaseUrl, managementKey, authIndex, {
+    method: "GET",
+    url: "https://cli-chat-proxy.grok.com/v1/billing?format=credits",
+    header: {
+      Authorization: "Bearer $TOKEN$",
+      "x-xai-token-auth": "xai-grok-cli",
+      "x-grok-client-version": "0.2.91",
+      accept: "*/*",
+      "user-agent": "grok-pager/0.2.91 grok-shell/0.2.91 (linux; x86_64)",
+    },
   }, signal, timeoutMs);
-  const envelope = asRecord(await readJson(response));
-  const status = typeof envelope?.status_code === "number" ? envelope.status_code : response.status;
-  const body = typeof envelope?.body === "string" ? (() => { try { return JSON.parse(envelope.body); } catch { return null; } })() : envelope?.body;
-  return { status, body };
+}
+
+async function readAntigravityUsageThroughCliproxy(
+  managementBaseUrl: string,
+  managementKey: string | undefined,
+  authIndex: string,
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+): Promise<{ status: number; body: unknown }> {
+  const header = { Authorization: "Bearer $TOKEN$", Accept: "*/*", "Content-Type": "application/json", "User-Agent": "antigravity" };
+  const load = await callCliproxyApi(managementBaseUrl, managementKey, authIndex, {
+    method: "POST",
+    url: "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
+    header,
+    data: JSON.stringify({ metadata: { ideType: "ANTIGRAVITY" } }),
+  }, signal, timeoutMs);
+  const project = asString(asRecord(load.body)?.cloudaicompanionProject);
+  if (load.status < 200 || load.status >= 300 || !project) return { status: load.status, body: null };
+  return callCliproxyApi(managementBaseUrl, managementKey, authIndex, {
+    method: "POST",
+    url: "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+    header,
+    data: JSON.stringify({ project }),
+  }, signal, timeoutMs);
 }
 
 async function readCliproxyAccountUsage(
@@ -522,6 +585,16 @@ async function readCliproxyAccountUsage(
     if (hasOkUsage(cached)) return cached;
     return usageError(`Cliproxy could not read Grok quota (${upstream.status}).`);
   }
+  if (account.provider.toLowerCase() === "antigravity" && authIndex) {
+    const upstream = await readAntigravityUsageThroughCliproxy(managementBaseUrl, options.managementKey, authIndex, options.signal, timeoutMs);
+    if (upstream.status >= 200 && upstream.status < 300) {
+      const normalized = normalizeAntigravityUsage(upstream.body, account);
+      if (hasOkUsage(normalized)) return normalized;
+    }
+    const cached = normalizeCliproxyCachedUsage(selected, account);
+    if (hasOkUsage(cached)) return cached;
+    return usageError(`Cliproxy could not read Antigravity quota (${upstream.status}).`);
+  }
   return normalizeCliproxyCachedUsage(selected, account);
 }
 
@@ -546,8 +619,7 @@ function aggregateCliproxyUsage(
     });
   });
   if (!windows.length) return usageError("Cliproxy did not return quota data for any configured account.");
-  const provider = accounts[0]?.provider.toLowerCase();
-  const displayName = provider === "xai" ? "Grok" : provider === "claude" ? "Claude" : accounts[0]?.provider ?? "Cliproxy";
+  const displayName = cliproxyProviderDisplayName(accounts[0]?.provider ?? "Cliproxy");
   const successful = results.filter(hasOkUsage).length;
   return {
     supported: true,
