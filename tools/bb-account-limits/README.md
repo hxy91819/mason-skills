@@ -48,11 +48,17 @@ Cliproxy 配额以**账户**为单位配置、以**上游供应商**为单位显
 
 ```json
 {
-  "enabledProviders": ["acp-codexl", "cliproxy-claude", "cliproxy-xai", "cliproxy-antigravity"],
+  "enabledProviders": ["acp-codexl", "cliproxy-codex", "cliproxy-claude", "cliproxy-xai", "cliproxy-antigravity", "cliproxy-kimi"],
   "cliproxy": {
     "managementBaseUrl": "http://127.0.0.1:8317/v0/management",
     "managementKeyFile": "/home/me/.config/cliproxyapi/management.key",
     "accounts": [
+      {
+        "id": "codex-work",
+        "provider": "codex",
+        "authIndex": "<stable-auth_index-from-Cliproxy>",
+        "label": "Codex 工作账号"
+      },
       {
         "id": "claude-work",
         "provider": "claude",
@@ -78,6 +84,12 @@ Cliproxy 配额以**账户**为单位配置、以**上游供应商**为单位显
         "label": "Gemini · 账号 1"
       },
       {
+        "id": "kimi",
+        "provider": "kimi",
+        "authIndex": "<stable-auth_index-from-Cliproxy>",
+        "label": "Kimi"
+      },
+      {
         "id": "other-provider",
         "provider": "other-provider",
         "authIndex": "<stable-auth_index-from-Cliproxy>",
@@ -98,7 +110,7 @@ Cliproxy 配额以**账户**为单位配置、以**上游供应商**为单位显
 
 `authIndex` 是 Cliproxy `/auth-files` 返回的稳定运行时 ID，优先使用；它可避免相同 provider 下多个账号名称相同或变更时选错账户。若不想保存 ID，可用 `account` 精确匹配 Cliproxy 返回的 `account`、`email`、`name` 或 `label` 字段；匹配到多个账号时插件会拒绝查询并提示改用 `authIndex`。`managementKeyEnv` 优先于 `managementKeyFile`，密钥值本身永远不写入 JSON 或日志。
 
-Claude 账号通过 Cliproxy 的 `/api-call` 在服务端代入 OAuth token，读取 Anthropic 官方 usage 响应；响应不可用时，会降级显示 Cliproxy 缓存的 5 小时、周和 scoped 周限额信号。`provider: "xai"` 是 Cliproxy 的 Grok 供应商标识，插件会读取其账单接口的当前周期与产品额度。`provider: "antigravity"` 会先从 Google Code Assist 读取项目 ID，再读取 Gemini、Claude/GPT 的 5 小时与周额度摘要；每个账户保持独立行。`provider: "zai"` 会显示为 Z.ai；待 Cliproxy 提供其认证记录或缓存额度信号后，可与其他未内置直连查询的 provider 一样通过 `cachedWindows` 映射。`scale` 选 `fraction` 时会将 0–1 转为百分比，默认为 `percent`。没有额度数据绝不显示为零。单个账号失败不会影响同一聚合卡中的其他账号。
+`provider: "codex"` 读取 ChatGPT 的认证用量端点，显示主额度和各附加模型组额度；它会与本机原生 Codex Provider 并存，因为后者仍是可执行的模型入口。Claude 账号通过 Cliproxy 的 `/api-call` 在服务端代入 OAuth token，读取 Anthropic 官方 usage 响应；响应不可用时，会降级显示 Cliproxy 缓存的 5 小时、周和 scoped 周限额信号。`provider: "xai"` 是 Cliproxy 的 Grok 供应商标识，插件会读取其账单接口的当前周期与产品额度。`provider: "antigravity"` 会先从 Google Code Assist 读取项目 ID，再读取 Gemini、Claude/GPT 的 5 小时与周额度摘要；每个账户保持独立行。`provider: "kimi"` 会读取 Kimi Coding Plan 的官方用量端点，显示周和滚动窗口额度。`provider: "zai"` 会显示为 Z.ai；待 Cliproxy 提供其认证记录或缓存额度信号后，可与其他未内置直连查询的 provider 一样通过 `cachedWindows` 映射。`scale` 选 `fraction` 时会将 0–1 转为百分比，默认为 `percent`。没有额度数据绝不显示为零。单个账号失败不会影响同一聚合卡中的其他账号。
 
 ## 安装
 
@@ -146,7 +158,7 @@ Copilot 使用 `--acp`，Full Access 映射 `--yolo`；CodeBuddy 使用 `--acp`�
 - CodexL：app-server 账户接口，显示各模型组额度窗口，不启动模型回合。
 - Kiro：内置 `/usage` 的套餐 credits；重置只有日期，因此不伪造 UTC 时刻或倒计时。
 - AGY：内置 `/usage` 的各模型组剩余百分比转换为已用百分比，保留 UTC 重置时间。
-- Cliproxy：在独立“账户额度”页面按供应商聚合显示；Claude 显示官方 session/weekly/scoped weekly 窗口，Grok 显示当前周期和产品额度，Antigravity 显示 Gemini 与 Claude/GPT 的 5 小时/周额度摘要。查询失败时仅显示已缓存且可验证的限额信号。
+- Cliproxy：在独立“账户额度”页面按供应商聚合显示；Codex 显示主额度和附加模型组额度，Claude 显示官方 session/weekly/scoped weekly 窗口，Grok 显示当前周期和产品额度，Antigravity 显示 Gemini 与 Claude/GPT 的 5 小时/周额度摘要，Kimi 显示 Coding Plan 的周和滚动窗口额度。查询失败时仅显示已缓存且可验证的限额信号。
 - CLI 未提供的信息保持为空；未知格式、超时、非零退出等不显示成零用量。
 - 查询有输出上限、20 秒超时、取消与进程清理；同一 bridge 中的重复查询合并。支持 POSIX/macOS，Windows 尚未实测。
 - Copilot/CodeBuddy 仅注册入口，不包含额度查询。

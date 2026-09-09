@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { normalizeAgyUsage, normalizeAntigravityUsage, normalizeClaudeUsage, normalizeCliproxyCachedUsage, normalizeGrokUsage, readAgyUsage, readCliproxyProviderUsage, readCliproxyUsage, normalizeCodexLimits, normalizeKiroUsage, readCodexUsage, readKiroUsage } from "./usage.js";
+import { normalizeAgyUsage, normalizeAntigravityUsage, normalizeClaudeUsage, normalizeCliproxyCachedUsage, normalizeCliproxyCodexUsage, normalizeGrokUsage, normalizeKimiUsage, readAgyUsage, readCliproxyProviderUsage, readCliproxyUsage, normalizeCodexLimits, normalizeKiroUsage, readCodexUsage, readKiroUsage } from "./usage.js";
 
 const agy = "Gemini Models\tWeekly Limit Remaining\t94%\t2026-09-11T02:49:57Z\nClaude and GPT models\tFive Hour Limit Remaining\t99.5%\t2026-09-07T08:07:15Z\n";
 
@@ -132,6 +132,46 @@ test("Antigravity converts each authoritative quota bucket from remaining to use
   ]);
   for (const invalid of [{}, { groups: [{ buckets: [{ remainingFraction: 1.01 }] }] }]) {
     const invalidResult = normalizeAntigravityUsage(invalid, { provider: "antigravity", authIndex: "account-1" });
+    assert.ok(invalidResult.supported && invalidResult.usage.status === "error");
+  }
+});
+
+test("Kimi converts its weekly and rolling-window token quotas into percentages", () => {
+  const result = normalizeKimiUsage({
+    subType: "kimi-code-pro",
+    usage: { limit: "1,000", used: "250", remaining: "750", resetTime: "2026-09-12T10:00:00Z" },
+    limits: [{
+      window: { duration: 300, timeUnit: "TIME_UNIT_MINUTE" },
+      detail: { limit: "200", used: "10", remaining: "190", resetTime: "2026-09-09T13:00:00Z" },
+    }],
+  }, { provider: "kimi", authIndex: "account-1", label: "Kimi" });
+  assert.ok(result.supported && result.usage.status === "ok");
+  assert.deepEqual(result.usage.windows, [
+    { label: "Weekly limit", usedPercent: 25, resetsAt: "2026-09-12T10:00:00.000Z" },
+    { label: "5-hour limit", usedPercent: 5, resetsAt: "2026-09-09T13:00:00.000Z" },
+  ]);
+  for (const invalid of [{}, { usage: { limit: "0", used: "0" } }, { usage: { limit: "100", used: "101" } }]) {
+    const invalidResult = normalizeKimiUsage(invalid, { provider: "kimi", authIndex: "account-1" });
+    assert.ok(invalidResult.supported && invalidResult.usage.status === "error");
+  }
+});
+
+test("Cliproxy Codex exposes the main and additional model-family windows", () => {
+  const result = normalizeCliproxyCodexUsage({
+    plan_type: "pro",
+    rate_limit: { primary_window: { used_percent: 20, limit_window_seconds: 18_000, reset_at: 1788951600 } },
+    additional_rate_limits: [{
+      limit_name: "Codex Spark",
+      rate_limit: { secondary_window: { used_percent: 35, limit_window_seconds: 604_800, reset_at: 1789207200 } },
+    }],
+  }, { provider: "codex", authIndex: "account-1", label: "Codex" });
+  assert.ok(result.supported && result.usage.status === "ok");
+  assert.deepEqual(result.usage.windows, [
+    { label: "5-hour limit", usedPercent: 20, resetsAt: "2026-09-09T11:00:00.000Z" },
+    { label: "Codex Spark: Weekly limit", usedPercent: 35, resetsAt: "2026-09-12T10:00:00.000Z" },
+  ]);
+  for (const invalid of [{}, { rate_limit: { primary_window: { used_percent: 101 } } }]) {
+    const invalidResult = normalizeCliproxyCodexUsage(invalid, { provider: "codex", authIndex: "account-1" });
     assert.ok(invalidResult.supported && invalidResult.usage.status === "error");
   }
 });
@@ -268,6 +308,64 @@ test("Antigravity gets a project before requesting the provider quota summary", 
     assert.match(String(apiCalls[0].url), /daily-cloudcode-pa\.googleapis\.com\/v1internal:loadCodeAssist$/);
     assert.match(String(apiCalls[1].url), /daily-cloudcode-pa\.googleapis\.com\/v1internal:retrieveUserQuotaSummary$/);
     assert.deepEqual(JSON.parse(String(apiCalls[1].data)), { project: "project-1" });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Kimi reads the official coding-plan usage endpoint through Cliproxy", async () => {
+  const originalFetch = globalThis.fetch;
+  const apiCalls: Array<Record<string, unknown>> = [];
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url.endsWith("/auth-files")) return new Response(JSON.stringify({ files: [{ provider: "kimi", auth_index: "account-1" }] }), { status: 200 });
+    const call = JSON.parse(String(init?.body));
+    apiCalls.push(call);
+    return new Response(JSON.stringify({ status_code: 200, body: JSON.stringify({
+      usage: { limit: "100", used: "20", remaining: "80", resetTime: "2026-09-12T10:00:00Z" },
+      limits: [],
+    }) }), { status: 200 });
+  };
+  try {
+    const result = await readCliproxyUsage({ provider: "kimi", authIndex: "account-1", label: "Kimi" }, {
+      managementBaseUrl: "http://cliproxy.test/v0/management",
+    });
+    assert.ok(result.supported && result.usage.status === "ok");
+    assert.deepEqual(result.usage.windows, [{ label: "Weekly limit", usedPercent: 20, resetsAt: "2026-09-12T10:00:00.000Z" }]);
+    assert.equal(apiCalls.length, 1);
+    assert.match(String(apiCalls[0].url), /^https:\/\/api\.kimi\.com\/coding\/v1\/usages$/);
+    assert.deepEqual(apiCalls[0].header, { Authorization: "Bearer $TOKEN$" });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Codex reads the authenticated web usage endpoint through Cliproxy", async () => {
+  const originalFetch = globalThis.fetch;
+  const apiCalls: Array<Record<string, unknown>> = [];
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url.endsWith("/auth-files")) return new Response(JSON.stringify({ files: [{ provider: "codex", auth_index: "account-1" }] }), { status: 200 });
+    const call = JSON.parse(String(init?.body));
+    apiCalls.push(call);
+    return new Response(JSON.stringify({ status_code: 200, body: JSON.stringify({
+      plan_type: "pro",
+      rate_limit: { primary_window: { used_percent: 20, limit_window_seconds: 18_000, reset_at: 1788951600 } },
+    }) }), { status: 200 });
+  };
+  try {
+    const result = await readCliproxyUsage({ provider: "codex", authIndex: "account-1", label: "Codex" }, {
+      managementBaseUrl: "http://cliproxy.test/v0/management",
+    });
+    assert.ok(result.supported && result.usage.status === "ok");
+    assert.deepEqual(result.usage.windows, [{ label: "5-hour limit", usedPercent: 20, resetsAt: "2026-09-09T11:00:00.000Z" }]);
+    assert.equal(apiCalls.length, 1);
+    assert.match(String(apiCalls[0].url), /^https:\/\/chatgpt\.com\/backend-api\/wham\/usage$/);
+    assert.deepEqual(apiCalls[0].header, {
+      Authorization: "Bearer $TOKEN$",
+      "Content-Type": "application/json",
+      "User-Agent": "codex_cli_rs/0.76.0",
+    });
   } finally {
     globalThis.fetch = originalFetch;
   }

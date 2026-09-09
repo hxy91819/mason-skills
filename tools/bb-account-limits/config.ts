@@ -88,8 +88,10 @@ export function cliproxyProviderId(provider: string): string {
 export function cliproxyProviderDisplayName(provider: string): string {
   const labels: Record<string, string> = {
     claude: "Claude",
+    codex: "Codex",
     xai: "Grok",
     antigravity: "Gemini · Antigravity",
+    kimi: "Kimi",
     zai: "Z.ai",
   };
   const normalized = provider.toLowerCase();

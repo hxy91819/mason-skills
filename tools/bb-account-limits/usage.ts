@@ -356,6 +356,81 @@ export function normalizeAntigravityUsage(raw: unknown, account: CliproxyUsageAc
   return { supported: true, usage: { status: "ok", accountEmail: null, planLabel: usageLabel(account), windows } };
 }
 
+function positiveNumber(value: unknown): number | null {
+  const numeric = typeof value === "string" ? Number(value.replaceAll(",", "")) : Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+}
+
+function kimiWindowLabel(raw: JsonRecord, fallback: string): string {
+  const duration = positiveNumber(raw.duration);
+  const unit = asString(raw.timeUnit)?.toLowerCase();
+  if (unit === "time_unit_minute" && duration === 300) return "5-hour limit";
+  if (unit === "time_unit_minute" && duration === 10080) return "Weekly limit";
+  return unit === "time_unit_minute" && duration ? `${duration}-minute limit` : fallback;
+}
+
+function kimiUsageWindow(raw: JsonRecord, label: string): { label: string; usedPercent: number; resetsAt: string | null } | null {
+  const limit = positiveNumber(raw.limit);
+  const used = typeof raw.used === "string" ? Number(raw.used.replaceAll(",", "")) : Number(raw.used);
+  if (!limit || !Number.isFinite(used) || used < 0 || used > limit) return null;
+  return { label, usedPercent: Number((used / limit * 100).toFixed(10)), resetsAt: parseReset(raw.resetTime) };
+}
+
+export function normalizeKimiUsage(raw: unknown, account: CliproxyUsageAccount): ProviderUsageResult {
+  const response = asRecord(raw);
+  if (!response) return usageError("Cliproxy returned an unrecognized Kimi quota response.");
+  const windows: Array<{ label: string; usedPercent: number; resetsAt: string | null }> = [];
+  const weekly = asRecord(response.usage);
+  if (weekly) {
+    const window = kimiUsageWindow(weekly, "Weekly limit");
+    if (window) windows.push(window);
+  }
+  const limits = Array.isArray(response.limits) ? response.limits.map(asRecord).filter((value): value is JsonRecord => value !== null) : [];
+  for (const limit of limits) {
+    const detail = asRecord(limit.detail);
+    if (!detail) continue;
+    const window = kimiUsageWindow(detail, kimiWindowLabel(asRecord(limit.window) ?? {}, "Current limit"));
+    if (window) windows.push(window);
+  }
+  if (!windows.length) return usageError("Cliproxy returned an unrecognized Kimi quota response.");
+  return { supported: true, usage: { status: "ok", accountEmail: null, planLabel: usageLabel(account), windows } };
+}
+
+function codexWhamWindowLabel(value: JsonRecord, fallback: string): string {
+  const seconds = positiveNumber(value.limit_window_seconds);
+  if (seconds === 18_000) return "5-hour limit";
+  if (seconds === 604_800) return "Weekly limit";
+  return seconds ? `${Math.round(seconds / 60)}-minute limit` : fallback;
+}
+
+function codexWhamWindows(raw: JsonRecord, prefix: string): Array<{ label: string; usedPercent: number; resetsAt: string | null }> {
+  const windows: Array<{ label: string; usedPercent: number; resetsAt: string | null }> = [];
+  for (const key of ["primary_window", "secondary_window"] as const) {
+    const window = asRecord(raw[key]);
+    if (!window) continue;
+    const usedPercent = Number(window.used_percent);
+    if (!Number.isFinite(usedPercent) || usedPercent < 0 || usedPercent > 100) continue;
+    const label = codexWhamWindowLabel(window, key === "primary_window" ? "Current limit" : "Secondary limit");
+    windows.push({ label: prefix ? `${prefix}: ${label}` : label, usedPercent, resetsAt: parseReset(window.reset_at) });
+  }
+  return windows;
+}
+
+export function normalizeCliproxyCodexUsage(raw: unknown, account: CliproxyUsageAccount): ProviderUsageResult {
+  const response = asRecord(raw);
+  const primary = response && asRecord(response.rate_limit);
+  if (!response || !primary) return usageError("Cliproxy returned an unrecognized Codex quota response.");
+  const windows = codexWhamWindows(primary, "");
+  const additional = Array.isArray(response.additional_rate_limits) ? response.additional_rate_limits.map(asRecord).filter((value): value is JsonRecord => value !== null) : [];
+  for (const limit of additional) {
+    const label = asString(limit.limit_name) ?? asString(limit.metered_feature) ?? "Additional limit";
+    const rateLimit = asRecord(limit.rate_limit);
+    if (rateLimit) windows.push(...codexWhamWindows(rateLimit, label));
+  }
+  if (!windows.length) return usageError("Cliproxy returned an unrecognized Codex quota response.");
+  return { supported: true, usage: { status: "ok", accountEmail: null, planLabel: asString(response.plan_type) ?? usageLabel(account), windows } };
+}
+
 function cachedQuotaSignals(record: JsonRecord): JsonRecord[] {
   const sources: JsonRecord[] = [];
   const quota = asRecord(record.quota);
@@ -557,6 +632,38 @@ async function readAntigravityUsageThroughCliproxy(
   }, signal, timeoutMs);
 }
 
+async function readKimiUsageThroughCliproxy(
+  managementBaseUrl: string,
+  managementKey: string | undefined,
+  authIndex: string,
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+): Promise<{ status: number; body: unknown }> {
+  return callCliproxyApi(managementBaseUrl, managementKey, authIndex, {
+    method: "GET",
+    url: "https://api.kimi.com/coding/v1/usages",
+    header: { Authorization: "Bearer $TOKEN$" },
+  }, signal, timeoutMs);
+}
+
+async function readCodexUsageThroughCliproxy(
+  managementBaseUrl: string,
+  managementKey: string | undefined,
+  authIndex: string,
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+): Promise<{ status: number; body: unknown }> {
+  return callCliproxyApi(managementBaseUrl, managementKey, authIndex, {
+    method: "GET",
+    url: "https://chatgpt.com/backend-api/wham/usage",
+    header: {
+      Authorization: "Bearer $TOKEN$",
+      "Content-Type": "application/json",
+      "User-Agent": "codex_cli_rs/0.76.0",
+    },
+  }, signal, timeoutMs);
+}
+
 async function readCliproxyAccountUsage(
   account: CliproxyUsageAccount,
   selected: JsonRecord,
@@ -594,6 +701,26 @@ async function readCliproxyAccountUsage(
     const cached = normalizeCliproxyCachedUsage(selected, account);
     if (hasOkUsage(cached)) return cached;
     return usageError(`Cliproxy could not read Antigravity quota (${upstream.status}).`);
+  }
+  if (account.provider.toLowerCase() === "kimi" && authIndex) {
+    const upstream = await readKimiUsageThroughCliproxy(managementBaseUrl, options.managementKey, authIndex, options.signal, timeoutMs);
+    if (upstream.status >= 200 && upstream.status < 300) {
+      const normalized = normalizeKimiUsage(upstream.body, account);
+      if (hasOkUsage(normalized)) return normalized;
+    }
+    const cached = normalizeCliproxyCachedUsage(selected, account);
+    if (hasOkUsage(cached)) return cached;
+    return usageError(`Cliproxy could not read Kimi quota (${upstream.status}).`);
+  }
+  if (account.provider.toLowerCase() === "codex" && authIndex) {
+    const upstream = await readCodexUsageThroughCliproxy(managementBaseUrl, options.managementKey, authIndex, options.signal, timeoutMs);
+    if (upstream.status >= 200 && upstream.status < 300) {
+      const normalized = normalizeCliproxyCodexUsage(upstream.body, account);
+      if (hasOkUsage(normalized)) return normalized;
+    }
+    const cached = normalizeCliproxyCachedUsage(selected, account);
+    if (hasOkUsage(cached)) return cached;
+    return usageError(`Cliproxy could not read Codex quota (${upstream.status}).`);
   }
   return normalizeCliproxyCachedUsage(selected, account);
 }
