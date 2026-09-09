@@ -1,0 +1,777 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# 脚本定义：本地多服务联调环境的技术栈无关 CLI（local-test skill）。
+# 用法：把本文件放进项目 bin/lt（或软链），项目根放一份 .local-test.yml。
+# 关键决策：
+#   - 机制全部收敛在 CLI，项目只留声明式配置，避免每个项目复制一份会各自漂移的模板脚本；
+#   - 每个 git worktree 是一个独立环境：namespace 决定端口偏移与库名后缀，多 worktree 可并行；
+#   - 中间件全机一份（compose），业务服务裸进程且以独立进程组启动，stop 杀整组；
+#   - 全机登记目录让 status 可见、gc 回收孤儿、软上限防资源耗尽，不做槽位租借；
+#   - 端口被未知进程占用即保守失败，不抢端口——那可能是其他 agent 的现场；
+#   - YAML/JSON 自己解析：CLI 要能在任意技术栈的仓库里直接跑，不引入 ruby/python/yq 依赖；
+#   - 只用 bash 3.2 语法（无关联数组、无 mapfile），保证 macOS 自带 bash 可用。
+LT_VERSION="1.1.0"
+STATE_DIR=".local-test"
+RUN_DIR="$STATE_DIR/run"
+LOG_DIR="$STATE_DIR/logs"
+ENV_FILE="$STATE_DIR/env"
+CONFIG_FILE=".local-test.yml"
+PREVIEW_URL_FILE="$STATE_DIR/preview-url"
+PREVIEW_LOGIN_URL_FILE="$STATE_DIR/preview-login-url"
+STOP_TIMEOUT=10
+REGISTRY_DIR="${LOCAL_TEST_REGISTRY_DIR:-$HOME/.local-test/registry}"
+MAX_ENVS="${LOCAL_TEST_MAX_ENVS:-5}"
+PORT_OFFSET_RANGE=200   # namespace 哈希映射到 [1,199] 的端口偏移；0 保留给主 checkout
+
+usage() {
+  cat <<'USAGE'
+用法:
+  lt {doctor|init|start|stop|status|logs <service>|gc|destroy|reset --yes}
+说明:
+  本地多服务联调环境的统一入口。读取项目根 .local-test.yml；中间件走 docker compose 且
+  全机一份，业务服务以裸进程按 worktree namespace 隔离启动并仅监听 127.0.0.1。
+选项:
+  doctor           检查 git/docker/setsid/cksum 与配置合法性；不启动任何东西
+  init             从 --from-json <file> 或 stdin 的 JSON 生成 .local-test.yml（--force 覆盖）
+  start            按中间件 -> 建库 -> 业务服务顺序拉起；幂等，已运行的服务跳过
+  stop             逆序收敛：对进程组 SIGTERM 超时转 SIGKILL，校验端口释放；默认保留数据
+  status           打印本环境状态、全机登记，末尾输出 LT_* 机器可读段
+  logs <service>   跟踪指定服务日志（Ctrl-C 退出不影响服务）
+  gc               回收全机孤儿环境：进程已死删登记；worktree 已删除则停进程、drop 库
+  destroy          stop 后 drop 本环境开发库并删登记；供 worktree teardown 调用，无环境时 no-op
+  reset --yes      停止并清理数据卷；仅用户明确要求"彻底重置"时使用
+环境变量:
+  LOCAL_TEST_NAMESPACE    覆盖 namespace（默认 linked worktree 取目录名，主 checkout 为空）
+  LOCAL_TEST_REGISTRY_DIR 全机登记目录（默认 ~/.local-test/registry）
+  LOCAL_TEST_MAX_ENVS     同时运行的环境软上限（默认 5）
+  LOCAL_TEST_SPAWN_MODE   强制进程组隔离方案 setsid|perl|monitor（默认自动探测）
+输出结果定义:
+  运行状态: .local-test/run/<service>.pid（进程组 id）、.local-test/run/port-offset
+  服务日志: .local-test/logs/<service>.log
+  全机登记: $LOCAL_TEST_REGISTRY_DIR/<project>--<namespace>
+  退出码:   0 成功; 1 参数或配置错误; 2 环境预检失败（端口被未知进程占用、超软上限、
+            real 模式却不在主 checkout）; 3 服务启动失败
+示例:
+  lt doctor
+  cat scan.json | lt init
+  lt start && lt status
+  lt logs web
+USAGE
+}
+
+log_info()  { echo "INFO: $*"; }
+log_error() { echo "ERROR: $*" >&2; }
+die()       { log_error "$1"; exit "${2:-1}"; }
+
+# ---- 配置解析 ---------------------------------------------------------
+# 只支持受限 YAML 子集：两空格缩进、最多三层、无列表/锚点/多行标量。
+# 输出 "点分路径<TAB>值"，供 cfg_get 用 awk 精确匹配，避免 grep 前缀误配。
+yaml_flatten() {
+  awk -v FN="$1" '
+    BEGIN { SQ = sprintf("%c", 39); DQ = sprintf("%c", 34); maxlvl = -1 }
+    function err(m) { printf("配置错误 %s: %s\n", FN, m) > "/dev/stderr"; exit 1 }
+    {
+      line = $0
+      sub(/\r$/, "", line)
+      if (line ~ /^[ ]*$/) next
+      if (line ~ /^[ ]*#/) next
+      if (index(line, "\t") > 0) err("第 " NR " 行含 TAB，只支持空格缩进")
+      match(line, /^ */); ind = RLENGTH
+      if (ind % 2 != 0) err("第 " NR " 行缩进不是 2 的倍数")
+      lvl = ind / 2
+      if (lvl > 2) err("第 " NR " 行超过三层嵌套")
+      if (lvl > maxlvl + 1) err("第 " NR " 行缩进跳级")
+      rest = substr(line, ind + 1)
+      if (substr(rest, 1, 1) == "-") err("第 " NR " 行使用了列表，不支持")
+      ci = index(rest, ":")
+      if (ci == 0) err("第 " NR " 行缺少冒号")
+      key = substr(rest, 1, ci - 1)
+      val = substr(rest, ci + 1)
+      if (key !~ /^[A-Za-z_][A-Za-z0-9_-]*$/) err("第 " NR " 行键名非法: " key)
+      sub(/^[ ]+/, "", val); sub(/[ ]+$/, "", val)
+      q = substr(val, 1, 1)
+      if (q == SQ || q == DQ) {
+        e = index(substr(val, 2), q)
+        if (e == 0) err("第 " NR " 行引号未闭合")
+        val = substr(val, 2, e - 1)
+      } else {
+        # 仅在 # 前有空白时才当作行尾注释，URL 里的 #fragment 得以保留
+        sub(/[ ]+#.*$/, "", val); sub(/[ ]+$/, "", val)
+      }
+      st[lvl] = key
+      maxlvl = lvl
+      if (val == "") next
+      p = st[0]
+      for (j = 1; j <= lvl; j++) p = p "." st[j]
+      printf("%s\t%s\n", p, val)
+    }
+  ' "$1"
+}
+
+# JSON -> 同样的扁平表示。只支持对象与标量，数组按错误处理（配置结构里用不到）。
+json_flatten() {
+  awk '
+    function err(m) { printf("JSON 解析失败: %s\n", m) > "/dev/stderr"; exit 1 }
+    function ws() { while (i <= n) { ch = substr(s, i, 1); if (ch == " " || ch == "\t" || ch == "\n" || ch == "\r") i++; else break } }
+    function pstr(   out, c) {
+      if (substr(s, i, 1) != "\"") err("第 " i " 字符处期望字符串")
+      i++; out = ""
+      while (i <= n) {
+        c = substr(s, i, 1)
+        if (c == "\\") {
+          i++; c = substr(s, i, 1)
+          if (c == "n") out = out "\n"
+          else if (c == "t") out = out "\t"
+          else if (c == "u") { i += 4; out = out "?" }
+          else out = out c
+          i++; continue
+        }
+        if (c == "\"") { i++; return out }
+        out = out c; i++
+      }
+      err("字符串未闭合")
+    }
+    function pval(path,   c, k) {
+      ws(); c = substr(s, i, 1)
+      if (c == "{") {
+        i++; ws()
+        if (substr(s, i, 1) == "}") { i++; return }
+        while (1) {
+          ws(); k = pstr(); ws()
+          if (substr(s, i, 1) != ":") err("期望冒号")
+          i++
+          pval(path == "" ? k : path "." k)
+          ws(); c = substr(s, i, 1)
+          if (c == ",") { i++; continue }
+          if (c == "}") { i++; return }
+          err("期望逗号或右花括号")
+        }
+      } else if (c == "[") {
+        err("不支持数组")
+      } else if (c == "\"") {
+        printf("%s\t%s\n", path, pstr())
+      } else {
+        v = ""
+        while (i <= n && index(" \t\r\n,}]", substr(s, i, 1)) == 0) { v = v substr(s, i, 1); i++ }
+        if (v == "") err("空值")
+        if (v != "null") printf("%s\t%s\n", path, v)
+      }
+    }
+    { buf = buf $0 "\n" }
+    END { s = buf; n = length(s); i = 1; ws(); pval(""); ws(); if (i <= n) err("结尾有多余内容") }
+  '
+}
+
+cfg_get() {
+  printf '%s\n' "$CFG" | awk -F'\t' -v k="$1" '$1 == k { print $2; found = 1; exit } END { if (!found) exit 0 }'
+}
+
+# 服务顺序即配置里的出现顺序：start 按序拉起、stop 逆序收敛
+cfg_service_names() {
+  printf '%s\n' "$CFG" | awk -F'\t' '
+    $1 ~ /^services\.[^.]+\.[^.]+$/ {
+      split($1, a, ".")
+      if (!(a[2] in seen)) { seen[a[2]] = 1; printf("%s\n", a[2]) }
+    }'
+}
+
+load_config() {
+  [[ -f "$CONFIG_FILE" ]] || die "找不到 $CONFIG_FILE；先用 lt init --from-json 生成" 1
+  CFG="$(yaml_flatten "$CONFIG_FILE")" || exit 1
+  PROJECT_NAME="$(cfg_get project)"
+  [[ -n "$PROJECT_NAME" ]] || PROJECT_NAME="$(basename "$REPO_ROOT")"
+  COMPOSE_FILE="$(cfg_get middleware)"
+  DB_PREPARE_CMD="$(cfg_get database.prepare)"
+  DB_DROP_CMD="$(cfg_get database.drop)"
+  EXTERNAL_MODE_ENV="$(cfg_get external.mode_env)"
+  PREVIEW_URL_TPL="$(cfg_get preview_url)"
+  GATEWAY_CONF="$(cfg_get gateway_conf)"
+  SVC_NAMES="$(cfg_service_names | tr '\n' ' ')"
+  local svc
+  for svc in $SVC_NAMES; do
+    [[ -n "$(cfg_get "services.$svc.cmd")" ]] || die "服务 $svc 缺少 cmd" 1
+  done
+}
+
+svc_port_base() { cfg_get "services.$1.port"; }
+svc_cmd()       { cfg_get "services.$1.cmd"; }
+svc_port() {
+  local base; base="$(svc_port_base "$1")"
+  [[ -n "$base" ]] || return 0
+  echo $(( base + PORT_OFFSET ))
+}
+
+# ---- 基础工具 ---------------------------------------------------------
+is_up() {
+  local port="$1"
+  [[ -n "$port" ]] || return 1
+  (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null || return 1
+  exec 3>&- 3<&- || true
+}
+pgid_of()    { cat "$RUN_DIR/$1.pid" 2>/dev/null || echo ""; }
+pgid_alive() { [[ -n "$1" ]] && kill -0 -- "-$1" 2>/dev/null; }
+upper_ident() { printf '%s' "$1" | tr '[:lower:]-' '[:upper:]_' | tr -c 'A-Z0-9_\n' '_'; }
+reverse_list() { printf '%s\n' $1 | awk '{ a[NR] = $0 } END { for (k = NR; k >= 1; k--) print a[k] }'; }
+
+# macOS 自带环境没有 setsid，doctor 会报告实际采用的方案；三者都能让服务成为进程组组长
+detect_spawn_mode() {
+  if [[ -n "${LOCAL_TEST_SPAWN_MODE:-}" ]]; then echo "$LOCAL_TEST_SPAWN_MODE"
+  elif command -v setsid >/dev/null 2>&1; then echo setsid
+  elif command -v perl >/dev/null 2>&1; then echo perl
+  else echo monitor; fi
+}
+
+# ---- namespace / 端口 -------------------------------------------------
+repo_root() { git rev-parse --show-toplevel 2>/dev/null || pwd -P; }
+canonical_namespace() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_]+/_/g; s/_+/_/g; s/^_+|_+$//g'
+}
+is_linked_worktree() {
+  local common git_dir
+  common="$(git rev-parse --git-common-dir 2>/dev/null || true)"
+  git_dir="$(git rev-parse --git-dir 2>/dev/null || true)"
+  [[ -n "$common" && -n "$git_dir" ]] || return 1
+  [[ "$(cd "$common" && pwd -P)" != "$(cd "$git_dir" && pwd -P)" ]]
+}
+resolve_namespace() {
+  if [[ -n "${LOCAL_TEST_NAMESPACE:-}" ]]; then
+    canonical_namespace "$LOCAL_TEST_NAMESPACE"; return
+  fi
+  # 主 checkout 返回空 namespace，保持端口与库名原值，向后兼容
+  if is_linked_worktree; then
+    canonical_namespace "$(basename "$REPO_ROOT")"
+  fi
+  return 0
+}
+hash_offset() {
+  # cksum 在 macOS/Linux 都有；取模得到决定性偏移，1..199，0 留给主 checkout
+  local n
+  n="$(printf '%s' "$1" | cksum | awk '{print $1}')"
+  echo $(( n % (PORT_OFFSET_RANGE - 1) + 1 ))
+}
+resolve_port_offset() {
+  [[ -n "$NAMESPACE" ]] || { echo 0; return; }
+  if [[ -f "$RUN_DIR/port-offset" ]]; then cat "$RUN_DIR/port-offset"; return; fi
+  local offset svc base tries=0 clash
+  offset="$(hash_offset "$NAMESPACE")"
+  while (( tries < PORT_OFFSET_RANGE )); do
+    clash=0
+    for svc in $SVC_NAMES; do
+      base="$(svc_port_base "$svc")"
+      [[ -n "$base" ]] || continue
+      is_up $(( base + offset )) && { clash=1; break; }
+    done
+    (( clash == 0 )) && { echo "$offset"; return; }
+    offset=$(( offset % (PORT_OFFSET_RANGE - 1) + 1 )); tries=$(( tries + 1 ))
+  done
+  log_error "namespace $NAMESPACE 在 $PORT_OFFSET_RANGE 个偏移内找不到空闲端口"
+  return 2
+}
+export_service_ports() {
+  local svc port
+  for svc in $SVC_NAMES; do
+    port="$(svc_port "$svc")"
+    [[ -n "$port" ]] || continue
+    export "LOCAL_TEST_PORT_$(upper_ident "$svc")=$port"
+  done
+  export LOCAL_TEST_NAMESPACE="$NAMESPACE"
+}
+# 把 $LOCAL_TEST_* 手工替换掉而不是 eval：配置值不应获得执行权限
+expand_lt_vars() {
+  local s="$1" svc up port
+  s="${s//\$\{LOCAL_TEST_NAMESPACE\}/$NAMESPACE}"
+  s="${s//\$LOCAL_TEST_NAMESPACE/$NAMESPACE}"
+  for svc in $SVC_NAMES; do
+    port="$(svc_port "$svc")"
+    [[ -n "$port" ]] || continue
+    up="$(upper_ident "$svc")"
+    s="${s//\$\{LOCAL_TEST_PORT_$up\}/$port}"
+    s="${s//\$LOCAL_TEST_PORT_$up/$port}"
+  done
+  printf '%s' "$s"
+}
+
+# ---- 外部系统模式 -----------------------------------------------------
+# real 只允许主 checkout：worktree 的写入型调用会污染真实外部系统，靠 CLI 强制而非靠人记住
+resolve_external_mode() {
+  [[ -n "$EXTERNAL_MODE_ENV" ]] || return 0
+  local mode=""
+  eval "mode=\${$EXTERNAL_MODE_ENV:-}"
+  if [[ -z "$mode" && -f "$ENV_FILE" ]]; then
+    mode="$(awk -F= -v k="$EXTERNAL_MODE_ENV" '$1 == k { sub(/^[^=]*=/, ""); print; exit }' "$ENV_FILE")"
+  fi
+  [[ -n "$mode" ]] || mode="mock"
+  EXTERNAL_MODE="$mode"
+  export "$EXTERNAL_MODE_ENV=$mode"
+}
+guard_external_mode() {
+  [[ -n "$EXTERNAL_MODE_ENV" ]] || return 0
+  if [[ "${EXTERNAL_MODE:-mock}" == "real" && -n "$NAMESPACE" ]]; then
+    log_error "$EXTERNAL_MODE_ENV=real 只允许在主 checkout 启动；当前 worktree namespace=$NAMESPACE"
+    log_error "把目标分支 checkout 到主 checkout 再启动，或改用 $EXTERNAL_MODE_ENV=mock"
+    return 2
+  fi
+}
+
+# ---- 全机登记 ---------------------------------------------------------
+registry_key() { echo "${PROJECT_NAME}--${NAMESPACE:-main}"; }
+registry_write() {
+  mkdir -p "$REGISTRY_DIR"
+  {
+    echo "project=$PROJECT_NAME"
+    echo "namespace=${NAMESPACE:-}"
+    echo "worktree=$REPO_ROOT"
+    echo "port_offset=$PORT_OFFSET"
+    echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    local svc
+    for svc in $SVC_NAMES; do
+      echo "service=$svc:$(svc_port "$svc"):$(pgid_of "$svc")"
+    done
+  } >"$REGISTRY_DIR/$(registry_key)"
+}
+registry_remove() { rm -f "$REGISTRY_DIR/$(registry_key)"; }
+registry_field() { grep "^$2=" "$1" 2>/dev/null | head -n1 | cut -d= -f2-; }
+registry_entry_alive() {
+  local file="$1" line pgid
+  while IFS= read -r line; do
+    [[ "$line" == service=* ]] || continue
+    pgid="${line##*:}"
+    pgid_alive "$pgid" && return 0
+  done <"$file"
+  return 1
+}
+count_live_envs() {
+  local file n=0 self
+  self="$(registry_key)"
+  for file in "$REGISTRY_DIR"/*; do
+    [[ -f "$file" ]] || continue
+    [[ "$(basename "$file")" == "$self" ]] && continue
+    registry_entry_alive "$file" && n=$(( n + 1 ))
+  done
+  echo "$n"
+}
+worktree_registered() {
+  local path="$1"
+  [[ -n "$path" && -d "$path" ]] || return 1
+  git -C "$path" worktree list --porcelain 2>/dev/null | grep -Fxq "worktree $path"
+}
+
+# ---- 单服务启停 -------------------------------------------------------
+spawn_service() {
+  local cmd="$1" logpath="$2"
+  case "$SPAWN_MODE" in
+    setsid)
+      setsid bash -c "$cmd" >"$logpath" 2>&1 </dev/null &
+      ;;
+    perl)
+      perl -e 'setpgrp(0,0); exec("/bin/bash", "-c", $ARGV[0]);' "$cmd" >"$logpath" 2>&1 </dev/null &
+      ;;
+    *)
+      # 开启 job control 后，后台作业会被放进自己的进程组，等价于 setsid 的隔离效果
+      set -m
+      bash -c "$cmd" >"$logpath" 2>&1 </dev/null &
+      set +m
+      ;;
+  esac
+  echo $!
+}
+start_one() {
+  local svc="$1" port cmd pgid
+  port="$(svc_port "$svc")"
+  cmd="$(svc_cmd "$svc")"
+  if [[ -n "$port" ]] && is_up "$port"; then
+    pgid="$(pgid_of "$svc")"
+    if pgid_alive "$pgid"; then
+      log_info "$svc 已在运行 (pgid $pgid, 端口 $port)，跳过"
+      return 0
+    fi
+    log_error "$svc 端口 $port 被未知进程占用，非本环境拉起；请人工确认后处理"
+    return 2
+  fi
+  if [[ -z "$port" ]]; then
+    pgid="$(pgid_of "$svc")"
+    if pgid_alive "$pgid"; then
+      log_info "$svc 已在运行 (pgid $pgid, 无端口)，跳过"
+      return 0
+    fi
+  fi
+  mkdir -p "$RUN_DIR" "$LOG_DIR"
+  log_info "启动 $svc${port:+ (127.0.0.1:$port)}"
+  pgid="$(spawn_service "$cmd" "$LOG_DIR/$svc.log")"
+  echo "$pgid" >"$RUN_DIR/$svc.pid"
+  sleep 1
+  if ! pgid_alive "$pgid"; then
+    log_error "$svc 启动后立即退出，查看 $LOG_DIR/$svc.log"
+    rm -f "$RUN_DIR/$svc.pid"
+    return 3
+  fi
+}
+stop_pgid() {
+  local pgid="$1" waited=0
+  pgid_alive "$pgid" || return 0
+  kill -TERM -- "-$pgid" 2>/dev/null || true
+  while pgid_alive "$pgid" && (( waited < STOP_TIMEOUT )); do sleep 1; waited=$(( waited + 1 )); done
+  pgid_alive "$pgid" && kill -KILL -- "-$pgid" 2>/dev/null || true
+  sleep 1
+  ! pgid_alive "$pgid"
+}
+stop_one() {
+  local svc="$1" port pgid
+  port="$(svc_port "$svc")"
+  pgid="$(pgid_of "$svc")"
+  if [[ -n "$pgid" ]]; then
+    stop_pgid "$pgid" && log_info "$svc (pgid $pgid) 已停止" || log_error "$svc (pgid $pgid) 无法终止"
+  fi
+  rm -f "$RUN_DIR/$svc.pid"
+  if [[ -n "$port" ]] && is_up "$port"; then
+    log_error "$svc 端口 $port 仍被占用（可能存在孤儿进程），请人工确认"
+    return 2
+  fi
+}
+compose_action() {
+  [[ -n "$COMPOSE_FILE" ]] || return 0
+  [[ -f "$COMPOSE_FILE" ]] || { log_error "找不到中间件配置 $COMPOSE_FILE"; return 2; }
+  # stop 用 stop 不用 down：容器与卷保留，符合"默认保留数据"
+  docker compose -f "$COMPOSE_FILE" "$@"
+}
+
+# ---- 子命令 -----------------------------------------------------------
+cmd_start() {
+  local svc rc=0 live
+  guard_external_mode || return 2
+  live="$(count_live_envs)"
+  if (( live >= MAX_ENVS )); then
+    log_error "全机已有 $live 个环境在运行，达到软上限 LOCAL_TEST_MAX_ENVS=$MAX_ENVS；先 lt status 查看并停止不需要的环境"
+    return 2
+  fi
+  compose_action up -d || rc=3
+  (( rc == 0 )) || return $rc
+  mkdir -p "$RUN_DIR" "$LOG_DIR"
+  if [[ -n "$DB_PREPARE_CMD" && ! -f "$RUN_DIR/db-prepared" ]]; then
+    log_info "准备本地开发库 (namespace: ${NAMESPACE:-<none>})"
+    bash -c "$DB_PREPARE_CMD" || { log_error "本地开发库准备失败"; return 3; }
+    touch "$RUN_DIR/db-prepared"
+  fi
+  echo "$PORT_OFFSET" >"$RUN_DIR/port-offset"
+  for svc in $SVC_NAMES; do
+    start_one "$svc" || rc=$?
+  done
+  registry_write
+  (( rc == 0 )) && log_info "环境已就绪 (namespace: ${NAMESPACE:-<none>}, 端口偏移 $PORT_OFFSET)，入口见 lt status"
+  (( rc == 2 )) && log_info "存在被未知进程占用的端口，处置前先 lt status 人工确认"
+  return $rc
+}
+cmd_stop() {
+  local svc rc=0
+  for svc in $(reverse_list "$SVC_NAMES"); do
+    stop_one "$svc" || rc=2
+  done
+  registry_remove
+  # 中间件全机共享：其他环境仍在运行时不停容器
+  if (( $(count_live_envs) == 0 )); then
+    compose_action stop || rc=2
+    (( rc == 0 )) && log_info "已全部停止（数据卷保留）"
+  else
+    (( rc == 0 )) && log_info "本环境已停止；中间件仍被其他环境使用，保留运行"
+  fi
+  return $rc
+}
+cmd_status() {
+  local svc port pgid state file any=0 preview_url login_url
+  echo "== 本环境 =="
+  echo "  项目: $PROJECT_NAME  namespace: ${NAMESPACE:-<none>}  端口偏移: $PORT_OFFSET"
+  echo "  worktree: $REPO_ROOT"
+  [[ -n "$EXTERNAL_MODE_ENV" ]] && echo "  外部系统: $EXTERNAL_MODE_ENV=${EXTERNAL_MODE:-mock}"
+  echo "== 中间件 =="
+  if [[ -n "$COMPOSE_FILE" ]]; then
+    docker compose -f "$COMPOSE_FILE" ps --format '{{.Name}}: {{.Status}}' 2>/dev/null || echo "  (docker 不可用)"
+  else
+    echo "  (未配置)"
+  fi
+  echo "== 业务服务 =="
+  for svc in $SVC_NAMES; do
+    port="$(svc_port "$svc")"
+    pgid="$(pgid_of "$svc")"
+    if [[ -n "$port" ]]; then
+      if is_up "$port"; then state="UP   (127.0.0.1:$port, pgid ${pgid:-unknown})"
+      else state="DOWN (127.0.0.1:$port)"; fi
+    else
+      if pgid_alive "$pgid"; then state="UP   (pgid $pgid, 无端口)"; else state="DOWN (无端口)"; fi
+    fi
+    printf '  %-14s %s\n' "$svc" "$state"
+  done
+  echo "== 对外入口 =="
+  preview_url=""
+  [[ -n "${PREVIEW_URL:-}" ]] && preview_url="$PREVIEW_URL"
+  [[ -z "$preview_url" && -f "$PREVIEW_URL_FILE" ]] && preview_url="$(head -n1 "$PREVIEW_URL_FILE")"
+  [[ -z "$preview_url" && -n "$PREVIEW_URL_TPL" ]] && preview_url="$(expand_lt_vars "$PREVIEW_URL_TPL")"
+  login_url="${PREVIEW_LOGIN_URL:-}"
+  [[ -z "$login_url" && -f "$PREVIEW_LOGIN_URL_FILE" ]] && login_url="$(head -n1 "$PREVIEW_LOGIN_URL_FILE")"
+  if [[ -n "$login_url" ]]; then
+    printf '  入口登录地址（首次访问先登录）: %s\n' "$login_url"
+  else
+    echo "  (未登记入口登录地址)"
+  fi
+  if [[ -n "$preview_url" ]]; then
+    printf '  用户预览地址（配置值，需单独验证可达）: %s\n' "$preview_url"
+    [[ -n "$GATEWAY_CONF" ]] && printf '  代理配置: %s\n' "$GATEWAY_CONF"
+  else
+    echo "  (未登记用户预览地址；勿把内部监听地址当作预览链接)"
+  fi
+  echo "== 全机已登记环境 ($REGISTRY_DIR) =="
+  for file in "$REGISTRY_DIR"/*; do
+    [[ -f "$file" ]] || continue
+    any=1
+    if registry_entry_alive "$file"; then state="ALIVE"; else state="DEAD "; fi
+    printf '  %s %-40s %s\n' "$state" "$(basename "$file")" "$(registry_field "$file" worktree)"
+  done
+  (( any == 0 )) && echo "  (无)"
+  # 机器可读段：agent 直接 grep ^LT_ 提取，不必解析上面的人读排版
+  echo "== 机器可读 =="
+  echo "LT_PROJECT=$PROJECT_NAME"
+  echo "LT_NAMESPACE=${NAMESPACE:-}"
+  echo "LT_WORKTREE=$REPO_ROOT"
+  echo "LT_PORT_OFFSET=$PORT_OFFSET"
+  [[ -n "$EXTERNAL_MODE_ENV" ]] && echo "LT_EXTERNAL_MODE=${EXTERNAL_MODE:-mock}"
+  for svc in $SVC_NAMES; do
+    port="$(svc_port "$svc")"
+    [[ -n "$port" ]] || continue
+    echo "LT_PORT_$(upper_ident "$svc")=$port"
+  done
+  [[ -n "$preview_url" ]] && echo "LT_URL=$preview_url"
+  [[ -n "$login_url" ]] && echo "LT_LOGIN_URL=$login_url"
+  return 0
+}
+cmd_logs() {
+  local target="${1:-}" svc
+  [[ -n "$target" ]] || { log_error "logs 需要服务名，可选: $SVC_NAMES"; return 1; }
+  for svc in $SVC_NAMES; do
+    if [[ "$svc" == "$target" ]]; then
+      tail -n 100 -f "$LOG_DIR/$svc.log"
+      return 0
+    fi
+  done
+  log_error "未知服务 $target，可选: $SVC_NAMES"
+  return 1
+}
+cmd_gc() {
+  local file key path proj ns line pgid rc=0 reclaimed=0
+  for file in "$REGISTRY_DIR"/*; do
+    [[ -f "$file" ]] || continue
+    key="$(basename "$file")"
+    path="$(registry_field "$file" worktree)"
+    proj="$(registry_field "$file" project)"
+    ns="$(registry_field "$file" namespace)"
+    if ! registry_entry_alive "$file"; then
+      log_info "gc: $key 进程已退出，删除登记"
+      rm -f "$file"; reclaimed=$(( reclaimed + 1 )); continue
+    fi
+    if ! worktree_registered "$path"; then
+      log_info "gc: $key 的 worktree 已不存在 ($path)，终止进程组"
+      while IFS= read -r line; do
+        [[ "$line" == service=* ]] || continue
+        pgid="${line##*:}"
+        stop_pgid "$pgid" || { log_error "gc: 无法终止 pgid $pgid"; rc=2; }
+      done <"$file"
+      # worktree 已删，只能在当前 checkout 里按登记的 namespace 执行 drop；
+      # 跨项目的 drop 命令不可知，只处理同项目的环境，其余留给该项目自己 gc
+      if [[ -n "$DB_DROP_CMD" && "$proj" == "$PROJECT_NAME" ]]; then
+        LOCAL_TEST_NAMESPACE="$ns" bash -c "$DB_DROP_CMD" \
+          || { log_error "gc: $key drop 开发库失败"; rc=2; }
+      elif [[ "$proj" != "$PROJECT_NAME" ]]; then
+        log_info "gc: $key 属于其他项目 $proj，跳过 drop（请在该项目内执行 lt gc）"
+      fi
+      rm -f "$file"; reclaimed=$(( reclaimed + 1 ))
+    fi
+  done
+  log_info "gc 完成，回收 $reclaimed 个环境"
+  return $rc
+}
+cmd_destroy() {
+  local rc=0
+  if [[ ! -d "$RUN_DIR" && ! -f "$REGISTRY_DIR/$(registry_key)" ]]; then
+    log_info "destroy: 本环境从未启动，无需处理"
+    return 0
+  fi
+  cmd_stop || rc=$?
+  if [[ -n "$DB_DROP_CMD" && -f "$RUN_DIR/db-prepared" ]]; then
+    log_info "drop 本地开发库 (namespace: ${NAMESPACE:-<none>})"
+    bash -c "$DB_DROP_CMD" || { log_error "drop 开发库失败"; rc=2; }
+  fi
+  rm -rf "$RUN_DIR"
+  registry_remove
+  return $rc
+}
+cmd_reset() {
+  [[ "${1:-}" == "--yes" ]] || { log_error "reset 会清理数据卷，必须带 --yes 且经用户明确要求"; return 1; }
+  cmd_stop || true
+  rm -f "$RUN_DIR/db-prepared"
+  if [[ -n "$COMPOSE_FILE" && -f "$COMPOSE_FILE" ]]; then
+    docker compose -f "$COMPOSE_FILE" down -v || true
+  fi
+  log_info "数据卷已清理，执行 lt start 重建环境"
+}
+
+cmd_doctor() {
+  local rc=0 v
+  echo "== lt doctor (v$LT_VERSION) =="
+  echo "  bash: ${BASH_VERSION:-unknown}"
+  if command -v git >/dev/null 2>&1; then
+    echo "  git: $(git --version | head -n1)"
+  else
+    echo "  git: 缺失（namespace 与 gc 依赖 git worktree 信息）"; rc=1
+  fi
+  if command -v cksum >/dev/null 2>&1; then echo "  cksum: 可用"; else echo "  cksum: 缺失（端口偏移无法推导）"; rc=1; fi
+  case "$SPAWN_MODE" in
+    setsid)  echo "  进程组隔离: setsid" ;;
+    perl)    echo "  进程组隔离: perl setpgrp（未找到 setsid）" ;;
+    monitor) echo "  进程组隔离: bash job control (set -m)（未找到 setsid 与 perl）" ;;
+  esac
+  if command -v docker >/dev/null 2>&1; then
+    v="$(docker compose version 2>/dev/null | head -n1 || true)"
+    echo "  docker: 可用${v:+; }${v:-（docker compose 子命令不可用）}"
+  else
+    echo "  docker: 缺失（仅在配置了 middleware 时必需）"
+  fi
+  echo "  登记目录: $REGISTRY_DIR"
+  echo "== 配置 =="
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    echo "  $CONFIG_FILE: 不存在；用 lt init --from-json 生成"
+    return $rc
+  fi
+  if ! yaml_flatten "$CONFIG_FILE" >/dev/null; then
+    echo "  $CONFIG_FILE: 解析失败"; return 1
+  fi
+  echo "  $CONFIG_FILE: 解析通过"
+  echo "  project: $PROJECT_NAME"
+  echo "  middleware: ${COMPOSE_FILE:-<none>}"
+  if [[ -n "$COMPOSE_FILE" && ! -f "$COMPOSE_FILE" ]]; then echo "  警告: 找不到 $COMPOSE_FILE"; rc=1; fi
+  echo "  database.prepare: ${DB_PREPARE_CMD:-<none>}"
+  echo "  database.drop: ${DB_DROP_CMD:-<none>}"
+  echo "  external.mode_env: ${EXTERNAL_MODE_ENV:-<none>}${EXTERNAL_MODE_ENV:+ (当前 ${EXTERNAL_MODE:-mock})}"
+  if [[ -z "$SVC_NAMES" ]]; then echo "  services: 空，start 无事可做"; rc=1; fi
+  local svc
+  for svc in $SVC_NAMES; do
+    printf '  service %-12s port=%-6s cmd=%s\n' "$svc" "$(svc_port_base "$svc")" "$(svc_cmd "$svc")"
+  done
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    if git check-ignore -q "$STATE_DIR/"; then
+      echo "  $STATE_DIR/: 已被 git 忽略"
+    else
+      echo "  $STATE_DIR/: 未被忽略，运行 lt init 或手工加入 .gitignore"; rc=1
+    fi
+  fi
+  return $rc
+}
+
+ensure_state_ignored() {
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  if git check-ignore -q "$STATE_DIR/"; then
+    log_info "$STATE_DIR/ 已被 git 忽略"
+    return 0
+  fi
+  local exclude
+  exclude="$(git rev-parse --git-common-dir)/info/exclude"
+  mkdir -p "$(dirname "$exclude")"
+  printf '%s\n' "$STATE_DIR/" >>"$exclude"
+  log_info "已把 $STATE_DIR/ 追加到 $exclude；若希望团队共享该规则，请改写进 .gitignore"
+}
+
+cmd_init() {
+  local src="" force=0 json flat
+  while (( $# > 0 )); do
+    case "$1" in
+      --from-json) src="${2:-}"; shift 2 ;;
+      --force) force=1; shift ;;
+      *) log_error "init 未知参数 $1"; return 1 ;;
+    esac
+  done
+  if [[ -f "$CONFIG_FILE" && $force -eq 0 ]]; then
+    log_error "$CONFIG_FILE 已存在；确认要覆盖再加 --force"
+    return 1
+  fi
+  if [[ -n "$src" ]]; then
+    [[ -f "$src" ]] || { log_error "找不到 $src"; return 1; }
+    json="$(cat "$src")"
+  else
+    json="$(cat)"
+  fi
+  [[ -n "${json//[[:space:]]/}" ]] || { log_error "init 需要 JSON（--from-json <file> 或 stdin）"; return 1; }
+  flat="$(printf '%s' "$json" | json_flatten)" || return 1
+
+  local out svc names
+  out="$(
+    jget() { printf '%s\n' "$flat" | awk -F'\t' -v k="$1" '$1 == k { print $2; exit }'; }
+    emit() {
+      local k="$1" v="$2"
+      [[ -n "$v" ]] || return 0
+      case "$v" in *"'"*) echo "值含单引号，无法安全写入 YAML: $k" >&2; return 1 ;; esac
+      printf "%s'%s'\n" "$k" "$v"
+    }
+    echo "# 由 lt init 生成；受限 YAML 子集，详见 local-test skill"
+    emit "project: " "$(jget project)"
+    emit "middleware: " "$(jget middleware)"
+    if [[ -n "$(jget database.prepare)$(jget database.drop)" ]]; then
+      echo "database:"
+      emit "  prepare: " "$(jget database.prepare)"
+      emit "  drop: " "$(jget database.drop)"
+    fi
+    if [[ -n "$(jget external.mode_env)" ]]; then
+      echo "external:"
+      emit "  mode_env: " "$(jget external.mode_env)"
+    fi
+    names="$(printf '%s\n' "$flat" | awk -F'\t' '$1 ~ /^services\.[^.]+\.[^.]+$/ { split($1, a, "."); if (!(a[2] in s)) { s[a[2]] = 1; print a[2] } }')"
+    if [[ -n "$names" ]]; then
+      echo "services:"
+      for svc in $names; do
+        echo "  $svc:"
+        emit "    port: " "$(jget "services.$svc.port")"
+        emit "    cmd: " "$(jget "services.$svc.cmd")"
+      done
+    fi
+    emit "preview_url: " "$(jget preview_url)"
+  )" || return 1
+  printf '%s\n' "$out" >"$CONFIG_FILE"
+  log_info "已生成 $CONFIG_FILE"
+  yaml_flatten "$CONFIG_FILE" >/dev/null || { log_error "生成的配置无法解析，请检查输入 JSON"; return 1; }
+  ensure_state_ignored
+  log_info "下一步：lt doctor 复核，再 lt start"
+}
+
+main() {
+  local cmd="${1:-}"
+  SPAWN_MODE="$(detect_spawn_mode)"
+  REPO_ROOT="$(repo_root)"
+  cd "$REPO_ROOT"
+  NAMESPACE="$(resolve_namespace)"
+
+  case "$cmd" in
+    -h|--help|help|'') usage; return 0 ;;
+    init) shift; cmd_init "$@"; return $? ;;
+  esac
+
+  if [[ "$cmd" == "doctor" && ! -f "$CONFIG_FILE" ]]; then
+    PROJECT_NAME="$(basename "$REPO_ROOT")"; COMPOSE_FILE=""; DB_PREPARE_CMD=""; DB_DROP_CMD=""
+    EXTERNAL_MODE_ENV=""; PREVIEW_URL_TPL=""; GATEWAY_CONF=""; SVC_NAMES=""; CFG=""
+    PORT_OFFSET=0
+    cmd_doctor; return $?
+  fi
+
+  load_config
+  PORT_OFFSET="$(resolve_port_offset)" || exit 2
+  export_service_ports
+  resolve_external_mode
+
+  case "$cmd" in
+    doctor)  cmd_doctor ;;
+    start)   cmd_start ;;
+    stop)    cmd_stop ;;
+    status)  cmd_status ;;
+    logs)    shift; cmd_logs "${1:-}" ;;
+    gc)      cmd_gc ;;
+    destroy) cmd_destroy ;;
+    reset)   shift; cmd_reset "${1:-}" ;;
+    *) usage; log_error "未知命令 $cmd"; return 1 ;;
+  esac
+}
+main "$@"
