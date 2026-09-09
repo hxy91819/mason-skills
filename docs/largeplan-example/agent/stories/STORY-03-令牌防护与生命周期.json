@@ -1,9 +1,10 @@
 {
-  "kind": "large-task-story",
+  "kind": "general",
   "schema_version": 2,
   "id": "STORY-03",
   "plan": "EPIC-TOKEN-LOGIN",
   "title": "阻止重放与高频滥用",
+  "difficulty": "medium",
   "intent_version": 1,
   "status": "todo",
   "blocked_by": [

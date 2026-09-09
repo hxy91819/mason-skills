@@ -48,6 +48,12 @@ MAX_VALIDATOR_PARSE_FAILURES = 2
 HANDOFF_TEXT_LIMIT = 400
 HANDOFF_ITEM_LIMIT = 200
 HANDOFF_LIST_LIMIT = 8
+COUNTER_DEFAULTS = {
+    "workers_total": 0,
+    "judges_total": 0,
+    "blocked_by_story": {},
+    "last_story_done_at": 0.0,
+}
 
 
 class DriverError(RuntimeError):
@@ -333,6 +339,7 @@ class Driver:
         self.output_path = self.state_dir / OUTPUT_FILENAME
         self.state: dict[str, Any] = self._load_state()
         self.stop_requested = False
+        self.run_started_at = time.time()
 
     # ----------------------------------------------------------------- 基础设施
 
@@ -348,16 +355,26 @@ class Driver:
         raise DriverError("找不到 bb-dispatch；用 --dispatch 指定路径。")
 
     def _load_state(self) -> dict[str, Any]:
+        data: dict[str, Any] = {}
         if self.state_path.exists():
             try:
-                data = json.loads(self.state_path.read_text(encoding="utf-8"))
-                if isinstance(data, dict):
-                    data.setdefault("plan_path", str(self.plan_path))
-                    data.setdefault("stories", {})
-                    return data
+                loaded = json.loads(self.state_path.read_text(encoding="utf-8"))
             except json.JSONDecodeError:
                 pass
-        return {"kind": "large-task-driver-state", "plan_path": str(self.plan_path), "stories": {}}
+            else:
+                if isinstance(loaded, dict):
+                    data = loaded
+        data.setdefault("kind", "large-task-driver-state")
+        data.setdefault("plan_path", str(self.plan_path))
+        data.setdefault("stories", {})
+        data.setdefault("thread_events", {})
+        counters = data.setdefault("counters", {})
+        if not isinstance(counters, dict):
+            counters = {}
+            data["counters"] = counters
+        for key, default in COUNTER_DEFAULTS.items():
+            counters.setdefault(key, default.copy() if isinstance(default, dict) else default)
+        return data
 
     def _save_state(self) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -388,6 +405,84 @@ class Driver:
         else:
             self.state["stories"][story_id] = state.to_dict()
         self._save_state()
+
+    def counters(self) -> dict[str, Any]:
+        return self.state["counters"]
+
+    def thresholds(self, *, story_total: int) -> dict[str, int | float]:
+        configured = self.state.get("safeguard_config")
+        if not isinstance(configured, dict):
+            configured = {}
+        stall_minutes = configured.get("stall_minutes", self.args.stall_minutes)
+        no_progress_hours = configured.get("no_progress_hours", self.args.no_progress_hours)
+        max_judges_total = configured.get("max_judges_total", self.args.max_judges_total)
+        max_workers_total = configured.get("max_workers_total", self.args.max_workers_total)
+        max_blocked_per_story = configured.get("max_blocked_per_story", self.args.max_blocked_per_story)
+        return {
+            "stall_minutes": stall_minutes,
+            "no_progress_hours": no_progress_hours,
+            "max_judges_total": max_judges_total,
+            "max_workers_total": max_workers_total or 3 * story_total,
+            "max_blocked_per_story": max_blocked_per_story,
+        }
+
+    def remember_safeguard_config(self) -> None:
+        self.state["safeguard_config"] = {
+            "stall_minutes": self.args.stall_minutes,
+            "no_progress_hours": self.args.no_progress_hours,
+            "max_judges_total": self.args.max_judges_total,
+            "max_workers_total": self.args.max_workers_total,
+            "max_blocked_per_story": self.args.max_blocked_per_story,
+        }
+        self._save_state()
+
+    def note_thread_event(self, thread_id: str) -> None:
+        self.state["thread_events"][thread_id] = time.time()
+        self._save_state()
+
+    def thread_is_stalled(self, thread_id: str) -> bool:
+        events = self.state["thread_events"]
+        last_event = events.get(thread_id)
+        if not isinstance(last_event, (int, float)):
+            self.note_thread_event(thread_id)
+            return False
+        return time.time() - last_event >= self.args.stall_minutes * 60
+
+    def ensure_thread_capacity(self, role: str) -> None:
+        counters = self.counters()
+        if role == "worker":
+            limit = self.thresholds(story_total=self.status()["plan"]["total"])["max_workers_total"]
+            count = counters["workers_total"]
+            label = "Worker"
+        elif role == "judge":
+            limit = self.args.max_judges_total
+            count = counters["judges_total"]
+            label = "Judge"
+        else:
+            return
+        if count >= limit:
+            raise DriverStop(f"全局 {label} 总量已达上限 {count}/{limit}，停止避免空跑。")
+
+    def record_thread_total(self, role: str) -> None:
+        if role == "worker":
+            self.counters()["workers_total"] += 1
+        elif role == "judge":
+            self.counters()["judges_total"] += 1
+        else:
+            return
+        self._save_state()
+
+    def note_story_done(self) -> None:
+        self.counters()["last_story_done_at"] = time.time()
+        self._save_state()
+
+    def check_no_progress(self) -> None:
+        last_done = self.counters().get("last_story_done_at")
+        since = max(self.run_started_at, last_done if isinstance(last_done, (int, float)) else 0.0)
+        if time.time() - since >= self.args.no_progress_hours * 3600:
+            raise DriverStop(
+                f"连续 {self.args.no_progress_hours:g} 小时没有新的 story.done，停止避免空跑。"
+            )
 
     def log(self, event: str, **facts: Any) -> None:
         record = {"at": utc_now(), "event": event, **facts}
@@ -585,7 +680,8 @@ class Driver:
 
     # ----------------------------------------------------------------- BB 线程
 
-    def dispatch_thread(self, *, difficulty: str, kind: str, title: str, task: str) -> str:
+    def dispatch_thread(self, *, difficulty: str, kind: str, title: str, task: str, role: str = "") -> str:
+        self.ensure_thread_capacity(role)
         command = [*self.dispatch, "--difficulty", difficulty, "--kind", kind, "--title", title, "--task", task]
         if self.args.environment:
             command += ["--environment", self.args.environment]
@@ -594,6 +690,8 @@ class Driver:
         thread_id = ((receipt.get("thread") or {}).get("id") or receipt.get("id"))
         if not thread_id:
             raise DriverError(f"bb-dispatch 未返回线程 ID: {json.dumps(payload, ensure_ascii=False)[:500]}")
+        self.record_thread_total(role)
+        self.note_thread_event(thread_id)
         selection = payload.get("selection", {})
         self.log("thread.spawned", thread=thread_id, difficulty=difficulty, kind=kind,
                  provider=selection.get("provider"), model=selection.get("model"), title=title)
@@ -630,6 +728,10 @@ class Driver:
             raise DriverError(f"线程 {thread_id} 处于未知状态: {status!r}")
         if result.returncode not in (0, 2):
             raise DriverError(f"bb thread wait 失败 ({result.returncode}): {result.stderr.strip()}")
+        if self.thread_is_stalled(thread_id):
+            self.bb("thread", "stop", thread_id, check=False)
+            self.log("thread.stalled", thread=thread_id, stall_minutes=self.args.stall_minutes)
+            return "stalled"
         # BB 在 timeout 时以退出码 2 返回；补足过快返回的间隔，使主循环不会忙等。
         remaining = timeout - (time.monotonic() - started)
         if remaining > 0:
@@ -638,6 +740,7 @@ class Driver:
 
     def tell_thread(self, thread_id: str, message: str) -> None:
         self.bb("thread", "tell", thread_id, message, "--mode", "auto")
+        self.note_thread_event(thread_id)
         self.log("thread.told", thread=thread_id, chars=len(message))
 
     # ----------------------------------------------------------------- 任务文本
@@ -775,14 +878,23 @@ Validator 线程：{state.validator_thread}
     def claim_and_dispatch(self, story_id: str, *, difficulty: str | None = None, resume_note: str = "") -> StoryState:
         story = self.read_story(story_id)
         state = self.story_state(story_id)
-        state.difficulty = difficulty or state.difficulty or self.args.default_difficulty
+        story_difficulty = story.get("difficulty")
+        state.difficulty = (
+            difficulty
+            or state.difficulty
+            or (str(story_difficulty) if story_difficulty in DIFFICULTIES else self.args.default_difficulty)
+        )
         if not state.baseline_commit:
             state.baseline_commit = self.head()
             state.baseline_dirty = self.dirty_paths()
         brief = self.brief(story_id)
         thread_id = self.dispatch_thread(
-            difficulty=state.difficulty, kind="debug" if self.args.kind == "debug" else "general",
-            title=f"{story_id} worker", task=self.worker_task(story_id, story, brief, resume_note=resume_note))
+            difficulty=state.difficulty,
+            kind=str(story.get("kind")) if story.get("kind") in ("general", "debug") else self.args.kind,
+            title=f"{story_id} worker",
+            task=self.worker_task(story_id, story, brief, resume_note=resume_note),
+            role="worker",
+        )
         state.worker_thread = thread_id
         state.validator_thread = None
         state.phase = "working"
@@ -844,13 +956,21 @@ Validator 线程：{state.validator_thread}
         self.transition(story_id, "done", expect="in_progress", owner=state.worker_thread or "driver")
         self.check()
         commit = self.checkpoint(story_id, state)
+        self.note_story_done()
         self.set_story_state(story_id, None)
         self.log("story.done", story=story_id, commit=commit, attempts=state.attempts, patch_rounds=state.patch_rounds)
 
     def block_story(self, story_id: str, reason: str) -> None:
         self.transition(story_id, "blocked", blocker=reason)
         self.set_story_state(story_id, None)
+        blocked = self.counters()["blocked_by_story"]
+        blocked[story_id] = int(blocked.get(story_id, 0)) + 1
+        self._save_state()
         self.log("story.blocked", story=story_id, reason=reason[:200])
+        if blocked[story_id] >= self.args.max_blocked_per_story:
+            raise DriverStop(
+                f"{story_id}: 累计进入 blocked {blocked[story_id]} 次，需要用户修改计划后再继续。"
+            )
 
     # ----------------------------------------------------------------- 异常 → judge
 
@@ -861,7 +981,7 @@ Validator 线程：{state.validator_thread}
             raise DriverStop(f"{story_id}: judge 已介入 {state.judge_rounds - 1} 次仍未收敛。最近情况：{situation}")
         story = self.read_story(story_id)
         thread_id = self.dispatch_thread(difficulty="complex", kind="general", title=f"{story_id} judge",
-                                         task=self.judge_task(story_id, story, state, situation))
+                                         task=self.judge_task(story_id, story, state, situation), role="judge")
         outcome = self.wait_thread(thread_id)
         while outcome == "busy":
             outcome = self.wait_thread(thread_id)
@@ -929,22 +1049,31 @@ Validator 线程：{state.validator_thread}
             pending = self.thread_interactions(thread_id)
             self.consult_judge(story_id, state, f"线程 {thread_id} 正在等待交互：{json.dumps(pending, ensure_ascii=False)[:1500]}")
             return True
-        if outcome == "error":
-            if state.thread_retries < 1:
-                state.thread_retries += 1
-                self.set_story_state(story_id, state)
-                self.bb("thread", "retry", thread_id, check=False)
-                self.log("thread.retried", story=story_id, thread=thread_id)
-                return True
+        if outcome == "stalled":
             if state.phase == "validating":
                 self.dispatch_validator(story_id, state)
                 return True
-            self.consult_judge(story_id, state, f"Worker 线程 {thread_id} 重试后仍处于 error。")
-            return True
+            return self.handle_thread_error(story_id, state, thread_id)
+        if outcome == "error":
+            return self.handle_thread_error(story_id, state, thread_id)
         output = self.thread_output(thread_id)
         if state.phase == "working":
             return self.handle_worker_output(story_id, story, state, output)
         return self.handle_validator_output(story_id, state, output)
+
+    def handle_thread_error(self, story_id: str, state: StoryState, thread_id: str) -> bool:
+        if state.thread_retries < 1:
+            state.thread_retries += 1
+            self.set_story_state(story_id, state)
+            self.bb("thread", "retry", thread_id, check=False)
+            self.note_thread_event(thread_id)
+            self.log("thread.retried", story=story_id, thread=thread_id)
+            return True
+        if state.phase == "validating":
+            self.dispatch_validator(story_id, state)
+            return True
+        self.consult_judge(story_id, state, f"Worker 线程 {thread_id} 重试后仍处于 error。")
+        return True
 
     def handle_worker_output(self, story_id: str, story: dict[str, Any], state: StoryState, output: str) -> bool:
         report = parse_worker_report(output)
@@ -1041,8 +1170,10 @@ Validator 线程：{state.validator_thread}
 
     def run(self) -> int:
         stories_done = 0
+        self.remember_safeguard_config()
         try:
             while True:
+                self.check_no_progress()
                 outcome = self.run_once()
                 if self.stop_requested:
                     raise DriverStop("收到 stop 请求；当前 run_once 已结束，保留 in_progress Story 供下次接回。")
@@ -1099,6 +1230,13 @@ def build_parser() -> argparse.ArgumentParser:
         target.add_argument("--max-patch-rounds", type=int, default=2, help="Validator FAIL 后发回同一 Worker 的最大轮数")
         target.add_argument("--max-attempts", type=int, default=3, help="同一 Story 的最大 Worker 线程数")
         target.add_argument("--max-judge-rounds", type=int, default=3, help="同一 Story 的最大 judge 介入次数")
+        target.add_argument("--stall-minutes", type=float, default=90, help="线程 busy 超过此分钟数后停止并按 error 路径处理")
+        target.add_argument("--no-progress-hours", type=float, default=3, help="连续没有 story.done 超过此小时数后停止")
+        target.add_argument("--max-judges-total", type=int, default=12, help="该计划累计 Judge 总数上限")
+        target.add_argument("--max-workers-total", type=int, default=0,
+                            help="该计划累计 Worker 总数上限；0 表示 Story 总数的 3 倍")
+        target.add_argument("--max-blocked-per-story", type=int, default=2,
+                            help="同一 Story 累计进入 blocked 的上限")
         target.add_argument("--wait-timeout", type=int, default=1800, help="单次等待线程的秒数上限；超过后返回 waiting")
         target.add_argument("--poll-seconds", type=int, default=120, help="bb thread wait 的 --timeout")
         target.add_argument("--allow-empty-story", action="store_true", help="允许 Worker 无改动即完成（纯验证类 Story）")
@@ -1129,6 +1267,9 @@ def background_command(args: argparse.Namespace) -> list[str]:
                "--default-difficulty", args.default_difficulty, "--kind", args.kind,
                "--validator", args.validator, "--max-patch-rounds", str(args.max_patch_rounds),
                "--max-attempts", str(args.max_attempts), "--max-judge-rounds", str(args.max_judge_rounds),
+               "--stall-minutes", str(args.stall_minutes), "--no-progress-hours", str(args.no_progress_hours),
+               "--max-judges-total", str(args.max_judges_total), "--max-workers-total", str(args.max_workers_total),
+               "--max-blocked-per-story", str(args.max_blocked_per_story),
                "--wait-timeout", str(args.wait_timeout), "--poll-seconds", str(args.poll_seconds),
                "--max-stories", str(args.max_stories), "--_pid-managed"]
     if args.dispatch:
@@ -1202,6 +1343,10 @@ def collect_status(driver: Driver, log_events: int) -> dict[str, Any]:
         "started_at": record.get("started_at") if record else None,
         "completed": plan.get("plan", {}).get("completed"), "total": plan.get("plan", {}).get("total"),
         "in_progress": in_progress, "blocked": blocked, "last_stop": last_stop,
+        "safeguards": {
+            "counters": driver.counters(),
+            "thresholds": driver.thresholds(story_total=int(plan.get("plan", {}).get("total") or 0)),
+        },
         "recent_events": recent_log_events(driver.log_path, log_events),
     }
 
@@ -1210,6 +1355,19 @@ def print_status(payload: dict[str, Any]) -> None:
     state = "running" if payload["alive"] else "stopped"
     print(f"Driver: {state}; pid={payload['pid'] or '-'}; started_at={payload['started_at'] or '-'}")
     print(f"Plan: completed={payload['completed']}/{payload['total']}")
+    safeguards = payload["safeguards"]
+    counters = safeguards["counters"]
+    thresholds = safeguards["thresholds"]
+    print(
+        "Safeguards: workers={workers}/{max_workers}; judges={judges}/{max_judges}; "
+        "blocked={blocked}/{max_blocked}; stall={stall:g}m; no_progress={no_progress:g}h".format(
+            workers=counters["workers_total"], max_workers=thresholds["max_workers_total"],
+            judges=counters["judges_total"], max_judges=thresholds["max_judges_total"],
+            blocked=sum(counters["blocked_by_story"].values()), max_blocked=thresholds["max_blocked_per_story"],
+            stall=thresholds["stall_minutes"],
+            no_progress=thresholds["no_progress_hours"],
+        )
+    )
     print(f"State: {payload['state_dir']}")
     for story in payload["in_progress"]:
         print("In progress: {id}; stage={stage}; difficulty={difficulty}; worker={worker_thread}; validator={validator_thread}".format(**story))

@@ -1,9 +1,10 @@
 {
-  "kind": "large-task-story",
+  "kind": "general",
   "schema_version": 2,
   "id": "STORY-01",
   "plan": "EPIC-TOKEN-LOGIN",
   "title": "让员工收到安全的一次性登录邮件",
+  "difficulty": "medium",
   "intent_version": 1,
   "status": "todo",
   "blocked_by": [],

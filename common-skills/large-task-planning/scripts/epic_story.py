@@ -71,6 +71,7 @@ STORY_FIELDS = (
     "id",
     "plan",
     "title",
+    "difficulty",
     "intent_version",
     "status",
     "blocked_by",
@@ -83,6 +84,9 @@ STORY_FIELDS = (
     "updated",
     "handoff",
 )
+OPTIONAL_STORY_FIELDS = ("difficulty", "kind")
+STORY_DIFFICULTIES = ("simple", "medium", "complex")
+STORY_KINDS = ("general", "debug")
 ACCEPTANCE_FIELDS = ("id", "criterion", "passed")
 CONTEXT_FIELDS = (
     "test_seams",
@@ -237,6 +241,15 @@ def _ordered(data: dict[str, Any], order: Sequence[str]) -> dict[str, Any]:
     return result
 
 
+def _is_story_data(data: dict[str, Any]) -> bool:
+    return str(data.get("id", "")).startswith("STORY-")
+
+
+def story_kind(data: dict[str, Any]) -> str:
+    kind = data.get("kind")
+    return str(kind) if kind in STORY_KINDS else "general"
+
+
 def canonicalize(data: dict[str, Any]) -> dict[str, Any]:
     result = deepcopy(data)
     if result.get("kind") == PLAN_KIND:
@@ -248,7 +261,7 @@ def canonicalize(data: dict[str, Any]) -> dict[str, Any]:
                 spec["testing"] = _ordered(testing, TESTING_FIELDS)
             result["spec"] = spec
         return _ordered(result, PLAN_FIELDS)
-    if result.get("kind") == STORY_KIND:
+    if _is_story_data(result):
         context = result.get("context")
         if isinstance(context, dict):
             result["context"] = _ordered(context, CONTEXT_FIELDS)
@@ -278,9 +291,16 @@ def _atomic_write(path: Path, text: str) -> None:
             temporary.unlink()
 
 
-def _unknown_fields(value: dict[str, Any], allowed: Sequence[str], label: str, errors: list[str]) -> None:
+def _unknown_fields(
+    value: dict[str, Any],
+    allowed: Sequence[str],
+    label: str,
+    errors: list[str],
+    *,
+    optional: Sequence[str] = (),
+) -> None:
     unknown = sorted(set(value) - set(allowed))
-    missing = [field for field in allowed if field not in value]
+    missing = [field for field in allowed if field not in value and field not in optional]
     if unknown:
         errors.append(f"{label}: 未知字段: {', '.join(unknown)}")
     if missing:
@@ -413,11 +433,11 @@ def validate_plan_data(path: Path, data: dict[str, Any]) -> list[str]:
 def validate_story_data(path: Path, data: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     label = str(path)
-    _unknown_fields(data, STORY_FIELDS, label, errors)
-    if any(field not in data for field in STORY_FIELDS):
+    _unknown_fields(data, STORY_FIELDS, label, errors, optional=OPTIONAL_STORY_FIELDS)
+    if any(field not in data for field in STORY_FIELDS if field not in OPTIONAL_STORY_FIELDS):
         return errors
-    if data["kind"] != STORY_KIND or data["schema_version"] != SCHEMA_VERSION:
-        errors.append(f"{label}: 必须是 kind={STORY_KIND}, schema_version={SCHEMA_VERSION}")
+    if data["schema_version"] != SCHEMA_VERSION:
+        errors.append(f"{label}: schema_version 必须是 {SCHEMA_VERSION}")
     story_id = str(data["id"])
     if not STORY_ID_RE.fullmatch(story_id):
         errors.append(f"{label}.id: 必须匹配 STORY-NN 或 STORY-NN.M")
@@ -427,6 +447,10 @@ def validate_story_data(path: Path, data: dict[str, Any]) -> list[str]:
         errors.append(f"{label}.plan: 必须是 EPIC ID")
     _nonempty_string(data["title"], f"{label}.title", errors)
     _nonempty_string(data["outcome"], f"{label}.outcome", errors)
+    if "difficulty" in data and data["difficulty"] not in STORY_DIFFICULTIES:
+        errors.append(f"{label}.difficulty: 必须是 simple、medium 或 complex")
+    if "kind" in data and data["kind"] not in (*STORY_KINDS, STORY_KIND):
+        errors.append(f"{label}.kind: 必须是 general 或 debug")
     if not isinstance(data["intent_version"], int) or isinstance(data["intent_version"], bool) or data["intent_version"] < 1:
         errors.append(f"{label}.intent_version: 必须是正整数")
     status = str(data["status"])
@@ -531,6 +555,12 @@ def handoff_warnings(path: Path, data: dict[str, Any]) -> list[str]:
             if isinstance(item, str) and len(item) > HANDOFF_ITEM_LIMIT:
                 warnings.append(f"{label}.{field}[{index}]: {len(item)} 字符，超过 {HANDOFF_ITEM_LIMIT}")
     return warnings
+
+
+def story_warnings(path: Path, data: dict[str, Any]) -> list[str]:
+    if data.get("difficulty") == "complex":
+        return [f"{path}: 预计需要 strong 模型的 Story 是拆分信号"]
+    return []
 
 
 def warn(warnings: Iterable[str]) -> None:
@@ -693,6 +723,8 @@ def status_payload(plan: Plan, stories: Sequence[Story]) -> dict[str, Any]:
                 "id": story.item_id,
                 "title": story.title,
                 "status": story.status,
+                "difficulty": story.data.get("difficulty", "medium"),
+                "kind": story_kind(story.data),
                 "owner": story.data["owner"],
                 "blocked_by": list(story.blocked_by),
                 "covers": list(story.covers),
@@ -923,7 +955,7 @@ def command_check(args: argparse.Namespace) -> int:
     if not report(errors):
         return 1
     for story in stories:
-        warn(handoff_warnings(story.path, story.data))
+        warn([*story_warnings(story.path, story.data), *handoff_warnings(story.path, story.data)])
     print(f"OK: {plan.item_id}; stories={len(stories)}; ready={len(ready_story_ids(stories))}; projections=fresh")
     return 0
 
@@ -984,7 +1016,11 @@ def command_brief(args: argparse.Namespace) -> int:
             "out_of_scope": plan.data["spec"]["out_of_scope"],
         },
         "golden_acceptance": cases,
-        "story": story.data,
+        "story": {
+            **story.data,
+            "difficulty": story.data.get("difficulty", "medium"),
+            "kind": story_kind(story.data),
+        },
         "dependency_handoffs": dependencies,
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -1027,13 +1063,13 @@ def command_write(args: argparse.Namespace) -> int:
     kind = data.get("kind")
     if kind == PLAN_KIND:
         errors = validate_plan_data(args.file, data)
-    elif kind == STORY_KIND:
+    elif _is_story_data(data):
         errors = validate_story_data(args.file, data)
     else:
         raise PlanError(f"未知 kind: {kind!r}")
     if not report(errors):
         return 1
-    if kind == STORY_KIND:
+    if _is_story_data(data):
         warn(handoff_warnings(args.file, data))
     _atomic_write(args.file, dump_json(data))
     print(f"OK: wrote {args.file}; run render/check after project updates")
@@ -1278,7 +1314,7 @@ def command_migrate_v1(args: argparse.Namespace) -> int:
         inputs = str(card.get("authoritative_inputs", "")).strip()
         scope = _legacy_section(body, "scope")
         story_data = {
-            "kind": STORY_KIND,
+            "kind": "general",
             "schema_version": SCHEMA_VERSION,
             "id": story_id,
             "plan": plan_id,

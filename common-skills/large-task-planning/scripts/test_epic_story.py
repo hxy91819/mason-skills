@@ -194,14 +194,56 @@ class EpicStoryCliTest(unittest.TestCase):
     def test_status_and_brief_separate_frontier_from_agent_context(self) -> None:
         status = json.loads(self.run_cli("status", *self.project_args(), "--json").stdout)
         self.assertEqual(status["ready"], ["STORY-01"])
+        self.assertEqual(status["stories"][0]["difficulty"], "medium")
+        self.assertEqual(status["stories"][0]["kind"], "general")
         brief = json.loads(
             self.run_cli("brief", *self.project_args(), "--story", "STORY-01").stdout
         )
+        self.assertEqual(brief["story"]["difficulty"], "medium")
+        self.assertEqual(brief["story"]["kind"], "general")
         self.assertEqual(brief["story"]["context"]["code_anchors"], ["src/demo.py:main"])
         self.assertEqual([item["id"] for item in brief["golden_acceptance"]], ["GC-01"])
         self.assertEqual(brief["plan"]["out_of_scope"], ["不执行正式发布。"])
         self.assertEqual(brief["plan"]["testing"]["seams"], ["公开命令的退出码与输出。"])
         self.assertEqual(brief["dependency_handoffs"], [])
+
+    def test_story_routing_fields_validate_warn_and_surface_from_plan(self) -> None:
+        story = json.loads(self.story_1.read_text(encoding="utf-8"))
+        story["difficulty"] = "complex"
+        story["kind"] = "debug"
+        self.write_json(self.story_1, story)
+        self.run_cli("render", *self.project_args())
+
+        checked = self.run_cli("check", *self.project_args())
+        self.assertIn("预计需要 strong 模型的 Story 是拆分信号", checked.stderr)
+        status = json.loads(self.run_cli("status", *self.project_args(), "--json").stdout)
+        self.assertEqual(status["stories"][0]["difficulty"], "complex")
+        self.assertEqual(status["stories"][0]["kind"], "debug")
+        brief = json.loads(self.run_cli("brief", *self.project_args(), "--story", "STORY-01").stdout)
+        self.assertEqual(brief["story"]["difficulty"], "complex")
+        self.assertEqual(brief["story"]["kind"], "debug")
+
+        story["difficulty"] = "fast"
+        self.write_json(self.story_1, story)
+        invalid_difficulty = self.run_cli("status", *self.project_args(), expected=1)
+        self.assertIn("difficulty: 必须是 simple、medium 或 complex", invalid_difficulty.stderr)
+
+        story["difficulty"] = "simple"
+        story["kind"] = "test"
+        self.write_json(self.story_1, story)
+        invalid_kind = self.run_cli("status", *self.project_args(), expected=1)
+        self.assertIn("kind: 必须是 general 或 debug", invalid_kind.stderr)
+
+    def test_old_story_without_routing_fields_uses_defaults(self) -> None:
+        story = json.loads(self.story_1.read_text(encoding="utf-8"))
+        story.pop("difficulty", None)
+        story.pop("kind")
+        self.write_json(self.story_1, story)
+        self.run_cli("render", *self.project_args())
+        self.run_cli("check", *self.project_args())
+        brief = json.loads(self.run_cli("brief", *self.project_args(), "--story", "STORY-01").stdout)
+        self.assertEqual(brief["story"]["difficulty"], "medium")
+        self.assertEqual(brief["story"]["kind"], "general")
 
     def test_transition_uses_expected_state_and_refreshes_status(self) -> None:
         self.run_cli(

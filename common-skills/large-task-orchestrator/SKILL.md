@@ -60,15 +60,8 @@ ready Story 时退出并把最小原因写到 stderr。
 
 ## 能力档
 
-| 能力档 | `--difficulty` | 使用条件 |
-| --- | --- | --- |
-| economy | `simple` | write scope 窄，验收可直接脚本化，没有设计分叉 |
-| standard | `medium` | 常规跨文件实现，公开 seam 和验收明确 |
-| strong | `complex` | 已证明的能力不足、跨模块不确定性或复杂整合 |
-
-默认从最低足够档开始。Validator 固定 `simple --kind test`；排障 Worker 使用 `--kind debug`。`strong`
-持续失败是重拆 Story 或请求决定的信号，不是无限升档的理由。实际 provider、模型、reasoning 和权限由
-用户的 `bb-model-routing` 配置决定，不能写进任务文本。
+Story 的首轮 `difficulty` 与 `kind` 由 [`large-task-planning`](../large-task-planning/SKILL.md) 定义；driver
+只消费它们并在 Judge 升档后覆盖实际难度。Validator 固定 `simple --kind test`。
 
 ## 报告契约
 
@@ -106,13 +99,18 @@ Judge 只回复一个动作：
 
 ## 常用参数与退出码
 
-- `--default-difficulty simple|medium|complex`：Story 没有既有档位时的首轮档位。
+- `--default-difficulty simple|medium|complex`：Story 缺少 `difficulty` 时的首轮档位；Story 的值优先，Judge 升档结果再优先。
+- `--kind general|debug`：Story 缺少 `kind` 时的 Worker 派发类型；Story 的值优先。
 - `--validator standard-up|always`：默认跳过 simple Story 的 Validator；`always` 强制每张都验。
 - `--max-patch-rounds`、`--max-attempts`、`--max-judge-rounds`：恢复上限，耗尽后停给用户。
+- `--stall-minutes`（默认 90）：单个 busy 线程超过此时长会被停止；Worker 走一次 retry 后再交 Judge，Validator 改派。
+- `--no-progress-hours`（默认 3）：本次 `run` 启动后若没有新的 `story.done` 超过此时长，driver 以退出码 3 停下。
+- `--max-judges-total`（默认 12）、`--max-workers-total`（默认 0，即 Story 总数的 3 倍）：计划级累计派发上限，跨 replan 与 reopen 保留。
+- `--max-blocked-per-story`（默认 2）：同一 Story 累计进入 blocked 的上限；耗尽表示需要用户修改计划。
 - `--poll-seconds`：每次 `bb thread wait` 的节奏；`--wait-timeout` 是该轮等待上限。
 - `--allow-empty-story`：仅纯验证 Story 可无业务改动完成。
 - `--once`、`--max-stories N`：适合定时或受限批次；`--push` 在全部完成后推送并核对 upstream HEAD。
-- `status [--json]`：只读显示进程、计划进度、in-progress/blocked Story、最近日志和上次停止原因；不读取线程全文。
+- `status [--json]`：只读显示进程、计划进度、in-progress/blocked Story、全局兜底计数与阈值、最近日志和上次停止原因；不读取线程全文。
 - `stop [--wait]`：向该计划的 pid 发送 SIGTERM；`--wait` 最长等待 `--wait-timeout` 秒。
 
 退出码 `0` 表示完成或本轮受控结束；`2` 表示 driver/环境契约错误；`3` 表示需用户处理，原因在 stderr；`4` 表示

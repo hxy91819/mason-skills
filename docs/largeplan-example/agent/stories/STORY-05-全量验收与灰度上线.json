@@ -1,9 +1,10 @@
 {
-  "kind": "large-task-story",
+  "kind": "general",
   "schema_version": 2,
   "id": "STORY-05",
   "plan": "EPIC-TOKEN-LOGIN",
   "title": "用真实场景验收并安全切换登录入口",
+  "difficulty": "complex",
   "intent_version": 1,
   "status": "todo",
   "blocked_by": [

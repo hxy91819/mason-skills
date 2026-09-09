@@ -1,9 +1,10 @@
 {
-  "kind": "large-task-story",
+  "kind": "general",
   "schema_version": 2,
   "id": "STORY-04",
   "plan": "EPIC-TOKEN-LOGIN",
   "title": "让运维看见并收到异常登录",
+  "difficulty": "medium",
   "intent_version": 1,
   "status": "todo",
   "blocked_by": [

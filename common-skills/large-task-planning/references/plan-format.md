@@ -62,11 +62,12 @@
 
 ```json
 {
-  "kind": "large-task-story",
+  "kind": "general",
   "schema_version": 2,
   "id": "STORY-01",
   "plan": "EPIC-EXAMPLE",
   "title": "一条可验证的纵向结果",
+  "difficulty": "medium",
   "intent_version": 1,
   "status": "todo",
   "blocked_by": [],
@@ -92,6 +93,10 @@
   "handoff": null
 }
 ```
+
+`difficulty` 是规划时判断的首轮能力档：`simple`、`medium` 或 `complex`；省略时按 `medium` 处理。
+`kind` 是派发类型：`general` 或用于排障的 `debug`；省略时按 `general` 处理。两者都在 Story 顶层，不写
+模型名或路由别名；具体模型由 `bb-model-routing` 配置决定。
 
 状态只有：
 

@@ -52,11 +52,16 @@ Problem、最终体验、黄金 oracle 和已确认的产品、兼容、安全�
 driver 没有长会话上下文：它只保存计划、Git、少量本地状态和结构化报告。细节属于工作区、测试与 BB
 线程记录；每个状态转换点把线程 ID、验证事实和下一步写回 Handoff，使任何线程可替换。
 
+为避免低成本调度在无产出的情况下无限运行，driver 在每个计划的本地状态累计 Worker/Judge 派发量、
+每 Story blocked 次数与最近 `story.done`，并限制 busy 线程的停滞时间、连续无完成时间和上述累计总量。
+这些保护跨 replan 与 reopen 保留；达到上限时保存最小原因并以退出码 3 停给用户，而不重置计数重试。
+
 ## Driver 是唯一控制面，Judge 只处理异常
 
-`large_task_driver.py` 通过 `$bb-model-routing` 的 `bb-dispatch` 创建 BB 线程。Worker 按 Story 难度映射为
-`simple / medium / complex`；Validator 固定 `simple --kind test`。provider、模型和 reasoning 由用户路由
-配置决定，叶子不自选型号，driver 也不把路由要求写进任务文本。
+`large_task_driver.py` 通过 `$bb-model-routing` 的 `bb-dispatch` 创建 BB 线程。规划者在每张 Story 顶层定义
+首轮 `difficulty`（`simple / medium / complex`）与 `kind`（`general / debug`），driver 只消费该决定；Validator
+固定 `simple --kind test`。provider、模型和 reasoning 由用户路由配置决定，叶子不自选型号，driver 也不把
+路由要求写进任务文本。
 
 - driver 选择 frontier、领取 Story、等待线程、解析报告、更新 JSON、创建 checkpoint 并完成最终交付；
 - Worker 只实现一张 Story；独立 Validator 只逐条确认 Acceptance 与新事实，不做代码审查或计划判断；

@@ -1,9 +1,10 @@
 {
-  "kind": "large-task-story",
+  "kind": "general",
   "schema_version": 2,
   "id": "STORY-02",
   "plan": "EPIC-TOKEN-LOGIN",
   "title": "让链接和验证码安全建立现有会话",
+  "difficulty": "medium",
   "intent_version": 1,
   "status": "todo",
   "blocked_by": [

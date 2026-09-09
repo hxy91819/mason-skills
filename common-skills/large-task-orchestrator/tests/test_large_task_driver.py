@@ -68,6 +68,8 @@ if args[:2] == ["thread", "tell"]:
     out({"ok": True})
 if args[:2] == ["thread", "retry"]:
     world["threads"][args[2]]["status"] = "active"; save(); out({"ok": True})
+if args[:2] == ["thread", "stop"]:
+    world["threads"][args[2]]["status"] = "error"; save(); out({"ok": True})
 print("unknown fake bb call: " + " ".join(args), file=sys.stderr); sys.exit(1)
 '''
 
@@ -362,6 +364,103 @@ class DriverTest(unittest.TestCase):
         self.assertEqual(self.story("STORY-01")["status"], "done")
         self.assertNotIn("STORY-01:validator", self.read_world().get("spawned", {}))
         self.assertTrue(any("Validator skipped" in item for item in self.story("STORY-01")["handoff"]["verification"]))
+
+    def test_story_routing_overrides_default_difficulty_and_kind(self) -> None:
+        first = self.story("STORY-01")
+        first["difficulty"] = "simple"
+        self.write_json(self.stories / "STORY-01-first.json", first)
+        second = self.story("STORY-02")
+        second["difficulty"] = "complex"
+        second["kind"] = "debug"
+        self.write_json(self.stories / "STORY-02-final.json", second)
+        self.planning("render")
+        self.set_world({
+            "STORY-01:worker": [[{"output": WORKER_DONE, "files": WORKER_FILES}]],
+            "STORY-02:worker": [[{"output": WORKER_DONE, "files": {"src/final.py": "done = True\n"}}]],
+            "STORY-02:validator": [[{"output": VALIDATOR_PASS}]],
+        })
+        self.run_driver("--default-difficulty", "medium")
+        workers = [item for item in self.read_world()["dispatches"] if item["title"].endswith("worker")]
+        self.assertEqual(
+            [(item["title"], item["difficulty"], item["kind"]) for item in workers],
+            [("STORY-01 worker", "simple", "general"), ("STORY-02 worker", "complex", "debug")],
+        )
+        self.assertNotIn("STORY-01:validator", self.read_world().get("spawned", {}))
+
+    def test_stalled_worker_is_stopped_then_retried(self) -> None:
+        self.set_world({"STORY-01:worker": [[{"status": "active"}]]})
+        self.run_driver("--once")
+        self.run_driver("--once", "--stall-minutes", "0")
+        world = self.read_world()
+        self.assertIn(["thread", "stop", "thr_worker_story01_1"], world["calls"])
+        self.assertIn(["thread", "retry", "thr_worker_story01_1"], world["calls"])
+        payload = self.status_payload()
+        self.assertTrue(any(event["event"] == "thread.stalled" for event in payload["recent_events"]))
+
+    def test_stalled_validator_is_reassigned(self) -> None:
+        self.set_world({
+            "STORY-01:worker": [[{"output": WORKER_DONE, "files": WORKER_FILES}]],
+            "STORY-01:validator": [[{"status": "active"}], [{"output": VALIDATOR_PASS}]],
+        })
+        self.run_driver("--once")
+        self.run_driver("--once")
+        self.run_driver("--once", "--stall-minutes", "0")
+        world = self.read_world()
+        self.assertIn(["thread", "stop", "thr_validator_story01_1"], world["calls"])
+        self.assertEqual(world["spawned"]["STORY-01:validator"], 2)
+
+    def test_no_progress_watchdog_stops_a_busy_driver(self) -> None:
+        self.set_world({"STORY-01:worker": [[{"status": "active"}]]})
+        result = self.run_driver("--no-progress-hours", "0.0001", "--stall-minutes", "90", expected=3)
+        self.assertIn("没有新的 story.done", result.stderr)
+        self.assertIn("没有新的 story.done", self.status_payload()["last_stop"])
+
+    def test_global_worker_and_judge_limits_stop_before_new_thread(self) -> None:
+        self.set_world({
+            "STORY-01:worker": [[{
+                "output": "Result: failed\nChanged: none\nVerified: 红\nRemaining: all\nHandoff: 需要重试"
+            }]],
+            "STORY-01:judge": [[{"output": "Action: retry\nNote: 重试。"}]],
+        })
+        workers_limited = self.run_driver("--max-workers-total", "1", expected=3)
+        self.assertIn("全局 Worker 总量已达上限 1/1", workers_limited.stderr)
+        payload = self.status_payload()
+        self.assertEqual(payload["safeguards"]["counters"]["workers_total"], 1)
+        self.assertEqual(payload["safeguards"]["thresholds"]["max_workers_total"], 1)
+
+    def test_global_judge_limit_stops_before_judge_thread(self) -> None:
+        self.set_world({
+            "STORY-01:worker": [[{
+                "output": "Result: blocked\nChanged: none\nVerified: none\nRemaining: 缺少凭据\nHandoff: 等待凭据"
+            }]],
+        })
+        result = self.run_driver("--max-judges-total", "0", expected=3)
+        self.assertIn("全局 Judge 总量已达上限 0/0", result.stderr)
+        payload = self.status_payload()
+        self.assertEqual(payload["safeguards"]["counters"]["judges_total"], 0)
+        self.assertEqual(payload["safeguards"]["thresholds"]["max_judges_total"], 0)
+
+    def test_second_block_of_reopened_story_stops_with_persistent_counter(self) -> None:
+        blocked_worker = {
+            "output": "Result: blocked\nChanged: none\nVerified: none\nRemaining: 缺少凭据\nHandoff: 等待凭据"
+        }
+        self.set_world({
+            "STORY-01:worker": [[blocked_worker]],
+            "STORY-01:judge": [[{"output": "Action: block\nNote: 等待凭据。"}]],
+        })
+        self.run_driver(expected=3)
+        reopened = self.story("STORY-01")
+        reopened.update({"status": "todo", "owner": None, "blocker": None})
+        self.write_json(self.stories / "STORY-01-first.json", reopened)
+        self.planning("render")
+        self.set_world({
+            "STORY-01:worker": [[blocked_worker]],
+            "STORY-01:judge": [[{"output": "Action: block\nNote: 仍在等待凭据。"}]],
+        })
+        result = self.run_driver(expected=3)
+        self.assertIn("累计进入 blocked 2 次", result.stderr)
+        payload = self.status_payload()
+        self.assertEqual(payload["safeguards"]["counters"]["blocked_by_story"]["STORY-01"], 2)
 
     def test_worker_blocked_consults_judge_and_stop_returns_to_user(self) -> None:
         self.set_world({

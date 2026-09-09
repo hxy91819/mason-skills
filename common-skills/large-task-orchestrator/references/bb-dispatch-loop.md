@@ -8,9 +8,10 @@
 - `agent/plan.json`、`agent/stories/*.json` 与 Git 是权威事实。
 - `Story.owner` 保存 Worker 的 BB `thr_*` ID，planning 只要求 active Story 的 owner 为非空字符串。
 - 每个 `(repo, plan)` 使用 `<repo>/.local/large-task-orchestrator/<topic-slug>/`；slug 包含计划 topic 的可读
-  形式和短哈希，避免同名路径碰撞。目录里的 `state.json` 缓存阶段、线程、次数和起始脏路径，`log.jsonl` 仅追加
-  事件，`driver.pid` 保存 pid/启动时间，`driver.out` 接收后台 stdout/stderr，`last-stop.txt` 保存最近一次退出码 3
-  的原因。它们都被 `.gitignore` 排除，丢失状态后可从计划和 BB 重新定位。
+  形式和短哈希，避免同名路径碰撞。目录里的 `state.json` 缓存阶段、线程、次数、起始脏路径，以及顶层
+  `counters`（累计 Worker/Judge、每 Story blocked 次数和最近 `story.done`）；这些累计值不随 replan 或 reopen
+  清空。`log.jsonl` 仅追加事件，`driver.pid` 保存 pid/启动时间，`driver.out` 接收后台 stdout/stderr，
+  `last-stop.txt` 保存最近一次退出码 3 的原因。它们都被 `.gitignore` 排除，丢失状态后可从计划和 BB 重新定位。
 - `start` 先通过计划 `check` 和 `bb-dispatch --dry-run`，再以 `start_new_session=True` 派生后台 `run`。pid 文件
   用原子创建预占：存活 pid 返回退出码 4，陈旧 pid 覆盖。`run` 与 `start --foreground` 也受同一锁保护。
 - `status [--json]` 只读取计划、本地状态和最近日志，不读线程全文。`stop` 对 pid 发 SIGTERM；信号处理器只设置
@@ -21,7 +22,8 @@
 1. `status --json` 给出 ready frontier；driver 领取一张 todo Story，记录基线并经 `bb-dispatch` 派 Worker。
 2. `bb thread wait <id> --timeout <poll>` 后读取 `show`、interactions 和 `output`。当前 BB 在 timeout 时返回
    退出码 2；只要线程仍是 `pending|starting|active|stopping`，这表示 busy，不是命令错误。driver 补足
-   poll 间隔，避免主循环忙等。
+   poll 间隔，避免主循环忙等。busy 自最近一次 driver 对该线程的事件超过 `--stall-minutes` 时，driver 先
+   `bb thread stop` 并记录 `thread.stalled`，再让 Worker retry 一次后交 Judge，或直接改派 Validator。
 3. Worker `worker_done` 时，driver 只将业务改动与 `write_scope` 比对；计划投影和 `.local/` 不算越界。
    没有业务改动须经 `--allow-empty-story` 明示，或交 Judge。
 4. simple Story 默认直接采纳 Worker 证据；其余 Story（或 `--validator always`）派只读 Validator。
@@ -33,6 +35,10 @@
 `error` 首次执行 `bb thread retry`；第二次 Worker error 交 Judge，第二次 Validator error 改派新的
 Validator。pending interaction 的完整内容交 Judge；Judge 处理已授权交互并回复 `patch` 加
 `interaction handled` 后，driver 继续等待原线程。
+
+每次运行还检查全局计时与累计上限：没有新的 `story.done` 超过 `--no-progress-hours` 即以退出码 3 停下；
+Worker 与 Judge 的累计派发量分别受 `--max-workers-total`（0 表示 Story 总数的 3 倍）和
+`--max-judges-total` 约束；同一 Story 的 blocked 累计达到 `--max-blocked-per-story` 后停止并要求用户修改计划。
 
 同一仓库的不同计划可以同时运行。其他已由 driver 管理的计划的 `SPEC.md`、`STATUS.md`、`agent/plan.json` 和
 `agent/stories/` 投影不计入当前 Story 的业务改动或 checkpoint，避免并发状态转换被误判为越界；业务文件仍按当前
