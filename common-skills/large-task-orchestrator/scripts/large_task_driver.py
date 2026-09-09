@@ -1,0 +1,799 @@
+#!/usr/bin/env python3
+"""确定性 driver：用 BB 线程持续执行 large-task-planning v2 计划。
+
+happy path 不调用任何强模型：脚本选 frontier、领取 Story、通过 bb-dispatch 派 Worker 与 Validator、
+等待线程、解析结构化报告、更新计划 JSON 并创建 Git checkpoint。只有异常（Worker 报告 blocked/failed、
+Validator 多轮 FAIL、越界写入、线程出错、待处理交互）才派一次性的 strong judge 线程，让它在固定动作集里
+选一个。真正需要用户的情况 driver 停下并打印原因。
+
+权威状态在计划 JSON 与 Git；Story.owner 保存 Worker 线程 ID。本地状态文件只缓存阶段、Validator 线程与
+尝试计数，丢失后可从计划 JSON 与 BB 线程记录恢复。
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable, Sequence
+
+SKILL_DIR = Path(__file__).resolve().parent.parent
+DEFAULT_PLANNING_SCRIPT = SKILL_DIR.parent / "large-task-planning" / "scripts" / "epic_story.py"
+DEFAULT_DISPATCH_SCRIPT = SKILL_DIR.parent / "bb-model-routing" / "scripts" / "bb-dispatch"
+STATE_RELATIVE = Path(".local/large-task-orchestrator/driver-state.json")
+LOG_RELATIVE = Path(".local/large-task-orchestrator/driver-log.jsonl")
+
+DIFFICULTIES = ("simple", "medium", "complex")
+WORKER_RESULTS = ("worker_done", "blocked", "failed")
+VERDICTS = ("PASS", "FAIL")
+JUDGE_ACTIONS = ("retry", "escalate", "patch", "block", "replan", "stop")
+THREAD_BUSY = ("pending", "starting", "active", "stopping")
+
+
+class DriverError(RuntimeError):
+    """driver 自身的契约或环境错误；不是 Story 失败。"""
+
+
+class DriverStop(RuntimeError):
+    """driver 需要停下交给用户；message 是给用户的原因。"""
+
+
+# --------------------------------------------------------------------------- 报告解析
+
+
+def parse_fields(text: str, keys: Sequence[str]) -> dict[str, str]:
+    """解析 `Key: value` 段落；同一 key 之后的续行归入该 key，直到遇到下一个已知 key。"""
+    result: dict[str, list[str]] = {}
+    current: str | None = None
+    pattern = re.compile(r"^\s*(%s)\s*:\s*(.*)$" % "|".join(re.escape(key) for key in keys))
+    for line in text.splitlines():
+        match = pattern.match(line)
+        if match:
+            current = match.group(1)
+            result[current] = [match.group(2).strip()]
+        elif current is not None:
+            result[current].append(line.rstrip())
+    return {key: "\n".join(lines).strip() for key, lines in result.items()}
+
+
+def parse_worker_report(text: str) -> dict[str, str] | None:
+    fields = parse_fields(text, ("Result", "Changed", "Verified", "Remaining", "Handoff"))
+    result = fields.get("Result", "").split()[0].strip("`") if fields.get("Result") else ""
+    if result not in WORKER_RESULTS:
+        return None
+    fields["Result"] = result
+    return fields
+
+
+def parse_validator_report(text: str) -> dict[str, Any] | None:
+    fields = parse_fields(text, ("Verdict", "Acceptance", "Gaps", "New facts"))
+    verdict = fields.get("Verdict", "").split()[0].strip("`") if fields.get("Verdict") else ""
+    if verdict not in VERDICTS:
+        return None
+    holds: dict[str, str] = {}
+    for line in fields.get("Acceptance", "").splitlines():
+        match = re.match(r"^\s*-\s*(AC-\d+)\s*:\s*(holds|missing)\b\s*(.*)$", line)
+        if match:
+            holds[match.group(1)] = match.group(2)
+    return {"verdict": verdict, "acceptance": holds, "gaps": fields.get("Gaps", ""),
+            "new_facts": fields.get("New facts", ""), "raw": text}
+
+
+def parse_judge_report(text: str) -> dict[str, str] | None:
+    fields = parse_fields(text, ("Action", "Note"))
+    action = fields.get("Action", "").split()[0].strip("`").lower() if fields.get("Action") else ""
+    if action not in JUDGE_ACTIONS:
+        return None
+    return {"action": action, "note": fields.get("Note", "")}
+
+
+def split_items(text: str) -> list[str]:
+    items = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.lower() == "none":
+            continue
+        items.append(line.lstrip("-* ").strip())
+    return items
+
+
+# --------------------------------------------------------------------------- 外部命令
+
+
+Runner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
+
+
+def run(command: Sequence[str], *, cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(list(command), cwd=cwd, capture_output=True, text=True, check=False)
+    if check and result.returncode != 0:
+        raise DriverError(f"命令失败 ({result.returncode}): {' '.join(command)}\n{result.stderr.strip()}")
+    return result
+
+
+def run_json(command: Sequence[str], *, cwd: Path | None = None) -> Any:
+    result = run(command, cwd=cwd)
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise DriverError(f"命令未返回 JSON: {' '.join(command)}\n{result.stdout[:500]}") from error
+
+
+# --------------------------------------------------------------------------- 状态
+
+
+@dataclass
+class StoryState:
+    phase: str = "working"  # working | validating
+    difficulty: str = "medium"
+    worker_thread: str | None = None
+    validator_thread: str | None = None
+    attempts: int = 0
+    patch_rounds: int = 0
+    thread_retries: int = 0
+    judge_rounds: int = 0
+    baseline_commit: str = ""
+    baseline_dirty: list[str] = field(default_factory=list)
+    last_worker: dict[str, str] = field(default_factory=dict)
+    last_validator: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "StoryState":
+        known = {name for name in cls.__dataclass_fields__}
+        return cls(**{key: value for key, value in data.items() if key in known})
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "phase": self.phase, "difficulty": self.difficulty, "worker_thread": self.worker_thread,
+            "validator_thread": self.validator_thread, "attempts": self.attempts,
+            "patch_rounds": self.patch_rounds, "thread_retries": self.thread_retries,
+            "judge_rounds": self.judge_rounds, "baseline_commit": self.baseline_commit,
+            "baseline_dirty": self.baseline_dirty, "last_worker": self.last_worker,
+            "last_validator": self.last_validator,
+        }
+
+
+class Driver:
+    def __init__(self, args: argparse.Namespace) -> None:
+        self.args = args
+        self.repository = Path(args.repository).resolve()
+        self.plan_path = Path(args.plan).resolve()
+        self.stories_dir = Path(args.stories_dir).resolve()
+        self.topic_dir = self.plan_path.parent.parent
+        self.planning_script = Path(args.planning_script).resolve()
+        self.dispatch = self._resolve_dispatch(args.dispatch)
+        self.state_path = self.repository / STATE_RELATIVE
+        self.log_path = self.repository / LOG_RELATIVE
+        self.state: dict[str, Any] = self._load_state()
+
+    # ----------------------------------------------------------------- 基础设施
+
+    @staticmethod
+    def _resolve_dispatch(value: str | None) -> list[str]:
+        if value:
+            return [value]
+        found = shutil.which("bb-dispatch")
+        if found:
+            return [found]
+        if DEFAULT_DISPATCH_SCRIPT.exists():
+            return [sys.executable, str(DEFAULT_DISPATCH_SCRIPT)]
+        raise DriverError("找不到 bb-dispatch；用 --dispatch 指定路径。")
+
+    def _load_state(self) -> dict[str, Any]:
+        if self.state_path.exists():
+            try:
+                data = json.loads(self.state_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return data
+            except json.JSONDecodeError:
+                pass
+        return {"kind": "large-task-driver-state", "stories": {}}
+
+    def _save_state(self) -> None:
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(prefix=".driver-state.", dir=self.state_path.parent)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(self.state, handle, ensure_ascii=False, indent=2)
+        os.replace(temporary, self.state_path)
+
+    def story_state(self, story_id: str) -> StoryState:
+        return StoryState.from_dict(self.state["stories"].get(story_id, {}))
+
+    def set_story_state(self, story_id: str, state: StoryState | None) -> None:
+        if state is None:
+            self.state["stories"].pop(story_id, None)
+        else:
+            self.state["stories"][story_id] = state.to_dict()
+        self._save_state()
+
+    def log(self, event: str, **facts: Any) -> None:
+        record = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "event": event, **facts}
+        try:
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.log_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except OSError as error:  # 记录失败只告警
+            print(f"WARN: 写入 driver 日志失败: {error}", file=sys.stderr)
+        print(f"[{record['at']}] {event} " + " ".join(f"{k}={v}" for k, v in facts.items() if k != "text"))
+
+    def planning(self, *arguments: str, expected: int = 0) -> subprocess.CompletedProcess[str]:
+        result = run([sys.executable, str(self.planning_script), *arguments], check=False)
+        if result.returncode != expected:
+            raise DriverError(f"epic_story.py {arguments[0]} 失败 ({result.returncode}):\n{result.stderr.strip()}")
+        return result
+
+    def project_args(self) -> list[str]:
+        return ["--plan", str(self.plan_path), "--stories-dir", str(self.stories_dir)]
+
+    def git(self, *arguments: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+        return run(["git", *arguments], cwd=self.repository, check=check)
+
+    def bb(self, *arguments: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+        return run(["bb", *arguments], cwd=self.repository, check=check)
+
+    def bb_json(self, *arguments: str) -> Any:
+        return run_json(["bb", *arguments, "--json"], cwd=self.repository)
+
+    # ----------------------------------------------------------------- 计划读写
+
+    def status(self) -> dict[str, Any]:
+        return json.loads(self.planning("status", *self.project_args(), "--json").stdout)
+
+    def check(self) -> None:
+        self.planning("check", *self.project_args())
+
+    def story_path(self, story_id: str) -> Path:
+        matches = [path for path in sorted(self.stories_dir.glob("*.json"))
+                   if json.loads(path.read_text(encoding="utf-8")).get("id") == story_id]
+        if len(matches) != 1:
+            raise DriverError(f"Story 文件不唯一或不存在: {story_id}")
+        return matches[0]
+
+    def read_story(self, story_id: str) -> dict[str, Any]:
+        return json.loads(self.story_path(story_id).read_text(encoding="utf-8"))
+
+    def write_story(self, story_id: str, data: dict[str, Any]) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as handle:
+            json.dump(data, handle, ensure_ascii=False, indent=2)
+            temporary = handle.name
+        try:
+            self.planning("write", "--file", str(self.story_path(story_id)), "--from", temporary)
+        finally:
+            os.unlink(temporary)
+
+    def brief(self, story_id: str) -> str:
+        return self.planning("brief", *self.project_args(), "--story", story_id).stdout
+
+    def transition(self, story_id: str, status: str, *, expect: str | None = None,
+                   owner: str | None = None, blocker: str | None = None) -> None:
+        arguments = ["transition", "--story", str(self.story_path(story_id)), "--status", status]
+        if expect:
+            arguments += ["--expect", expect]
+        if owner:
+            arguments += ["--owner", owner]
+        if blocker:
+            arguments += ["--blocker", blocker]
+        self.planning(*arguments)
+
+    # ----------------------------------------------------------------- Git 事实
+
+    def dirty_paths(self) -> list[str]:
+        output = self.git("status", "--short", "--untracked-files=all").stdout
+        return [line[3:].strip() for line in output.splitlines() if line.strip()]
+
+    def head(self) -> str:
+        return self.git("rev-parse", "HEAD").stdout.strip()
+
+    def story_changes(self, state: StoryState) -> list[str]:
+        baseline = set(state.baseline_dirty)
+        return [path for path in self.dirty_paths() if path not in baseline]
+
+    def out_of_scope(self, story: dict[str, Any], changes: list[str]) -> list[str]:
+        scopes = [scope.strip() for scope in story.get("context", {}).get("write_scope", []) if scope.strip()]
+        topic = os.path.relpath(self.topic_dir, self.repository)
+        allowed_prefixes = [topic, ".local/"]
+        offenders = []
+        for path in changes:
+            if any(path.startswith(prefix.rstrip("/")) for prefix in allowed_prefixes):
+                continue
+            # write_scope 是人写的区域描述；只把明显的路径前缀当硬边界，其余交给 judge 判断。
+            if any(path.startswith(scope.rstrip("/*")) for scope in scopes if "/" in scope or "." in scope):
+                continue
+            offenders.append(path)
+        return offenders
+
+    def checkpoint(self, story_id: str, state: StoryState) -> str:
+        paths = self.story_changes(state)
+        topic = os.path.relpath(self.topic_dir, self.repository)
+        targets = [path for path in paths if not path.startswith(".local/")]
+        if topic not in targets:
+            targets.append(topic)
+        self.git("add", "--", *targets)
+        staged = self.git("diff", "--cached", "--name-only").stdout.strip()
+        if not staged:
+            return self.head()
+        self.git("commit", "-q", "-m", f"checkpoint({story_id}): {self.read_story(story_id)['title']}")
+        return self.head()
+
+    # ----------------------------------------------------------------- BB 线程
+
+    def dispatch_thread(self, *, difficulty: str, kind: str, title: str, task: str) -> str:
+        command = [*self.dispatch, "--difficulty", difficulty, "--kind", kind, "--title", title, "--task", task]
+        if self.args.environment:
+            command += ["--environment", self.args.environment]
+        payload = run_json(command, cwd=self.repository)
+        thread_id = ((payload.get("result") or {}).get("thread") or {}).get("id")
+        if not thread_id:
+            raise DriverError(f"bb-dispatch 未返回线程 ID: {json.dumps(payload, ensure_ascii=False)[:500]}")
+        selection = payload.get("selection", {})
+        self.log("thread.spawned", thread=thread_id, difficulty=difficulty, kind=kind,
+                 provider=selection.get("provider"), model=selection.get("model"), title=title)
+        return thread_id
+
+    def thread_status(self, thread_id: str) -> dict[str, Any]:
+        payload = self.bb_json("thread", "show", thread_id)
+        return payload.get("thread") or payload
+
+    def thread_output(self, thread_id: str) -> str:
+        payload = self.bb_json("thread", "output", thread_id)
+        return str(payload.get("output") or "")
+
+    def thread_interactions(self, thread_id: str) -> list[dict[str, Any]]:
+        payload = self.bb_json("thread", "interactions", "list", thread_id)
+        return [item for item in (payload if isinstance(payload, list) else payload.get("interactions", []))
+                if item.get("status", "pending") == "pending"]
+
+    def wait_thread(self, thread_id: str) -> str:
+        """阻塞到线程 idle / error / 有待处理交互；返回 idle | error | interaction | busy。"""
+        deadline = time.monotonic() + self.args.wait_timeout
+        while True:
+            self.bb("thread", "wait", thread_id, "--timeout", str(self.args.poll_seconds), check=False)
+            status = str(self.thread_status(thread_id).get("status") or "")
+            if status == "idle":
+                return "idle"
+            if status == "error":
+                return "error"
+            if self.thread_interactions(thread_id):
+                return "interaction"
+            if status not in THREAD_BUSY:
+                raise DriverError(f"线程 {thread_id} 处于未知状态: {status!r}")
+            if time.monotonic() >= deadline:
+                return "busy"
+
+    def tell_thread(self, thread_id: str, message: str) -> None:
+        self.bb("thread", "tell", thread_id, message, "--mode", "auto")
+        self.log("thread.told", thread=thread_id, chars=len(message))
+
+    # ----------------------------------------------------------------- 任务文本
+
+    def repo_context(self) -> str:
+        parts = [f"仓库根目录：{self.repository}", f"当前 HEAD：{self.head()}"]
+        rules = self.repository / "AGENTS.md"
+        if rules.exists():
+            parts.append(f"仓库规则文件：{rules}（先读它）")
+        if self.args.context:
+            parts.append(self.args.context)
+        return "\n".join(parts)
+
+    def worker_task(self, story_id: str, story: dict[str, Any], brief: str, *, resume_note: str = "") -> str:
+        scope = "\n".join(f"- {item}" for item in story.get("context", {}).get("write_scope", [])) or "- （计划未限定）"
+        return f"""你是 Story {story_id} 的 Worker，一次只实现这一张 Story。不要修改计划 JSON、SPEC.md、STATUS.md，不要提交或推送，不要派生其他线程。
+
+{self.repo_context()}
+
+只允许修改这些区域（write scope）：
+{scope}
+
+工作区可能有他人并发改动：保留它们，不要回滚或格式化无关文件。
+
+执行方式：先验证现状，在执行包指定的公开测试 seam 上按 red → green 的纵向小循环实现，每一步跑相关测试。Acceptance 全部成立才算完成；做不到就如实报告 blocked 或 failed，不要放宽验收。
+{resume_note}
+执行包（来自计划）：
+```json
+{brief}
+```
+
+最终回复只包含下面这段，字段顺序固定，不加其他内容：
+
+Result: worker_done | blocked | failed
+Changed: <可观察结果和文件，最多 8 行>
+Verified: <运行过的命令与结果，最多 8 行>
+Remaining: <未完成工作或 none>
+Handoff: <替换 Worker 或下一张 Story 需要的事实，最多 400 字符>
+"""
+
+    def validator_task(self, story_id: str, story: dict[str, Any], brief: str, state: StoryState) -> str:
+        acceptance = "\n".join(f"- {item['id']}: {item['criterion']}" for item in story["acceptance"])
+        changes = "\n".join(f"- {path}" for path in self.story_changes(state)) or "- （无未提交改动）"
+        worker = state.last_worker
+        return f"""你是 Story {story_id} 的 Validator。你没有参与实现；只读，不修改任何文件，不提交。可以运行测试与验收命令。
+
+{self.repo_context()}
+本 Story 开始时的基线 commit：{state.baseline_commit}
+本 Story 的未提交改动：
+{changes}
+
+Worker 报告：
+Changed: {worker.get('Changed', '')}
+Verified: {worker.get('Verified', '')}
+
+任务：逐条核对下面每项 Acceptance 是否真正成立，以工作区、命令输出和黄金案例为准，Worker 报告不是证据。不做代码审查、风格或重构建议。
+
+Acceptance：
+{acceptance}
+
+执行包（来自计划）：
+```json
+{brief}
+```
+
+最终回复只包含下面这段：
+
+Verdict: PASS | FAIL
+Acceptance:
+- AC-01: holds | missing — <命令或观察证据>
+Gaps: <遗漏、越界或与黄金案例冲突的事实；none>
+New facts: <推翻后续 Story 前提或计划假设的发现；none>
+"""
+
+    def judge_task(self, story_id: str, story: dict[str, Any], state: StoryState, situation: str) -> str:
+        return f"""你是 large-task driver 的 judge。driver 是确定性脚本，遇到它无法判断的情况时派你做一次决定。你只回答一个动作，不实现代码。
+
+{self.repo_context()}
+计划：{self.plan_path}
+Story：{story_id} — {story['title']}
+Story 文件：{self.story_path(story_id)}
+Worker 线程：{state.worker_thread}（difficulty={state.difficulty}，attempts={state.attempts}，patch_rounds={state.patch_rounds}）
+Validator 线程：{state.validator_thread}
+基线 commit：{state.baseline_commit}
+
+情况：
+{situation}
+
+最近的 Worker 报告：
+{json.dumps(state.last_worker, ensure_ascii=False, indent=2)}
+
+最近的 Validator 报告：
+{json.dumps({k: v for k, v in state.last_validator.items() if k != 'raw'}, ensure_ascii=False, indent=2)}
+
+可用命令：`bb thread show/output/log <id>`、`git status --short`、`git diff --stat`、
+`python3 {self.planning_script} status|brief ...`。需要看细节时自己去看，但不要读超过必要的内容。
+
+可选动作（只能选一个）：
+- retry：换一个同难度的 fresh Worker 重做（原因是环境、配额、session 或线程本身，而不是能力）。
+- escalate：换一个更高难度档的 fresh Worker（原因是实现能力不够；当前 {state.difficulty}）。
+- patch：把 Note 作为修复提示发回同一 Worker 线程（遗漏明确且小）。
+- block：把 Story 标记为 blocked，Note 写具体 blocker；driver 会继续其他 ready Story。
+- replan：你已经用 `python3 {self.planning_script} write/transition` 修改了计划（插入、拆分、改写未开始的 Story，保留既有 ID，Outcome/Acceptance 变化时递增 intent_version），Note 说明改了什么；driver 会重新校验计划并继续。
+- stop：必须由用户决定（缺凭据或权限、破坏性或外部动作、显著成本、改变 Goal/黄金判据/用户边界、无法协调的并发冲突）。Note 写证据、已尝试的恢复、影响范围和一个最小决策问题。
+
+线程正在等待交互时，你可以用 `bb thread interactions list/show/approve/answer/deny` 处理属于计划已授权范围内的交互，处理后选 retry 之外的 `patch`（Note 写 "interaction handled"）让 driver 继续等待；越权的交互选 stop。
+
+最终回复只包含：
+
+Action: retry | escalate | patch | block | replan | stop
+Note: <给 driver 或用户的说明>
+"""
+
+    # ----------------------------------------------------------------- Story 生命周期
+
+    def claim_and_dispatch(self, story_id: str, *, difficulty: str | None = None, resume_note: str = "") -> StoryState:
+        story = self.read_story(story_id)
+        state = self.story_state(story_id)
+        state.difficulty = difficulty or state.difficulty or self.args.default_difficulty
+        if not state.baseline_commit:
+            state.baseline_commit = self.head()
+            state.baseline_dirty = self.dirty_paths()
+        brief = self.brief(story_id)
+        thread_id = self.dispatch_thread(
+            difficulty=state.difficulty, kind="debug" if self.args.kind == "debug" else "general",
+            title=f"{story_id} worker", task=self.worker_task(story_id, story, brief, resume_note=resume_note))
+        state.worker_thread = thread_id
+        state.validator_thread = None
+        state.phase = "working"
+        state.attempts += 1
+        state.patch_rounds = 0
+        state.thread_retries = 0
+        if story["status"] == "todo":
+            self.transition(story_id, "in_progress", expect="todo", owner=thread_id)
+        else:
+            self.transition(story_id, "in_progress", owner=thread_id)
+        self.set_story_state(story_id, state)
+        self.log("story.dispatched", story=story_id, thread=thread_id, difficulty=state.difficulty, attempt=state.attempts)
+        return state
+
+    def dispatch_validator(self, story_id: str, state: StoryState) -> None:
+        story = self.read_story(story_id)
+        thread_id = self.dispatch_thread(
+            difficulty="simple", kind="test", title=f"{story_id} validator",
+            task=self.validator_task(story_id, story, self.brief(story_id), state))
+        state.validator_thread = thread_id
+        state.phase = "validating"
+        self.set_story_state(story_id, state)
+
+    def needs_validator(self, state: StoryState) -> bool:
+        if self.args.validator == "always":
+            return True
+        return state.difficulty != "simple"
+
+    def complete_story(self, story_id: str, state: StoryState) -> None:
+        story = self.read_story(story_id)
+        worker = state.last_worker
+        validator = state.last_validator
+        for item in story["acceptance"]:
+            item["passed"] = True
+        verification = split_items(worker.get("Verified", ""))
+        if validator:
+            verification += [f"Validator {state.validator_thread}: {validator['verdict']}; "
+                             + "; ".join(f"{k} {v}" for k, v in validator.get("acceptance", {}).items())]
+        else:
+            verification.append(f"Validator skipped (difficulty={state.difficulty}); worker evidence accepted by driver")
+        risks = split_items(validator.get("new_facts", "")) if validator else []
+        story["handoff"] = {
+            "summary": worker.get("Changed", "").strip() or story["outcome"],
+            "verification": verification or [f"worker thread {state.worker_thread}"],
+            "remaining": [],
+            "risks": risks,
+            "next": (worker.get("Handoff", "").strip() or "读取下一张 Story。") + f"\n线程: worker={state.worker_thread}, validator={state.validator_thread}",
+        }
+        story["status"] = "in_progress"
+        self.write_story(story_id, story)
+        self.transition(story_id, "done", expect="in_progress", owner=state.worker_thread or "driver")
+        self.check()
+        commit = self.checkpoint(story_id, state)
+        self.set_story_state(story_id, None)
+        self.log("story.done", story=story_id, commit=commit, attempts=state.attempts, patch_rounds=state.patch_rounds)
+
+    def block_story(self, story_id: str, reason: str) -> None:
+        self.transition(story_id, "blocked", blocker=reason)
+        self.set_story_state(story_id, None)
+        self.log("story.blocked", story=story_id, reason=reason[:200])
+
+    # ----------------------------------------------------------------- 异常 → judge
+
+    def consult_judge(self, story_id: str, state: StoryState, situation: str) -> None:
+        state.judge_rounds += 1
+        self.set_story_state(story_id, state)
+        if state.judge_rounds > self.args.max_judge_rounds:
+            raise DriverStop(f"{story_id}: judge 已介入 {state.judge_rounds - 1} 次仍未收敛。最近情况：{situation}")
+        story = self.read_story(story_id)
+        thread_id = self.dispatch_thread(difficulty="complex", kind="general", title=f"{story_id} judge",
+                                         task=self.judge_task(story_id, story, state, situation))
+        outcome = self.wait_thread(thread_id)
+        while outcome == "busy":
+            outcome = self.wait_thread(thread_id)
+        if outcome != "idle":
+            raise DriverStop(f"{story_id}: judge 线程 {thread_id} 未正常结束（{outcome}）。情况：{situation}")
+        report = parse_judge_report(self.thread_output(thread_id))
+        if report is None:
+            raise DriverStop(f"{story_id}: judge 线程 {thread_id} 的回复无法解析。情况：{situation}")
+        self.log("judge.decided", story=story_id, thread=thread_id, action=report["action"], note=report["note"][:200])
+        self.apply_judge(story_id, state, report)
+
+    def apply_judge(self, story_id: str, state: StoryState, report: dict[str, str]) -> None:
+        action, note = report["action"], report["note"]
+        if action == "stop":
+            raise DriverStop(f"{story_id}: 需要用户决定。\n{note}")
+        if action == "block":
+            self.block_story(story_id, note or "judge 标记为 blocked")
+            return
+        if action == "replan":
+            self.check()
+            self.set_story_state(story_id, None)
+            return
+        if action == "patch":
+            if not state.worker_thread:
+                self.claim_and_dispatch(story_id, resume_note=f"\n上一轮判断：{note}\n")
+                return
+            if note.strip().lower() != "interaction handled":
+                self.tell_thread(state.worker_thread, f"修复提示（来自 judge）：\n{note}\n\n修完后按原报告格式回复。")
+            state.phase = "working"
+            state.patch_rounds += 1
+            self.set_story_state(story_id, state)
+            return
+        if action in ("retry", "escalate"):
+            difficulty = state.difficulty
+            if action == "escalate":
+                index = DIFFICULTIES.index(difficulty)
+                if index + 1 >= len(DIFFICULTIES):
+                    raise DriverStop(f"{story_id}: 已是最高难度档仍失败，需要拆分或用户决定。\n{note}")
+                difficulty = DIFFICULTIES[index + 1]
+            if state.attempts >= self.args.max_attempts:
+                raise DriverStop(f"{story_id}: Worker 已尝试 {state.attempts} 次。\n{note}")
+            self.claim_and_dispatch(story_id, difficulty=difficulty,
+                                    resume_note=f"\n这是第 {state.attempts + 1} 次尝试。上一轮事实：{json.dumps(state.last_worker, ensure_ascii=False)}\njudge 说明：{note}\n")
+
+    # ----------------------------------------------------------------- 主循环
+
+    def step_story(self, story_id: str) -> bool:
+        """推进一张 in_progress Story 一步；返回 True 表示本步有进展（不含单纯等待）。"""
+        state = self.story_state(story_id)
+        story = self.read_story(story_id)
+        if not state.worker_thread:
+            owner = story.get("owner")
+            if owner and owner.startswith("thr_"):
+                state.worker_thread = owner
+                state.baseline_commit = state.baseline_commit or self.head()
+                self.set_story_state(story_id, state)
+            else:
+                self.claim_and_dispatch(story_id, resume_note="\n此 Story 之前已领取但线程丢失；先核对工作区已有改动。\n")
+                return True
+        thread_id = state.validator_thread if state.phase == "validating" else state.worker_thread
+        assert thread_id
+        outcome = self.wait_thread(thread_id)
+        if outcome == "busy":
+            return False
+        if outcome == "interaction":
+            pending = self.thread_interactions(thread_id)
+            self.consult_judge(story_id, state, f"线程 {thread_id} 正在等待交互：{json.dumps(pending, ensure_ascii=False)[:1500]}")
+            return True
+        if outcome == "error":
+            if state.thread_retries < 1:
+                state.thread_retries += 1
+                self.set_story_state(story_id, state)
+                self.bb("thread", "retry", thread_id, check=False)
+                self.log("thread.retried", story=story_id, thread=thread_id)
+                return True
+            if state.phase == "validating":
+                self.dispatch_validator(story_id, state)
+                return True
+            self.consult_judge(story_id, state, f"Worker 线程 {thread_id} 重试后仍处于 error。")
+            return True
+        output = self.thread_output(thread_id)
+        if state.phase == "working":
+            return self.handle_worker_output(story_id, story, state, output)
+        return self.handle_validator_output(story_id, state, output)
+
+    def handle_worker_output(self, story_id: str, story: dict[str, Any], state: StoryState, output: str) -> bool:
+        report = parse_worker_report(output)
+        if report is None:
+            self.consult_judge(story_id, state, f"Worker 回复无法按契约解析：\n{output[-1500:]}")
+            return True
+        state.last_worker = report
+        self.set_story_state(story_id, state)
+        self.log("worker.reported", story=story_id, thread=state.worker_thread, result=report["Result"])
+        if report["Result"] != "worker_done":
+            self.consult_judge(story_id, state, f"Worker 报告 {report['Result']}。")
+            return True
+        offenders = self.out_of_scope(story, self.story_changes(state))
+        if offenders:
+            self.consult_judge(story_id, state, f"Worker 修改了 write scope 之外的路径：{offenders}")
+            return True
+        if not self.story_changes(state) and not self.args.allow_empty_story:
+            self.consult_judge(story_id, state, "Worker 报告完成，但工作区没有任何新改动。")
+            return True
+        if self.needs_validator(state):
+            self.dispatch_validator(story_id, state)
+        else:
+            self.complete_story(story_id, state)
+        return True
+
+    def handle_validator_output(self, story_id: str, state: StoryState, output: str) -> bool:
+        report = parse_validator_report(output)
+        if report is None:
+            self.dispatch_validator(story_id, state)
+            self.log("validator.unparsable", story=story_id, thread=state.validator_thread)
+            return True
+        state.last_validator = report
+        self.set_story_state(story_id, state)
+        self.log("validator.reported", story=story_id, thread=state.validator_thread, verdict=report["verdict"])
+        if report["verdict"] == "PASS" and "missing" not in report["acceptance"].values():
+            self.complete_story(story_id, state)
+            return True
+        if state.patch_rounds < self.args.max_patch_rounds and state.worker_thread:
+            state.patch_rounds += 1
+            state.phase = "working"
+            self.set_story_state(story_id, state)
+            missing = [key for key, value in report["acceptance"].items() if value == "missing"]
+            self.tell_thread(state.worker_thread,
+                             f"Validator 判定未完成。未成立的 Acceptance：{', '.join(missing) or '见 Gaps'}\n"
+                             f"Gaps：\n{report['gaps']}\n\n只修这些遗漏，修完后按原报告格式回复。")
+            return True
+        self.consult_judge(story_id, state, f"Validator 连续 {state.patch_rounds + 1} 轮 FAIL。Gaps：{report['gaps']}")
+        return True
+
+    def run_once(self) -> str:
+        """执行一轮；返回 progress | waiting | complete | idle。"""
+        self.check()
+        status = self.status()
+        in_progress = [s["id"] for s in status["stories"] if s["status"] == "in_progress"]
+        if in_progress:
+            progressed = any(self.step_story(story_id) for story_id in in_progress)
+            return "progress" if progressed else "waiting"
+        if status["plan"]["completed"] == status["plan"]["total"]:
+            return "complete"
+        ready = status.get("ready") or []
+        if not ready:
+            return "idle"
+        self.claim_and_dispatch(ready[0])
+        return "progress"
+
+    def finish(self) -> None:
+        self.planning("completion-check", *self.project_args())
+        if self.args.push:
+            self.git("push")
+            local, remote = self.head(), self.git("rev-parse", "@{upstream}").stdout.strip()
+            if local != remote:
+                raise DriverStop(f"推送后远端 HEAD {remote} 不等于本地 {local}。")
+            self.log("delivered", commit=local, pushed=True)
+        else:
+            self.log("delivered", commit=self.head(), pushed=False)
+
+    def run(self) -> int:
+        stories_done = 0
+        try:
+            while True:
+                outcome = self.run_once()
+                if outcome == "complete":
+                    self.finish()
+                    print("DONE: 全部 Story 完成。")
+                    return 0
+                if outcome == "idle":
+                    status = self.status()
+                    blocked = [f"{s['id']}: {s['blocker']}" for s in status["stories"] if s["status"] == "blocked"]
+                    print("STOP: 没有可推进的 Story。\n" + "\n".join(blocked), file=sys.stderr)
+                    return 3
+                if outcome == "progress":
+                    stories_done = self.status()["plan"]["completed"]
+                if self.args.once:
+                    print(f"ONCE: {outcome}; completed={stories_done}")
+                    return 0
+                if self.args.max_stories and stories_done >= self.args.max_stories:
+                    print(f"LIMIT: 已完成 {stories_done} 张 Story，达到 --max-stories。")
+                    return 0
+        except DriverStop as stop:
+            self.log("driver.stopped", reason=str(stop)[:500])
+            print(f"STOP: {stop}", file=sys.stderr)
+            return 3
+
+
+# --------------------------------------------------------------------------- CLI
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="用 BB 线程持续执行 large-task-planning v2 计划的确定性 driver。",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="退出码：0 完成或本轮结束；2 driver 或环境错误；3 需要用户介入（原因在 stderr）。")
+    parser.add_argument("--plan", required=True, help="<topic>/agent/plan.json")
+    parser.add_argument("--stories-dir", required=True, help="同一 agent/ 下的 stories/")
+    parser.add_argument("--repository", default=".", help="Git 仓库根目录；默认当前目录")
+    parser.add_argument("--planning-script", default=str(DEFAULT_PLANNING_SCRIPT), help="epic_story.py 路径")
+    parser.add_argument("--dispatch", help="bb-dispatch 路径；默认 PATH 或 sibling bb-model-routing")
+    parser.add_argument("--environment", help="传给 bb-dispatch 的 BB 环境 ID")
+    parser.add_argument("--context", default="", help="附加给每个线程的仓库说明（基线、命令等）")
+    parser.add_argument("--default-difficulty", choices=DIFFICULTIES, default="medium", help="首轮 Worker 难度")
+    parser.add_argument("--kind", choices=["general", "debug"], default="general", help="Worker 的 bb-dispatch --kind")
+    parser.add_argument("--validator", choices=["always", "standard-up"], default="standard-up",
+                        help="standard-up（默认）：simple 档 Story 跳过 Validator，采信 Worker 证据；always：每张都派")
+    parser.add_argument("--max-patch-rounds", type=int, default=2, help="Validator FAIL 后发回同一 Worker 的最大轮数")
+    parser.add_argument("--max-attempts", type=int, default=3, help="同一 Story 的最大 Worker 线程数")
+    parser.add_argument("--max-judge-rounds", type=int, default=3, help="同一 Story 的最大 judge 介入次数")
+    parser.add_argument("--wait-timeout", type=int, default=1800, help="单次等待线程的秒数上限；超过后返回 waiting")
+    parser.add_argument("--poll-seconds", type=int, default=120, help="bb thread wait 的 --timeout")
+    parser.add_argument("--allow-empty-story", action="store_true", help="允许 Worker 无改动即完成（纯验证类 Story）")
+    parser.add_argument("--once", action="store_true", help="只推进一步就退出；适合定时调用")
+    parser.add_argument("--max-stories", type=int, default=0, help="完成 N 张 Story 后退出；0 为不限")
+    parser.add_argument("--push", action="store_true", help="全部完成后推送当前分支并核对远端 HEAD")
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        return Driver(args).run()
+    except DriverError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

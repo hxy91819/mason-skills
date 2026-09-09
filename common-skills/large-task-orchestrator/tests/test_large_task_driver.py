@@ -1,0 +1,279 @@
+"""用假 bb / bb-dispatch 验证 driver 的可观察行为：计划状态、Git checkpoint、线程调用序列与退出码。"""
+from __future__ import annotations
+
+import json
+import os
+import stat
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from typing import Any
+
+SKILL_DIR = Path(__file__).resolve().parent.parent
+DRIVER = SKILL_DIR / "scripts" / "large_task_driver.py"
+PLANNING = SKILL_DIR.parent / "large-task-planning" / "scripts" / "epic_story.py"
+
+# 假 bb：所有线程状态在 world.json 里；每个线程按脚本化的 outputs 队列依次回复。
+FAKE_BB = r'''#!/usr/bin/env python3
+import json, os, sys
+world_path = os.environ["FAKE_WORLD"]
+world = json.load(open(world_path))
+args = [a for a in sys.argv[1:] if a != "--json"]
+def save(): json.dump(world, open(world_path, "w"), ensure_ascii=False, indent=1)
+def out(v): print(json.dumps(v, ensure_ascii=False)); sys.exit(0)
+world.setdefault("calls", []).append(args)
+save()
+if args[:1] == ["status"]:
+    out({"project": {"id": "proj"}, "thread": {"id": "thr_parent", "environment": {"display": {"id": "env"}}}})
+if args[:2] == ["thread", "show"]:
+    t = world["threads"][args[2]]
+    out({"thread": {"id": args[2], "status": t["status"]}})
+if args[:2] == ["thread", "wait"]:
+    t = world["threads"][args[2]]
+    # 每次 wait 消耗一条脚本化回复：线程从 active 变为 idle/error 并写入 output；副作用写文件模拟 Worker 改动。
+    if t["status"] != "idle" and t["queue"]:
+        step = t["queue"].pop(0)
+        t["status"] = step.get("status", "idle")
+        t["output"] = step.get("output", "")
+        for rel, content in step.get("files", {}).items():
+            path = os.path.join(os.environ["FAKE_REPO"], rel)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            open(path, "w").write(content)
+        save()
+    out({"status": t["status"]})
+if args[:2] == ["thread", "output"]:
+    out({"output": world["threads"][args[2]]["output"]})
+if args[:3] == ["thread", "interactions", "list"]:
+    out(world["threads"][args[3]].get("interactions", []))
+if args[:2] == ["thread", "tell"]:
+    t = world["threads"][args[2]]
+    t["status"] = "active"; t.setdefault("tells", []).append(args[3]); save()
+    out({"ok": True})
+if args[:2] == ["thread", "retry"]:
+    world["threads"][args[2]]["status"] = "active"; save(); out({"ok": True})
+print("unknown fake bb call: " + " ".join(args), file=sys.stderr); sys.exit(1)
+'''
+
+FAKE_DISPATCH = r'''#!/usr/bin/env python3
+import json, os, sys
+world_path = os.environ["FAKE_WORLD"]
+world = json.load(open(world_path))
+args = sys.argv[1:]
+def get(flag):
+    return args[args.index(flag) + 1] if flag in args else None
+title = get("--title"); role = title.split()[-1]; story = title.split()[0]
+key = f"{story}:{role}"
+scripts = world["scripts"].get(key) or []
+index = world.setdefault("spawned", {}).get(key, 0)
+queue = scripts[index] if index < len(scripts) else [{"output": "Result: failed\nChanged: none\nVerified: none\nRemaining: all\nHandoff: no script"}]
+world["spawned"][key] = index + 1
+thread_id = f"thr_{role}_{story.lower().replace('-', '')}_{index + 1}"
+world["threads"][thread_id] = {"status": "active", "output": "", "queue": list(queue), "task": get("--task"),
+                               "difficulty": get("--difficulty"), "kind": get("--kind")}
+world.setdefault("dispatches", []).append({"thread": thread_id, "difficulty": get("--difficulty"), "kind": get("--kind"), "title": title})
+json.dump(world, open(world_path, "w"), ensure_ascii=False, indent=1)
+print(json.dumps({"dry_run": False, "selection": {"provider": "p", "model": "m", "difficulty": get("--difficulty"), "kind": get("--kind")},
+                  "result": {"thread": {"id": thread_id, "status": "queued"}}}))
+'''
+
+WORKER_DONE = "Result: worker_done\nChanged: 新增 src/feature.py 提供公开入口\nVerified: python3 -m unittest：退出码 0\nRemaining: none\nHandoff: 公开入口在 src/feature.py。"
+WORKER_FILES = {"src/feature.py": "def feature():\n    return 1\n"}
+VALIDATOR_PASS = "Verdict: PASS\nAcceptance:\n- AC-01: holds — 运行公开入口返回 1\nGaps: none\nNew facts: none"
+VALIDATOR_FAIL = "Verdict: FAIL\nAcceptance:\n- AC-01: missing — 入口返回 None\nGaps: 缺少返回值\nNew facts: none"
+
+
+def plan_data() -> dict[str, Any]:
+    return {
+        "kind": "large-task-plan", "schema_version": 2, "id": "EPIC-DEMO", "title": "演示", "goal_version": 1,
+        "updated": "2026-09-09", "language": "zh-Hans",
+        "spec": {
+            "problem_statement": "缺少公开入口。", "solution": "提供公开入口。",
+            "user_stories": [{"id": "US-01", "actor": "用户", "want": "调用入口", "benefit": "得到结果"}],
+            "boundaries": ["兼容。"],
+            "decisions": [{"id": "D-01", "decision": "复用入口", "rationale": "稳定。", "impact": "无。", "owner": "agent"}],
+            "testing": {"seams": ["公开函数。"], "strategy": "先失败再实现。"},
+            "out_of_scope": ["发布。"],
+        },
+        "golden_acceptance": [{"id": "GC-01", "title": "调用", "fixture": ["无"], "actions": ["调用"], "oracle": ["返回 1"], "evidence": ["输出"]}],
+        "final_story": "STORY-02",
+    }
+
+
+def story_data(story_id: str, blocked_by: list[str]) -> dict[str, Any]:
+    return {
+        "kind": "large-task-story", "schema_version": 2, "id": story_id, "plan": "EPIC-DEMO",
+        "title": f"{story_id} 结果", "intent_version": 1, "status": "todo", "blocked_by": blocked_by, "covers": ["GC-01"],
+        "outcome": "公开入口可用。",
+        "acceptance": [{"id": "AC-01", "criterion": "调用入口返回 1。", "passed": False}],
+        "context": {"test_seams": ["feature()"], "code_anchors": ["src/feature.py"], "authoritative_inputs": ["SPEC"],
+                    "write_scope": ["src/"], "stop_conditions": ["改变边界。"]},
+        "owner": None, "blocker": None, "updated": "2026-09-09", "handoff": None,
+    }
+
+
+class DriverTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.repo = self.root / "repo"
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        (self.repo / "plan" / "agent" / "stories").mkdir(parents=True)
+        for name, content in (("bb", FAKE_BB), ("bb-dispatch", FAKE_DISPATCH)):
+            path = self.bin / name
+            path.write_text(content, encoding="utf-8")
+            path.chmod(path.stat().st_mode | stat.S_IEXEC)
+        self.world = self.root / "world.json"
+        self.plan = self.repo / "plan" / "agent" / "plan.json"
+        self.stories = self.repo / "plan" / "agent" / "stories"
+        self.write_json(self.plan, plan_data())
+        self.write_json(self.stories / "STORY-01-first.json", story_data("STORY-01", []))
+        self.write_json(self.stories / "STORY-02-final.json", story_data("STORY-02", ["STORY-01"]))
+        self.planning("render")
+        self.git("init", "-q", "-b", "main")
+        self.git("config", "user.email", "t@example.com")
+        self.git("config", "user.name", "t")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "plan")
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    @staticmethod
+    def write_json(path: Path, value: dict[str, Any]) -> None:
+        path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    def git(self, *arguments: str) -> str:
+        return subprocess.run(["git", *arguments], cwd=self.repo, capture_output=True, text=True, check=True).stdout
+
+    def planning(self, command: str) -> None:
+        subprocess.run([sys.executable, str(PLANNING), command, "--plan", str(self.plan), "--stories-dir", str(self.stories)],
+                       check=True, capture_output=True)
+
+    def set_world(self, scripts: dict[str, list[list[dict[str, Any]]]]) -> None:
+        self.write_json(self.world, {"threads": {}, "scripts": scripts})
+
+    def read_world(self) -> dict[str, Any]:
+        return json.loads(self.world.read_text(encoding="utf-8"))
+
+    def run_driver(self, *extra: str, expected: int = 0) -> subprocess.CompletedProcess[str]:
+        env = {**os.environ, "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}",
+               "FAKE_WORLD": str(self.world), "FAKE_REPO": str(self.repo)}
+        result = subprocess.run(
+            [sys.executable, str(DRIVER), "--plan", str(self.plan), "--stories-dir", str(self.stories),
+             "--repository", str(self.repo), "--dispatch", str(self.bin / "bb-dispatch"), "--poll-seconds", "1", *extra],
+            cwd=self.repo, env=env, capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, expected, result.stderr + result.stdout)
+        return result
+
+    def story(self, story_id: str) -> dict[str, Any]:
+        for path in self.stories.glob("*.json"):
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if data["id"] == story_id:
+                return data
+        raise AssertionError(story_id)
+
+    def test_happy_path_completes_plan_with_checkpoints_and_validator(self) -> None:
+        self.set_world({
+            "STORY-01:worker": [[{"output": WORKER_DONE, "files": WORKER_FILES}]],
+            "STORY-01:validator": [[{"output": VALIDATOR_PASS}]],
+            "STORY-02:worker": [[{"output": WORKER_DONE, "files": {"src/final.py": "x = 1\n"}}]],
+            "STORY-02:validator": [[{"output": VALIDATOR_PASS}]],
+        })
+        result = self.run_driver()
+        self.assertIn("DONE", result.stdout)
+        self.assertEqual(self.story("STORY-01")["status"], "done")
+        self.assertEqual(self.story("STORY-02")["status"], "done")
+        self.assertTrue(self.story("STORY-01")["acceptance"][0]["passed"])
+        self.assertIn("thr_worker_story01_1", self.story("STORY-01")["handoff"]["next"])
+        log = self.git("log", "--oneline")
+        self.assertIn("checkpoint(STORY-01)", log)
+        self.assertIn("checkpoint(STORY-02)", log)
+        self.assertEqual(self.git("status", "--short").strip(), "")
+        dispatches = self.read_world()["dispatches"]
+        self.assertEqual([d["title"] for d in dispatches],
+                         ["STORY-01 worker", "STORY-01 validator", "STORY-02 worker", "STORY-02 validator"])
+        self.assertEqual(dispatches[1]["kind"], "test")
+        self.assertEqual(dispatches[1]["difficulty"], "simple")
+        worker_task = self.read_world()["threads"]["thr_worker_story01_1"]["task"]
+        self.assertIn("Result: worker_done | blocked | failed", worker_task)
+        self.assertIn("src/", worker_task)
+
+    def test_validator_fail_is_sent_back_to_same_worker_then_passes(self) -> None:
+        self.set_world({
+            "STORY-01:worker": [[{"output": WORKER_DONE, "files": WORKER_FILES},
+                                 {"output": WORKER_DONE, "files": {"src/feature.py": "def feature():\n    return 1  # fixed\n"}}]],
+            "STORY-01:validator": [[{"output": VALIDATOR_FAIL}], [{"output": VALIDATOR_PASS}]],
+        })
+        self.run_driver("--max-stories", "1")
+        self.assertEqual(self.story("STORY-01")["status"], "done")
+        world = self.read_world()
+        tells = world["threads"]["thr_worker_story01_1"]["tells"]
+        self.assertEqual(len(tells), 1)
+        self.assertIn("AC-01", tells[0])
+        self.assertIn("缺少返回值", tells[0])
+        self.assertEqual(world["spawned"]["STORY-01:validator"], 2)
+        self.assertEqual(world["spawned"]["STORY-01:worker"], 1)
+
+    def test_simple_story_skips_validator(self) -> None:
+        self.set_world({"STORY-01:worker": [[{"output": WORKER_DONE, "files": WORKER_FILES}]]})
+        self.run_driver("--max-stories", "1", "--default-difficulty", "simple")
+        self.assertEqual(self.story("STORY-01")["status"], "done")
+        self.assertNotIn("STORY-01:validator", self.read_world().get("spawned", {}))
+        self.assertTrue(any("Validator skipped" in item for item in self.story("STORY-01")["handoff"]["verification"]))
+
+    def test_worker_blocked_consults_judge_and_stop_returns_to_user(self) -> None:
+        self.set_world({
+            "STORY-01:worker": [[{"output": "Result: blocked\nChanged: none\nVerified: none\nRemaining: 缺少凭据\nHandoff: 需要 API key"}]],
+            "STORY-01:judge": [[{"output": "Action: stop\nNote: 需要用户提供 API key 才能继续。"}]],
+        })
+        result = self.run_driver(expected=3)
+        self.assertIn("需要用户提供 API key", result.stderr)
+        self.assertEqual(self.story("STORY-01")["status"], "in_progress")
+        dispatches = self.read_world()["dispatches"]
+        self.assertEqual(dispatches[-1]["title"], "STORY-01 judge")
+        self.assertEqual(dispatches[-1]["difficulty"], "complex")
+        judge_task = self.read_world()["threads"][dispatches[-1]["thread"]]["task"]
+        self.assertIn("Worker 报告 blocked", judge_task)
+
+    def test_judge_escalate_spawns_higher_difficulty_worker(self) -> None:
+        self.set_world({
+            "STORY-01:worker": [[{"output": "Result: failed\nChanged: none\nVerified: 测试仍红\nRemaining: 全部\nHandoff: 实现不出来"}],
+                                [{"output": WORKER_DONE, "files": WORKER_FILES}]],
+            "STORY-01:judge": [[{"output": "Action: escalate\nNote: 能力不足。"}]],
+            "STORY-01:validator": [[{"output": VALIDATOR_PASS}]],
+        })
+        self.run_driver("--max-stories", "1")
+        self.assertEqual(self.story("STORY-01")["status"], "done")
+        workers = [d for d in self.read_world()["dispatches"] if d["title"] == "STORY-01 worker"]
+        self.assertEqual([d["difficulty"] for d in workers], ["medium", "complex"])
+
+    def test_out_of_scope_write_goes_to_judge(self) -> None:
+        self.set_world({
+            "STORY-01:worker": [[{"output": WORKER_DONE, "files": {**WORKER_FILES, "README.md": "oops\n"}}]],
+            "STORY-01:judge": [[{"output": "Action: stop\nNote: 越界修改 README。"}]],
+        })
+        result = self.run_driver(expected=3)
+        self.assertIn("越界修改 README", result.stderr)
+        judge_task = self.read_world()["threads"]["thr_judge_story01_1"]["task"]
+        self.assertIn("README.md", judge_task)
+
+    def test_resume_reuses_thread_recorded_in_owner(self) -> None:
+        self.set_world({
+            "STORY-01:worker": [[{"status": "active"}, {"output": WORKER_DONE, "files": WORKER_FILES}]],
+            "STORY-01:validator": [[{"output": VALIDATOR_PASS}]],
+        })
+        first = self.run_driver("--once")
+        self.assertIn("ONCE", first.stdout)
+        self.assertEqual(self.story("STORY-01")["status"], "in_progress")
+        self.assertTrue(self.story("STORY-01")["owner"].startswith("thr_"))
+        (self.repo / ".local").rename(self.repo / ".local-lost")  # 丢失本地状态，只剩计划与线程
+        self.run_driver("--max-stories", "1")
+        self.assertEqual(self.story("STORY-01")["status"], "done")
+        self.assertEqual(self.read_world()["spawned"]["STORY-01:worker"], 1)
+
+
+if __name__ == "__main__":
+    unittest.main()
