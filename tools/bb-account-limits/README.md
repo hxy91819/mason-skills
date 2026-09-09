@@ -100,3 +100,7 @@ Copilot 使用 `--acp`，Full Access 映射 `--yolo`；CodeBuddy 使用 `--acp`�
 回退到旧路径插件时重新安装原路径。回退为普通 ACP 条目时先禁用本插件，再将备份条目合并回当前 `customAgents`，避免重复 ID；不删除线程、认证或原生会话数据。
 
 测试覆盖额度解析、失败状态、精度、超时/取消、退出清理和 ACP bridge conformance。`test-runtime.mjs` 为 SDK 0.4.47 的测试运行时提供 CJS require 支持。
+
+### AGY 长任务时限
+
+ACP 启动环境设置 `AGY_EXTRA_ARGS="--print-timeout 2h"`，覆盖 `agy -p` 默认的 5 分钟等待。2026-09-09 实际故障日志显示默认时限会在 turn in progress 时截断任务，适配器却返回 end_turn；此配置解除 5 分钟截断，但超过 2 小时仍可能触发同类退出，不代表已解决所有 ACP 稳定性问题。更改后 reload 插件；已加载的 idle AGY 线程先 stop 释放旧运行时，再继续原线程。

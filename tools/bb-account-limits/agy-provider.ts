@@ -17,7 +17,8 @@ export const agyProvider: PluginProviderDeclaration = {
       displayName: "Antigravity (AGY)",
       command: config.bun,
       args: [config.agyEntry],
-      env: { AGY_BIN: config.agy, AGY_SKIP_DOWNLOAD: "1" },
+      // agy -p 默认 5 分钟会在任务未结束时退出，ACP 必须显式延长等待。
+      env: { AGY_BIN: config.agy, AGY_SKIP_DOWNLOAD: "1", AGY_EXTRA_ARGS: "--print-timeout 2h" },
     },
   },
   maintenance: { health: true, usage: true, installation: false },
