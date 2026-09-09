@@ -1,18 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 定义：共享工作区的 Git 保护 wrapper。正常 Git 命令透明转发，会隐藏、丢弃或覆盖并行现场的命令被拒绝。
-# 参数：与 Git 完全相同；--wrapper-help 显示说明；--user-approved=<reason> 是唯一授权通道。
-# 输出：放行命令保留 Git 原始输出和退出码；被拦截时向 stderr 输出提示并返回 77。
-# 决策：按命令语义和 Git 原生保护能力判定；会受并发竞态影响的破坏性预检不能作为放行依据。
-
 readonly REAL_GIT="/usr/bin/git"
 declare -a GIT_GLOBAL_ARGS=()
 declare -a SPLIT_ALIAS_ARGS=()
 declare -a RESOLVED_COMMAND_ARGS=()
 RESOLVED_COMMAND=""
-ALIAS_RESOLUTION_ERROR=""
-BLOCK_REASON="该命令会破坏或重置共享仓库、工作区、暂存区或远端状态。"
 
 usage() {
   cat <<'EOF'
@@ -21,30 +14,17 @@ Usage:
   git --wrapper-help
 
 Description:
-  Protects a shared worktree from commands that can hide, discard, or overwrite
-  another user or agent's uncommitted state. Commands that preserve file and
-  index state, including commit and rebase without autostash, are forwarded.
-  Mutating stash operations and autostash are forbidden and cannot be overridden.
-
-Options:
-  --wrapper-help             Show this wrapper-specific help.
-  --user-approved=<reason>   Allow one state-changing command after the user
-                             explicitly approves it (or the current task already
-                             authorized that exact target). Must appear
-                             immediately after "git" and include a non-empty
-                             audit reason.
+  In a shared worktree, blocks state-changing stash operations and autostash.
+  All other Git commands are forwarded unchanged to native Git.
 
 Outputs:
   Forwarded commands: original Git stdout, stderr, and exit code.
-  Blocked commands: an instruction on stderr and exit code 77.
+  Blocked stash/autostash commands: an instruction on stderr and exit code 77.
 
 Examples:
-  git status --short
-  git add -- src/example.py
-  git commit -m 'normal task commit'
+  git stash list
   git rebase --no-autostash origin/main
-  git reset --soft HEAD~1
-  git --user-approved='user explicitly approved switching branches' switch feature/example
+  git worktree remove ../delivered-worktree
 EOF
 }
 
@@ -58,59 +38,18 @@ render_command() {
   printf '%s' "${rendered% }"
 }
 
-block_command() {
-  local command_text
-  command_text="$(render_command git "$@")"
-
-  cat >&2 <<EOF
-BLOCKED: ${BLOCK_REASON}
-
-  ${command_text}
-
-当前工作区可能有其他用户或 Agent 并行工作。不得自行重试、改用
-/usr/bin/git、别名或其他命令绕过此保护。
-
-必须先向用户说明：
-1. 准备执行的完整命令；
-2. 可能影响的文件、分支、worktree 或历史；
-3. 为什么必须执行，以及如何恢复。
-
-若当前任务已明确授权该目标，Agent 可以直接使用 \`--user-approved\`；无需再次向用户确认。
-如果授权、目标或影响范围不明确，先说明风险并请求用户确认，用户同意后使用单次
-break-glass 授权：
-  git --user-approved='<记录用户授权理由>' ${command_text#git }
-EOF
-  exit 77
-}
-
 hard_block_command() {
   local reason="$1"
   shift
-  local command_text
-  command_text="$(render_command git "$@")"
 
   cat >&2 <<EOF
 HARD-BLOCKED: ${reason}
 
-  ${command_text}
+  $(render_command git "$@")
 
-该命令在共享工作区中没有 break-glass 通道，\`--user-approved\` 也不能放行。
-请把需要保留的工作提交为本地 commit（不要推送临时保全提交），或者停止并交还用户处理。
-不得改用 /usr/bin/git、别名或其他方式绕过此保护。
+请创建本地 commit 保全现场，或为 rebase、merge、pull 显式传入 --no-autostash。
 EOF
   exit 77
-}
-
-run_approved() {
-  local approval_reason="$1"
-  shift
-
-  cat >&2 <<EOF
-BREAK-GLASS: 正在执行用户明确授权的 Git 写操作。
-授权理由: ${approval_reason}
-完整命令: $(render_command git "$@")
-EOF
-  exec "$REAL_GIT" "$@"
 }
 
 find_subcommand_index() {
@@ -141,7 +80,7 @@ find_subcommand_index() {
       --help|-h|--version|-v|--exec-path|--html-path|--man-path|--info-path)
         return 0
         ;;
-      -* )
+      -*)
         ((index += 1))
         ;;
       *)
@@ -158,7 +97,19 @@ git_probe() {
 }
 
 requests_help() {
-  [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]
+  local arg
+
+  for arg in "$@"; do
+    case "$arg" in
+      --)
+        return 1
+        ;;
+      -h|--help)
+        return 0
+        ;;
+    esac
+  done
+  return 1
 }
 
 split_git_alias() {
@@ -242,7 +193,6 @@ split_git_alias() {
 }
 
 git_command_takes_precedence_over_alias() {
-  # Git 不允许 alias 覆盖已有子命令；先复现该优先级，避免误判同名 alias。
   local commands=""
 
   commands="$(git_probe --list-cmds=main,others,nohelpers 2>/dev/null)" || return 1
@@ -257,21 +207,11 @@ resolve_alias_command() {
   local seen="|${candidate}|"
   local -a trailing_args=("$@")
 
-  ALIAS_RESOLUTION_ERROR=""
   while ! git_command_takes_precedence_over_alias "$candidate"; do
     alias_value="$(git_probe config --get "alias.${candidate}" 2>/dev/null)" || break
-    if [[ "$alias_value" == '!'* ]]; then
-      ALIAS_RESOLUTION_ERROR="shell alias '${candidate}' 的副作用无法静态判定。"
-      return 1
-    fi
-    if ! split_git_alias "$alias_value"; then
-      ALIAS_RESOLUTION_ERROR="alias '${candidate}' 无法被安全解析。"
-      return 1
-    fi
-    if [[ "${SPLIT_ALIAS_ARGS[0]}" == -* ]]; then
-      ALIAS_RESOLUTION_ERROR="alias '${candidate}' 以 Git 全局选项开头，无法安全判定。"
-      return 1
-    fi
+    [[ "$alias_value" == '!'* ]] && return 1
+    split_git_alias "$alias_value" || return 1
+    [[ "${SPLIT_ALIAS_ARGS[0]}" != -* ]] || return 1
 
     candidate="${SPLIT_ALIAS_ARGS[0]}"
     RESOLVED_COMMAND_ARGS=()
@@ -287,7 +227,6 @@ resolve_alias_command() {
     fi
     ((depth += 1))
     if ((depth > 20)) || [[ "$seen" == *"|${candidate}|"* ]]; then
-      ALIAS_RESOLUTION_ERROR="alias 展开存在循环或超过 20 层。"
       return 1
     fi
     seen+="${candidate}|"
@@ -309,178 +248,6 @@ stash_is_read_only() {
       return 1
       ;;
   esac
-}
-
-clean_is_read_only() {
-  local arg
-  local options=1
-
-  for arg in "$@"; do
-    if ((options == 0)); then
-      continue
-    fi
-    case "$arg" in
-      --)
-        options=0
-        ;;
-      -n|--dry-run)
-        return 0
-        ;;
-      -e|-e?*)
-        ;;
-      -[^-]*)
-        [[ "${arg#-}" == *n* ]] && return 0
-        ;;
-    esac
-  done
-  return 1
-}
-
-reset_preserves_shared_state() {
-  local arg
-  local mode="mixed"
-
-  for arg in "$@"; do
-    case "$arg" in
-      --soft)
-        mode="soft"
-        ;;
-      --mixed|--hard|--merge|--keep|-p|--patch)
-        mode="destructive"
-        ;;
-    esac
-  done
-  [[ "$mode" == "soft" ]]
-}
-
-branch_is_disruptive() {
-  local arg
-  local options=1
-
-  for arg in "$@"; do
-    if ((options == 0)); then
-      continue
-    fi
-    case "$arg" in
-      --)
-        options=0
-        ;;
-      -d|-D|--delete|-m|-M|--move|-C|-f|--force|--edit-description|--set-upstream-to|--set-upstream-to=*|--unset-upstream)
-        return 0
-        ;;
-      -[^-]*)
-        [[ "${arg#-}" == *[dDmMufC]* ]] && return 0
-        ;;
-    esac
-  done
-  return 1
-}
-
-restore_changes_shared_state() {
-  local arg
-  local expects_source=0
-  local path_seen=0
-  local separator_seen=0
-
-  for arg in "$@"; do
-    if ((expects_source == 1)); then
-      expects_source=0
-      continue
-    fi
-    if ((separator_seen == 1)); then
-      path_seen=1
-      continue
-    fi
-    case "$arg" in
-      --)
-        separator_seen=1
-        ;;
-      --source|-s)
-        expects_source=1
-        ;;
-      --source=*|-s?*)
-        ;;
-      --pathspec-from-file|--pathspec-from-file=*)
-        path_seen=1
-        ;;
-      -*)
-        ;;
-      *)
-        path_seen=1
-        ;;
-    esac
-  done
-  ((path_seen == 1))
-}
-
-checkout_changes_shared_state() {
-  local current_branch=""
-  local target=""
-  local arg
-  local positional_count=0
-
-  for arg in "$@"; do
-    case "$arg" in
-      --|-b|-B|-c|-C|--orphan|--orphan=*|--detach|-f|--force|--discard-changes|-p|--patch|--ours|--theirs|-m|--merge|--no-overlay|--recurse-submodules|--recurse-submodules=*|--pathspec-from-file|--pathspec-from-file=*)
-        return 0
-        ;;
-      -[^-]*)
-        [[ "${arg#-}" == *[bBdfmp23]* ]] && return 0
-        ;;
-      -*)
-        ;;
-      *)
-        target="$arg"
-        ((positional_count += 1))
-        ;;
-    esac
-  done
-
-  ((positional_count == 0)) && return 1
-  ((positional_count == 1)) || return 0
-  current_branch="$(git_probe branch --show-current 2>/dev/null)" || return 0
-  [[ -n "$current_branch" && "$target" == "$current_branch" ]] && return 1
-  return 0
-}
-
-switch_changes_shared_state() {
-  local current_branch=""
-  local target=""
-  local arg
-
-  for arg in "$@"; do
-    case "$arg" in
-      -c|-C|--create|--create=*|--force-create|--force-create=*|-d|--detach|-f|--force|--discard-changes|-m|--merge|--orphan|--orphan=*|--recurse-submodules|--recurse-submodules=*)
-        return 0
-        ;;
-      -[^-]*)
-        [[ "${arg#-}" == *[cCdfm]* ]] && return 0
-        ;;
-      -*)
-        ;;
-      *)
-        target="$arg"
-        ;;
-    esac
-  done
-
-  [[ -n "$target" ]] || return 1
-  current_branch="$(git_probe branch --show-current 2>/dev/null)" || return 0
-  [[ -n "$current_branch" && "$target" == "$current_branch" ]] && return 1
-  return 0
-}
-
-sequencer_discards_state() {
-  local arg
-
-  for arg in "$@"; do
-    case "$arg" in
-      --abort|--skip|--quit)
-        return 0
-        ;;
-    esac
-  done
-  return 1
 }
 
 is_sequencer_control() {
@@ -587,438 +354,6 @@ requests_autostash() {
   esac
 }
 
-submodule_changes_worktree() {
-  local arg
-
-  for arg in "$@"; do
-    case "$arg" in
-      -*)
-        ;;
-      update|deinit|absorbgitdirs)
-        return 0
-        ;;
-      *)
-        return 1
-        ;;
-    esac
-  done
-  return 1
-}
-
-reflog_is_destructive() {
-  local action="${1:-}"
-  shift || true
-  local arg
-  local dry_run=0
-
-  [[ "$action" == "expire" || "$action" == "delete" ]] || return 1
-  for arg in "$@"; do
-    case "$arg" in
-      -n|--dry-run)
-        dry_run=1
-        ;;
-      --no-dry-run)
-        dry_run=0
-        ;;
-      -[^-]*)
-        [[ "${arg#-}" == *n* ]] && dry_run=1
-        ;;
-    esac
-  done
-  ((dry_run == 0))
-}
-
-push_is_destructive() {
-  local arg
-  local destructive_ref=0
-  local dry_run=0
-  local force=0
-  local options=1
-  local prune=0
-
-  for arg in "$@"; do
-    if [[ "$arg" == "+"* || "$arg" == ":"* ]]; then
-      destructive_ref=1
-      continue
-    fi
-    if ((options == 0)); then
-      continue
-    fi
-    case "$arg" in
-      --)
-        options=0
-        ;;
-      -n|--dry-run)
-        dry_run=1
-        ;;
-      --no-dry-run)
-        dry_run=0
-        ;;
-      -f|--force|--force-with-lease|--force-with-lease=*)
-        force=1
-        ;;
-      --no-force|--no-force-with-lease)
-        force=0
-        ;;
-      -d|--delete|--mirror)
-        destructive_ref=1
-        ;;
-      -o|-o?*)
-        ;;
-      -[^-]*)
-        [[ "${arg#-}" == *n* ]] && dry_run=1
-        [[ "${arg#-}" == *f* ]] && force=1
-        [[ "${arg#-}" == *d* ]] && destructive_ref=1
-        ;;
-      --prune)
-        prune=1
-        ;;
-      --no-prune)
-        prune=0
-        ;;
-    esac
-  done
-
-  ((dry_run == 1)) && return 1
-  ((force == 1 || destructive_ref == 1 || prune == 1)) && return 0
-  push_config_is_destructive "$@"
-}
-
-push_config_is_destructive() {
-  local arg
-  local branch=""
-  local configured_refspecs=""
-  local expects_value=""
-  local has_command_refspec=0
-  local mirror=""
-  local options=1
-  local repository=""
-
-  for arg in "$@"; do
-    if [[ -n "$expects_value" ]]; then
-      [[ "$expects_value" == "repository" ]] && repository="$arg"
-      expects_value=""
-      continue
-    fi
-    if ((options == 1)); then
-      case "$arg" in
-        --)
-          options=0
-          continue
-          ;;
-        --repo)
-          expects_value="repository"
-          continue
-          ;;
-        --repo=*)
-          repository="${arg#--repo=}"
-          continue
-          ;;
-        -r|--receive-pack|--exec|-o|--push-option)
-          expects_value="ignored"
-          continue
-          ;;
-        -r?*|--receive-pack=*|--exec=*|-o?*|--push-option=*)
-          continue
-          ;;
-        -*)
-          continue
-          ;;
-      esac
-    fi
-
-    if [[ -z "$repository" ]]; then
-      repository="$arg"
-    else
-      has_command_refspec=1
-    fi
-  done
-
-  if [[ -z "$repository" ]]; then
-    branch="$(git_probe symbolic-ref --quiet --short HEAD 2>/dev/null)" || return 1
-    repository="$(git_probe for-each-ref --format='%(push:remotename)' "refs/heads/${branch}" 2>/dev/null)" || true
-  fi
-  [[ -n "$repository" ]] || return 1
-
-  mirror="$(git_probe config --bool --get "remote.${repository}.mirror" 2>/dev/null)" || true
-  [[ "$mirror" == "true" ]] && return 0
-  ((has_command_refspec == 1)) && return 1
-
-  configured_refspecs="$(git_probe config --get-all "remote.${repository}.push" 2>/dev/null)" || true
-  while IFS= read -r arg; do
-    [[ "$arg" == "+"* || "$arg" == ":"* ]] && return 0
-  done <<< "$configured_refspecs"
-  return 1
-}
-
-prune_is_read_only() {
-  local arg
-  local options=1
-
-  for arg in "$@"; do
-    if ((options == 0)); then
-      continue
-    fi
-    case "$arg" in
-      --)
-        options=0
-        ;;
-      -n|--dry-run)
-        return 0
-        ;;
-      -[^-]*)
-        [[ "${arg#-}" == *n* ]] && return 0
-        ;;
-    esac
-  done
-  return 1
-}
-
-gc_prunes_explicitly() {
-  local arg
-
-  for arg in "$@"; do
-    case "$arg" in
-      --prune=never)
-        ;;
-      --prune|--prune=*)
-        return 0
-        ;;
-    esac
-  done
-  return 1
-}
-
-forced_file_operation() {
-  local arg
-  local dry_run=0
-  local force=0
-  local options=1
-
-  for arg in "$@"; do
-    if ((options == 0)); then
-      continue
-    fi
-    case "$arg" in
-      --)
-        options=0
-        ;;
-      -f|--force)
-        force=1
-        ;;
-      --no-force)
-        force=0
-        ;;
-      -n|--dry-run)
-        dry_run=1
-        ;;
-      --no-dry-run)
-        dry_run=0
-        ;;
-      -[^-]*)
-        [[ "${arg#-}" == *f* ]] && force=1
-        [[ "${arg#-}" == *n* ]] && dry_run=1
-        ;;
-    esac
-  done
-  ((dry_run == 0 && force == 1))
-}
-
-worktree_is_destructive() {
-  local action="${1:-}"
-  shift || true
-  local arg
-  local dry_run=0
-
-  case "$action" in
-    ""|list|add)
-      return 1
-      ;;
-    prune)
-      for arg in "$@"; do
-        case "$arg" in
-          -n|--dry-run)
-            dry_run=1
-            ;;
-          --no-dry-run)
-            dry_run=0
-            ;;
-          -[^-]*)
-            [[ "${arg#-}" == *n* ]] && dry_run=1
-            ;;
-        esac
-      done
-      ((dry_run == 0))
-      ;;
-    *)
-      return 0
-      ;;
-  esac
-}
-
-apply_uses_unsafe_paths() {
-  local arg
-  local check_only=0
-  local explicit_apply=0
-  local numstat_only=0
-  local stat_only=0
-  local summary_only=0
-  local unsafe_paths=0
-
-  for arg in "$@"; do
-    case "$arg" in
-      --unsafe-paths)
-        unsafe_paths=1
-        ;;
-      --no-unsafe-paths)
-        unsafe_paths=0
-        ;;
-      --apply)
-        explicit_apply=1
-        ;;
-      --no-apply)
-        explicit_apply=0
-        ;;
-      --stat)
-        stat_only=1
-        ;;
-      --no-stat)
-        stat_only=0
-        ;;
-      --numstat)
-        numstat_only=1
-        ;;
-      --no-numstat)
-        numstat_only=0
-        ;;
-      --summary)
-        summary_only=1
-        ;;
-      --no-summary)
-        summary_only=0
-        ;;
-      --check)
-        check_only=1
-        ;;
-      --no-check)
-        check_only=0
-        ;;
-    esac
-  done
-
-  ((
-    unsafe_paths == 1
-      && (
-        explicit_apply == 1
-          || (stat_only == 0 && numstat_only == 0 && summary_only == 0 && check_only == 0)
-      )
-  ))
-}
-
-bisect_is_read_only() {
-  case "${1:-}" in
-    ""|log|visualize|view|terms)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
-sparse_checkout_is_read_only() {
-  case "${1:-}" in
-    ""|list|check-rules)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
-# 判定候选 index 路径是否就是共享 index 本体。git 目录无法解析、路径为空
-# 或是相对路径时保守判定为共享；比较前用 readlink 归一化，防止用软链指向
-# 共享 index 绕过判定。
-index_path_is_shared() {
-  local candidate="$1"
-
-  if [[ -z "$candidate" ]]; then
-    return 0
-  fi
-  case "$candidate" in
-    /*) ;;
-    *)
-      return 0
-      ;;
-  esac
-
-  local git_dir
-  git_dir="$($REAL_GIT rev-parse --absolute-git-dir 2>/dev/null)" || return 0
-
-  local shared="${git_dir%/}/index"
-  if [[ "$candidate" == "$shared" ]]; then
-    return 0
-  fi
-
-  local candidate_norm shared_norm
-  candidate_norm="$(readlink -f -- "$candidate" 2>/dev/null)" || candidate_norm="$candidate"
-  shared_norm="$(readlink -f -- "$shared" 2>/dev/null)" || shared_norm="$shared"
-  [[ "$candidate_norm" == "$shared_norm" ]]
-}
-
-# read-tree 默认把 tree 写进共享 index，因此拦截；但 BB、IDE 插件一类 diff 工具
-# 会用 GIT_INDEX_FILE 指向私有临时 index，或用 --index-output=<file> 把结果写到
-# 指定文件，来计算未跟踪文件的 diff。写入目标不是共享 index、且不带 -u（把结果
-# 展开到 working tree）时不触碰共享现场，放行。
-read_tree_preserves_shared_state() {
-  local arg
-  local index_output=""
-  local pending_output=0
-
-  for arg in "$@"; do
-    if ((pending_output == 1)); then
-      index_output="$arg"
-      pending_output=0
-      continue
-    fi
-    case "$arg" in
-      --)
-        break
-        ;;
-      -u|--update)
-        return 1
-        ;;
-      -[^-]*)
-        # 短旗标可合并（如 -mu），任一组合含 u 都会更新 working tree
-        [[ "${arg#-}" == *u* ]] && return 1
-        ;;
-      --index-output=?*)
-        index_output="${arg#--index-output=}"
-        ;;
-      --index-output)
-        pending_output=1
-        ;;
-    esac
-  done
-
-  if ((pending_output == 1)); then
-    return 1
-  fi
-
-  if [[ -n "$index_output" ]]; then
-    if index_path_is_shared "$index_output"; then
-      return 1
-    fi
-    return 0
-  fi
-
-  if index_path_is_shared "${GIT_INDEX_FILE:-}"; then
-    return 1
-  fi
-  return 0
-}
-
 is_hard_blocked() {
   local command="$1"
   shift
@@ -1036,99 +371,11 @@ is_hard_blocked() {
   esac
 }
 
-is_blocked() {
-  local command="$1"
-  shift
-
-  case "$command" in
-    clean)
-      ! clean_is_read_only "$@"
-      ;;
-    reset)
-      ! reset_preserves_shared_state "$@"
-      ;;
-    restore)
-      restore_changes_shared_state "$@"
-      ;;
-    checkout)
-      checkout_changes_shared_state "$@"
-      ;;
-    switch)
-      switch_changes_shared_state "$@"
-      ;;
-    # revert 不拦截是用户的明确决策：revert 产生新的反向 commit，不隐藏或改写现有内容；
-    # 序列控制旗标（--abort/--skip/--quit）也放行，残余风险记录在 README 放行清单。
-    merge|rebase|cherry-pick|am)
-      sequencer_discards_state "$@"
-      ;;
-    push)
-      push_is_destructive "$@"
-      ;;
-    prune)
-      ! prune_is_read_only "$@"
-      ;;
-    gc)
-      gc_prunes_explicitly "$@"
-      ;;
-    rm|mv)
-      forced_file_operation "$@"
-      ;;
-    apply)
-      apply_uses_unsafe_paths "$@"
-      ;;
-    bisect)
-      ! bisect_is_read_only "$@"
-      ;;
-    sparse-checkout)
-      ! sparse_checkout_is_read_only "$@"
-      ;;
-    checkout-index)
-      # checkout-index 的语义就是把 index 内容抽取进 working tree，即使 index
-      # 被重定向也会覆盖工作区文件，无条件拦截。
-      return 0
-      ;;
-    read-tree)
-      ! read_tree_preserves_shared_state "$@"
-      ;;
-    branch)
-      branch_is_disruptive "$@"
-      ;;
-    worktree)
-      worktree_is_destructive "$@"
-      ;;
-    reflog)
-      reflog_is_destructive "$@"
-      ;;
-    submodule)
-      submodule_changes_worktree "$@"
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
 main() {
-  local approval_reason=""
   local subcommand_index
   local command
   local -a args
   local -a command_args=()
-
-  case "${1:-}" in
-    --user-approved=*)
-      approval_reason="${1#--user-approved=}"
-      shift
-      if [[ -z "$approval_reason" ]]; then
-        echo "ERROR: --user-approved requires a non-empty approval reason." >&2
-        return 64
-      fi
-      ;;
-    --user-approved)
-      echo "ERROR: use --user-approved=<reason>; the audit reason cannot be omitted." >&2
-      return 64
-      ;;
-  esac
 
   args=("$@")
   subcommand_index="$(find_subcommand_index "$@")"
@@ -1150,11 +397,7 @@ main() {
   fi
 
   if ! resolve_alias_command "$command" ${command_args[@]+"${command_args[@]}"}; then
-    BLOCK_REASON="$ALIAS_RESOLUTION_ERROR"
-    if [[ -n "$approval_reason" ]]; then
-      run_approved "$approval_reason" "$@"
-    fi
-    block_command "$@"
+    exec "$REAL_GIT" "$@"
   fi
   command="$RESOLVED_COMMAND"
   command_args=()
@@ -1168,16 +411,9 @@ main() {
 
   if is_hard_blocked "$command" ${command_args[@]+"${command_args[@]}"}; then
     if [[ "$command" == "stash" ]]; then
-      hard_block_command "严格禁止会创建、应用、删除或隐藏现场的 stash 操作。" "$@"
+      hard_block_command "共享工作区不允许产生副作用的 stash 操作。" "$@"
     fi
-    hard_block_command "显式或配置启用的 autostash 可能捕获另一个 Agent 并发写入的内容。" "$@"
-  fi
-
-  if is_blocked "$command" ${command_args[@]+"${command_args[@]}"}; then
-    if [[ -n "$approval_reason" ]]; then
-      run_approved "$approval_reason" "$@"
-    fi
-    block_command "$@"
+    hard_block_command "共享工作区不允许 autostash。" "$@"
   fi
 
   exec "$REAL_GIT" "$@"

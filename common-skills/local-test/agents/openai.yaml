@@ -1,6 +1,6 @@
 interface:
   display_name: "Local Test Environment"
-  short_description: "Set up, verify, and cleanly shut down isolated local test environments."
+  short_description: "Set up, verify, and cleanly shut down per-worktree isolated local test environments with shared middleware."
   default_prompt: "Use $local-test when setting up or running local multi-service testing environments for functional verification before deployment."
 
 policy:

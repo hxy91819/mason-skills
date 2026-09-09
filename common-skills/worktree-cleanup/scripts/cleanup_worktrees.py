@@ -863,11 +863,6 @@ def revalidate_local_state(entry: dict[str, Any], repo_root: Path) -> str | None
     return None
 
 
-def git_supports_user_approval(repo_root: Path) -> bool:
-    result = run_command(["git", "--wrapper-help"], cwd=repo_root, check=False)
-    return result.returncode == 0 and "--user-approved" in result.stdout
-
-
 def apply_candidates(summary: dict[str, Any], approved_tokens: list[str]) -> None:
     eligible_by_token = {
         entry["approval_token"]: entry
@@ -905,10 +900,6 @@ def apply_candidates(summary: dict[str, Any], approved_tokens: list[str]) -> Non
     batch_root.chmod(0o700)
     summary["backup_root"] = str(batch_root)
     manifest_path = batch_root / "manifest.json"
-    guard_supports_user_approval = git_supports_user_approval(
-        Path(summary["common_repo_root"])
-    )
-
     def update_manifest() -> None:
         write_json(
             manifest_path,
@@ -977,26 +968,14 @@ def apply_candidates(summary: dict[str, Any], approved_tokens: list[str]) -> Non
             fail_candidate(state_error)
             continue
 
-        # 单级授权：wrapper 唯一的授权参数是 --user-approved。脚本已预先验证
-        # 目标干净且远端可证明，reason 记录该预检结论供审计；wrapper 不在时
-        # 直接用普通 git（探测见 git_supports_user_approval）。
-        remove_args = ["git"]
-        if guard_supports_user_approval:
-            remove_args.append(
-                "--user-approved="
-                f"worktree-cleanup approval {candidate['approval_token'][:12]} "
-                "for a clean remotely durable worktree"
-            )
-        remove_args.extend(["worktree", "remove", str(worktree_path)])
+        remove_args = ["git", "worktree", "remove", str(worktree_path)]
         result = run_command(
             remove_args,
             cwd=Path(summary["common_repo_root"]),
             check=False,
         )
         if result.returncode != 0:
-            candidate["action"] = (
-                "authorization-required" if result.returncode == 77 else "failed"
-            )
+            candidate["action"] = "failed"
             candidate["error"] = (
                 result.stderr.strip()
                 or result.stdout.strip()

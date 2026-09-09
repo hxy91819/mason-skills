@@ -410,7 +410,7 @@ else:
         self.assertIn("ignored_roots_deleted_count: 51", rendered)
         self.assertIn("ignored_roots_deleted_sample_truncated: yes", rendered)
 
-    def test_git_guard_user_authorization_is_used(self) -> None:
+    def test_worktree_removal_does_not_probe_git_wrapper(self) -> None:
         _, report = self.audit()
         token = self.approval_for(report, self.worktree)
         git_wrapper = self.fake_bin / "git"
@@ -420,11 +420,11 @@ import os
 import sys
 
 args = sys.argv[1:]
-if args[:1] == ["--wrapper-help"]:
-    print("--user-approved=<reason>")
-    sys.exit(0)
-if args and args[0].startswith("--user-approved="):
-    os.execv("/usr/bin/git", ["git", *args[1:]])
+if args[:1] == ["--wrapper-help"] or (
+    args and args[0].startswith("--user-approved=")
+):
+    print("unexpected wrapper compatibility call", file=sys.stderr)
+    sys.exit(99)
 os.execv("/usr/bin/git", ["git", *args])
 """,
             encoding="utf-8",
@@ -451,11 +451,9 @@ import os
 import sys
 
 args = sys.argv[1:]
-if args and args[0].startswith("--user-approved="):
-    args = args[1:]
 if args[:2] == ["worktree", "remove"] and args[2].endswith("task-123"):
-    print("simulated worktree guard", file=sys.stderr)
-    sys.exit(77)
+    print("simulated removal failure", file=sys.stderr)
+    sys.exit(1)
 os.execv("/usr/bin/git", ["git", *args])
 """,
             encoding="utf-8",
@@ -474,7 +472,7 @@ os.execv("/usr/bin/git", ["git", *args])
         self.assertEqual(result.returncode, 1)
         applied = json.loads(result.stdout)
         actions = {entry["path"]: entry["action"] for entry in applied["entries"]}
-        self.assertEqual(actions[str(self.worktree)], "authorization-required")
+        self.assertEqual(actions[str(self.worktree)], "failed")
         self.assertEqual(actions[str(second)], "removed")
         self.assertTrue(self.worktree.exists())
         self.assertFalse(second.exists())

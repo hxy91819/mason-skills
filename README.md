@@ -80,8 +80,8 @@ common-skills/
 
 See [common-skills/README.md](common-skills/README.md) for authoring guidelines.
 
-Repository tooling includes the [shared-worktree Git guard](tools/git-shared-worktree-guard/README.md),
-which preserves concurrent Agent work without blocking safe local history operations.
+Repository tooling includes the [shared-worktree Git stash guard](tools/git-shared-worktree-guard/README.md),
+which prevents state-changing stash operations and autostash.
 
 `config/` holds the facts for reproducing a user-scope setup on a new machine:
 [`skill-symlinks.yaml`](config/skill-symlinks.yaml) is the recommended global-skills manifest

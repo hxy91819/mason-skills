@@ -18,5 +18,5 @@ Use this skill only when the user explicitly invokes it. The invocation authoriz
 1. **Start**: Check current workspace status. Create the task branch and worktree under `.worktrees/<task-name>` from the target remote default branch (e.g. `origin/main`).
 2. **Work**: Perform all edits, tests, commits, and pushes inside the task worktree. Never use `git stash`.
 3. **Clean Up**: Once the work is merged into the target branch or a PR/MR is submitted with its commits pushed to remote, clean up:
-   - Remove the task worktree and delete its local branch. If blocked by the git wrapper, use `--user-approved='clean delivered worktree'` under this invocation's existing authorization without asking the user again.
+   - Remove the task worktree and delete its local branch.
    - Never use `--force`. If the worktree is dirty or commits are not durably pushed, keep it intact and report the path.
