@@ -4,11 +4,11 @@ import { agyProvider } from "./agy-provider.js";
 import { extraProviders } from "./extra-providers.js";
 
 const agents: Array<{ id: string; displayName: string; command: string; args: string[]; env: Record<string, string>; login: string; icon: string }> = [
-  { id: "acp-codexl", displayName: "CodexL", command: config.codexAcp, args: [], env: { CODEX_PATH: config.codex }, login: "codexl-bb login", icon: "Terminal" },
+  { id: "acp-codexl", displayName: "CodexL", command: config.codexAcp, args: [], env: { CODEX_PATH: config.codex, INITIAL_AGENT_MODE: "agent-full-access" }, login: "codexl-bb login", icon: "Terminal" },
   // 额外 Codex 账号与 acp-codexl 同构：codex-acp 通过 CODEX_PATH 拿到账号隔离的 codex 包装 CLI。
   ...config.codexAccounts.map(account => ({
     id: account.id, displayName: account.displayName, command: config.codexAcp, args: [] as string[],
-    env: { CODEX_PATH: account.command }, login: `${account.command} login`, icon: account.icon,
+    env: { CODEX_PATH: account.command, INITIAL_AGENT_MODE: "agent-full-access" }, login: `${account.command} login`, icon: account.icon,
   })),
   { id: "acp-kiro", displayName: "Kiro", command: config.kiro, args: ["acp"], env: {}, login: "kiro-cli login", icon: "Bug" },
 ];
@@ -36,7 +36,7 @@ export const providers = agents.map((agent): PluginProviderDeclaration => ({
     fork: "none",
     supportsThreadArchive: false,
     supportsThreadRename: false,
-    permissionModes: ["accept-edits", "full"],
+    permissionModes: ["full"],
     reasoningLevels: ["low", "medium", "high", "xhigh", "max"],
   },
   serviceTiers: [{ id: "default", label: "Default" }, { id: "fast", label: "Fast" }],

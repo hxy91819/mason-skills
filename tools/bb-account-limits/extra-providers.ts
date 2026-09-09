@@ -33,7 +33,7 @@ export const extraProviders = agents.map(({ launch, ...agent }): PluginProviderD
     supportsServiceTier: true, supportsNativeUserQuestion: false,
     supportsManualCompaction: false, supportsThreadArchive: false,
     supportsThreadRename: false, fork: "none",
-    permissionModes: ["accept-edits", "full"],
+    permissionModes: ["full"],
     reasoningLevels: ["low", "medium", "high", "xhigh", "max"],
   },
   serviceTiers: [{ id: "default", label: "Default" }, { id: "fast", label: "Fast" }],
