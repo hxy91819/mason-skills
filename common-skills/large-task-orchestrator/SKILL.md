@@ -72,31 +72,36 @@ ready Story 时退出并把最小原因写到 stderr。
 
 ## 报告契约
 
-Worker 的 `Changed`、`Verified` 最多各 8 行，`Handoff` 最多 400 字符；最终只回复：
+契约字段以中文为准，因为 Worker 通常运行在要求中文回复的系统提示下；driver 同时接受旧的英文字段名
+和常见同义写法（如「已变更」「剩余工作」「交接说明」），值也接受「完成 / 通过 / 成立」等同义词。
+Worker 回复不可解析时 driver 先让同一线程按契约重发一次，再派 Judge。
+
+Worker 的「变更」「验证」最多各 8 行，「交接」最多 400 字符；最终只回复：
 
 ```text
-Result: worker_done | blocked | failed
-Changed: <可观察结果和文件>
-Verified: <命令及结果>
-Remaining: <未完成工作或 none>
-Handoff: <下一位 Worker 所需事实>
+结果：worker_done | blocked | failed
+变更：<可观察结果和文件>
+验证：<命令及结果>
+剩余：<未完成工作，或 无>
+交接：<下一位 Worker 所需事实>
 ```
 
-Validator 只读核验 Acceptance，不做代码审查：
+Validator 只读核验 Acceptance，不做代码审查。driver 在任务里列出自己维护的计划状态与投影路径，
+Validator 不得因这些路径判越界：
 
 ```text
-Verdict: PASS | FAIL
-Acceptance:
+结论：PASS | FAIL
+验收：
 - AC-01: holds | missing — <命令或观察证据>
-Gaps: <遗漏、越界或黄金案例冲突；none>
-New facts: <推翻后续假设的发现；none>
+缺口：<遗漏、越界或黄金案例冲突；或 无>
+新事实：<推翻后续假设的发现；或 无>
 ```
 
 Judge 只回复一个动作：
 
 ```text
-Action: retry | escalate | patch | block | replan | stop
-Note: <给 driver 或用户的事实>
+动作：retry | escalate | patch | block | replan | stop
+说明：<给 driver 或用户的事实>
 ```
 
 ## 常用参数与退出码

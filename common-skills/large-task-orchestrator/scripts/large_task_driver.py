@@ -147,48 +147,94 @@ def clear_pid_lock(path: Path, pid: int) -> None:
 # --------------------------------------------------------------------------- 报告解析
 
 
-def parse_fields(text: str, keys: Sequence[str]) -> dict[str, str]:
-    """解析 `Key: value` 段落；同一 key 之后的续行归入该 key，直到遇到下一个已知 key。"""
+# 报告契约以中文字段为准：Worker 多运行在要求中文回复的系统提示下，英文字段会被"翻译"掉。
+# 每个规范字段附带常见同义写法，解析时统一映射回规范名；值同样接受中英文同义词。
+WORKER_FIELDS: dict[str, tuple[str, ...]] = {
+    "Result": ("结果", "Result", "状态"),
+    "Changed": ("变更", "Changed", "已变更", "已更改", "改动", "修改"),
+    "Verified": ("验证", "Verified", "已验证", "校验"),
+    "Remaining": ("剩余", "Remaining", "剩余工作", "未完成"),
+    "Handoff": ("交接", "Handoff", "交接说明", "移交"),
+}
+VALIDATOR_FIELDS: dict[str, tuple[str, ...]] = {
+    "Verdict": ("结论", "Verdict", "判定"),
+    "Acceptance": ("验收", "Acceptance", "验收项"),
+    "Gaps": ("缺口", "Gaps", "遗漏", "问题"),
+    "New facts": ("新事实", "New facts", "新发现"),
+}
+JUDGE_FIELDS: dict[str, tuple[str, ...]] = {
+    "Action": ("动作", "Action", "决定"),
+    "Note": ("说明", "Note", "备注", "原因"),
+}
+# 键带后缀区分同一中文词在不同契约中的含义（"失败"对 Worker 是 failed，对 Validator 是 FAIL）。
+VALUE_ALIASES: dict[str, str] = {
+    "完成": "worker_done", "已完成": "worker_done", "done": "worker_done",
+    "阻塞": "blocked", "受阻": "blocked", "失败": "failed",
+    "通过:v": "PASS", "pass:v": "PASS", "未通过:v": "FAIL", "失败:v": "FAIL", "fail:v": "FAIL",
+    "成立": "holds", "缺失": "missing", "不成立": "missing",
+    "重试": "retry", "升档": "escalate", "修补": "patch", "阻塞:j": "block", "重规划": "replan", "停止": "stop",
+}
+
+
+def parse_fields(text: str, fields: dict[str, tuple[str, ...]]) -> dict[str, str]:
+    """解析 `字段：值` 段落，中英文冒号均可；续行归入上一个字段，直到遇到下一个已知字段。"""
+    alias_to_key = {alias: key for key, aliases in fields.items() for alias in aliases}
+    names = sorted(alias_to_key, key=len, reverse=True)
+    pattern = re.compile(r"^\s*[*_`]*(%s)[*_`]*\s*[:：]\s*(.*)$" % "|".join(re.escape(name) for name in names))
     result: dict[str, list[str]] = {}
     current: str | None = None
-    pattern = re.compile(r"^\s*(%s)\s*:\s*(.*)$" % "|".join(re.escape(key) for key in keys))
     for line in text.splitlines():
         match = pattern.match(line)
         if match:
-            current = match.group(1)
+            current = alias_to_key[match.group(1)]
             result[current] = [match.group(2).strip()]
         elif current is not None:
             result[current].append(line.rstrip())
     return {key: "\n".join(lines).strip() for key, lines in result.items()}
 
 
+def canonical_value(raw: str, allowed: Sequence[str], *, suffix: str = "") -> str:
+    token = raw.split()[0].strip("`*_。.，,") if raw.strip() else ""
+    lowered = token.lower()
+    for item in allowed:
+        if item.lower() == lowered:
+            return item
+    for key in (lowered + suffix, token + suffix, lowered, token):
+        mapped = VALUE_ALIASES.get(key)
+        if mapped in allowed:
+            return mapped
+    return ""
+
+
 def parse_worker_report(text: str) -> dict[str, str] | None:
-    fields = parse_fields(text, ("Result", "Changed", "Verified", "Remaining", "Handoff"))
-    result = fields.get("Result", "").split()[0].strip("`") if fields.get("Result") else ""
-    if result not in WORKER_RESULTS:
+    fields = parse_fields(text, WORKER_FIELDS)
+    result = canonical_value(fields.get("Result", ""), WORKER_RESULTS)
+    if not result:
         return None
     fields["Result"] = result
     return fields
 
 
 def parse_validator_report(text: str) -> dict[str, Any] | None:
-    fields = parse_fields(text, ("Verdict", "Acceptance", "Gaps", "New facts"))
-    verdict = fields.get("Verdict", "").split()[0].strip("`") if fields.get("Verdict") else ""
-    if verdict not in VERDICTS:
+    fields = parse_fields(text, VALIDATOR_FIELDS)
+    verdict = canonical_value(fields.get("Verdict", ""), VERDICTS, suffix=":v")
+    if not verdict:
         return None
     holds: dict[str, str] = {}
     for line in fields.get("Acceptance", "").splitlines():
-        match = re.match(r"^\s*-\s*(AC-\d+)\s*:\s*(holds|missing)\b\s*(.*)$", line)
+        match = re.match(r"^\s*[-*]?\s*(AC-\d+)\s*[:：]\s*(\S+)", line)
         if match:
-            holds[match.group(1)] = match.group(2)
+            status = canonical_value(match.group(2), ("holds", "missing"))
+            if status:
+                holds[match.group(1)] = status
     return {"verdict": verdict, "acceptance": holds, "gaps": fields.get("Gaps", ""),
             "new_facts": fields.get("New facts", ""), "raw": text}
 
 
 def parse_judge_report(text: str) -> dict[str, str] | None:
-    fields = parse_fields(text, ("Action", "Note"))
-    action = fields.get("Action", "").split()[0].strip("`").lower() if fields.get("Action") else ""
-    if action not in JUDGE_ACTIONS:
+    fields = parse_fields(text, JUDGE_FIELDS)
+    action = canonical_value(fields.get("Action", ""), JUDGE_ACTIONS, suffix=":j")
+    if not action:
         return None
     return {"action": action, "note": fields.get("Note", "")}
 
@@ -197,7 +243,7 @@ def split_items(text: str) -> list[str]:
     items = []
     for line in text.splitlines():
         line = line.strip()
-        if not line or line.lower() == "none":
+        if not line or line.lower() in ("none", "无", "无。"):
             continue
         items.append(line.lstrip("-* ").strip())
     return items
@@ -246,6 +292,7 @@ class StoryState:
     patch_rounds: int = 0
     thread_retries: int = 0
     validator_parse_failures: int = 0
+    reformat_rounds: int = 0
     judge_rounds: int = 0
     baseline_commit: str = ""
     baseline_dirty: list[str] = field(default_factory=list)
@@ -263,7 +310,7 @@ class StoryState:
             "validator_thread": self.validator_thread, "attempts": self.attempts,
             "patch_rounds": self.patch_rounds, "thread_retries": self.thread_retries,
             "validator_parse_failures": self.validator_parse_failures,
-            "judge_rounds": self.judge_rounds, "baseline_commit": self.baseline_commit,
+            "reformat_rounds": self.reformat_rounds, "judge_rounds": self.judge_rounds, "baseline_commit": self.baseline_commit,
             "baseline_dirty": self.baseline_dirty, "last_worker": self.last_worker,
             "last_validator": self.last_validator,
         }
@@ -622,25 +669,44 @@ class Driver:
 {brief}
 ```
 
-最终回复只包含下面这段，字段顺序固定，不加其他内容：
+最终回复只包含下面这段，字段名逐字保留、顺序固定，不加其他内容：
 
-Result: worker_done | blocked | failed
-Changed: <可观察结果和文件，最多 8 行>
-Verified: <运行过的命令与结果，最多 8 行>
-Remaining: <未完成工作或 none>
-Handoff: <替换 Worker 或下一张 Story 需要的事实，最多 400 字符>
+结果：worker_done | blocked | failed
+变更：<可观察结果和文件，最多 8 行>
+验证：<运行过的命令与结果，最多 8 行>
+剩余：<未完成工作，或 无>
+交接：<替换 Worker 或下一张 Story 需要的事实，最多 400 字符>
+"""
+
+    @staticmethod
+    def reformat_request() -> str:
+        return """你的上一条回复无法被 driver 解析。不要改代码，只按下面格式重新回复一次，字段名逐字保留：
+
+结果：worker_done | blocked | failed
+变更：<可观察结果和文件>
+验证：<命令与结果>
+剩余：<未完成工作，或 无>
+交接：<下一位 Worker 需要的事实>
 """
 
     def validator_task(self, story_id: str, story: dict[str, Any], brief: str, state: StoryState) -> str:
         acceptance = "\n".join(f"- {item['id']}: {item['criterion']}" for item in story["acceptance"])
         changes = "\n".join(f"- {path}" for path in self.story_changes(state)) or "- （无未提交改动）"
         worker = state.last_worker
+        management = "\n".join(f"- {path}" for path in self.management_paths(story_id))
+        implementation = "\n".join(f"- {path}" for path in self.implementation_changes(story_id, state)) or "- （无）"
         return f"""你是 Story {story_id} 的 Validator。你没有参与实现；只读，不修改任何文件，不提交。可以运行测试与验收命令。
 
 {self.repo_context()}
 本 Story 开始时的基线 commit：{state.baseline_commit}
 本 Story 的未提交改动：
 {changes}
+
+其中下面这些是 driver 自己维护的计划状态与投影，不是 Worker 改的，不算越界，不要因它们判 FAIL：
+{management}
+
+Worker 实际的实现改动只有：
+{implementation}
 
 Worker 报告：
 Changed: {worker.get('Changed', '')}
@@ -656,13 +722,13 @@ Acceptance：
 {brief}
 ```
 
-最终回复只包含下面这段：
+最终回复只包含下面这段，字段名逐字保留：
 
-Verdict: PASS | FAIL
-Acceptance:
+结论：PASS | FAIL
+验收：
 - AC-01: holds | missing — <命令或观察证据>
-Gaps: <遗漏、越界或与黄金案例冲突的事实；none>
-New facts: <推翻后续 Story 前提或计划假设的发现；none>
+缺口：<遗漏、越界或与黄金案例冲突的事实；或 无>
+新事实：<推翻后续 Story 前提或计划假设的发现；或 无>
 """
 
     def judge_task(self, story_id: str, story: dict[str, Any], state: StoryState, situation: str) -> str:
@@ -698,10 +764,10 @@ Validator 线程：{state.validator_thread}
 
 线程正在等待交互时，你可以用 `bb thread interactions list/show/approve/answer/deny` 处理属于计划已授权范围内的交互，处理后选 retry 之外的 `patch`（Note 写 "interaction handled"）让 driver 继续等待；越权的交互选 stop。
 
-最终回复只包含：
+最终回复只包含下面两行，字段名逐字保留：
 
-Action: retry | escalate | patch | block | replan | stop
-Note: <给 driver 或用户的说明>
+动作：retry | escalate | patch | block | replan | stop
+说明：<给 driver 或用户的说明>
 """
 
     # ----------------------------------------------------------------- Story 生命周期
@@ -724,6 +790,7 @@ Note: <给 driver 或用户的说明>
         state.patch_rounds = 0
         state.thread_retries = 0
         state.validator_parse_failures = 0
+        state.reformat_rounds = 0
         if story["status"] == "todo":
             self.transition(story_id, "in_progress", expect="todo", owner=thread_id)
         else:
@@ -882,6 +949,13 @@ Note: <给 driver 或用户的说明>
     def handle_worker_output(self, story_id: str, story: dict[str, Any], state: StoryState, output: str) -> bool:
         report = parse_worker_report(output)
         if report is None:
+            # 格式漂移比实现失败常见得多，让同一线程按契约重发一次比派 complex Judge 便宜。
+            if state.worker_thread and state.reformat_rounds < 1:
+                state.reformat_rounds += 1
+                self.set_story_state(story_id, state)
+                self.tell_thread(state.worker_thread, self.reformat_request())
+                self.log("worker.reformat_requested", story=story_id, thread=state.worker_thread)
+                return True
             self.consult_judge(story_id, state, f"Worker 回复无法按契约解析：\n{output[-1500:]}")
             return True
         state.last_worker = report

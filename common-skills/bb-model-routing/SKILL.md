@@ -48,6 +48,9 @@ bb-dispatch --difficulty medium --kind test --task '<测试目标、范围与验
 driver 只传任务文本、难度与已有环境，路由仍由本配置决定；状态机、wait/output/tell 兼容性见其
 [`references/bb-dispatch-loop.md`](../large-task-orchestrator/references/bb-dispatch-loop.md)。
 
+成本提示：`defaults.test` 决定 Validator 的模型。Validator 只逐条核对验收并跑命令，便宜模型的中档
+reasoning 即可；把它指到与 `complex` 同级的强模型会让校验比实现还贵。`complex` 同时承担 Judge，应保持强模型。
+
 ## 可观测性
 
 使用 `--dry-run` 只读检查当前选择、目标环境和启动参数；派发返回实际选择与原始创建回执。当前没有持久运行历史、裁决回写或跨运行聚合，无法统计长期成功率；故障定位依赖返回错误和 BB 线程记录。

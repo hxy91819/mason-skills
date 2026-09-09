@@ -299,7 +299,7 @@ class DriverTest(unittest.TestCase):
         self.assertEqual(dispatches[1]["kind"], "test")
         self.assertEqual(dispatches[1]["difficulty"], "simple")
         worker_task = self.read_world()["threads"]["thr_worker_story01_1"]["task"]
-        self.assertIn("Result: worker_done | blocked | failed", worker_task)
+        self.assertIn("结果：worker_done | blocked | failed", worker_task)
         self.assertIn("src/", worker_task)
 
     def test_validator_fail_is_sent_back_to_same_worker_then_passes(self) -> None:
@@ -317,6 +317,44 @@ class DriverTest(unittest.TestCase):
         self.assertIn("缺少返回值", tells[0])
         self.assertEqual(world["spawned"]["STORY-01:validator"], 2)
         self.assertEqual(world["spawned"]["STORY-01:worker"], 1)
+
+    def test_chinese_reports_are_parsed_without_judge(self) -> None:
+        worker_cn = "结果：worker_done\n已变更：新增 src/feature.py\n已验证：python3 -m unittest：退出码 0\n剩余工作：无\n交接说明：入口在 src/feature.py。"
+        validator_cn = "结论：PASS\n验收：\n- AC-01: 成立 — 返回 1\n缺口：无\n新事实：无"
+        self.set_world({
+            "STORY-01:worker": [[{"output": worker_cn, "files": WORKER_FILES}]],
+            "STORY-01:validator": [[{"output": validator_cn}]],
+        })
+        self.run_driver("--max-stories", "1")
+        self.assertEqual(self.story("STORY-01")["status"], "done")
+        self.assertNotIn("STORY-01:judge", self.read_world().get("spawned", {}))
+        self.assertEqual(self.story("STORY-01")["handoff"]["risks"], [])
+
+    def test_unparsable_worker_reply_gets_one_reformat_request_before_judge(self) -> None:
+        self.set_world({
+            "STORY-01:worker": [[{"output": "我做完了，测试都通过。", "files": WORKER_FILES},
+                                 {"output": WORKER_DONE}]],
+            "STORY-01:validator": [[{"output": VALIDATOR_PASS}]],
+        })
+        self.run_driver("--max-stories", "1")
+        self.assertEqual(self.story("STORY-01")["status"], "done")
+        world = self.read_world()
+        self.assertNotIn("STORY-01:judge", world.get("spawned", {}))
+        tells = world["threads"]["thr_worker_story01_1"]["tells"]
+        self.assertEqual(len(tells), 1)
+        self.assertIn("结果：worker_done | blocked | failed", tells[0])
+
+    def test_validator_task_marks_driver_managed_paths_as_not_out_of_scope(self) -> None:
+        self.set_world({
+            "STORY-01:worker": [[{"output": WORKER_DONE, "files": WORKER_FILES}]],
+            "STORY-01:validator": [[{"output": VALIDATOR_PASS}]],
+        })
+        self.run_driver("--max-stories", "1")
+        task = self.read_world()["threads"]["thr_validator_story01_1"]["task"]
+        self.assertIn("不算越界", task)
+        self.assertIn("plan/STATUS.md", task)
+        self.assertIn("plan/agent/stories/STORY-01-first.json", task)
+        self.assertIn("结论：PASS | FAIL", task)
 
     def test_simple_story_skips_validator(self) -> None:
         self.set_world({"STORY-01:worker": [[{"output": WORKER_DONE, "files": WORKER_FILES}]]})
