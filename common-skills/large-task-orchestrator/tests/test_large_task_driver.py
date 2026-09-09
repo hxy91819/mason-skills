@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -17,7 +18,7 @@ PLANNING = SKILL_DIR.parent / "large-task-planning" / "scripts" / "epic_story.py
 
 # 假 bb：所有线程状态在 world.json 里；每个线程按脚本化的 outputs 队列依次回复。
 FAKE_BB = r'''#!/usr/bin/env python3
-import json, os, sys
+import json, os, subprocess, sys
 world_path = os.environ["FAKE_WORLD"]
 world = json.load(open(world_path))
 args = [a for a in sys.argv[1:] if a != "--json"]
@@ -32,17 +33,25 @@ if args[:2] == ["thread", "show"]:
     out({"thread": {"id": args[2], "status": t["status"]}})
 if args[:2] == ["thread", "wait"]:
     t = world["threads"][args[2]]
+    wait_exit = 0
     # 每次 wait 消耗一条脚本化回复：线程从 active 变为 idle/error 并写入 output；副作用写文件模拟 Worker 改动。
     if t["status"] != "idle" and t["queue"]:
         step = t["queue"].pop(0)
+        wait_exit = step.get("wait_exit", 0)
         t["status"] = step.get("status", "idle")
         t["output"] = step.get("output", "")
         for rel, content in step.get("files", {}).items():
             path = os.path.join(os.environ["FAKE_REPO"], rel)
             os.makedirs(os.path.dirname(path), exist_ok=True)
             open(path, "w").write(content)
+        for thread_id in step.get("clear_interactions_for", []):
+            world["threads"][thread_id]["interactions"] = []
+        if step.get("render_plan"):
+            subprocess.run([sys.executable, os.environ["FAKE_PLANNING"], "render",
+                            "--plan", os.environ["FAKE_PLAN"], "--stories-dir", os.environ["FAKE_STORIES"]],
+                           check=True, capture_output=True)
         save()
-    out({"status": t["status"]})
+    print(json.dumps({"status": t["status"]}, ensure_ascii=False)); sys.exit(wait_exit)
 if args[:2] == ["thread", "output"]:
     out({"output": world["threads"][args[2]]["output"]})
 if args[:3] == ["thread", "interactions", "list"]:
@@ -71,11 +80,12 @@ queue = scripts[index] if index < len(scripts) else [{"output": "Result: failed\
 world["spawned"][key] = index + 1
 thread_id = f"thr_{role}_{story.lower().replace('-', '')}_{index + 1}"
 world["threads"][thread_id] = {"status": "active", "output": "", "queue": list(queue), "task": get("--task"),
-                               "difficulty": get("--difficulty"), "kind": get("--kind")}
+                               "difficulty": get("--difficulty"), "kind": get("--kind"),
+                               "interactions": list(world.get("interactions", {}).get(key, []))}
 world.setdefault("dispatches", []).append({"thread": thread_id, "difficulty": get("--difficulty"), "kind": get("--kind"), "title": title})
 json.dump(world, open(world_path, "w"), ensure_ascii=False, indent=1)
 print(json.dumps({"dry_run": False, "selection": {"provider": "p", "model": "m", "difficulty": get("--difficulty"), "kind": get("--kind")},
-                  "result": {"thread": {"id": thread_id, "status": "queued"}}}))
+                  "result": {"id": thread_id, "status": "queued"}}))
 '''
 
 WORKER_DONE = "Result: worker_done\nChanged: 新增 src/feature.py 提供公开入口\nVerified: python3 -m unittest：退出码 0\nRemaining: none\nHandoff: 公开入口在 src/feature.py。"
@@ -128,6 +138,7 @@ class DriverTest(unittest.TestCase):
         self.world = self.root / "world.json"
         self.plan = self.repo / "plan" / "agent" / "plan.json"
         self.stories = self.repo / "plan" / "agent" / "stories"
+        (self.repo / ".gitignore").write_text(".local/\n", encoding="utf-8")
         self.write_json(self.plan, plan_data())
         self.write_json(self.stories / "STORY-01-first.json", story_data("STORY-01", []))
         self.write_json(self.stories / "STORY-02-final.json", story_data("STORY-02", ["STORY-01"]))
@@ -153,14 +164,20 @@ class DriverTest(unittest.TestCase):
                        check=True, capture_output=True)
 
     def set_world(self, scripts: dict[str, list[list[dict[str, Any]]]]) -> None:
-        self.write_json(self.world, {"threads": {}, "scripts": scripts})
+        interactions = scripts.get("interactions", {})
+        self.write_json(self.world, {
+            "threads": {},
+            "scripts": {key: value for key, value in scripts.items() if key != "interactions"},
+            "interactions": interactions,
+        })
 
     def read_world(self) -> dict[str, Any]:
         return json.loads(self.world.read_text(encoding="utf-8"))
 
     def run_driver(self, *extra: str, expected: int = 0) -> subprocess.CompletedProcess[str]:
         env = {**os.environ, "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}",
-               "FAKE_WORLD": str(self.world), "FAKE_REPO": str(self.repo)}
+               "FAKE_WORLD": str(self.world), "FAKE_REPO": str(self.repo),
+               "FAKE_PLANNING": str(PLANNING), "FAKE_PLAN": str(self.plan), "FAKE_STORIES": str(self.stories)}
         result = subprocess.run(
             [sys.executable, str(DRIVER), "--plan", str(self.plan), "--stories-dir", str(self.stories),
              "--repository", str(self.repo), "--dispatch", str(self.bin / "bb-dispatch"), "--poll-seconds", "1", *extra],
@@ -174,6 +191,15 @@ class DriverTest(unittest.TestCase):
             if data["id"] == story_id:
                 return data
         raise AssertionError(story_id)
+
+    def add_story(self, story_id: str, blocked_by: list[str]) -> None:
+        self.write_json(self.stories / f"{story_id}-extra.json", story_data(story_id, blocked_by))
+        final = self.story("STORY-02")
+        final["blocked_by"].append(story_id)
+        self.write_json(self.stories / "STORY-02-final.json", final)
+        self.planning("render")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", f"add {story_id}")
 
     def test_happy_path_completes_plan_with_checkpoints_and_validator(self) -> None:
         self.set_world({
@@ -269,10 +295,182 @@ class DriverTest(unittest.TestCase):
         self.assertIn("ONCE", first.stdout)
         self.assertEqual(self.story("STORY-01")["status"], "in_progress")
         self.assertTrue(self.story("STORY-01")["owner"].startswith("thr_"))
-        (self.repo / ".local").rename(self.repo / ".local-lost")  # 丢失本地状态，只剩计划与线程
+        shutil.rmtree(self.repo / ".local")  # 丢失本地状态，只剩计划与线程
         self.run_driver("--max-stories", "1")
         self.assertEqual(self.story("STORY-01")["status"], "done")
         self.assertEqual(self.read_world()["spawned"]["STORY-01:worker"], 1)
+
+    def test_worker_error_retries_once_then_judge_replaces_worker(self) -> None:
+        self.set_world({
+            "STORY-01:worker": [
+                [{"status": "error"}, {"status": "error"}],
+                [{"output": WORKER_DONE, "files": WORKER_FILES}],
+            ],
+            "STORY-01:judge": [[{"output": "Action: retry\nNote: 线程故障，换 fresh Worker。"}]],
+            "STORY-01:validator": [[{"output": VALIDATOR_PASS}]],
+        })
+        self.run_driver("--max-stories", "1")
+        world = self.read_world()
+        self.assertEqual(world["spawned"]["STORY-01:worker"], 2)
+        self.assertEqual(world["spawned"]["STORY-01:judge"], 1)
+        retries = [call for call in world["calls"] if call[:2] == ["thread", "retry"]]
+        self.assertEqual(retries, [["thread", "retry", "thr_worker_story01_1"]])
+
+    def test_validator_error_retries_once_then_reassigns_validator(self) -> None:
+        self.set_world({
+            "STORY-01:worker": [[{"output": WORKER_DONE, "files": WORKER_FILES}]],
+            "STORY-01:validator": [
+                [{"status": "error"}, {"status": "error"}],
+                [{"output": VALIDATOR_PASS}],
+            ],
+        })
+        self.run_driver("--max-stories", "1")
+        world = self.read_world()
+        self.assertEqual(world["spawned"]["STORY-01:validator"], 2)
+        retries = [call for call in world["calls"] if call[:2] == ["thread", "retry"]]
+        self.assertEqual(retries, [["thread", "retry", "thr_validator_story01_1"]])
+
+    def test_pending_interaction_goes_to_judge_then_original_worker_continues(self) -> None:
+        self.set_world({
+            "STORY-01:worker": [[{"status": "active"}, {"output": WORKER_DONE, "files": WORKER_FILES}]],
+            "STORY-01:judge": [[{
+                "output": "Action: patch\nNote: interaction handled",
+                "clear_interactions_for": ["thr_worker_story01_1"],
+            }]],
+            "STORY-01:validator": [[{"output": VALIDATOR_PASS}]],
+            "interactions": {
+                "STORY-01:worker": [{"id": "int-credential", "status": "pending", "question": "确认在测试环境读取令牌"}],
+            },
+        })
+        self.run_driver("--max-stories", "1")
+        world = self.read_world()
+        judge = next(item for item in world["dispatches"] if item["title"] == "STORY-01 judge")
+        judge_task = world["threads"][judge["thread"]]["task"]
+        self.assertIn("int-credential", judge_task)
+        self.assertIn("读取令牌", judge_task)
+        self.assertEqual(world["spawned"]["STORY-01:worker"], 1)
+        self.assertEqual(self.story("STORY-01")["status"], "done")
+
+    def test_judge_block_continues_independent_ready_story_then_stops(self) -> None:
+        self.add_story("STORY-03", [])
+        self.set_world({
+            "STORY-01:worker": [[{"output": "Result: blocked\nChanged: none\nVerified: none\nRemaining: 缺少凭据\nHandoff: 等待凭据"}]],
+            "STORY-01:judge": [[{"output": "Action: block\nNote: 等待用户提供测试凭据。"}]],
+            "STORY-03:worker": [[{"output": WORKER_DONE, "files": {"src/independent.py": "value = 3\n"}}]],
+            "STORY-03:validator": [[{"output": VALIDATOR_PASS}]],
+        })
+        result = self.run_driver(expected=3)
+        self.assertIn("STORY-01: 等待用户提供测试凭据", result.stderr)
+        self.assertEqual(self.story("STORY-01")["status"], "blocked")
+        self.assertEqual(self.story("STORY-03")["status"], "done")
+
+    def test_judge_replan_refreshes_plan_then_driver_continues(self) -> None:
+        replanned = story_data("STORY-01", [])
+        replanned["status"] = "todo"
+        replan_contents = json.dumps(replanned, ensure_ascii=False, indent=2) + "\n"
+        self.set_world({
+            "STORY-01:worker": [
+                [{"output": "Result: failed\nChanged: none\nVerified: 红\nRemaining: 全部\nHandoff: 需要重排"}],
+                [{"output": WORKER_DONE, "files": WORKER_FILES}],
+            ],
+            "STORY-01:judge": [[{
+                "output": "Action: replan\nNote: 已将当前 Story 放回 todo 并更新执行路线。",
+                "files": {"plan/agent/stories/STORY-01-first.json": replan_contents},
+                "render_plan": True,
+            }]],
+            "STORY-01:validator": [[{"output": VALIDATOR_PASS}]],
+        })
+        self.run_driver("--max-stories", "1")
+        self.assertEqual(self.story("STORY-01")["status"], "done")
+        self.assertEqual(self.read_world()["spawned"]["STORY-01:worker"], 2)
+
+    def test_once_calls_resume_a_simple_story_until_done(self) -> None:
+        self.set_world({"STORY-01:worker": [[{"output": WORKER_DONE, "files": WORKER_FILES}]]})
+        self.run_driver("--once", "--default-difficulty", "simple")
+        self.assertEqual(self.story("STORY-01")["status"], "in_progress")
+        self.run_driver("--once", "--default-difficulty", "simple")
+        self.assertEqual(self.story("STORY-01")["status"], "done")
+
+    def test_wait_timeout_exit_two_is_a_paced_wait_not_a_driver_error(self) -> None:
+        self.set_world({"STORY-01:worker": [[{"status": "active", "wait_exit": 2}] ]})
+        self.run_driver("--once")
+        waiting = self.run_driver("--once")
+        self.assertIn("ONCE: waiting", waiting.stdout)
+        self.assertEqual(self.story("STORY-01")["status"], "in_progress")
+
+    def test_empty_worker_change_goes_to_judge_unless_explicitly_allowed(self) -> None:
+        self.set_world({
+            "STORY-01:worker": [[{"output": WORKER_DONE}]],
+            "STORY-01:judge": [[{"output": "Action: stop\nNote: 没有可验证的改动。"}]],
+        })
+        result = self.run_driver("--default-difficulty", "simple", expected=3)
+        self.assertIn("没有可验证的改动", result.stderr)
+        self.assertEqual(self.read_world()["spawned"]["STORY-01:judge"], 1)
+
+    def test_allow_empty_story_completes_without_judge(self) -> None:
+        self.set_world({"STORY-01:worker": [[{"output": WORKER_DONE}]]})
+        self.run_driver("--default-difficulty", "simple", "--allow-empty-story", "--max-stories", "1")
+        self.assertEqual(self.story("STORY-01")["status"], "done")
+        self.assertNotIn("STORY-01:judge", self.read_world().get("spawned", {}))
+
+    def test_complete_story_caps_handoff_to_planning_limits(self) -> None:
+        long_report = (
+            "Result: worker_done\n"
+            f"Changed: {'改动' * 300}\n"
+            f"Verified: {'验证' * 160}\n"
+            "Remaining: none\n"
+            f"Handoff: {'交接' * 300}"
+        )
+        self.set_world({"STORY-01:worker": [[{"output": long_report, "files": WORKER_FILES}]]})
+        self.run_driver("--default-difficulty", "simple", "--max-stories", "1")
+        handoff = self.story("STORY-01")["handoff"]
+        self.assertLessEqual(len(handoff["summary"]), 400)
+        self.assertLessEqual(len(handoff["next"]), 400)
+        self.assertTrue(all(len(item) <= 200 for item in handoff["verification"]))
+
+    def test_validator_always_runs_for_a_simple_story(self) -> None:
+        self.set_world({
+            "STORY-01:worker": [[{"output": WORKER_DONE, "files": WORKER_FILES}]],
+            "STORY-01:validator": [[{"output": VALIDATOR_PASS}]],
+        })
+        self.run_driver("--default-difficulty", "simple", "--validator", "always", "--max-stories", "1")
+        self.assertEqual(self.read_world()["spawned"]["STORY-01:validator"], 1)
+
+    def test_unparsable_validator_is_bounded_then_goes_to_judge(self) -> None:
+        self.set_world({
+            "STORY-01:worker": [[{"output": WORKER_DONE, "files": WORKER_FILES}]],
+            "STORY-01:validator": [[{"output": WORKER_DONE}], [{"output": WORKER_DONE}], [{"output": WORKER_DONE}]],
+            "STORY-01:judge": [[{"output": "Action: stop\nNote: Validator 契约不可靠。"}]],
+        })
+        result = self.run_driver(expected=3)
+        self.assertIn("Validator 契约不可靠", result.stderr)
+        world = self.read_world()
+        self.assertEqual(world["spawned"]["STORY-01:validator"], 3)
+        self.assertEqual(world["spawned"]["STORY-01:judge"], 1)
+
+    def test_checkpoint_excludes_preexisting_staged_change(self) -> None:
+        (self.repo / "README.md").write_text("并发暂存改动\n", encoding="utf-8")
+        self.git("add", "README.md")
+        self.set_world({"STORY-01:worker": [[{"output": WORKER_DONE, "files": WORKER_FILES}]]})
+        self.run_driver("--default-difficulty", "simple", "--max-stories", "1")
+        committed = self.git("show", "--format=", "--name-only", "HEAD").splitlines()
+        self.assertNotIn("README.md", committed)
+        staged = subprocess.run(["git", "diff", "--cached", "--quiet", "--", "README.md"], cwd=self.repo)
+        self.assertEqual(staged.returncode, 1)
+
+    def test_push_updates_the_configured_upstream_head(self) -> None:
+        remote = self.root / "remote.git"
+        subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
+        self.git("remote", "add", "origin", str(remote))
+        self.git("push", "-q", "--set-upstream", "origin", "main")
+        self.set_world({
+            "STORY-01:worker": [[{"output": WORKER_DONE, "files": WORKER_FILES}]],
+            "STORY-02:worker": [[{"output": WORKER_DONE, "files": {"src/final.py": "done = True\n"}}]],
+        })
+        self.run_driver("--default-difficulty", "simple", "--push")
+        remote_head = subprocess.run(["git", "--git-dir", str(remote), "rev-parse", "main"],
+                                     capture_output=True, text=True, check=True).stdout.strip()
+        self.assertEqual(remote_head, self.git("rev-parse", "HEAD").strip())
 
 
 if __name__ == "__main__":

@@ -1,67 +1,51 @@
-# BB 派发循环
+# Driver 内部循环
 
-所有线程通过 sibling `bb-model-routing` 的 `scripts/bb-dispatch` 创建，路由、模型、reasoning 与权限
-由用户配置决定。本文只列 orchestrator 在一次 Story 循环里用到的命令。`<routing-skill>` 指
-`bb-model-routing` 目录；`bb-dispatch` 已在 PATH 时直接调用。
+这是 `scripts/large_task_driver.py` 的维护参考，不是手动编排步骤。调用者只启动或恢复 driver；脚本负责
+线程生命周期和计划状态转换。
 
-## 派发
+## 输入与持久状态
 
-```bash
-<routing-skill>/scripts/bb-dispatch --difficulty medium \
-  --title 'STORY-03 worker' \
-  --task "$(cat /tmp/story-03-task.md)"
-```
+- `agent/plan.json`、`agent/stories/*.json` 与 Git 是权威事实。
+- `Story.owner` 保存 Worker 的 BB `thr_*` ID，planning 只要求 active Story 的 owner 为非空字符串。
+- `<repo>/.local/large-task-orchestrator/driver-state.json` 缓存阶段、线程、次数和起始脏路径；
+  `driver-log.jsonl` 仅追加事件。两者被 `.gitignore` 排除，丢失时可从计划和 BB 重新定位。
 
-`--task` 内容 = `epic_story.py brief` 输出 + 仓库规则与基线 + 并发 write scope + 报告契约。把任务
-写到临时文件再传入，避免 shell 转义问题。返回 JSON 里 `result.thread.id` 是线程 ID，立即写回 Story
-Handoff。
+## 每张 Story 的状态机
 
-Validator：
+1. `status --json` 给出 ready frontier；driver 领取一张 todo Story，记录基线并经 `bb-dispatch` 派 Worker。
+2. `bb thread wait <id> --timeout <poll>` 后读取 `show`、interactions 和 `output`。当前 BB 在 timeout 时返回
+   退出码 2；只要线程仍是 `pending|starting|active|stopping`，这表示 busy，不是命令错误。driver 补足
+   poll 间隔，避免主循环忙等。
+3. Worker `worker_done` 时，driver 只将业务改动与 `write_scope` 比对；计划投影和 `.local/` 不算越界。
+   没有业务改动须经 `--allow-empty-story` 明示，或交 Judge。
+4. simple Story 默认直接采纳 Worker 证据；其余 Story（或 `--validator always`）派只读 Validator。
+   Validator 失败把精确缺口发回同一 Worker；三次不能解析的 Validator 输出交 Judge，防止无限重派。
+5. 完成时写入 Acceptance、受限长度的 Handoff、刷新投影，并用 `git commit --only -- <targets>` 创建
+   checkpoint。目标是业务路径加当前 Story/SPEC/STATUS，排除开始前的脏路径和 `.local/`，因此不会提交
+   其他 Agent 的既有暂存改动。
 
-```bash
-<routing-skill>/scripts/bb-dispatch --difficulty simple --kind test \
-  --title 'STORY-03 validator' \
-  --task "$(cat /tmp/story-03-validate.md)"
-```
+`error` 首次执行 `bb thread retry`；第二次 Worker error 交 Judge，第二次 Validator error 改派新的
+Validator。pending interaction 的完整内容交 Judge；Judge 处理已授权交互并回复 `patch` 加
+`interaction handled` 后，driver 继续等待原线程。
 
-Validator 任务要固定基线 commit、Story ID、逐条 Acceptance、相关黄金案例和要跑的命令；声明只读。
+## Judge 与回执
 
-只读探查（看 diff 细节、跑整合测试回摘要）同样用 `--difficulty simple`，任务里要求只回摘要。
+异常才经 `bb-dispatch --difficulty complex --kind general` 派 Judge。它的动作含义：
 
-## 等待与取报告
+- `retry`：同档 fresh Worker；`escalate`：高一档 Worker；`patch`：向现有 Worker 发送小修复提示。
+- `block`：写 blocker 后继续其他 ready Story；`replan`：Judge 已改计划，driver 重新 `check`；`stop`：退出码 3。
 
-```bash
-bb thread wait <thread-id> --timeout 1800 --json
-bb thread output <thread-id>
-```
+`bb-dispatch` 的创建回执在已知 BB 版本中出现过两种形状：`result.thread.id` 与 `result.id`。driver 两者
+都接受；没有任一 ID 时退出码 2，避免在创建结果不明时重复派发。
 
-`wait` 超时不代表失败：先 `bb thread show <thread-id> --json` 看状态。`status` 为等待交互时：
+## 维护检查
 
-```bash
-bb thread interactions list <thread-id> --json
-bb thread interactions approve <interaction-id> <thread-id>   # 已授权范围内
-bb thread interactions answer <interaction-id> <thread-id> ... # 能从计划回答的问题
-```
-
-超出授权或需要用户决定的交互按 blocker 规则处理，不替用户决定。
-
-线程失败（provider、配额、session）用 `bb thread retry <thread-id>` 一次；仍失败则换同档
-replacement，并在 Handoff 记下原线程 ID。
-
-## 同一 Story 的 follow-up
-
-Validator 指出的精确遗漏发回同一 Worker 线程：
+修改此循环后，更新 fake BB 用例并运行：
 
 ```bash
-bb thread tell <worker-thread-id> "$(cat /tmp/story-03-patch.md)"
-bb thread wait <worker-thread-id> --json
-bb thread output <worker-thread-id>
+cd common-skills/large-task-orchestrator
+python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
-Worker 线程已丢失或上下文过长时改派 fresh Worker，把 Handoff 事实和遗漏一起交给它。
-
-## 并发规则
-
-默认同时只有一个会写工作区的线程在跑。Validator 与只读探查可与彼此并行，但不与写工作区的 Worker
-并行读同一区域的未提交 diff，除非任务里固定了基线 commit。多个写入 Worker 只在已有隔离 worktree
-并用 `--environment` 指定时才允许。
+真实环境检查先跑 `bb-dispatch --dry-run`，再在临时 Git 仓库里运行一张示例 Story。核对 child 的
+`parentThreadId`、`status`、`output`、driver jsonl 与 checkpoint；接口差异应以兼容代码和回归测试收口。

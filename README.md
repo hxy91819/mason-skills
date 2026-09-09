@@ -128,7 +128,7 @@ python3 common-skills/skill-manifest-sync/scripts/sync_skill_symlinks.py --mode 
 | [article-workflow](common-skills/article-workflow/) | A phased article optimization workflow with 13 skills — from brief generation through final publication. See [workflow README](common-skills/article-workflow/README.md) for phase order and usage. |
 | [distill](common-skills/distill/) | Reviews one session or a bounded periodic cross-session window for evidence-backed harness and project-knowledge improvements, explicitly auditing repository Skills and AGENTS.md instructions for design and usability problems. |
 | [large-task-planning](common-skills/large-task-planning/) | Compiles a large engineering goal into reader-friendly SPEC/STATUS views and a JSON execution plan. Explicit invocation only. |
-| [large-task-orchestrator](common-skills/large-task-orchestrator/) | Dispatches worker and cheap validator threads through BB (`bb-model-routing`) to execute a plan until delivery or a genuine blocker. Explicit invocation only. |
+| [large-task-orchestrator](common-skills/large-task-orchestrator/) | 用确定性 driver 经 BB（`bb-model-routing`）派发 Worker / Validator，并仅在异常时派 Judge 执行计划。仅显式调用。 |
 | [mermaid-lint](common-skills/mermaid-lint/) | Validates and fixes mermaid diagrams in markdown. Renders every block against the real mermaid renderer and reports all failures in one pass. Original skill design. |
 | [readiness-report](common-skills/readiness-report/) | Read-only Agent-Readiness audit of the current Git repository with a 1–5 level score and a local JSON report. Adapted from Factory Droid's built-in `/readiness-report` with remote reporting removed. Explicit invocation only. |
 | [readiness-fix](common-skills/readiness-fix/) | Fixes failing signals from the latest local readiness report; asks whether to generate a report first when none exists. Adapted from Factory Droid's built-in `/readiness-fix` with remote report access removed. Explicit invocation only. |
@@ -202,13 +202,11 @@ Compiles engineering work that exceeds one context into two audience-specific la
 state, dependencies, context, and handoff. The Markdown views are generated around human
 questions instead of mirroring internal Story fields.
 
-Its execution counterpart, `large-task-orchestrator`, dispatches fresh worker threads and
-cheap validator threads through BB via `bb-model-routing`, keeping the orchestrator's own
-context to structured reports and diff stats so a strong model can run for a long time while
-cheaper models do the work. Plan files, Git checkpoints, and BB thread records make every
-worker session disposable and long-running work recoverable. The two Skills share a
-[core system design](docs/large-task-system-design.md), and the v2 token-login example is
-[`docs/largeplan-example/`](docs/largeplan-example/).
+执行端 `large-task-orchestrator` 是确定性 driver：它经 `bb-model-routing` 派 fresh Worker 和廉价
+Validator，在 Worker 异常、验证失败、越界或报告不可解析时才派一次性的 strong Judge。计划文件、Git
+checkpoint、driver jsonl 和 BB 线程记录让会话可替换、长时执行可恢复。两项 Skill 共享
+[核心设计](docs/large-task-system-design.md)，v2 令牌登录示例在
+[`docs/largeplan-example/`](docs/largeplan-example/)。
 
 ### mermaid-lint
 

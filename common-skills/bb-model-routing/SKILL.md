@@ -43,9 +43,10 @@ bb-dispatch --difficulty medium --kind test --task '<测试目标、范围与验
 
 ## 作为编排后端
 
-`large-task-orchestrator` 把 Worker / Validator 全部通过本技能派发：能力档映射为 `--difficulty`，
-Validator 固定 `--difficulty simple --kind test`。orchestrator 只传任务文本与难度，路由仍由本配置决定；
-线程 wait / output / tell 的循环见该技能的 `references/bb-dispatch-loop.md`。
+`large-task-orchestrator` 的确定性 driver 通过本技能派 Worker、Validator 与异常时的 Judge：Worker 按
+能力档映射为 `--difficulty`，Validator 固定 `--difficulty simple --kind test`，Judge 固定 `complex`。
+driver 只传任务文本、难度与已有环境，路由仍由本配置决定；状态机、wait/output/tell 兼容性见其
+[`references/bb-dispatch-loop.md`](../large-task-orchestrator/references/bb-dispatch-loop.md)。
 
 ## 可观测性
 

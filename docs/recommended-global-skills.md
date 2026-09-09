@@ -37,7 +37,7 @@ user 级 prompt 正文不在此清单范围内：由 [`config/user-agents.md`](.
 | 2 | `autoreview` | 提交/发布前的结构化代码审查 | 显式调用 (`$autoreview`) |
 | 3 | `distill` | 从会话历史与实践中蒸馏可沉淀的规则与经验 | 显式调用 (`$distill`) |
 | 4 | `harness-config-sync` | 跨 Agent 宿主（Codex/Claude/Pi 等）收敛 prompts 与 skills 布局 | 显式调用 (`$harness-config-sync`) |
-| 5 | `large-task-orchestrator` | 用原生子 Agent 持续编排推进大型工程任务 | 显式调用 (`$large-task-orchestrator`) |
+| 5 | `large-task-orchestrator` | 用确定性 driver 与按需 Judge 持续推进大型工程计划 | 显式调用 (`$large-task-orchestrator`) |
 | 6 | `large-task-planning` | 大型工程任务的双层规划（人读 SPEC/STATUS + Agent 机器执行 plan.json） | 显式调用 (`$large-task-planning`) |
 | 7 | `local-test` | 实际搭建、复用或管理本地联调/项目预览环境 | 允许隐式触发（窄条件） |
 | 8 | `mermaid-lint` | Markdown 中 Mermaid 图表的渲染级批量校验与自动修复 | 显式调用 (`$mermaid-lint`) |

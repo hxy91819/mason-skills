@@ -37,6 +37,10 @@ WORKER_RESULTS = ("worker_done", "blocked", "failed")
 VERDICTS = ("PASS", "FAIL")
 JUDGE_ACTIONS = ("retry", "escalate", "patch", "block", "replan", "stop")
 THREAD_BUSY = ("pending", "starting", "active", "stopping")
+MAX_VALIDATOR_PARSE_FAILURES = 2
+HANDOFF_TEXT_LIMIT = 400
+HANDOFF_ITEM_LIMIT = 200
+HANDOFF_LIST_LIMIT = 8
 
 
 class DriverError(RuntimeError):
@@ -106,6 +110,15 @@ def split_items(text: str) -> list[str]:
     return items
 
 
+def limit_text(text: str, limit: int) -> str:
+    value = text.strip()
+    return value if len(value) <= limit else value[: limit - 1].rstrip() + "…"
+
+
+def limited_items(text: str) -> list[str]:
+    return [limit_text(item, HANDOFF_ITEM_LIMIT) for item in split_items(text)[:HANDOFF_LIST_LIMIT]]
+
+
 # --------------------------------------------------------------------------- 外部命令
 
 
@@ -133,12 +146,13 @@ def run_json(command: Sequence[str], *, cwd: Path | None = None) -> Any:
 @dataclass
 class StoryState:
     phase: str = "working"  # working | validating
-    difficulty: str = "medium"
+    difficulty: str = ""
     worker_thread: str | None = None
     validator_thread: str | None = None
     attempts: int = 0
     patch_rounds: int = 0
     thread_retries: int = 0
+    validator_parse_failures: int = 0
     judge_rounds: int = 0
     baseline_commit: str = ""
     baseline_dirty: list[str] = field(default_factory=list)
@@ -155,6 +169,7 @@ class StoryState:
             "phase": self.phase, "difficulty": self.difficulty, "worker_thread": self.worker_thread,
             "validator_thread": self.validator_thread, "attempts": self.attempts,
             "patch_rounds": self.patch_rounds, "thread_retries": self.thread_retries,
+            "validator_parse_failures": self.validator_parse_failures,
             "judge_rounds": self.judge_rounds, "baseline_commit": self.baseline_commit,
             "baseline_dirty": self.baseline_dirty, "last_worker": self.last_worker,
             "last_validator": self.last_validator,
@@ -286,8 +301,20 @@ class Driver:
     # ----------------------------------------------------------------- Git 事实
 
     def dirty_paths(self) -> list[str]:
-        output = self.git("status", "--short", "--untracked-files=all").stdout
-        return [line[3:].strip() for line in output.splitlines() if line.strip()]
+        output = self.git("status", "--porcelain=v1", "-z", "--untracked-files=all").stdout
+        records = output.split("\0")
+        paths: list[str] = []
+        index = 0
+        while index < len(records):
+            record = records[index]
+            index += 1
+            if not record:
+                continue
+            paths.append(record[3:])
+            # Porcelain v1 puts the original path after a rename/copy record.
+            if len(record) >= 2 and (record[0] in "RC" or record[1] in "RC"):
+                index += 1
+        return paths
 
     def head(self) -> str:
         return self.git("rev-parse", "HEAD").stdout.strip()
@@ -296,31 +323,70 @@ class Driver:
         baseline = set(state.baseline_dirty)
         return [path for path in self.dirty_paths() if path not in baseline]
 
+    @staticmethod
+    def path_within(path: str, boundary: str) -> bool:
+        normalized = boundary.strip().strip("/")
+        if not normalized or normalized == ".":
+            return normalized == "."
+        if boundary.rstrip().endswith("/"):
+            return path.startswith(normalized + "/")
+        return path == normalized or path.startswith(normalized + "/")
+
+    def management_paths(self, story_id: str) -> list[str]:
+        topic = os.path.relpath(self.topic_dir, self.repository)
+        prefix = "" if topic == "." else f"{topic}/"
+        return [
+            os.path.relpath(self.story_path(story_id), self.repository),
+            f"{prefix}SPEC.md",
+            f"{prefix}STATUS.md",
+        ]
+
+    def implementation_changes(self, story_id: str, state: StoryState) -> list[str]:
+        management = set(self.management_paths(story_id))
+        return [path for path in self.story_changes(state) if path not in management]
+
+    @staticmethod
+    def path_scopes(scopes: Sequence[str]) -> list[str]:
+        prefixes: list[str] = []
+        for scope in scopes:
+            for token in re.split(r"[\s,，、;；]+", scope):
+                candidate = token.strip("`'\"。:：()（）[]{}")
+                if candidate.startswith("./"):
+                    candidate = candidate[2:]
+                candidate = candidate.rstrip("*")
+                if "/" in candidate or re.fullmatch(r"[A-Za-z0-9_.-]+\.[A-Za-z0-9_-]+", candidate):
+                    prefixes.append(candidate)
+        return prefixes
+
     def out_of_scope(self, story: dict[str, Any], changes: list[str]) -> list[str]:
         scopes = [scope.strip() for scope in story.get("context", {}).get("write_scope", []) if scope.strip()]
         topic = os.path.relpath(self.topic_dir, self.repository)
         allowed_prefixes = [topic, ".local/"]
         offenders = []
         for path in changes:
-            if any(path.startswith(prefix.rstrip("/")) for prefix in allowed_prefixes):
+            if any(self.path_within(path, prefix) for prefix in allowed_prefixes):
                 continue
-            # write_scope 是人写的区域描述；只把明显的路径前缀当硬边界，其余交给 judge 判断。
-            if any(path.startswith(scope.rstrip("/*")) for scope in scopes if "/" in scope or "." in scope):
+            # 只从 write_scope 中提取明确的路径 token，文字性边界留给 judge 裁决。
+            if any(self.path_within(path, prefix) for prefix in self.path_scopes(scopes)):
                 continue
             offenders.append(path)
         return offenders
 
     def checkpoint(self, story_id: str, state: StoryState) -> str:
-        paths = self.story_changes(state)
-        topic = os.path.relpath(self.topic_dir, self.repository)
-        targets = [path for path in paths if not path.startswith(".local/")]
-        if topic not in targets:
-            targets.append(topic)
-        self.git("add", "--", *targets)
-        staged = self.git("diff", "--cached", "--name-only").stdout.strip()
-        if not staged:
+        baseline = set(state.baseline_dirty)
+        candidates = [*self.implementation_changes(story_id, state), *self.management_paths(story_id)]
+        targets = list(dict.fromkeys(
+            path for path in candidates if path not in baseline and not self.path_within(path, ".local/")
+        ))
+        if not targets:
             return self.head()
-        self.git("commit", "-q", "-m", f"checkpoint({story_id}): {self.read_story(story_id)['title']}")
+        self.git("add", "--", *targets)
+        staged = self.git("diff", "--cached", "--quiet", "--", *targets, check=False)
+        if staged.returncode == 0:
+            return self.head()
+        # --only keeps another agent's pre-existing index entries out of this checkpoint.
+        self.git("commit", "-q", "--only", "-m", f"checkpoint({story_id}): {self.read_story(story_id)['title']}",
+                 "--", *targets)
         return self.head()
 
     # ----------------------------------------------------------------- BB 线程
@@ -330,7 +396,8 @@ class Driver:
         if self.args.environment:
             command += ["--environment", self.args.environment]
         payload = run_json(command, cwd=self.repository)
-        thread_id = ((payload.get("result") or {}).get("thread") or {}).get("id")
+        receipt = payload.get("result") or {}
+        thread_id = ((receipt.get("thread") or {}).get("id") or receipt.get("id"))
         if not thread_id:
             raise DriverError(f"bb-dispatch 未返回线程 ID: {json.dumps(payload, ensure_ascii=False)[:500]}")
         selection = payload.get("selection", {})
@@ -353,20 +420,27 @@ class Driver:
 
     def wait_thread(self, thread_id: str) -> str:
         """阻塞到线程 idle / error / 有待处理交互；返回 idle | error | interaction | busy。"""
-        deadline = time.monotonic() + self.args.wait_timeout
-        while True:
-            self.bb("thread", "wait", thread_id, "--timeout", str(self.args.poll_seconds), check=False)
-            status = str(self.thread_status(thread_id).get("status") or "")
-            if status == "idle":
-                return "idle"
-            if status == "error":
-                return "error"
-            if self.thread_interactions(thread_id):
-                return "interaction"
-            if status not in THREAD_BUSY:
-                raise DriverError(f"线程 {thread_id} 处于未知状态: {status!r}")
-            if time.monotonic() >= deadline:
-                return "busy"
+        started = time.monotonic()
+        timeout = min(self.args.poll_seconds, self.args.wait_timeout)
+        if timeout <= 0:
+            raise DriverError("--poll-seconds 与 --wait-timeout 必须为正整数。")
+        result = self.bb("thread", "wait", thread_id, "--timeout", str(timeout), check=False)
+        status = str(self.thread_status(thread_id).get("status") or "")
+        if status == "idle":
+            return "idle"
+        if status == "error":
+            return "error"
+        if self.thread_interactions(thread_id):
+            return "interaction"
+        if status not in THREAD_BUSY:
+            raise DriverError(f"线程 {thread_id} 处于未知状态: {status!r}")
+        if result.returncode not in (0, 2):
+            raise DriverError(f"bb thread wait 失败 ({result.returncode}): {result.stderr.strip()}")
+        # BB 在 timeout 时以退出码 2 返回；补足过快返回的间隔，使主循环不会忙等。
+        remaining = timeout - (time.monotonic() - started)
+        if remaining > 0:
+            time.sleep(remaining)
+        return "busy"
 
     def tell_thread(self, thread_id: str, message: str) -> None:
         self.bb("thread", "tell", thread_id, message, "--mode", "auto")
@@ -502,6 +576,7 @@ Note: <给 driver 或用户的说明>
         state.attempts += 1
         state.patch_rounds = 0
         state.thread_retries = 0
+        state.validator_parse_failures = 0
         if story["status"] == "todo":
             self.transition(story_id, "in_progress", expect="todo", owner=thread_id)
         else:
@@ -530,19 +605,25 @@ Note: <给 driver 或用户的说明>
         validator = state.last_validator
         for item in story["acceptance"]:
             item["passed"] = True
-        verification = split_items(worker.get("Verified", ""))
+        verification = limited_items(worker.get("Verified", ""))
         if validator:
-            verification += [f"Validator {state.validator_thread}: {validator['verdict']}; "
-                             + "; ".join(f"{k} {v}" for k, v in validator.get("acceptance", {}).items())]
+            verification += [limit_text(
+                f"Validator {state.validator_thread}: {validator['verdict']}; "
+                + "; ".join(f"{k} {v}" for k, v in validator.get("acceptance", {}).items()),
+                HANDOFF_ITEM_LIMIT,
+            )]
         else:
             verification.append(f"Validator skipped (difficulty={state.difficulty}); worker evidence accepted by driver")
-        risks = split_items(validator.get("new_facts", "")) if validator else []
+        risks = limited_items(validator.get("new_facts", "")) if validator else []
+        thread_fact = f"线程: worker={state.worker_thread}, validator={state.validator_thread}"
+        next_text = worker.get("Handoff", "").strip() or "读取下一张 Story。"
+        next_text = limit_text(next_text, HANDOFF_TEXT_LIMIT - len(thread_fact) - 1)
         story["handoff"] = {
-            "summary": worker.get("Changed", "").strip() or story["outcome"],
-            "verification": verification or [f"worker thread {state.worker_thread}"],
+            "summary": limit_text(worker.get("Changed", "").strip() or story["outcome"], HANDOFF_TEXT_LIMIT),
+            "verification": (verification or [f"worker thread {state.worker_thread}"])[:HANDOFF_LIST_LIMIT],
             "remaining": [],
             "risks": risks,
-            "next": (worker.get("Handoff", "").strip() or "读取下一张 Story。") + f"\n线程: worker={state.worker_thread}, validator={state.validator_thread}",
+            "next": f"{next_text}\n{thread_fact}",
         }
         story["status"] = "in_progress"
         self.write_story(story_id, story)
@@ -591,8 +672,7 @@ Note: <给 driver 或用户的说明>
             return
         if action == "patch":
             if not state.worker_thread:
-                self.claim_and_dispatch(story_id, resume_note=f"\n上一轮判断：{note}\n")
-                return
+                raise DriverError(f"{story_id}: judge 选择 patch，但没有可接收提示的 Worker 线程。")
             if note.strip().lower() != "interaction handled":
                 self.tell_thread(state.worker_thread, f"修复提示（来自 judge）：\n{note}\n\n修完后按原报告格式回复。")
             state.phase = "working"
@@ -663,11 +743,12 @@ Note: <给 driver 或用户的说明>
         if report["Result"] != "worker_done":
             self.consult_judge(story_id, state, f"Worker 报告 {report['Result']}。")
             return True
-        offenders = self.out_of_scope(story, self.story_changes(state))
+        changes = self.implementation_changes(story_id, state)
+        offenders = self.out_of_scope(story, changes)
         if offenders:
             self.consult_judge(story_id, state, f"Worker 修改了 write scope 之外的路径：{offenders}")
             return True
-        if not self.story_changes(state) and not self.args.allow_empty_story:
+        if not changes and not self.args.allow_empty_story:
             self.consult_judge(story_id, state, "Worker 报告完成，但工作区没有任何新改动。")
             return True
         if self.needs_validator(state):
@@ -679,10 +760,20 @@ Note: <给 driver 或用户的说明>
     def handle_validator_output(self, story_id: str, state: StoryState, output: str) -> bool:
         report = parse_validator_report(output)
         if report is None:
+            state.validator_parse_failures += 1
+            self.set_story_state(story_id, state)
+            if state.validator_parse_failures > MAX_VALIDATOR_PARSE_FAILURES:
+                self.consult_judge(
+                    story_id, state,
+                    f"Validator 已有 {state.validator_parse_failures} 次回复无法按契约解析：\n{output[-1500:]}",
+                )
+                return True
             self.dispatch_validator(story_id, state)
-            self.log("validator.unparsable", story=story_id, thread=state.validator_thread)
+            self.log("validator.unparsable", story=story_id, thread=state.validator_thread,
+                     failures=state.validator_parse_failures)
             return True
         state.last_validator = report
+        state.validator_parse_failures = 0
         self.set_story_state(story_id, state)
         self.log("validator.reported", story=story_id, thread=state.validator_thread, verdict=report["verdict"])
         if report["verdict"] == "PASS" and "missing" not in report["acceptance"].values():

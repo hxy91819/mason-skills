@@ -27,3 +27,6 @@ node_modules/
 dist/
 build/
 *.log
+
+# Local driver state and append-only logs
+.local/

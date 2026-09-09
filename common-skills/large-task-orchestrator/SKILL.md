@@ -1,161 +1,110 @@
 ---
 name: large-task-orchestrator
-description: 用 BB 线程持续执行已有大型任务计划，直到完整交付或出现真实 blocker。
+description: 启动确定性 driver 执行大型任务计划，并在它停下时处理用户决策。
 disable-model-invocation: true
 ---
 
-# Large Task Orchestrator
+# 大型任务 driver
 
-这是流程类 Skill，仅在用户显式调用 `$large-task-orchestrator` 时运行。
+这是流程类 Skill，仅在用户显式调用 `$large-task-orchestrator` 时运行。它只接管已经通过
+`large-task-planning` v2 校验的计划：脚本是控制面，Worker、Validator 和异常时的 Judge 都是经
+`bb-dispatch` 创建的短生命周期 BB 线程。
 
-当前 Agent 是 orchestrator：一个上下文大、判断力强的会话，只做调度与裁决。实际实现由便宜但可靠的
-Worker 完成，完成校验由更便宜的 Validator 完成；两者都是通过 `$bb-model-routing` 派发的 BB 线程，
-路由表由 `bb-dispatch` 用户配置持有。计划 JSON、Git 和线程记录承载长期状态，任何线程都可以丢弃和
-替换。
+开始前阅读相邻的 `large-task-planning` 计划格式、[`bb-model-routing`](../bb-model-routing/SKILL.md)
+和[联合设计](../../docs/large-task-system-design.md)。计划 JSON 与 Git 是权威状态；BB 线程记录和
+`.local/large-task-orchestrator/driver-log.jsonl` 是可回看的运行事实。
 
-只接管已存在并通过 sibling `large-task-planning` v2 校验的计划。先读
-[`../large-task-planning/references/plan-format.md`](../large-task-planning/references/plan-format.md)
-与[`../bb-model-routing/SKILL.md`](../bb-model-routing/SKILL.md)。角色边界、并行规则和 blocker 规则
-以[联合核心设计](../../docs/large-task-system-design.md)为准，本文只写执行流程。
+## 启动与恢复
 
-## 上下文纪律
-
-Orchestrator 的上下文是最贵的资源，也是长时运行最大的风险源。规则：
-
-- 不读完整 diff、测试日志或线程全文。只看 `git status --short`、`git diff --stat`、Worker 与 Validator
-  的结构化报告，以及 `epic_story.py status --json`。
-- 需要看细节时派 economy 只读线程去看，让它回摘要。
-- 每个状态转换点（领取后、Worker 回报后、Validator 回报后、checkpoint 后）都把当前阶段、线程 ID 和
-  精确下一步写回 Story Handoff。不要等 compaction 来临才写：你无法预知它何时发生。
-- 恢复顺序固定为 Agent JSON → Git → `bb thread show <id>`。不要求重新读取子线程对话。
-
-## 启动或恢复
-
-1. 读取适用的 `AGENTS.md`、`SPEC.md`、`STATUS.md` 与 `agent/plan.json`；检查当前 branch、
-   `git status --short`、`git worktree list` 与已有提交。保留无关并发改动。
-2. 运行：
+1. 阅读仓库规则、`SPEC.md`、`STATUS.md`，检查分支、`git status --short` 和 `git worktree list`；保留
+   并发改动。
+2. 校验计划与路由：
 
 ```bash
 python3 <planning-skill>/scripts/epic_story.py check \
   --plan <topic>/agent/plan.json --stories-dir <topic>/agent/stories
-python3 <planning-skill>/scripts/epic_story.py status \
-  --plan <topic>/agent/plan.json --stories-dir <topic>/agent/stories --json
+<routing-skill>/scripts/bb-dispatch --difficulty medium \
+  --task '校验 driver 路由；不创建线程。' --dry-run
 ```
 
-3. 对每个 `in_progress` Story，读 Handoff 里记录的线程 ID，用 `bb thread show <id> --json` 看线程
-   状态与最终输出，再对照 `git diff --stat`。线程仍在跑就 `wait`；线程已结束或丢失就把 Handoff 里的
-   事实交给 fresh replacement Worker。不要因为对话压缩而重新领取。
-4. 确认 `bb status --json` 指向目标项目和环境，`bb-dispatch --dry-run` 通过。配置缺失先按
-   `$bb-model-routing` 补齐，再开始循环。
+3. 在目标 BB 项目与环境中启动；`bb-dispatch` 会将新线程关联到当前父线程。
 
-## 选择能力档
+```bash
+python3 <orchestrator-skill>/scripts/large_task_driver.py \
+  --plan <topic>/agent/plan.json \
+  --stories-dir <topic>/agent/stories \
+  --repository <repo-root> \
+  --environment <bb-environment-id>
+```
 
-派发 Worker 前先定本轮能力档，直接映射为 `bb-dispatch --difficulty`。用户指定模型或 reasoning 时
-转成配置别名或 `--agent`/`--reasoning` 传入，不写进任务文本。难度从当前 Story 与已有失败证据现场
-判定，不写入计划 JSON。
+重复运行同一命令即可恢复。计划中的 `owner` 保留 Worker 线程 ID；遗失 `.local/` 状态时，driver 会从
+计划和 BB 线程恢复。定时任务使用 `--once`，每次只推进一个可观察步骤。
 
-| 能力档 | `--difficulty` | 适用 |
+## 正常循环与异常
+
+正常路径不调用强模型：driver 选择 ready frontier、领取 Story、派 Worker、核对改动；按配置决定是否派
+Validator；通过后更新 Handoff、刷新投影并创建只含本 Story 路径的 checkpoint。
+
+发生 Worker `blocked`/`failed`、线程 error、待处理 interaction、越界写入、空改动、报告无法解析或
+Validator 多轮失败时，driver 才派 `complex` Judge。Judge 只能选择 `retry`、`escalate`、`patch`、
+`block`、`replan` 或 `stop`。`block` 后继续其他 ready Story；`replan` 后重新校验计划；`stop` 或没有
+ready Story 时退出并把最小原因写到 stderr。
+
+不要手动篡改 driver 状态文件、Story 的 `owner` 或 Handoff 来跳过这些状态转换。要处理停下原因，先读
+stderr、计划 `status --json`、driver jsonl 与相关 `bb thread show/output`，在既定 Goal 和授权内处理后
+重启 driver；需要凭据、权限、外部/破坏性动作、显著成本或稳定边界变更时才请用户决定。
+
+## 能力档
+
+| 能力档 | `--difficulty` | 使用条件 |
 | --- | --- | --- |
-| economy | `simple` | 验收可脚本化、write_scope 窄、已有测试或黄金案例可当 oracle、无设计分叉 |
-| standard | `medium` | 常规实现；seam 清楚，但需要跨文件判断 |
-| strong | `complex` | 跨模块设计、模糊契约、安全或数据迁移、同一 Story 已因能力失败、`final_story` 整合 |
+| economy | `simple` | write scope 窄，验收可直接脚本化，没有设计分叉 |
+| standard | `medium` | 常规跨文件实现，公开 seam 和验收明确 |
+| strong | `complex` | 已证明的能力不足、跨模块不确定性或复杂整合 |
 
-默认取最低够用档。Validator 固定 `--difficulty simple --kind test`，不随 Worker 升档。排障型
-Story 加 `--kind debug`。
-
-同一 Story 上较低档 Worker 失败，且原因是实现能力（不是环境、权限、配额）时升一档再派。strong 仍
-失败则拆分、换路线或按 blocker 规则问用户。长时间 strong 循环或并行多个 strong Worker 属于显著
-成本，先问用户。Validator 失败换同档 replacement，不升档。路由不可用或配额耗尽时按
-`$bb-model-routing` 报告，不自行换模型。
-
-## 自主循环
-
-持续执行下面的循环，不在 Story 之间停下来询问是否继续。派发、等待、取报告和 follow-up 的具体命令
-见[BB 派发循环](references/bb-dispatch-loop.md)。
-
-1. **选择 frontier。** 从 `status --json` 的 `ready` 中选择最能降低 Goal 风险的 Story；通常取第一项。
-2. **原子领取。** `transition --expect todo --status in_progress --owner <worker-thread-或-run-id>`。
-   预期状态失败就重新读取计划并协调并发事实。
-3. **派发 fresh Worker。** 用 planning 的 `brief` 提取执行包，加上仓库规则、当前基线、并发 write
-   scope 和下面的 Worker 报告契约，组成 `--task`。要求它先验证现状，在指定公开 seam 上按 red → green
-   的纵向小循环实现并运行相关测试。不复制会话历史或全部计划。派发后立刻把线程 ID 写回 Handoff。
-4. **等待并取报告。** `bb thread wait` 到 idle，`bb thread output` 取报告。线程卡在交互上时用
-   `bb thread interactions` 处理：属于已授权范围的直接批准；越权或需要用户决定的按 blocker 规则。
-5. **核对边界。** 只看 `git status --short` 和 `git diff --stat`：确认没有越界 write_scope、没有丢失
-   并发改动、不是只改了报告。Worker 回复不是完成证明。
-6. **完成校验。** 按 Story 分流：
-   - economy 且 Acceptance 全部可由脚本或测试直接判定：orchestrator 派 economy 只读线程跑验收命令并
-     回摘要，或自己跑输出短小的命令；不派 Validator。
-   - 其他 Story：派未参与实现的 Validator（`--difficulty simple --kind test`），固定本轮基线与 diff，
-     按下面的 Validator 契约逐条核对 Acceptance 并跑必要测试。
-7. **裁决。** 全部 Acceptance 成立则完成 Story。有明确小遗漏则把精确遗漏用 `bb thread tell` 发回
-   同一 Worker 线程修复，再复核。Validator 报告的新事实由 orchestrator 判断：新独立结果用插入 Story
-   承接；Goal 或用户边界失效才请求用户。
-8. **完成 Story。** 用 planning 的 `write` 更新 Story JSON：已证明的 Acceptance 设为 `passed=true`，
-   Handoff 记录可观察结果、验证命令与结论、线程 ID、残余风险和下一 Story 输入。随后
-   `transition --status done`、`check`，并创建包含 Story ID 的 Git checkpoint。
-9. **继续。** 重新计算 frontier，直到 `final_story` 完成或没有可推进工作。
+默认从最低足够档开始。Validator 固定 `simple --kind test`；排障 Worker 使用 `--kind debug`。`strong`
+持续失败是重拆 Story 或请求决定的信号，不是无限升档的理由。实际 provider、模型、reasoning 和权限由
+用户的 `bb-model-routing` 配置决定，不能写进任务文本。
 
 ## 报告契约
 
-写进 `--task` 末尾，要求线程最终回复只包含这段。事实仍以工作区、测试和计划为准。
-
-Worker：
+Worker 的 `Changed`、`Verified` 最多各 8 行，`Handoff` 最多 400 字符；最终只回复：
 
 ```text
 Result: worker_done | blocked | failed
 Changed: <可观察结果和文件>
 Verified: <命令及结果>
 Remaining: <未完成工作或 none>
-Handoff: <替换 Worker 继续所需上下文>
+Handoff: <下一位 Worker 所需事实>
 ```
 
-Validator：
+Validator 只读核验 Acceptance，不做代码审查：
 
 ```text
 Verdict: PASS | FAIL
 Acceptance:
 - AC-01: holds | missing — <命令或观察证据>
-Gaps: <遗漏、越界或与黄金案例冲突的事实；none>
-New facts: <推翻后续 Story 前提或计划假设的发现；none>
+Gaps: <遗漏、越界或黄金案例冲突；none>
+New facts: <推翻后续假设的发现；none>
 ```
 
-Validator 只确认 Story 是否真正完成，不做代码审查、风格或重构建议。它意外写了文件时不接受其
-结论；先隔离该改动，再派新的 Validator。计划级判断（插入 Story、重规划）由 orchestrator 做，需要
-大局视角时另派线程显式调用 `$story-direction-review`。
+Judge 只回复一个动作：
 
-## 计划演化与 blocker
-
-Orchestrator 在既定 Goal 和用户边界内拥有实现路径，可以重排、插入、合并或改写未开始的 Story。
-修改 Story 结果或验收时递增 `intent_version`，保留完成证据和既有 ID；插入使用 `STORY-NN.M`。
-
-预计需要 strong 才能完成的 Story 首先是拆分信号，不是升档信号。
-
-询问用户的条件、恢复优先级和"不得降低黄金判据"见联合核心设计。提问时给出证据、已尝试恢复、
-影响范围和一个最小决策，并先继续其他独立 ready Story。
-
-## 收口与交付
-
-完成 `final_story` 前，在同一 acceptance commit 上运行全部黄金案例和跨 Story 整合检查（派线程跑，
-回摘要）。然后：
-
-1. 运行 `completion-check`，确认全部 Story、验收勾选、依赖与黄金覆盖收口。
-2. 检查 `git diff --stat`、branch、`git status --short`、`git worktree list` 与待推送提交，只提交
-   授权范围。
-3. 推送当前目标分支到明确 upstream；不 force-push、不绕过 hook、不猜测歧义 remote。
-4. 查询真实 upstream，确认其 commit 等于本地交付 HEAD。
-
-只有计划完成门禁、整合测试、授权提交和远端 HEAD 都成立时报告完成。
-
-## 可观测性
-
-没有独立的运行历史账本。每个 Worker / Validator 线程由 `bb-dispatch` 创建并关联到当前父线程，
-BB 已持久化 provider、模型、状态、耗时和最终输出；Story Handoff 记录该 Story 用过的线程 ID 与
-结论。复盘用：
-
-```bash
-bb thread list --parent-thread <orchestrator-thread-id> --json
-bb thread show <thread-id> --json
+```text
+Action: retry | escalate | patch | block | replan | stop
+Note: <给 driver 或用户的事实>
 ```
 
-缺口：没有跨运行的成功率聚合，升档决策只留在 Handoff 文本里。
+## 常用参数与退出码
+
+- `--default-difficulty simple|medium|complex`：Story 没有既有档位时的首轮档位。
+- `--validator standard-up|always`：默认跳过 simple Story 的 Validator；`always` 强制每张都验。
+- `--max-patch-rounds`、`--max-attempts`、`--max-judge-rounds`：恢复上限，耗尽后停给用户。
+- `--poll-seconds`：每次 `bb thread wait` 的节奏；`--wait-timeout` 是该轮等待上限。
+- `--allow-empty-story`：仅纯验证 Story 可无业务改动完成。
+- `--once`、`--max-stories N`：适合定时或受限批次；`--push` 在全部完成后推送并核对 upstream HEAD。
+
+退出码 `0` 表示完成或本轮受控结束；`2` 表示 driver/环境契约错误；`3` 表示需用户处理，原因在 stderr。
+
+维护 driver 的内部状态、BB 回执兼容性和等待语义时，读
+[driver 循环](references/bb-dispatch-loop.md)。
