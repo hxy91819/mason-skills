@@ -128,7 +128,7 @@ python3 common-skills/skill-manifest-sync/scripts/sync_skill_symlinks.py --mode 
 | [article-workflow](common-skills/article-workflow/) | A phased article optimization workflow with 13 skills — from brief generation through final publication. See [workflow README](common-skills/article-workflow/README.md) for phase order and usage. |
 | [distill](common-skills/distill/) | Reviews one session or a bounded periodic cross-session window for evidence-backed harness and project-knowledge improvements, explicitly auditing repository Skills and AGENTS.md instructions for design and usability problems. |
 | [large-task-planning](common-skills/large-task-planning/) | Compiles a large engineering goal into reader-friendly SPEC/STATUS views and a JSON execution plan. Explicit invocation only. |
-| [large-task-orchestrator](common-skills/large-task-orchestrator/) | Uses host-native workers and an economy validator (`$story-direction-review`) to execute a plan until delivery or a genuine blocker. Explicit invocation only. |
+| [large-task-orchestrator](common-skills/large-task-orchestrator/) | Dispatches worker and cheap validator threads through BB (`bb-model-routing`) to execute a plan until delivery or a genuine blocker. Explicit invocation only. |
 | [mermaid-lint](common-skills/mermaid-lint/) | Validates and fixes mermaid diagrams in markdown. Renders every block against the real mermaid renderer and reports all failures in one pass. Original skill design. |
 | [readiness-report](common-skills/readiness-report/) | Read-only Agent-Readiness audit of the current Git repository with a 1–5 level score and a local JSON report. Adapted from Factory Droid's built-in `/readiness-report` with remote reporting removed. Explicit invocation only. |
 | [readiness-fix](common-skills/readiness-fix/) | Fixes failing signals from the latest local readiness report; asks whether to generate a report first when none exists. Adapted from Factory Droid's built-in `/readiness-fix` with remote report access removed. Explicit invocation only. |
@@ -202,12 +202,13 @@ Compiles engineering work that exceeds one context into two audience-specific la
 state, dependencies, context, and handoff. The Markdown views are generated around human
 questions instead of mirroring internal Story fields.
 
-Its execution counterpart, `large-task-orchestrator`, drives fresh host-native worker
-subagents and an economy validator that runs `$story-direction-review` to confirm the
-story is actually complete, with one writer by default. Plan files and
-Git checkpoints make subagent sessions disposable and long-running work recoverable. The
-two Skills share a [core system design](docs/large-task-system-design.md), and the v2
-token-login example is [`docs/largeplan-example/`](docs/largeplan-example/).
+Its execution counterpart, `large-task-orchestrator`, dispatches fresh worker threads and
+cheap validator threads through BB via `bb-model-routing`, keeping the orchestrator's own
+context to structured reports and diff stats so a strong model can run for a long time while
+cheaper models do the work. Plan files, Git checkpoints, and BB thread records make every
+worker session disposable and long-running work recoverable. The two Skills share a
+[core system design](docs/large-task-system-design.md), and the v2 token-login example is
+[`docs/largeplan-example/`](docs/largeplan-example/).
 
 ### mermaid-lint
 
@@ -318,7 +319,7 @@ Original long-running task system. The v2 design selectively adapts the decision
 tracer-bullet, and observable-test-seam ideas from
 [Matt Pocock's skills](https://github.com/mattpocock/skills) (MIT, Copyright Matt Pocock)
 without vendoring or requiring that package at runtime. Story closeout is completion
-validation via `$story-direction-review`, not two-axis code review. See the
+validation by an independent validator thread, not two-axis code review. See the
 [pinned upstream provenance](docs/large-task-system-design.md#上游借鉴与版本回溯) for the exact
 source commit and design mapping.
 

@@ -1,6 +1,6 @@
 ---
 name: large-task-orchestrator
-description: 用宿主原生 subagent 持续执行已有大型任务计划，直到完整交付或出现真实 blocker。
+description: 用 BB 线程持续执行已有大型任务计划，直到完整交付或出现真实 blocker。
 disable-model-invocation: true
 ---
 
@@ -8,33 +8,31 @@ disable-model-invocation: true
 
 这是流程类 Skill，仅在用户显式调用 `$large-task-orchestrator` 时运行。
 
-当前 Agent 是 orchestrator。使用宿主提供的原生 subagent 能力调度 Worker 与 Validator；具体工具名因
-coding agent 而异。Worker 按 Story 难度选择能力档；Validator 固定 economy，并用
-`$story-direction-review` 确认 Story 是否真正完成。计划、Git 和验证证据承载长期状态，subagent
-session 可以随时丢弃和替换。核心流程不依赖外部代理 CLI、provider 路由表或某个特定 coding agent。
+当前 Agent 是 orchestrator：一个上下文大、判断力强的会话，只做调度与裁决。实际实现由便宜但可靠的
+Worker 完成，完成校验由更便宜的 Validator 完成；两者都是通过 `$bb-model-routing` 派发的 BB 线程，
+路由表由 `bb-dispatch` 用户配置持有。计划 JSON、Git 和线程记录承载长期状态，任何线程都可以丢弃和
+替换。
 
 只接管已存在并通过 sibling `large-task-planning` v2 校验的计划。先读
-[`../large-task-planning/references/plan-format.md`](../large-task-planning/references/plan-format.md)。
-派发 Validator 前读[`../story-direction-review/SKILL.md`](../story-direction-review/SKILL.md)。维护与
-planning 的共同边界或回溯 Matt 上游借鉴时再读[联合核心设计](../../docs/large-task-system-design.md)。
+[`../large-task-planning/references/plan-format.md`](../large-task-planning/references/plan-format.md)
+与[`../bb-model-routing/SKILL.md`](../bb-model-routing/SKILL.md)。角色边界、并行规则和 blocker 规则
+以[联合核心设计](../../docs/large-task-system-design.md)为准，本文只写执行流程。
 
-## 角色边界
+## 上下文纪律
 
-- **Orchestrator（当前 Agent）**：唯一控制面。拥有 Story 状态、计划调整、能力档选择、subagent
-  调度、结果裁决、Git checkpoint、整合与最终 push。Worker 与 Validator 不自选型号。
-- **Worker（fresh subagent）**：一次只实现一张 Story。可在同一 Story 内接收修复 follow-up；不修改
-  计划、不提交、不推送，也不继续派生 subagent。
-- **Validator（独立 subagent）**：没有参与该 Story 的实现。只读、可跑验证命令，不编辑文件、不修改
-  计划。显式调用 `$story-direction-review`，只确认 Story 是否真正完成、后续能否继续。不做代码审查。
+Orchestrator 的上下文是最贵的资源，也是长时运行最大的风险源。规则：
 
-默认同时只运行一个会写工作区的 Worker。共享工作区中的并行写入收益通常低于冲突与恢复成本。
-只读调查或互不影响的 Validator 可以并行；只有已有隔离 worktree 且计划明确分配 write scope 时，才并行
-多个 Worker。未经用户授权，不创建、切换或清理 branch/worktree。
+- 不读完整 diff、测试日志或线程全文。只看 `git status --short`、`git diff --stat`、Worker 与 Validator
+  的结构化报告，以及 `epic_story.py status --json`。
+- 需要看细节时派 economy 只读线程去看，让它回摘要。
+- 每个状态转换点（领取后、Worker 回报后、Validator 回报后、checkpoint 后）都把当前阶段、线程 ID 和
+  精确下一步写回 Story Handoff。不要等 compaction 来临才写：你无法预知它何时发生。
+- 恢复顺序固定为 Agent JSON → Git → `bb thread show <id>`。不要求重新读取子线程对话。
 
 ## 启动或恢复
 
-1. 读取适用的 `AGENTS.md`、`SPEC.md`、`STATUS.md`、`agent/plan.json` 与脚本状态；检查当前 branch、
-   `git status --short`、`git worktree list` 和已有提交。保留无关并发改动。
+1. 读取适用的 `AGENTS.md`、`SPEC.md`、`STATUS.md` 与 `agent/plan.json`；检查当前 branch、
+   `git status --short`、`git worktree list` 与已有提交。保留无关并发改动。
 2. 运行：
 
 ```bash
@@ -44,61 +42,65 @@ python3 <planning-skill>/scripts/epic_story.py status \
   --plan <topic>/agent/plan.json --stories-dir <topic>/agent/stories --json
 ```
 
-3. 对每个 `in_progress` Story，先对照 Story handoff、当前 diff、测试结果和 Git checkpoint。工作仍可用就
-   继续；session 已丢失就把这些事实交给 fresh replacement Worker。不要因为对话压缩而重新领取。
-4. 尽力启动本地 history run。History 是旁路复盘缓存；写入失败只警告，不改变计划状态或交付事实。
+3. 对每个 `in_progress` Story，读 Handoff 里记录的线程 ID，用 `bb thread show <id> --json` 看线程
+   状态与最终输出，再对照 `git diff --stat`。线程仍在跑就 `wait`；线程已结束或丢失就把 Handoff 里的
+   事实交给 fresh replacement Worker。不要因为对话压缩而重新领取。
+4. 确认 `bb status --json` 指向目标项目和环境，`bb-dispatch --dry-run` 通过。配置缺失先按
+   `$bb-model-routing` 补齐，再开始循环。
 
 ## 选择能力档
 
-派发 Worker 前先定本轮 **能力档**，再映射到宿主当前可用的原生 subagent、model 与 effort。用户指定
-模型或 effort 时原样使用。难度从当前 Story 与已有失败证据现场判定，不写入计划 JSON。Validator 不按
-难度升档：固定 economy。
+派发 Worker 前先定本轮能力档，直接映射为 `bb-dispatch --difficulty`。用户指定模型或 reasoning 时
+转成配置别名或 `--agent`/`--reasoning` 传入，不写进任务文本。难度从当前 Story 与已有失败证据现场
+判定，不写入计划 JSON。
 
-- **economy**：验收可脚本化、write_scope 窄、已有测试或黄金案例可当 oracle、无设计分叉。
-- **standard**：常规实现；seam 清楚，但需要跨文件判断。
-- **strong**：跨模块设计、模糊契约、安全或数据迁移、同一 Story 已因能力失败、或 `final_story` 整合。
+| 能力档 | `--difficulty` | 适用 |
+| --- | --- | --- |
+| economy | `simple` | 验收可脚本化、write_scope 窄、已有测试或黄金案例可当 oracle、无设计分叉 |
+| standard | `medium` | 常规实现；seam 清楚，但需要跨文件判断 |
+| strong | `complex` | 跨模块设计、模糊契约、安全或数据迁移、同一 Story 已因能力失败、`final_story` 整合 |
 
-默认 Worker 取上表最低够用档。Validator 与只读探查一律 economy。不要 inherit 父会话模型来图方便：
-编排会话通常已是高档。宿主不能选模型时用其默认值，并在 history 记下实际 model/effort 或 `default`。
+默认取最低够用档。Validator 固定 `--difficulty simple --kind test`，不随 Worker 升档。排障型
+Story 加 `--kind debug`。
 
 同一 Story 上较低档 Worker 失败，且原因是实现能力（不是环境、权限、配额）时升一档再派。strong 仍
-失败则拆分、换路线或按 blocker 规则问用户。长时间 strong 循环或并行多个高档 Worker 属于显著成本，
-先问用户。Validator 失败换同等 economy replacement，不升档。
-
-每次派发都能说出档位、宿主映射，以及为何不是更低一档。宿主型号对照见
-[能力档映射](references/subagent-selection.md)。
+失败则拆分、换路线或按 blocker 规则问用户。长时间 strong 循环或并行多个 strong Worker 属于显著
+成本，先问用户。Validator 失败换同档 replacement，不升档。路由不可用或配额耗尽时按
+`$bb-model-routing` 报告，不自行换模型。
 
 ## 自主循环
 
-持续执行下面的循环，不在 Story 之间停下来询问是否继续：
+持续执行下面的循环，不在 Story 之间停下来询问是否继续。派发、等待、取报告和 follow-up 的具体命令
+见[BB 派发循环](references/bb-dispatch-loop.md)。
 
 1. **选择 frontier。** 从 `status --json` 的 `ready` 中选择最能降低 Goal 风险的 Story；通常取第一项。
-2. **原子领取。** 使用 `transition --expect todo --status in_progress --owner <worker-id>`。若预期状态失败，
-   重新读取计划并协调并发事实。
-3. **选择能力档并派发 fresh Worker。** 按「选择能力档」为本轮 Worker 定档并映射到宿主原生
-   subagent。用 planning 的 `brief` 命令提取当前 Story、稳定边界、相关黄金案例和直接前置 handoff，
-   再补充仓库规则、当前基线与并发 write scope。要求它先验证现状，在指定公开 seam 上按 red → green
-   的纵向小循环实现并运行相关测试。不要复制整个会话历史或全部计划。
-4. **核对落盘事实。** Worker 回复不是完成证明。Orchestrator 检查 diff、工作区和命令证据，确认没有
-   越界、丢失并发改动或只修改了报告。
-5. **完成校验。** 派发未参与实现的 economy Validator，固定本轮基线与 diff。任务必须显式要求
-   `$story-direction-review`：确认 Outcome/Acceptance 与相关黄金案例是否真正成立，后续能否继续。
-   不做代码审查、风格检查或局部重构建议。
-6. **裁决。** Validator 结论为 `CONTINUE` 则由 orchestrator 运行必要测试；`PATCH` 把精确遗漏发回
-   同一 Worker 修复，再由 Validator 复核。新独立结果用插入 Story 承接；Goal 或用户边界失效才请求用户。
-7. **完成 Story。** 通过 planning 的 `write` 更新 Story JSON：把已证明的 Acceptance 设为 `passed=true`，
-   在 Handoff 中记录可观察结果、命令/证据与 Validator 结论、剩余事项、残余风险和下一 Story 输入。
-   随后 `transition --status done`、运行 `check`，并由 orchestrator 创建包含 Story ID 的 Git checkpoint；
-   `SPEC.md` 与 `STATUS.md` 由脚本同步刷新。
-8. **继续。** 重新计算 frontier，直到 `final_story` 完成或没有可推进工作。
+2. **原子领取。** `transition --expect todo --status in_progress --owner <worker-thread-或-run-id>`。
+   预期状态失败就重新读取计划并协调并发事实。
+3. **派发 fresh Worker。** 用 planning 的 `brief` 提取执行包，加上仓库规则、当前基线、并发 write
+   scope 和下面的 Worker 报告契约，组成 `--task`。要求它先验证现状，在指定公开 seam 上按 red → green
+   的纵向小循环实现并运行相关测试。不复制会话历史或全部计划。派发后立刻把线程 ID 写回 Handoff。
+4. **等待并取报告。** `bb thread wait` 到 idle，`bb thread output` 取报告。线程卡在交互上时用
+   `bb thread interactions` 处理：属于已授权范围的直接批准；越权或需要用户决定的按 blocker 规则。
+5. **核对边界。** 只看 `git status --short` 和 `git diff --stat`：确认没有越界 write_scope、没有丢失
+   并发改动、不是只改了报告。Worker 回复不是完成证明。
+6. **完成校验。** 按 Story 分流：
+   - economy 且 Acceptance 全部可由脚本或测试直接判定：orchestrator 派 economy 只读线程跑验收命令并
+     回摘要，或自己跑输出短小的命令；不派 Validator。
+   - 其他 Story：派未参与实现的 Validator（`--difficulty simple --kind test`），固定本轮基线与 diff，
+     按下面的 Validator 契约逐条核对 Acceptance 并跑必要测试。
+7. **裁决。** 全部 Acceptance 成立则完成 Story。有明确小遗漏则把精确遗漏用 `bb thread tell` 发回
+   同一 Worker 线程修复，再复核。Validator 报告的新事实由 orchestrator 判断：新独立结果用插入 Story
+   承接；Goal 或用户边界失效才请求用户。
+8. **完成 Story。** 用 planning 的 `write` 更新 Story JSON：已证明的 Acceptance 设为 `passed=true`，
+   Handoff 记录可观察结果、验证命令与结论、线程 ID、残余风险和下一 Story 输入。随后
+   `transition --status done`、`check`，并创建包含 Story ID 的 Git checkpoint。
+9. **继续。** 重新计算 frontier，直到 `final_story` 完成或没有可推进工作。
 
-每次 context compaction 前，先把当前阶段、证据和精确下一步写回 Story Handoff。恢复顺序固定为
-Agent JSON → Git/diff → history；subagent 对话只在仍可访问且确有需要时读取。启动 history、记录
-attempt、聚合复盘或收口 finish 时读[History 与复盘](references/orchestration-history.md)。
+## 报告契约
 
-## Subagent 报告契约
+写进 `--task` 末尾，要求线程最终回复只包含这段。事实仍以工作区、测试和计划为准。
 
-不要求 provider 特有 JSON 或事件流。Worker 最终回复应简短包含：
+Worker：
 
 ```text
 Result: worker_done | blocked | failed
@@ -108,34 +110,52 @@ Remaining: <未完成工作或 none>
 Handoff: <替换 Worker 继续所需上下文>
 ```
 
-Validator 最终回复遵循 `$story-direction-review` 的输出契约，并给出唯一结论
-`CONTINUE | PATCH | INSERT_STORY | REPLAN`。格式帮助协调，但事实仍以工作区、测试和计划为准。
-Validator 意外写文件时，不接受其结论；先隔离该改动与并发现场，再派发新的只读 Validator。
+Validator：
+
+```text
+Verdict: PASS | FAIL
+Acceptance:
+- AC-01: holds | missing — <命令或观察证据>
+Gaps: <遗漏、越界或与黄金案例冲突的事实；none>
+New facts: <推翻后续 Story 前提或计划假设的发现；none>
+```
+
+Validator 只确认 Story 是否真正完成，不做代码审查、风格或重构建议。它意外写了文件时不接受其
+结论；先隔离该改动，再派新的 Validator。计划级判断（插入 Story、重规划）由 orchestrator 做，需要
+大局视角时另派线程显式调用 `$story-direction-review`。
 
 ## 计划演化与 blocker
 
 Orchestrator 在既定 Goal 和用户边界内拥有实现路径，可以重排、插入、合并或改写未开始的 Story。
 修改 Story 结果或验收时递增 `intent_version`，保留完成证据和既有 ID；插入使用 `STORY-NN.M`。
 
-只有以下情况询问用户：缺少必要凭据或权限；下一步具有破坏性、难回退、明显外部影响或显著成本；
-选择会改变 Goal、黄金 oracle、公开契约或用户边界；同一语义区域的并发修改无法判断；受影响链的
-安全恢复路径已经耗尽。先继续其他独立 ready Story，只阻塞受影响链。提问时给出证据、已尝试恢复、
-影响范围和一个最小决策。
+预计需要 strong 才能完成的 Story 首先是拆分信号，不是升档信号。
 
-普通实现不确定、首次测试失败、subagent 消失或等价技术方案选择都由 orchestrator 解决。最终验收
-失败时保留失败证据：实现缺陷插入修复 Story；fixture/环境错误修复验收环境；Goal 或边界错误才请求
-用户。不得降低黄金判据来获得绿色结果。
+询问用户的条件、恢复优先级和"不得降低黄金判据"见联合核心设计。提问时给出证据、已尝试恢复、
+影响范围和一个最小决策，并先继续其他独立 ready Story。
 
 ## 收口与交付
 
-完成 `final_story` 前，在同一 acceptance commit 上运行全部黄金案例和跨 Story 整合检查。然后：
+完成 `final_story` 前，在同一 acceptance commit 上运行全部黄金案例和跨 Story 整合检查（派线程跑，
+回摘要）。然后：
 
 1. 运行 `completion-check`，确认全部 Story、验收勾选、依赖与黄金覆盖收口。
-2. 检查完整 diff、branch、`git status --short`、`git worktree list` 与待推送提交，只提交授权范围。
+2. 检查 `git diff --stat`、branch、`git status --short`、`git worktree list` 与待推送提交，只提交
+   授权范围。
 3. 推送当前目标分支到明确 upstream；不 force-push、不绕过 hook、不猜测歧义 remote。
 4. 查询真实 upstream，确认其 commit 等于本地交付 HEAD。
-5. 尽力执行 history `finish --outcome delivered --plan <topic>/agent/plan.json \
-   --stories-dir <topic>/agent/stories`。
 
-只有计划完成门禁、整合测试、授权提交和远端 HEAD 都成立时报告完成。History 写入失败作为遥测告警
-报告，但不推翻已经由 Plan、测试和 Git 证明的交付。
+只有计划完成门禁、整合测试、授权提交和远端 HEAD 都成立时报告完成。
+
+## 可观测性
+
+没有独立的运行历史账本。每个 Worker / Validator 线程由 `bb-dispatch` 创建并关联到当前父线程，
+BB 已持久化 provider、模型、状态、耗时和最终输出；Story Handoff 记录该 Story 用过的线程 ID 与
+结论。复盘用：
+
+```bash
+bb thread list --parent-thread <orchestrator-thread-id> --json
+bb thread show <thread-id> --json
+```
+
+缺口：没有跨运行的成功率聚合，升档决策只留在 Handoff 文本里。

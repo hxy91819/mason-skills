@@ -45,9 +45,9 @@
 
 ## 复杂 Skill 的可观测设计
 
-新建或大改难以观测的 skill 时，必须按本仓库标准内置可观测设计。难以观测的判定：调用外部引擎/子进程、长时运行且内部有重试/fallback 状态迁移、输出是建议性结果且依赖人工裁决、或失败难以事后定位。参考实现：`large-task-orchestrator` 的 `scripts/orchestration_history.py`、`autoreview` 的 review history（`--history-summary`）。
+新建或大改难以观测的 skill 时，必须按本仓库标准内置可观测设计。难以观测的判定：调用外部引擎/子进程、长时运行且内部有重试/fallback 状态迁移、输出是建议性结果且依赖人工裁决、或失败难以事后定位。参考实现：`droid-config` 的 `scripts/droid_config_audit.py`、`autoreview` 的 review history（`--history-summary`）。
 
-标准组件（六项，全部落在已验证的两个参考实现上）：
+标准组件（六项，全部落在已验证的两个参考实现上）。例外：当外部系统已经持久化同等事实（如 BB 线程记录）时，可以不建独立账本，但必须在 SKILL.md 写明用什么命令回看以及剩余缺口：
 
 1. **单一事实源**：本地、Git-ignored 的运行历史缓存，只由脚本维护，不用手改；存放在被审仓库或用户主目录之外，永不提交。
 2. **最小事实**：只记复盘必需字段（engine/model/耗时/outcome/稳定 id）；prompt、正文、diff、日志、密钥一律不入库。

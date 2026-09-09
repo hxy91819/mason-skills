@@ -92,6 +92,10 @@ CONTEXT_FIELDS = (
     "stop_conditions",
 )
 HANDOFF_FIELDS = ("summary", "verification", "remaining", "risks", "next")
+# Handoff 会原样进入后续 brief，直接消耗便宜 Worker 的上下文；超限只告警，避免阻塞已成立的完成事实。
+HANDOFF_TEXT_LIMIT = 400
+HANDOFF_LIST_LIMIT = 8
+HANDOFF_ITEM_LIMIT = 200
 
 HUMAN_LABELS = {
     "zh-Hans": {
@@ -507,6 +511,33 @@ def validate_story_data(path: Path, data: dict[str, Any]) -> list[str]:
     return errors
 
 
+def handoff_warnings(path: Path, data: dict[str, Any]) -> list[str]:
+    handoff = data.get("handoff")
+    if not isinstance(handoff, dict):
+        return []
+    label = f"{path}.handoff"
+    warnings: list[str] = []
+    for field in ("summary", "next"):
+        value = handoff.get(field)
+        if isinstance(value, str) and len(value) > HANDOFF_TEXT_LIMIT:
+            warnings.append(f"{label}.{field}: {len(value)} 字符，超过 {HANDOFF_TEXT_LIMIT}；只写事实与命令")
+    for field in ("verification", "remaining", "risks"):
+        value = handoff.get(field)
+        if not isinstance(value, list):
+            continue
+        if len(value) > HANDOFF_LIST_LIMIT:
+            warnings.append(f"{label}.{field}: {len(value)} 项，超过 {HANDOFF_LIST_LIMIT}")
+        for index, item in enumerate(value):
+            if isinstance(item, str) and len(item) > HANDOFF_ITEM_LIMIT:
+                warnings.append(f"{label}.{field}[{index}]: {len(item)} 字符，超过 {HANDOFF_ITEM_LIMIT}")
+    return warnings
+
+
+def warn(warnings: Iterable[str]) -> None:
+    for warning in warnings:
+        print(f"WARN: {warning}", file=sys.stderr)
+
+
 def story_order(story_id: str) -> tuple[int, int, str]:
     match = STORY_ID_RE.fullmatch(story_id)
     if not match:
@@ -891,6 +922,8 @@ def command_check(args: argparse.Namespace) -> int:
         errors.extend(projection_errors(plan, stories))
     if not report(errors):
         return 1
+    for story in stories:
+        warn(handoff_warnings(story.path, story.data))
     print(f"OK: {plan.item_id}; stories={len(stories)}; ready={len(ready_story_ids(stories))}; projections=fresh")
     return 0
 
@@ -1000,6 +1033,8 @@ def command_write(args: argparse.Namespace) -> int:
         raise PlanError(f"未知 kind: {kind!r}")
     if not report(errors):
         return 1
+    if kind == STORY_KIND:
+        warn(handoff_warnings(args.file, data))
     _atomic_write(args.file, dump_json(data))
     print(f"OK: wrote {args.file}; run render/check after project updates")
     return 0

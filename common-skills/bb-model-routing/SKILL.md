@@ -41,6 +41,12 @@ bb-dispatch --difficulty medium --kind test --task '<测试目标、范围与验
 
 根据返回结果报告线程 ID、实际选择和状态。创建成功不代表任务完成；创建结果不明时先查询线程，避免重复派发。
 
+## 作为编排后端
+
+`large-task-orchestrator` 把 Worker / Validator 全部通过本技能派发：能力档映射为 `--difficulty`，
+Validator 固定 `--difficulty simple --kind test`。orchestrator 只传任务文本与难度，路由仍由本配置决定；
+线程 wait / output / tell 的循环见该技能的 `references/bb-dispatch-loop.md`。
+
 ## 可观测性
 
 使用 `--dry-run` 只读检查当前选择、目标环境和启动参数；派发返回实际选择与原始创建回执。当前没有持久运行历史、裁决回写或跨运行聚合，无法统计长期成功率；故障定位依赖返回错误和 BB 线程记录。

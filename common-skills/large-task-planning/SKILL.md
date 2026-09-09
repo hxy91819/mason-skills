@@ -64,7 +64,9 @@ agent/*.json + 项目进展.md` 时，再读[迁移说明](references/migrate-v1
 ## 编译执行路径
 
 把工作拆成 tracer-bullet Story：每张 Story 交付一条窄而完整、可独立验证的纵向结果，并能由一个
-fresh Worker context 完成。依赖字段 `blocked_by` 只表达真正阻止开工的边。
+fresh、便宜的 Worker context 完成。粒度判据是 economy 或 standard 档模型能独立做完；预计需要 strong
+才能完成的 Story 先拆，而不是留给 orchestrator 升档。优先把 Acceptance 写成可由脚本或测试直接判定
+的形式，这类 Story 在执行时可以跳过独立 Validator。依赖字段 `blocked_by` 只表达真正阻止开工的边。
 
 Story Context 只保存执行所需的公共 test seams、代码入口、权威资料、write scope 和停止条件。
 Outcome 与 Acceptance 说结果，不列层级实现任务。宽范围机械迁移使用 expand → 分批 migrate →
@@ -116,5 +118,6 @@ python3 <skill-dir>/scripts/epic_story.py brief \
 ```
 
 标记 `done` 前，在 JSON 中把已证明的 Acceptance 设为 `passed=true`，并写清 handoff 的结果、验证、
-剩余工作、风险和下一步。最终使用 `completion-check`；它证明计划内部与人读投影收口，不替代仓库
-测试、Git 检查或远端交付。
+剩余工作、风险和下一步。Handoff 是下一个便宜 Worker 的输入，只写事实与命令，不写过程叙述；`check`
+对超长 Handoff 输出 `WARN`，超限阈值见格式契约。最终使用 `completion-check`；它证明计划内部与人读
+投影收口，不替代仓库测试、Git 检查或远端交付。

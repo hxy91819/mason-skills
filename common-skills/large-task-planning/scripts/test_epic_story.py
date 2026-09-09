@@ -296,6 +296,22 @@ class EpicStoryCliTest(unittest.TestCase):
         result = self.run_cli("status", *self.project_args(), expected=1)
         self.assertIn("Story blocker 成环", result.stderr)
 
+    def test_oversized_handoff_warns_but_does_not_block(self) -> None:
+        story = story_data("STORY-01", blocked_by=[], status="in_progress")
+        story["handoff"] = completed_handoff("过程叙述。" * 100)
+        story["handoff"]["remaining"] = ["还没做完。"]
+        story["handoff"]["risks"] = [f"风险 {index}" for index in range(9)]
+        payload = self.root / "story.json"
+        self.write_json(payload, story)
+        written = self.run_cli("write", "--file", str(self.story_1), "--from", str(payload))
+        self.assertIn("WARN: ", written.stderr)
+        self.assertIn("handoff.summary", written.stderr)
+        self.assertIn("handoff.risks: 9 项", written.stderr)
+        self.run_cli("render", *self.project_args())
+        checked = self.run_cli("check", *self.project_args())
+        self.assertIn("handoff.summary", checked.stderr)
+        self.assertIn("OK:", checked.stdout)
+
     def test_write_rejects_schema_sediment(self) -> None:
         invalid = deepcopy(plan_data())
         invalid["extra_rule"] = True

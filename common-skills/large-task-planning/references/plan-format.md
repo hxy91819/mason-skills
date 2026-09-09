@@ -114,6 +114,10 @@
 
 `covers` 只表示该 Story 推进或复验的黄金案例，不表示测试 ID，也不保存命令结果。
 
+Handoff 会原样进入后续 Story 的 `brief`，直接消耗便宜 Worker 的上下文。`check` 与 `write` 对超长
+Handoff 输出 `WARN` 但不失败：`summary` 与 `next` 各 400 字符，`verification`、`remaining`、`risks`
+各 8 项且每项 200 字符。线程 ID、命令和退出码属于事实，过程叙述与重复的验收原文不属于。
+
 ## 人读投影
 
 `render` 在计划根目录生成：

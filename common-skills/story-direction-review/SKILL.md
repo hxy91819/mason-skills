@@ -6,9 +6,10 @@ disable-model-invocation: true
 
 # Story Direction Review
 
-这是流程类 Skill，仅在用户显式调用 `$story-direction-review` 时运行。`large-task-orchestrator` 的
-Validator 也通过任务里的 `$story-direction-review` 显式调用本 Skill。默认只读；只确认 Story 是否真正
-完成、方向是否仍成立。不做代码审查、风格检查或局部重构建议。
+这是流程类 Skill，仅在用户显式调用 `$story-direction-review` 时运行。`large-task-orchestrator` 在
+需要大局判断（是否插入 Story、是否重规划）时，也会另派线程并在任务里显式调用本 Skill；它的常规
+Validator 只逐条核对 Acceptance，不走本 Skill。默认只读；只确认 Story 是否真正完成、方向是否仍
+成立。不做代码审查、风格检查或局部重构建议。
 
 ## 建立独立视角
 
