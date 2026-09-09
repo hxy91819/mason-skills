@@ -82,6 +82,7 @@ function compactCliproxyUsage(result: ProviderUsageResult): CliproxyUsageSnapsho
         status: "ok",
         planLabel: result.usage.planLabel,
         windows: result.usage.windows.map(window => ({
+          accountLabel: typeof window.accountLabel === "string" ? window.accountLabel : null,
           label: window.label,
           usedPercent: Math.min(100, Math.max(0, window.usedPercent)),
           resetsAt: window.resetsAt,

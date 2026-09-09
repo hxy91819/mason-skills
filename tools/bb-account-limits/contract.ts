@@ -4,6 +4,7 @@ import { z } from "zod";
 const emptyInputSchema = z.object({}).strict();
 
 const quotaWindowSchema = z.object({
+  accountLabel: z.string().min(1).nullable(),
   label: z.string().min(1),
   usedPercent: z.number().finite().min(0).max(100),
   resetsAt: z.string().datetime().nullable(),

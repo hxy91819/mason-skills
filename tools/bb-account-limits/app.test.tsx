@@ -32,8 +32,11 @@ test("账户额度页面注册为导航面板并显示独立 Cliproxy 数据", a
         displayName: "Claude",
         usage: {
           status: "ok",
-          planLabel: "Claude · Cliproxy · 1/1 accounts",
-          windows: [{ label: "Weekly limit", usedPercent: 25, resetsAt: "2026-09-15T01:30:22.000Z" }],
+          planLabel: "Claude · Cliproxy · 2/2 accounts",
+          windows: [
+            { accountLabel: "Claude 工作账号", label: "Claude 工作账号 · Weekly limit", usedPercent: 25, resetsAt: "2026-09-15T01:30:22.000Z" },
+            { accountLabel: "Claude 个人账号", label: "Claude 个人账号 · 5-hour limit", usedPercent: 50, resetsAt: "2026-09-10T01:30:22.000Z" },
+          ],
         },
       }],
     }],
@@ -42,6 +45,8 @@ test("账户额度页面注册为导航面板并显示独立 Cliproxy 数据", a
     rpc: { readCliproxyUsage: () => snapshot },
   });
   await slot.findByText("Claude");
+  assert.ok(slot.getByRole("region", { name: "Claude 工作账号 的额度" }));
+  assert.ok(slot.getByRole("region", { name: "Claude 个人账号 的额度" }));
   assert.equal(slot.getByRole("progressbar", { name: "Weekly limit 剩余额度" }).getAttribute("aria-valuenow"), "75");
   assert.deepEqual(slot.inspection.rpcCalls, [{ method: "readCliproxyUsage", input: {} }]);
   slot.lifecycle.unmount();

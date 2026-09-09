@@ -9,25 +9,50 @@ function resetLabel(value: string | null): string {
   return `重置于 ${new Intl.DateTimeFormat("zh-CN", { dateStyle: "short", timeStyle: "short" }).format(date)}`;
 }
 
+type OkUsage = Extract<CliproxyUsageSnapshot["providers"][number]["usage"], { status: "ok" }>;
+type QuotaWindow = OkUsage["windows"][number];
+
+function displayWindowLabel(window: QuotaWindow): string {
+  const prefix = window.accountLabel ? `${window.accountLabel} · ` : "";
+  return prefix && window.label.startsWith(prefix) ? window.label.slice(prefix.length) : window.label;
+}
+
+function groupWindowsByAccount(windows: readonly QuotaWindow[]) {
+  const groups = new Map<string, QuotaWindow[]>();
+  for (const window of windows) {
+    const accountLabel = window.accountLabel ?? "账户额度";
+    const group = groups.get(accountLabel);
+    if (group) group.push(window);
+    else groups.set(accountLabel, [window]);
+  }
+  return [...groups.entries()];
+}
+
 function Usage({ usage }: { usage: CliproxyUsageSnapshot["providers"][number]["usage"] }) {
   if (usage.status === "ok") {
     return <>
       {usage.planLabel && <p className="mb-3 text-sm text-muted-foreground">{usage.planLabel}</p>}
-      <ul className="space-y-3">
-        {usage.windows.map((window, index) => {
-          const remaining = Math.max(0, Math.min(100, 100 - window.usedPercent));
-          return <li key={`${window.label}-${index}`}>
-            <div className="mb-1 flex items-baseline justify-between gap-3 text-sm">
-              <span>{window.label}</span>
-              <span className="shrink-0 text-muted-foreground">剩余 {remaining.toFixed(1)}%</span>
-            </div>
-            <div className="h-2 overflow-hidden rounded-full bg-muted" role="progressbar" aria-label={`${window.label} 剩余额度`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={remaining}>
-              <div className="h-full rounded-full bg-primary" style={{ width: `${remaining}%` }} />
-            </div>
-            <p className="mt-1 text-xs text-muted-foreground">{resetLabel(window.resetsAt)}</p>
-          </li>;
-        })}
-      </ul>
+      <div className="space-y-3">
+        {groupWindowsByAccount(usage.windows).map(([accountLabel, windows]) => <section key={accountLabel} aria-label={`${accountLabel} 的额度`} className="rounded-md border border-border/70 bg-muted/30 p-3">
+          <h3 className="mb-3 text-sm font-medium">{accountLabel}</h3>
+          <ul className="space-y-3">
+            {windows.map((window, index) => {
+              const label = displayWindowLabel(window);
+              const remaining = Math.max(0, Math.min(100, 100 - window.usedPercent));
+              return <li key={`${window.label}-${index}`}>
+                <div className="mb-1 flex items-baseline justify-between gap-3 text-sm">
+                  <span>{label}</span>
+                  <span className="shrink-0 text-muted-foreground">剩余 {remaining.toFixed(1)}%</span>
+                </div>
+                <div className="h-2 overflow-hidden rounded-full bg-muted" role="progressbar" aria-label={`${label} 剩余额度`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={remaining}>
+                  <div className="h-full rounded-full bg-primary" style={{ width: `${remaining}%` }} />
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">{resetLabel(window.resetsAt)}</p>
+              </li>;
+            })}
+          </ul>
+        </section>)}
+      </div>
     </>;
   }
   const messages: Record<Exclude<typeof usage.status, "ok" | "error">, string> = {

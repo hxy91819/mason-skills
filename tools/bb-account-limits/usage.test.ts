@@ -273,7 +273,7 @@ test("Cliproxy provider aggregation keeps successful account limits when another
     assert.ok(result.supported && result.usage.status === "ok");
     assert.equal(result.usage.planLabel, "Claude · Cliproxy · 1/2 accounts");
     assert.deepEqual(result.usage.windows, [
-      { label: "账号 1 · Weekly limit", usedPercent: 42, resetsAt: "2026-09-12T10:00:00.000Z" },
+      { accountLabel: "账号 1", label: "账号 1 · Weekly limit", usedPercent: 42, resetsAt: "2026-09-12T10:00:00.000Z" },
     ]);
     assert.equal(requests.filter(url => url.endsWith("/auth-files")).length, 1);
   } finally {

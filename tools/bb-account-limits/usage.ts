@@ -740,6 +740,7 @@ function aggregateCliproxyUsage(
       if (!label || !Number.isFinite(usedPercent) || usedPercent < 0 || usedPercent > 100) return [];
       return [{
         label: `${usageLabel(accounts[index]!)} · ${label}`,
+        accountLabel: usageLabel(accounts[index]!),
         usedPercent,
         resetsAt: typeof window.resetsAt === "string" ? window.resetsAt : null,
       }];
