@@ -4,10 +4,12 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from typing import Any
@@ -18,11 +20,15 @@ PLANNING = SKILL_DIR.parent / "large-task-planning" / "scripts" / "epic_story.py
 
 # 假 bb：所有线程状态在 world.json 里；每个线程按脚本化的 outputs 队列依次回复。
 FAKE_BB = r'''#!/usr/bin/env python3
-import json, os, subprocess, sys
+import fcntl, json, os, subprocess, sys
 world_path = os.environ["FAKE_WORLD"]
-world = json.load(open(world_path))
+world_handle = open(world_path, "r+", encoding="utf-8")
+fcntl.flock(world_handle, fcntl.LOCK_EX)
+world = json.load(world_handle)
 args = [a for a in sys.argv[1:] if a != "--json"]
-def save(): json.dump(world, open(world_path, "w"), ensure_ascii=False, indent=1)
+def save():
+    world_handle.seek(0); json.dump(world, world_handle, ensure_ascii=False, indent=1)
+    world_handle.truncate(); world_handle.flush()
 def out(v): print(json.dumps(v, ensure_ascii=False)); sys.exit(0)
 world.setdefault("calls", []).append(args)
 save()
@@ -66,12 +72,17 @@ print("unknown fake bb call: " + " ".join(args), file=sys.stderr); sys.exit(1)
 '''
 
 FAKE_DISPATCH = r'''#!/usr/bin/env python3
-import json, os, sys
+import fcntl, json, os, sys
 world_path = os.environ["FAKE_WORLD"]
-world = json.load(open(world_path))
+world_handle = open(world_path, "r+", encoding="utf-8")
+fcntl.flock(world_handle, fcntl.LOCK_EX)
+world = json.load(world_handle)
 args = sys.argv[1:]
 def get(flag):
     return args[args.index(flag) + 1] if flag in args else None
+if "--dry-run" in args:
+    print(json.dumps({"dry_run": True, "selection": {"difficulty": get("--difficulty"), "kind": get("--kind")}}))
+    sys.exit(0)
 title = get("--title"); role = title.split()[-1]; story = title.split()[0]
 key = f"{story}:{role}"
 scripts = world["scripts"].get(key) or []
@@ -83,7 +94,8 @@ world["threads"][thread_id] = {"status": "active", "output": "", "queue": list(q
                                "difficulty": get("--difficulty"), "kind": get("--kind"),
                                "interactions": list(world.get("interactions", {}).get(key, []))}
 world.setdefault("dispatches", []).append({"thread": thread_id, "difficulty": get("--difficulty"), "kind": get("--kind"), "title": title})
-json.dump(world, open(world_path, "w"), ensure_ascii=False, indent=1)
+world_handle.seek(0); json.dump(world, world_handle, ensure_ascii=False, indent=1)
+world_handle.truncate(); world_handle.flush()
 print(json.dumps({"dry_run": False, "selection": {"provider": "p", "model": "m", "difficulty": get("--difficulty"), "kind": get("--kind")},
                   "result": {"id": thread_id, "status": "queued"}}))
 '''
@@ -148,8 +160,26 @@ class DriverTest(unittest.TestCase):
         self.git("config", "user.name", "t")
         self.git("add", "-A")
         self.git("commit", "-q", "-m", "plan")
+        self.background_pids: list[int] = []
 
     def tearDown(self) -> None:
+        for pid in reversed(self.background_pids):
+            try:
+                os.killpg(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                continue
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.05)
+            else:
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
         self.temporary.cleanup()
 
     @staticmethod
@@ -159,8 +189,9 @@ class DriverTest(unittest.TestCase):
     def git(self, *arguments: str) -> str:
         return subprocess.run(["git", *arguments], cwd=self.repo, capture_output=True, text=True, check=True).stdout
 
-    def planning(self, command: str) -> None:
-        subprocess.run([sys.executable, str(PLANNING), command, "--plan", str(self.plan), "--stories-dir", str(self.stories)],
+    def planning(self, command: str, *, plan: Path | None = None, stories: Path | None = None) -> None:
+        subprocess.run([sys.executable, str(PLANNING), command, "--plan", str(plan or self.plan),
+                        "--stories-dir", str(stories or self.stories)],
                        check=True, capture_output=True)
 
     def set_world(self, scripts: dict[str, list[list[dict[str, Any]]]]) -> None:
@@ -174,16 +205,60 @@ class DriverTest(unittest.TestCase):
     def read_world(self) -> dict[str, Any]:
         return json.loads(self.world.read_text(encoding="utf-8"))
 
-    def run_driver(self, *extra: str, expected: int = 0) -> subprocess.CompletedProcess[str]:
+    def run_command(self, command: str, *extra: str, expected: int = 0, plan: Path | None = None,
+                    stories: Path | None = None) -> subprocess.CompletedProcess[str]:
         env = {**os.environ, "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}",
                "FAKE_WORLD": str(self.world), "FAKE_REPO": str(self.repo),
                "FAKE_PLANNING": str(PLANNING), "FAKE_PLAN": str(self.plan), "FAKE_STORIES": str(self.stories)}
         result = subprocess.run(
-            [sys.executable, str(DRIVER), "--plan", str(self.plan), "--stories-dir", str(self.stories),
+            [sys.executable, str(DRIVER), command, "--plan", str(plan or self.plan),
+             "--stories-dir", str(stories or self.stories),
              "--repository", str(self.repo), "--dispatch", str(self.bin / "bb-dispatch"), "--poll-seconds", "1", *extra],
             cwd=self.repo, env=env, capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, expected, result.stderr + result.stdout)
         return result
+
+    def run_driver(self, *extra: str, expected: int = 0) -> subprocess.CompletedProcess[str]:
+        return self.run_command("run", *extra, expected=expected)
+
+    def start_driver(self, *extra: str, plan: Path | None = None, stories: Path | None = None) -> int:
+        result = self.run_command("start", *extra, plan=plan, stories=stories)
+        marker = "STARTED: pid="
+        pid = int(next(line[len(marker):] for line in result.stdout.splitlines() if line.startswith(marker)))
+        self.background_pids.append(pid)
+        return pid
+
+    def status_payload(self, *, plan: Path | None = None, stories: Path | None = None) -> dict[str, Any]:
+        result = self.run_command("status", "--json", plan=plan, stories=stories)
+        return json.loads(result.stdout)
+
+    def wait_for(self, predicate: Any, *, timeout: float = 5) -> Any:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            value = predicate()
+            if value:
+                return value
+            time.sleep(0.05)
+        self.fail("等待后台 driver 状态超时")
+
+    def wait_for_driver_exit(self, *, plan: Path | None = None, stories: Path | None = None) -> dict[str, Any]:
+        return self.wait_for(lambda: payload if not (payload := self.status_payload(plan=plan, stories=stories))["alive"] else None)
+
+    def add_one_story_plan(self, topic: str, story_id: str) -> tuple[Path, Path]:
+        plan = self.repo / topic / "agent" / "plan.json"
+        stories = plan.parent / "stories"
+        stories.mkdir(parents=True)
+        data = plan_data()
+        data["id"] = f"EPIC-{story_id}"
+        data["final_story"] = story_id
+        self.write_json(plan, data)
+        story = story_data(story_id, [])
+        story["plan"] = data["id"]
+        self.write_json(stories / f"{story_id}.json", story)
+        self.planning("render", plan=plan, stories=stories)
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", f"add {topic}")
+        return plan, stories
 
     def story(self, story_id: str) -> dict[str, Any]:
         for path in self.stories.glob("*.json"):
@@ -471,6 +546,84 @@ class DriverTest(unittest.TestCase):
         remote_head = subprocess.run(["git", "--git-dir", str(remote), "rev-parse", "main"],
                                      capture_output=True, text=True, check=True).stdout.strip()
         self.assertEqual(remote_head, self.git("rev-parse", "HEAD").strip())
+
+    def test_start_runs_in_background_status_exposes_thread_and_rejects_duplicate(self) -> None:
+        self.set_world({"STORY-01:worker": [[{"status": "active"}]]})
+        self.start_driver("--max-stories", "1")
+        payload = self.wait_for(lambda: value if (value := self.status_payload())["alive"]
+                                and value["in_progress"] else None)
+        story = payload["in_progress"][0]
+        self.assertEqual(story["id"], "STORY-01")
+        self.assertEqual(story["stage"], "working")
+        self.assertTrue(story["worker_thread"].startswith("thr_worker_story01_"))
+        duplicate = self.run_command("start", "--max-stories", "1", expected=4)
+        self.assertIn("已在运行", duplicate.stderr)
+
+    def test_stale_pid_file_does_not_block_start(self) -> None:
+        self.set_world({"STORY-01:worker": [[{"status": "active"}]]})
+        state_dir = Path(self.status_payload()["state_dir"])
+        state_dir.mkdir(parents=True)
+        (state_dir / "driver.pid").write_text('{"pid": 999999, "started_at": "old"}\n', encoding="utf-8")
+        self.start_driver("--max-stories", "1")
+        payload = self.wait_for(lambda: value if (value := self.status_payload())["alive"] else None)
+        self.assertNotEqual(payload["pid"], 999999)
+
+    def test_two_plans_in_one_repository_have_isolated_background_state_and_resume_to_done(self) -> None:
+        plan_a, stories_a = self.add_one_story_plan("plan-a", "STORY-03")
+        plan_b, stories_b = self.add_one_story_plan("plan-b", "STORY-04")
+        self.set_world({
+            "STORY-03:worker": [[{"status": "active"}, {"output": WORKER_DONE}]],
+            "STORY-04:worker": [[{"status": "active"}, {"output": WORKER_DONE}]],
+        })
+        self.start_driver("--default-difficulty", "simple", "--allow-empty-story", "--max-stories", "1",
+                          plan=plan_a, stories=stories_a)
+        self.start_driver("--default-difficulty", "simple", "--allow-empty-story", "--max-stories", "1",
+                          plan=plan_b, stories=stories_b)
+        payload_a = self.wait_for(lambda: value if (value := self.status_payload(plan=plan_a, stories=stories_a))["alive"]
+                                  and value["in_progress"] else None)
+        payload_b = self.wait_for(lambda: value if (value := self.status_payload(plan=plan_b, stories=stories_b))["alive"]
+                                  and value["in_progress"] else None)
+        self.assertNotEqual(payload_a["state_dir"], payload_b["state_dir"])
+        self.run_command("stop", "--wait", "--wait-timeout", "5", plan=plan_a, stories=stories_a)
+        self.run_command("stop", "--wait", "--wait-timeout", "5", plan=plan_b, stories=stories_b)
+        self.run_command("run", "--default-difficulty", "simple", "--allow-empty-story", "--max-stories", "1",
+                         plan=plan_a, stories=stories_a)
+        self.run_command("run", "--default-difficulty", "simple", "--allow-empty-story", "--max-stories", "1",
+                         plan=plan_b, stories=stories_b)
+        self.assertEqual(json.loads((stories_a / "STORY-03.json").read_text(encoding="utf-8"))["status"], "done")
+        self.assertEqual(json.loads((stories_b / "STORY-04.json").read_text(encoding="utf-8"))["status"], "done")
+        log_a = (Path(payload_a["state_dir"]) / "log.jsonl").read_text(encoding="utf-8")
+        log_b = (Path(payload_b["state_dir"]) / "log.jsonl").read_text(encoding="utf-8")
+        self.assertIn("STORY-03", log_a)
+        self.assertNotIn("STORY-04", log_a)
+        self.assertIn("STORY-04", log_b)
+        self.assertNotIn("STORY-03", log_b)
+
+    def test_stop_preserves_in_progress_story_then_restart_reuses_worker(self) -> None:
+        self.set_world({
+            "STORY-01:worker": [[{"status": "active"}, {"output": WORKER_DONE, "files": WORKER_FILES}]],
+        })
+        self.start_driver("--default-difficulty", "simple", "--max-stories", "1")
+        self.wait_for(lambda: value if (value := self.status_payload())["alive"] and value["in_progress"] else None)
+        self.run_command("stop", "--wait", "--wait-timeout", "5")
+        self.assertEqual(self.story("STORY-01")["status"], "in_progress")
+        stopped = self.status_payload()
+        self.assertFalse(stopped["alive"])
+        self.assertFalse((Path(stopped["state_dir"]) / "driver.pid").exists())
+        self.start_driver("--default-difficulty", "simple", "--max-stories", "1")
+        self.wait_for_driver_exit()
+        self.assertEqual(self.story("STORY-01")["status"], "done")
+        self.assertEqual(self.read_world()["spawned"]["STORY-01:worker"], 1)
+
+    def test_status_json_reports_last_stop_reason_after_exit_three(self) -> None:
+        self.set_world({
+            "STORY-01:worker": [[{"output": "Result: blocked\nChanged: none\nVerified: none\nRemaining: 缺少凭据\nHandoff: 等待凭据"}]],
+            "STORY-01:judge": [[{"output": "Action: stop\nNote: 需要用户提供测试凭据。"}]],
+        })
+        self.start_driver("--max-stories", "1")
+        payload = self.wait_for_driver_exit()
+        self.assertIn("需要用户提供测试凭据", payload["last_stop"])
+        self.assertFalse((Path(payload["state_dir"]) / "driver.pid").exists())
 
 
 if __name__ == "__main__":

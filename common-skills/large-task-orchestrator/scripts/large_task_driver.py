@@ -13,10 +13,13 @@ Validator 多轮 FAIL、越界写入、线程出错、待处理交互）才派�
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import shutil
+import shlex
+import signal
 import subprocess
 import sys
 import tempfile
@@ -29,8 +32,12 @@ from typing import Any, Callable, Sequence
 SKILL_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_PLANNING_SCRIPT = SKILL_DIR.parent / "large-task-planning" / "scripts" / "epic_story.py"
 DEFAULT_DISPATCH_SCRIPT = SKILL_DIR.parent / "bb-model-routing" / "scripts" / "bb-dispatch"
-STATE_RELATIVE = Path(".local/large-task-orchestrator/driver-state.json")
-LOG_RELATIVE = Path(".local/large-task-orchestrator/driver-log.jsonl")
+STATE_ROOT_RELATIVE = Path(".local/large-task-orchestrator")
+STATE_FILENAME = "state.json"
+LOG_FILENAME = "log.jsonl"
+PID_FILENAME = "driver.pid"
+LAST_STOP_FILENAME = "last-stop.txt"
+OUTPUT_FILENAME = "driver.out"
 
 DIFFICULTIES = ("simple", "medium", "complex")
 WORKER_RESULTS = ("worker_done", "blocked", "failed")
@@ -49,6 +56,92 @@ class DriverError(RuntimeError):
 
 class DriverStop(RuntimeError):
     """driver 需要停下交给用户；message 是给用户的原因。"""
+
+
+class DriverAlreadyRunning(DriverError):
+    """同一 (repository, plan) 已有存活的 driver。"""
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def topic_slug(repository: Path, plan_path: Path) -> str:
+    """给计划位置生成可读且无碰撞的状态目录名。"""
+    try:
+        relative = plan_path.parent.parent.relative_to(repository).as_posix()
+    except ValueError:
+        relative = plan_path.parent.parent.as_posix()
+    readable = re.sub(r"[^a-z0-9]+", "-", relative.casefold()).strip("-") or "plan"
+    digest = hashlib.sha256(relative.encode("utf-8")).hexdigest()[:10]
+    return f"{readable}-{digest}"
+
+
+def read_pid_record(path: Path) -> dict[str, Any] | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("pid"), int):
+        return None
+    return data
+
+
+def process_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        # 已退出但尚未被 init 回收的 zombie 不能继续占用计划锁。
+        if (Path("/proc") / str(pid) / "stat").read_text(encoding="utf-8").split()[2] == "Z":
+            return False
+    except OSError:
+        pass
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def write_pid_record(path: Path, pid: int, *, started_at: str | None = None) -> None:
+    record = {"pid": pid, "started_at": started_at or utc_now()}
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def acquire_pid_lock(path: Path) -> None:
+    """以 O_EXCL 预占锁，避免两个 start 在校验期间同时通过。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    while True:
+        try:
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError:
+            record = read_pid_record(path)
+            if record and process_alive(record["pid"]):
+                raise DriverAlreadyRunning(
+                    f"该计划的 driver 已在运行：pid={record['pid']}，started_at={record.get('started_at', 'unknown')}。"
+                )
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            continue
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump({"pid": os.getpid(), "started_at": utc_now()}, handle, ensure_ascii=False)
+            handle.write("\n")
+        return
+
+
+def clear_pid_lock(path: Path, pid: int) -> None:
+    record = read_pid_record(path)
+    if record and record.get("pid") == pid:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 # --------------------------------------------------------------------------- 报告解析
@@ -185,9 +278,14 @@ class Driver:
         self.topic_dir = self.plan_path.parent.parent
         self.planning_script = Path(args.planning_script).resolve()
         self.dispatch = self._resolve_dispatch(args.dispatch)
-        self.state_path = self.repository / STATE_RELATIVE
-        self.log_path = self.repository / LOG_RELATIVE
+        self.state_dir = self.repository / STATE_ROOT_RELATIVE / topic_slug(self.repository, self.plan_path)
+        self.state_path = self.state_dir / STATE_FILENAME
+        self.log_path = self.state_dir / LOG_FILENAME
+        self.pid_path = self.state_dir / PID_FILENAME
+        self.last_stop_path = self.state_dir / LAST_STOP_FILENAME
+        self.output_path = self.state_dir / OUTPUT_FILENAME
         self.state: dict[str, Any] = self._load_state()
+        self.stop_requested = False
 
     # ----------------------------------------------------------------- 基础设施
 
@@ -207,10 +305,12 @@ class Driver:
             try:
                 data = json.loads(self.state_path.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
+                    data.setdefault("plan_path", str(self.plan_path))
+                    data.setdefault("stories", {})
                     return data
             except json.JSONDecodeError:
                 pass
-        return {"kind": "large-task-driver-state", "stories": {}}
+        return {"kind": "large-task-driver-state", "plan_path": str(self.plan_path), "stories": {}}
 
     def _save_state(self) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -218,6 +318,19 @@ class Driver:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             json.dump(self.state, handle, ensure_ascii=False, indent=2)
         os.replace(temporary, self.state_path)
+
+    def clear_last_stop(self) -> None:
+        try:
+            self.last_stop_path.unlink()
+        except FileNotFoundError:
+            pass
+
+    def write_last_stop(self, reason: str) -> None:
+        self.last_stop_path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(prefix=".last-stop.", dir=self.last_stop_path.parent)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(f"{utc_now()}\n{reason.strip()}\n")
+        os.replace(temporary, self.last_stop_path)
 
     def story_state(self, story_id: str) -> StoryState:
         return StoryState.from_dict(self.state["stories"].get(story_id, {}))
@@ -230,7 +343,7 @@ class Driver:
         self._save_state()
 
     def log(self, event: str, **facts: Any) -> None:
-        record = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "event": event, **facts}
+        record = {"at": utc_now(), "event": event, **facts}
         try:
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
             with self.log_path.open("a", encoding="utf-8") as handle:
@@ -256,6 +369,17 @@ class Driver:
 
     def bb_json(self, *arguments: str) -> Any:
         return run_json(["bb", *arguments, "--json"], cwd=self.repository)
+
+    def validate_dispatch(self) -> None:
+        command = [*self.dispatch, "--difficulty", self.args.default_difficulty,
+                   "--kind", "debug" if self.args.kind == "debug" else "general",
+                   "--task", "校验 large-task driver 路由；不创建线程。", "--dry-run"]
+        if self.args.environment:
+            command += ["--environment", self.args.environment]
+        run_json(command, cwd=self.repository)
+
+    def request_stop(self) -> None:
+        self.stop_requested = True
 
     # ----------------------------------------------------------------- 计划读写
 
@@ -341,9 +465,32 @@ class Driver:
             f"{prefix}STATUS.md",
         ]
 
+    def is_driver_management_path(self, path: str) -> bool:
+        """忽略并行 driver 的投影，避免把它们的状态转换算进业务改动。"""
+        candidate = (self.repository / path).resolve()
+        state_root = self.repository / STATE_ROOT_RELATIVE
+        for state_path in state_root.glob("*/" + STATE_FILENAME):
+            try:
+                cached = json.loads(state_path.read_text(encoding="utf-8"))
+                plan_value = cached.get("plan_path") if isinstance(cached, dict) else None
+                plan_path = Path(str(plan_value)).resolve()
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            topic = plan_path.parent.parent
+            stories = topic / "agent" / "stories"
+            if candidate in (plan_path, topic / "SPEC.md", topic / "STATUS.md"):
+                return True
+            try:
+                candidate.relative_to(stories)
+            except ValueError:
+                continue
+            return True
+        return False
+
     def implementation_changes(self, story_id: str, state: StoryState) -> list[str]:
         management = set(self.management_paths(story_id))
-        return [path for path in self.story_changes(state) if path not in management]
+        return [path for path in self.story_changes(state)
+                if path not in management and not self.is_driver_management_path(path)]
 
     @staticmethod
     def path_scopes(scopes: Sequence[str]) -> list[str]:
@@ -823,14 +970,20 @@ Note: <给 driver 或用户的说明>
         try:
             while True:
                 outcome = self.run_once()
+                if self.stop_requested:
+                    raise DriverStop("收到 stop 请求；当前 run_once 已结束，保留 in_progress Story 供下次接回。")
                 if outcome == "complete":
                     self.finish()
+                    self.clear_last_stop()
                     print("DONE: 全部 Story 完成。")
                     return 0
                 if outcome == "idle":
                     status = self.status()
                     blocked = [f"{s['id']}: {s['blocker']}" for s in status["stories"] if s["status"] == "blocked"]
-                    print("STOP: 没有可推进的 Story。\n" + "\n".join(blocked), file=sys.stderr)
+                    reason = "没有可推进的 Story。\n" + "\n".join(blocked)
+                    self.log("driver.stopped", reason=reason[:500])
+                    self.write_last_stop(reason)
+                    print("STOP: " + reason, file=sys.stderr)
                     return 3
                 if outcome == "progress":
                     stories_done = self.status()["plan"]["completed"]
@@ -842,6 +995,7 @@ Note: <给 driver 或用户的说明>
                     return 0
         except DriverStop as stop:
             self.log("driver.stopped", reason=str(stop)[:500])
+            self.write_last_stop(str(stop))
             print(f"STOP: {stop}", file=sys.stderr)
             return 3
 
@@ -853,34 +1007,238 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="用 BB 线程持续执行 large-task-planning v2 计划的确定性 driver。",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="退出码：0 完成或本轮结束；2 driver 或环境错误；3 需要用户介入（原因在 stderr）。")
-    parser.add_argument("--plan", required=True, help="<topic>/agent/plan.json")
-    parser.add_argument("--stories-dir", required=True, help="同一 agent/ 下的 stories/")
-    parser.add_argument("--repository", default=".", help="Git 仓库根目录；默认当前目录")
-    parser.add_argument("--planning-script", default=str(DEFAULT_PLANNING_SCRIPT), help="epic_story.py 路径")
-    parser.add_argument("--dispatch", help="bb-dispatch 路径；默认 PATH 或 sibling bb-model-routing")
-    parser.add_argument("--environment", help="传给 bb-dispatch 的 BB 环境 ID")
-    parser.add_argument("--context", default="", help="附加给每个线程的仓库说明（基线、命令等）")
-    parser.add_argument("--default-difficulty", choices=DIFFICULTIES, default="medium", help="首轮 Worker 难度")
-    parser.add_argument("--kind", choices=["general", "debug"], default="general", help="Worker 的 bb-dispatch --kind")
-    parser.add_argument("--validator", choices=["always", "standard-up"], default="standard-up",
-                        help="standard-up（默认）：simple 档 Story 跳过 Validator，采信 Worker 证据；always：每张都派")
-    parser.add_argument("--max-patch-rounds", type=int, default=2, help="Validator FAIL 后发回同一 Worker 的最大轮数")
-    parser.add_argument("--max-attempts", type=int, default=3, help="同一 Story 的最大 Worker 线程数")
-    parser.add_argument("--max-judge-rounds", type=int, default=3, help="同一 Story 的最大 judge 介入次数")
-    parser.add_argument("--wait-timeout", type=int, default=1800, help="单次等待线程的秒数上限；超过后返回 waiting")
-    parser.add_argument("--poll-seconds", type=int, default=120, help="bb thread wait 的 --timeout")
-    parser.add_argument("--allow-empty-story", action="store_true", help="允许 Worker 无改动即完成（纯验证类 Story）")
-    parser.add_argument("--once", action="store_true", help="只推进一步就退出；适合定时调用")
-    parser.add_argument("--max-stories", type=int, default=0, help="完成 N 张 Story 后退出；0 为不限")
-    parser.add_argument("--push", action="store_true", help="全部完成后推送当前分支并核对远端 HEAD")
+        epilog="退出码：0 完成或本轮结束；2 driver 或环境错误；3 需要用户介入；4 同一计划已有 driver 在运行。")
+    commands = parser.add_subparsers(dest="command", required=True, title="子命令")
+
+    def add_common_arguments(target: argparse.ArgumentParser) -> None:
+        target.add_argument("--plan", required=True, help="<topic>/agent/plan.json")
+        target.add_argument("--stories-dir", required=True, help="同一 agent/ 下的 stories/")
+        target.add_argument("--repository", default=".", help="Git 仓库根目录；默认当前目录")
+        target.add_argument("--planning-script", default=str(DEFAULT_PLANNING_SCRIPT), help="epic_story.py 路径")
+        target.add_argument("--dispatch", help="bb-dispatch 路径；默认 PATH 或 sibling bb-model-routing")
+        target.add_argument("--environment", help="传给 bb-dispatch 的 BB 环境 ID")
+        target.add_argument("--context", default="", help="附加给每个线程的仓库说明（基线、命令等）")
+        target.add_argument("--default-difficulty", choices=DIFFICULTIES, default="medium", help="首轮 Worker 难度")
+        target.add_argument("--kind", choices=["general", "debug"], default="general", help="Worker 的 bb-dispatch --kind")
+        target.add_argument("--validator", choices=["always", "standard-up"], default="standard-up",
+                            help="standard-up（默认）：simple 档 Story 跳过 Validator，采信 Worker 证据；always：每张都派")
+        target.add_argument("--max-patch-rounds", type=int, default=2, help="Validator FAIL 后发回同一 Worker 的最大轮数")
+        target.add_argument("--max-attempts", type=int, default=3, help="同一 Story 的最大 Worker 线程数")
+        target.add_argument("--max-judge-rounds", type=int, default=3, help="同一 Story 的最大 judge 介入次数")
+        target.add_argument("--wait-timeout", type=int, default=1800, help="单次等待线程的秒数上限；超过后返回 waiting")
+        target.add_argument("--poll-seconds", type=int, default=120, help="bb thread wait 的 --timeout")
+        target.add_argument("--allow-empty-story", action="store_true", help="允许 Worker 无改动即完成（纯验证类 Story）")
+        target.add_argument("--once", action="store_true", help="只推进一步就退出；适合定时调用")
+        target.add_argument("--max-stories", type=int, default=0, help="完成 N 张 Story 后退出；0 为不限")
+        target.add_argument("--push", action="store_true", help="全部完成后推送当前分支并核对远端 HEAD")
+
+    run_parser = commands.add_parser("run", help="在前台运行 driver")
+    add_common_arguments(run_parser)
+    run_parser.add_argument("--_pid-managed", action="store_true", help=argparse.SUPPRESS)
+    start_parser = commands.add_parser("start", help="校验后在后台启动 driver")
+    add_common_arguments(start_parser)
+    start_parser.add_argument("--foreground", action="store_true", help="等价于 run，在前台运行")
+    status_parser = commands.add_parser("status", help="显示某个计划的 driver 与计划状态")
+    add_common_arguments(status_parser)
+    status_parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
+    status_parser.add_argument("--log-events", type=int, default=10, help="输出最近 N 条日志事件")
+    stop_parser = commands.add_parser("stop", help="请求后台 driver 在当前 run_once 后退出")
+    add_common_arguments(stop_parser)
+    stop_parser.add_argument("--wait", action="store_true", help="等待 driver 退出，最长 --wait-timeout 秒")
     return parser
+
+
+def background_command(args: argparse.Namespace) -> list[str]:
+    command = [sys.executable, str(Path(__file__).resolve()), "run",
+               "--plan", str(args.plan), "--stories-dir", str(args.stories_dir),
+               "--repository", str(args.repository), "--planning-script", str(args.planning_script),
+               "--default-difficulty", args.default_difficulty, "--kind", args.kind,
+               "--validator", args.validator, "--max-patch-rounds", str(args.max_patch_rounds),
+               "--max-attempts", str(args.max_attempts), "--max-judge-rounds", str(args.max_judge_rounds),
+               "--wait-timeout", str(args.wait_timeout), "--poll-seconds", str(args.poll_seconds),
+               "--max-stories", str(args.max_stories), "--_pid-managed"]
+    if args.dispatch:
+        command += ["--dispatch", args.dispatch]
+    if args.environment:
+        command += ["--environment", args.environment]
+    if args.context:
+        command += ["--context", args.context]
+    if args.allow_empty_story:
+        command.append("--allow-empty-story")
+    if args.once:
+        command.append("--once")
+    if args.push:
+        command.append("--push")
+    return command
+
+
+def status_command(driver: Driver, args: argparse.Namespace) -> str:
+    command = [sys.executable, str(Path(__file__).resolve()), "status", "--plan", str(driver.plan_path),
+               "--stories-dir", str(driver.stories_dir), "--repository", str(driver.repository),
+               "--planning-script", str(args.planning_script)]
+    if args.dispatch:
+        command += ["--dispatch", str(args.dispatch)]
+    return shlex.join(command)
+
+
+def recent_log_events(path: Path, count: int) -> list[dict[str, Any]]:
+    if count <= 0 or not path.exists():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()[-count:]
+    except OSError:
+        return []
+    events = []
+    for line in lines:
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict):
+            events.append(item)
+    return events
+
+
+def collect_status(driver: Driver, log_events: int) -> dict[str, Any]:
+    plan = driver.status()
+    record = read_pid_record(driver.pid_path)
+    pid = record.get("pid") if record else None
+    state_stories = driver.state.get("stories", {})
+    in_progress = []
+    blocked = []
+    for story in plan.get("stories", []):
+        if story.get("status") == "blocked":
+            blocked.append({"id": story["id"], "blocker": story.get("blocker")})
+        if story.get("status") != "in_progress":
+            continue
+        cached = StoryState.from_dict(state_stories.get(story["id"], {}))
+        in_progress.append({
+            "id": story["id"], "stage": cached.phase,
+            "difficulty": cached.difficulty or None,
+            "worker_thread": cached.worker_thread or story.get("owner"),
+            "validator_thread": cached.validator_thread,
+        })
+    try:
+        last_stop = driver.last_stop_path.read_text(encoding="utf-8").strip() or None
+    except OSError:
+        last_stop = None
+    return {
+        "repository": str(driver.repository), "plan": str(driver.plan_path), "state_dir": str(driver.state_dir),
+        "alive": bool(pid and process_alive(pid)), "pid": pid,
+        "started_at": record.get("started_at") if record else None,
+        "completed": plan.get("plan", {}).get("completed"), "total": plan.get("plan", {}).get("total"),
+        "in_progress": in_progress, "blocked": blocked, "last_stop": last_stop,
+        "recent_events": recent_log_events(driver.log_path, log_events),
+    }
+
+
+def print_status(payload: dict[str, Any]) -> None:
+    state = "running" if payload["alive"] else "stopped"
+    print(f"Driver: {state}; pid={payload['pid'] or '-'}; started_at={payload['started_at'] or '-'}")
+    print(f"Plan: completed={payload['completed']}/{payload['total']}")
+    print(f"State: {payload['state_dir']}")
+    for story in payload["in_progress"]:
+        print("In progress: {id}; stage={stage}; difficulty={difficulty}; worker={worker_thread}; validator={validator_thread}".format(**story))
+    for story in payload["blocked"]:
+        print(f"Blocked: {story['id']}; reason={story['blocker']}")
+    if payload["last_stop"]:
+        print(f"Last stop:\n{payload['last_stop']}")
+    if payload["recent_events"]:
+        print("Recent events:")
+        for event in payload["recent_events"]:
+            print(f"- {event.get('at', '-')}: {event.get('event', '-')}")
+
+
+def run_foreground(args: argparse.Namespace) -> int:
+    driver = Driver(args)
+    acquired = False
+    pid_managed = getattr(args, "_pid_managed", False)
+    try:
+        if not pid_managed:
+            acquire_pid_lock(driver.pid_path)
+            acquired = True
+
+        def request_stop(_signal: int, _frame: Any) -> None:
+            driver.request_stop()
+
+        previous_term = signal.signal(signal.SIGTERM, request_stop)
+        previous_int = signal.signal(signal.SIGINT, request_stop)
+        try:
+            return driver.run()
+        finally:
+            signal.signal(signal.SIGTERM, previous_term)
+            signal.signal(signal.SIGINT, previous_int)
+    finally:
+        if acquired or pid_managed:
+            clear_pid_lock(driver.pid_path, os.getpid())
+
+
+def start_background(args: argparse.Namespace) -> int:
+    driver = Driver(args)
+    acquire_pid_lock(driver.pid_path)
+    try:
+        driver.check()
+        driver.validate_dispatch()
+        driver.state_dir.mkdir(parents=True, exist_ok=True)
+        with driver.output_path.open("a", encoding="utf-8") as output:
+            process = subprocess.Popen(
+                background_command(args), cwd=driver.repository, stdout=output, stderr=subprocess.STDOUT,
+                start_new_session=True, close_fds=True,
+            )
+        write_pid_record(driver.pid_path, process.pid)
+        if process.poll() is not None:
+            clear_pid_lock(driver.pid_path, process.pid)
+    except Exception:
+        clear_pid_lock(driver.pid_path, os.getpid())
+        raise
+    print(f"STARTED: pid={process.pid}")
+    print(f"Log: {driver.log_path}")
+    print(f"Output: {driver.output_path}")
+    print(f"Status: {status_command(driver, args)}")
+    return 0
+
+
+def stop_driver(args: argparse.Namespace) -> int:
+    driver = Driver(args)
+    record = read_pid_record(driver.pid_path)
+    if not record or not process_alive(record["pid"]):
+        if record:
+            clear_pid_lock(driver.pid_path, record["pid"])
+        print("STOPPED: 没有运行中的 driver。")
+        return 0
+    pid = record["pid"]
+    os.kill(pid, signal.SIGTERM)
+    if args.wait:
+        deadline = time.monotonic() + args.wait_timeout
+        while process_alive(pid) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        if process_alive(pid):
+            raise DriverError(f"等待 pid {pid} 退出超时（{args.wait_timeout} 秒）。")
+        clear_pid_lock(driver.pid_path, pid)
+    print(f"STOP REQUESTED: pid={pid}" + ("; 已退出。" if args.wait else ""))
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        return Driver(args).run()
+        if args.command == "run":
+            return run_foreground(args)
+        if args.command == "start":
+            return run_foreground(args) if args.foreground else start_background(args)
+        if args.command == "status":
+            payload = collect_status(Driver(args), args.log_events)
+            if args.json:
+                print(json.dumps(payload, ensure_ascii=False, indent=2))
+            else:
+                print_status(payload)
+            return 0
+        if args.command == "stop":
+            return stop_driver(args)
+        raise DriverError(f"未知子命令: {args.command}")
+    except DriverAlreadyRunning as error:
+        print(f"RUNNING: {error}", file=sys.stderr)
+        return 4
     except DriverError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2

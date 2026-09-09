@@ -6,7 +6,8 @@
 
 系统的两个目标：让模型长时间自主工作；用成本分层省钱。确定性 driver 是唯一控制面，负责可机械判定的
 调度、状态更新与 checkpoint；实现由 Worker 完成，完成校验由 Validator 完成。只有异常才派一次性的
-strong Judge 做受限裁决。所有设计取舍都以这两个目标为判据。
+strong Judge 做受限裁决。driver 以 `(仓库, 计划)` 为边界持有 pid 锁和状态目录，所以不同仓库或同一仓库的
+不同计划可以并行运行。所有设计取舍都以这两个目标为判据。
 
 ## 两种读者，一份事实
 
@@ -97,8 +98,9 @@ Story 失败；保留已有 diff 与证据后重试一次或派发 replacement W
 
 ## 最小可观测性
 
-权威状态在 Agent JSON 与 Git 中。driver 在 `.local/large-task-orchestrator/driver-log.jsonl` 追加最小事件：
-派发的线程、报告、Judge 决定、checkpoint 与停止原因；它不是第二套状态账本。线程级事实（provider、模型、
+权威状态在 Agent JSON 与 Git 中。每个计划在
+`.local/large-task-orchestrator/<topic-slug>/log.jsonl` 追加最小事件，并保留 `state.json`、pid、后台输出和上次
+停止原因：派发的线程、报告、Judge 决定、checkpoint 与停止原因；它不是第二套状态账本。线程级事实（provider、模型、
 状态、耗时、最终输出）由 BB 持久化，每个线程通过 `bb-dispatch` 关联到 driver 父线程，可用
 `bb thread list --parent-thread`、`bb thread show` 和 `bb thread output` 回看。Story Handoff 记录每张 Story
 使用的 Worker/Validator。已知缺口是没有跨运行成功率聚合。

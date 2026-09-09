@@ -1,14 +1,20 @@
 # Driver 内部循环
 
-这是 `scripts/large_task_driver.py` 的维护参考，不是手动编排步骤。调用者只启动或恢复 driver；脚本负责
-线程生命周期和计划状态转换。
+这是 `scripts/large_task_driver.py` 的维护参考，不是手动编排步骤。调用者先查单个计划的 `status`，未运行时用
+`start` 后台启动；脚本负责进程、线程生命周期和计划状态转换。
 
 ## 输入与持久状态
 
 - `agent/plan.json`、`agent/stories/*.json` 与 Git 是权威事实。
 - `Story.owner` 保存 Worker 的 BB `thr_*` ID，planning 只要求 active Story 的 owner 为非空字符串。
-- `<repo>/.local/large-task-orchestrator/driver-state.json` 缓存阶段、线程、次数和起始脏路径；
-  `driver-log.jsonl` 仅追加事件。两者被 `.gitignore` 排除，丢失时可从计划和 BB 重新定位。
+- 每个 `(repo, plan)` 使用 `<repo>/.local/large-task-orchestrator/<topic-slug>/`；slug 包含计划 topic 的可读
+  形式和短哈希，避免同名路径碰撞。目录里的 `state.json` 缓存阶段、线程、次数和起始脏路径，`log.jsonl` 仅追加
+  事件，`driver.pid` 保存 pid/启动时间，`driver.out` 接收后台 stdout/stderr，`last-stop.txt` 保存最近一次退出码 3
+  的原因。它们都被 `.gitignore` 排除，丢失状态后可从计划和 BB 重新定位。
+- `start` 先通过计划 `check` 和 `bb-dispatch --dry-run`，再以 `start_new_session=True` 派生后台 `run`。pid 文件
+  用原子创建预占：存活 pid 返回退出码 4，陈旧 pid 覆盖。`run` 与 `start --foreground` 也受同一锁保护。
+- `status [--json]` 只读取计划、本地状态和最近日志，不读线程全文。`stop` 对 pid 发 SIGTERM；信号处理器只设置
+  停止标志，driver 在当前 `run_once` 后以退出码 3 退出并清除 pid，不会中断已派出的 BB 线程。
 
 ## 每张 Story 的状态机
 
@@ -27,6 +33,10 @@
 `error` 首次执行 `bb thread retry`；第二次 Worker error 交 Judge，第二次 Validator error 改派新的
 Validator。pending interaction 的完整内容交 Judge；Judge 处理已授权交互并回复 `patch` 加
 `interaction handled` 后，driver 继续等待原线程。
+
+同一仓库的不同计划可以同时运行。其他已由 driver 管理的计划的 `SPEC.md`、`STATUS.md`、`agent/plan.json` 和
+`agent/stories/` 投影不计入当前 Story 的业务改动或 checkpoint，避免并发状态转换被误判为越界；业务文件仍按当前
+Story 的 `write_scope` 检查。
 
 ## Judge 与回执
 
