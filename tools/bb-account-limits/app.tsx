@@ -9,6 +9,16 @@ function resetLabel(value: string | null): string {
   return `重置于 ${new Intl.DateTimeFormat("zh-CN", { dateStyle: "short", timeStyle: "short" }).format(date)}`;
 }
 
+function updatedLabel(value: string): string {
+  const elapsedMs = Math.max(0, Date.now() - new Date(value).getTime());
+  const minutes = Math.floor(elapsedMs / 60_000);
+  if (minutes < 1) return "刚刚更新";
+  if (minutes < 60) return `${minutes} 分钟前更新`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} 小时前更新`;
+  return `${Math.floor(hours / 24)} 天前更新`;
+}
+
 type OkUsage = Extract<CliproxyUsageSnapshot["providers"][number]["usage"], { status: "ok" }>;
 type QuotaWindow = OkUsage["windows"][number];
 
@@ -68,7 +78,8 @@ function AccountLimitsPanel() {
   const [snapshot, setSnapshot] = useState<AccountLimitsPanelSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const refresh = useCallback(async () => {
+  const [refreshingProviderIds, setRefreshingProviderIds] = useState<Set<string>>(new Set());
+  const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -79,16 +90,42 @@ function AccountLimitsPanel() {
       setLoading(false);
     }
   }, [rpc]);
-  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => { void load(); }, [load]);
+
+  const refreshProvider = useCallback(async (providerId: string) => {
+    setRefreshingProviderIds(current => new Set(current).add(providerId));
+    setError(null);
+    try {
+      const refreshed = await rpc.call("readCliproxyUsage", { providerIds: [providerId], force: true });
+      setSnapshot(current => {
+        if (!current) return refreshed;
+        const machines = new Map(refreshed.machines.map(machine => [machine.id, machine]));
+        return {
+          machines: current.machines.map(machine => {
+            const update = machines.get(machine.id);
+            if (!update) return machine;
+            const providers = new Map(machine.providers.map(provider => [provider.id, provider]));
+            for (const provider of update.providers) providers.set(provider.id, provider);
+            return { ...update, providers: [...providers.values()] };
+          }),
+        };
+      });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "刷新账户额度失败。请稍后重试。");
+    } finally {
+      setRefreshingProviderIds(current => {
+        const next = new Set(current);
+        next.delete(providerId);
+        return next;
+      });
+    }
+  }, [rpc]);
 
   const showMachineName = (snapshot?.machines.length ?? 0) > 1;
   return <main className="h-full overflow-auto p-4 md:p-5">
     <div className="mx-auto max-w-3xl space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="text-sm text-muted-foreground">按上游供应商聚合的 Cliproxy 账户额度；它们不会加入模型 Provider 选择器。</p>
-        <button type="button" className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60" onClick={() => void refresh()} disabled={loading}>
-          {loading ? "正在刷新…" : "刷新"}
-        </button>
+        <p className="text-sm text-muted-foreground">按上游供应商聚合的 Cliproxy 账户额度；数据最多缓存 30 分钟，供应商卡片可单独刷新。</p>
       </div>
       {error && <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{error}</p>}
       {!snapshot && loading && <p className="text-sm text-muted-foreground">正在读取账户额度…</p>}
@@ -96,9 +133,18 @@ function AccountLimitsPanel() {
         {showMachineName && <h2 className="text-sm font-medium text-muted-foreground">{machine.displayName}</h2>}
         {machine.status === "disconnected" && <p className="rounded-md border border-border p-3 text-sm text-muted-foreground">此机器未连接，无法读取额度。</p>}
         {machine.status === "error" && <p className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{machine.error ?? "读取此机器的额度失败。"}</p>}
+        {machine.status === "connected" && machine.error && <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{machine.error}</p>}
         {machine.status === "connected" && machine.providers.length === 0 && <p className="rounded-md border border-border p-3 text-sm text-muted-foreground">没有启用的 Cliproxy 账户额度。</p>}
         {machine.status === "connected" && machine.providers.map(provider => <article key={provider.id} className="rounded-lg border border-border bg-card p-4 shadow-sm">
-          <h2 className="mb-3 font-medium">{provider.displayName}</h2>
+          <div className="mb-3 flex items-start justify-between gap-3">
+            <div>
+              <h2 className="font-medium">{provider.displayName}</h2>
+              <p className="mt-1 text-xs text-muted-foreground">{updatedLabel(provider.updatedAt)}</p>
+            </div>
+            <button type="button" aria-label={`刷新 ${provider.displayName} 额度`} className="rounded-md border border-border px-2.5 py-1 text-sm hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60" onClick={() => void refreshProvider(provider.id)} disabled={refreshingProviderIds.has(provider.id)}>
+              {refreshingProviderIds.has(provider.id) ? "正在刷新…" : "刷新"}
+            </button>
+          </div>
           <Usage usage={provider.usage} />
         </article>)}
       </section>)}

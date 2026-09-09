@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { JSDOM } from "jsdom";
+import { act } from "react";
 import { installTestPluginRuntime, loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import type { AccountLimitsPanelSnapshot } from "./contract.js";
 
@@ -30,6 +31,7 @@ test("账户额度页面注册为导航面板并显示独立 Cliproxy 数据", a
       providers: [{
         id: "cliproxy-claude",
         displayName: "Claude",
+        updatedAt: "2026-09-09T01:30:22.000Z",
         usage: {
           status: "ok",
           planLabel: "Claude · Cliproxy · 2/2 accounts",
@@ -45,9 +47,17 @@ test("账户额度页面注册为导航面板并显示独立 Cliproxy 数据", a
     rpc: { readCliproxyUsage: () => snapshot },
   });
   await slot.findByText("Claude");
+  assert.ok(slot.getByText(/数据最多缓存 30 分钟，供应商卡片可单独刷新。/));
   assert.ok(slot.getByRole("region", { name: "Claude 工作账号 的额度" }));
   assert.ok(slot.getByRole("region", { name: "Claude 个人账号 的额度" }));
+  await act(async () => {
+    slot.getByRole("button", { name: "刷新 Claude 额度" }).click();
+    await new Promise(resolve => setImmediate(resolve));
+  });
   assert.equal(slot.getByRole("progressbar", { name: "Weekly limit 剩余额度" }).getAttribute("aria-valuenow"), "75");
-  assert.deepEqual(slot.inspection.rpcCalls, [{ method: "readCliproxyUsage", input: {} }]);
+  assert.deepEqual(slot.inspection.rpcCalls, [
+    { method: "readCliproxyUsage", input: {} },
+    { method: "readCliproxyUsage", input: { providerIds: ["cliproxy-claude"], force: true } },
+  ]);
   slot.lifecycle.unmount();
 });

@@ -69,9 +69,13 @@ export function withAccountLimits(
 export const experimental_providerBridge = withAccountLimits(experimental_acpProviderBridge, (id, signal) =>
   resolveUsageReader(id, signal));
 
-function enabledCliproxyGroups(): Map<string, CliproxyUsageAccount[]> {
+function enabledCliproxyGroups(providerIds?: readonly string[]): Map<string, CliproxyUsageAccount[]> {
+  const selected = providerIds ? new Set(providerIds) : null;
   return new Map([...activeCliproxyAccountsByProvider(config.cliproxy.accounts)]
-    .filter(([provider]) => config.enabledProviders.includes(cliproxyProviderId(provider))));
+    .filter(([provider]) => {
+      const providerId = cliproxyProviderId(provider);
+      return config.enabledProviders.includes(providerId) && (!selected || selected.has(providerId));
+    }));
 }
 
 function compactCliproxyUsage(result: ProviderUsageResult): CliproxyUsageSnapshot["providers"][number]["usage"] {
@@ -115,6 +119,6 @@ export async function readCliproxyUsageSnapshot(
 export default experimental_defineHostEntry({
   contract: accountLimitsHostContract,
   handlers: {
-    readCliproxyUsage: (_input, context) => readCliproxyUsageSnapshot(undefined, { signal: context.signal }),
+    readCliproxyUsage: ({ providerIds }, context) => readCliproxyUsageSnapshot(enabledCliproxyGroups(providerIds), { signal: context.signal }),
   },
 });

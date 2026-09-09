@@ -1,7 +1,7 @@
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
-const emptyInputSchema = z.object({}).strict();
+const providerIdsSchema = z.array(z.string().min(1)).min(1).max(64);
 
 const quotaWindowSchema = z.object({
   accountLabel: z.string().min(1).nullable(),
@@ -30,26 +30,40 @@ export type CliproxyUsageSnapshot = z.infer<typeof cliproxyUsageSnapshotSchema>;
 
 export const accountLimitsHostContract = defineRpcContract({
   readCliproxyUsage: {
-    input: emptyInputSchema,
+    input: z.object({ providerIds: providerIdsSchema.optional() }).strict(),
     output: cliproxyUsageSnapshotSchema,
   },
 });
+
+const panelProviderSchema = z.object({
+  id: z.string().min(1),
+  displayName: z.string().min(1),
+  usage: quotaUsageSchema,
+  updatedAt: z.string().datetime(),
+}).strict();
 
 export const accountLimitsPanelSnapshotSchema = z.object({
   machines: z.array(z.object({
     id: z.string().min(1),
     displayName: z.string().min(1),
     status: z.enum(["connected", "disconnected", "error"]),
-    providers: cliproxyUsageSnapshotSchema.shape.providers,
+    providers: z.array(panelProviderSchema),
     error: z.string().min(1).nullable(),
   }).strict()),
 }).strict();
 
 export type AccountLimitsPanelSnapshot = z.infer<typeof accountLimitsPanelSnapshotSchema>;
 
+export const accountLimitsPanelReadInputSchema = z.object({
+  providerIds: providerIdsSchema.optional(),
+  force: z.boolean().optional(),
+}).strict();
+
+export type AccountLimitsPanelReadInput = z.infer<typeof accountLimitsPanelReadInputSchema>;
+
 export const accountLimitsPanelRpcContract = defineRpcContract({
   readCliproxyUsage: {
-    input: emptyInputSchema,
+    input: accountLimitsPanelReadInputSchema,
     output: accountLimitsPanelSnapshotSchema,
   },
 });
