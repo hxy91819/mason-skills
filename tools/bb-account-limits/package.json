@@ -8,7 +8,7 @@
   },
   "bb": {
     "name": "Account Limits",
-    "description": "Local ACP providers: CodexL and Kiro account limits, plus Antigravity.",
+    "description": "Local and Cliproxy account limits in BB's native provider-usage surface.",
     "branding": {
       "icon": "ChartColumn"
     },

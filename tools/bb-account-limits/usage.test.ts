@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { normalizeAgyUsage, readAgyUsage, normalizeCodexLimits, normalizeKiroUsage, readCodexUsage, readKiroUsage } from "./usage.js";
+import { normalizeAgyUsage, normalizeClaudeUsage, normalizeCliproxyCachedUsage, readAgyUsage, readCliproxyUsage, normalizeCodexLimits, normalizeKiroUsage, readCodexUsage, readKiroUsage } from "./usage.js";
 
 const agy = "Gemini Models\tWeekly Limit Remaining\t94%\t2026-09-11T02:49:57Z\nClaude and GPT models\tFive Hour Limit Remaining\t99.5%\t2026-09-07T08:07:15Z\n";
 
@@ -80,6 +80,114 @@ test("Codex legacy windows work; absent or malformed limits are never reported a
   for (const raw of [null, {}, { rateLimits: {} }, { rateLimits: { primary: { usedPercent: "0" } } }]) {
     const invalid = normalizeCodexLimits(raw);
     assert.ok(invalid.supported && invalid.usage.status === "error");
+  }
+});
+
+test("Claude usage converts Cliproxy's official usage response into BB windows", () => {
+  const result = normalizeClaudeUsage({ limits: [
+    { kind: "session", percent: 8, resets_at: "2026-09-09T11:00:00+00:00" },
+    { kind: "weekly_all", percent: 63, resets_at: "2026-09-12T10:00:00+00:00" },
+    { kind: "weekly_scoped", percent: 95, resets_at: "2026-09-12T10:00:00+00:00" },
+  ] }, { provider: "claude", authIndex: "account-1", label: "Claude work" });
+  assert.ok(result.supported && result.usage.status === "ok");
+  assert.deepEqual(result.usage.windows, [
+    { label: "5-hour limit", usedPercent: 8, resetsAt: "2026-09-09T11:00:00.000Z" },
+    { label: "Weekly limit", usedPercent: 63, resetsAt: "2026-09-12T10:00:00.000Z" },
+    { label: "Weekly scoped limit", usedPercent: 95, resetsAt: "2026-09-12T10:00:00.000Z" },
+  ]);
+  for (const invalid of [{}, { limits: [{ kind: "session", percent: 101 }] }]) {
+    const invalidResult = normalizeClaudeUsage(invalid, { provider: "claude", authIndex: "account-1" });
+    assert.ok(invalidResult.supported && invalidResult.usage.status === "error");
+  }
+});
+
+test("cached Claude rate-limit signals are a safe fallback and deduplicate model snapshots", () => {
+  const result = normalizeCliproxyCachedUsage({ model_quotas: {
+    latest: { observed_at: "2026-09-09T10:00:00Z", signals: {
+      "Anthropic-Ratelimit-Unified-5h-Utilization": "0.05",
+      "Anthropic-Ratelimit-Unified-5h-Reset": "1788951600",
+      "Anthropic-Ratelimit-Unified-7d-Utilization": "0.62",
+      "Anthropic-Ratelimit-Unified-7d-Reset": "1789207200",
+    } },
+    old: { observed_at: "2026-09-09T09:00:00Z", signals: {
+      "Anthropic-Ratelimit-Unified-5h-Utilization": "0.99",
+      "Anthropic-Ratelimit-Unified-5h-Reset": "1788948000",
+    } },
+  } }, { provider: "claude", authIndex: "account-1", label: "Claude work" });
+  assert.ok(result.supported && result.usage.status === "ok");
+  assert.deepEqual(result.usage.windows, [
+    { label: "5-hour limit", usedPercent: 5, resetsAt: "2026-09-09T11:00:00.000Z" },
+    { label: "Weekly limit", usedPercent: 62, resetsAt: "2026-09-12T10:00:00.000Z" },
+  ]);
+  const invalidResult = normalizeCliproxyCachedUsage({ quota: { signals: {} } }, { provider: "claude", authIndex: "account-1" });
+  assert.ok(invalidResult.supported && invalidResult.usage.status === "error");
+});
+
+test("configured cached windows make new Cliproxy provider signals usable without a code change", () => {
+  const result = normalizeCliproxyCachedUsage({ quota: { signals: {
+    "X-Custom-Usage": "47.5",
+    "X-Custom-Reset": "1788951600",
+  } } }, {
+    provider: "custom-provider",
+    authIndex: "account-1",
+    label: "Custom account",
+    cachedWindows: [{
+      label: "Monthly credits",
+      usedPercentSignal: "x-custom-usage",
+      resetsAtSignal: "x-custom-reset",
+      scale: "percent",
+    }],
+  });
+  assert.ok(result.supported && result.usage.status === "ok");
+  assert.deepEqual(result.usage.windows, [
+    { label: "Monthly credits", usedPercent: 47.5, resetsAt: "2026-09-09T11:00:00.000Z" },
+  ]);
+});
+
+test("Cliproxy queries the selected credential, uses token substitution only inside management API, and falls back to cache", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    requests.push({ url, init });
+    if (url.endsWith("/auth-files")) return new Response(JSON.stringify({ files: [{
+      provider: "claude", auth_index: "account-1", model_quotas: { model: { signals: {
+        "Anthropic-Ratelimit-Unified-5h-Utilization": "0.25",
+        "Anthropic-Ratelimit-Unified-5h-Reset": "1788951600",
+      } } },
+    }] }), { status: 200 });
+    return new Response(JSON.stringify({ status_code: 403, body: "{}" }), { status: 200 });
+  };
+  try {
+    const result = await readCliproxyUsage({ provider: "claude", authIndex: "account-1", label: "Claude work" }, {
+      managementBaseUrl: "http://cliproxy.test/v0/management",
+      managementKey: "test-management-key",
+    });
+    assert.ok(result.supported && result.usage.status === "ok");
+    assert.equal(result.usage.planLabel, "Claude work (cached)");
+    assert.equal(requests.length, 2);
+    assert.equal(new Headers(requests[0].init?.headers).get("authorization"), "Bearer test-management-key");
+    const apiCall = JSON.parse(String(requests[1].init?.body));
+    assert.deepEqual(apiCall.header, { Authorization: "Bearer $TOKEN$", "anthropic-beta": "oauth-2025-04-20" });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Cliproxy queries time out rather than leaving BB's usage refresh pending", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_input, init) => new Promise<Response>((_resolve, reject) => {
+    init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+  });
+  try {
+    const result = await readCliproxyUsage({ provider: "claude", authIndex: "account-1" }, {
+      managementBaseUrl: "http://cliproxy.test/v0/management",
+      timeoutMs: 10,
+    });
+    assert.ok(result.supported && result.usage.status === "error");
+    assert.match(result.usage.message, /timed out/);
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });
 

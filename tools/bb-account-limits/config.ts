@@ -12,6 +12,32 @@ const codexAccountSchema = z.object({
   icon: z.string().min(1),
 });
 
+const cliproxyCachedWindowSchema = z.object({
+  label: z.string().min(1),
+  usedPercentSignal: z.string().min(1),
+  resetsAtSignal: z.string().min(1).optional(),
+  scale: z.enum(["fraction", "percent"]).optional(),
+});
+
+const cliproxyAccountSchema = z.object({
+  id: z.string().min(1),
+  provider: z.string().min(1),
+  authIndex: z.string().min(1).optional(),
+  account: z.string().min(1).optional(),
+  label: z.string().min(1).optional(),
+  enabled: z.boolean().optional(),
+  cachedWindows: z.array(cliproxyCachedWindowSchema).optional(),
+}).refine(account => account.authIndex !== undefined || account.account !== undefined, {
+  message: "either authIndex or account is required",
+});
+
+const cliproxyConfigSchema = z.object({
+  managementBaseUrl: z.string().url(),
+  managementKeyEnv: z.string().min(1).optional(),
+  managementKeyFile: z.string().min(1).optional(),
+  accounts: z.array(cliproxyAccountSchema),
+});
+
 const localConfigSchema = z.object({
   enabledProviders: z.array(z.string().min(1)).optional(),
   codex: z.string().min(1).optional(),
@@ -23,6 +49,7 @@ const localConfigSchema = z.object({
   agyEntry: z.string().min(1).optional(),
   copilot: z.string().min(1).optional(),
   codebuddy: z.string().min(1).optional(),
+  cliproxy: cliproxyConfigSchema.optional(),
 });
 
 export type CodexAccount = z.infer<typeof codexAccountSchema>;
@@ -44,9 +71,15 @@ const defaults = {
   agyEntry: "/absolute/path/to/bb-account-limits/agy/agy-entry.mjs",
   copilot: "copilot",
   codebuddy: "codebuddy",
+  cliproxy: {
+    managementBaseUrl: "http://127.0.0.1:8317/v0/management",
+    accounts: [] as CliproxyAccount[],
+  },
 };
 
-export type AccountLimitsConfig = typeof defaults;
+export type CliproxyAccount = z.infer<typeof cliproxyAccountSchema>;
+export type CliproxyConfig = z.infer<typeof cliproxyConfigSchema>;
+export type AccountLimitsConfig = Omit<typeof defaults, "cliproxy"> & { cliproxy: CliproxyConfig };
 
 export function loadLocalAccountLimitsConfigFile(
   file: URL,

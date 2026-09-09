@@ -39,6 +39,33 @@ test("valid local config overrides only the fields it provides", async () => {
   });
 });
 
+test("Cliproxy accounts require a stable selector and keep credential locations out of source", async () => {
+  const { overrides, warnings } = await withLocalConfig(JSON.stringify({
+    cliproxy: {
+      managementBaseUrl: "http://127.0.0.1:8317/v0/management",
+      managementKeyFile: "/run/user/1000/cliproxy-management.key",
+      accounts: [{
+        id: "claude-work", provider: "claude", authIndex: "stable-auth-id", label: "Claude work",
+        cachedWindows: [{ label: "Daily limit", usedPercentSignal: "X-Usage", resetsAtSignal: "X-Usage-Reset", scale: "percent" }],
+      }],
+    },
+  }));
+  assert.deepEqual(warnings, []);
+  assert.deepEqual(overrides.cliproxy, {
+    managementBaseUrl: "http://127.0.0.1:8317/v0/management",
+    managementKeyFile: "/run/user/1000/cliproxy-management.key",
+    accounts: [{
+      id: "claude-work", provider: "claude", authIndex: "stable-auth-id", label: "Claude work",
+      cachedWindows: [{ label: "Daily limit", usedPercentSignal: "X-Usage", resetsAtSignal: "X-Usage-Reset", scale: "percent" }],
+    }],
+  });
+  const invalid = await withLocalConfig(JSON.stringify({
+    cliproxy: { managementBaseUrl: "http://127.0.0.1:8317/v0/management", accounts: [{ id: "x", provider: "claude" }] },
+  }));
+  assert.deepEqual(invalid.overrides, {});
+  assert.equal(invalid.warnings.length, 1);
+});
+
 test("invalid JSON, schema violations and wrong types fall back to defaults with a warning", async () => {
   for (const body of ["not json", "[]", JSON.stringify({ enabledProviders: "acp-codexl" }), JSON.stringify({ codexAccounts: [{ id: "x" }] })]) {
     const { overrides, warnings } = await withLocalConfig(body);

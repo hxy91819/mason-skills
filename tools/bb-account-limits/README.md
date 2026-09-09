@@ -28,6 +28,7 @@ BB 本地 provider 插件：将 CodexL、Kiro、AGY 账户额度接入原生 `sy
 | `kiro` / `agy` | 对话和额度查询共同使用的 CLI 路径 |
 | `bun` / `agyEntry` | AGY ACP 启动器；后者必须是执行机器上的绝对路径 |
 | `copilot` / `codebuddy` | 可选的原生 ACP CLI 路径 |
+| `cliproxy` | 通过 CLIProxyAPI 管理接口读取指定 OAuth 账户的额度；详见下节 |
 
 `config.ts` 只保留机器无关的默认值；上表所有键都可在 local JSON 里覆盖，未知键忽略。命令默认从 **BB 执行进程的 PATH** 查找；找不到时在 local JSON 里填绝对路径。修改配置后重新构建、reload；local JSON 是运行时读取的，只改它时 reload 即可、无需重新构建。多个执行机器必须有兼容的命令路径，单份插件配置不做每机器映射。
 
@@ -40,6 +41,52 @@ BB 本地 provider 插件：将 CodexL、Kiro、AGY 账户额度接入原生 `sy
 可启用 ID：`acp-codexl`、`acp-kiro`、`acp-agy`、`acp-copilot`、`acp-codebuddy`，以及 `codexAccounts` 里自定义的 ID。仅启用已准备好的入口。不要把账号、token、原机器认证目录放入源码；机器相关配置全部留在 local JSON。
 
 CodexL 包装脚本应原样转发参数，不固定注入 `danger-full-access` 或 `approval=never`。如果不需要账户隔离，`codex` 配置可直接填已登录的 `codex` 命令；provider ID 仍为 `acp-codexl`。
+
+### Cliproxy 多账号额度
+
+Cliproxy 配额以**账户**为单位配置，而不是把每一个上游供应商内置进插件。每个启用账户会成为一个仅显示额度的 BB Provider；它没有可选模型，不能被误用来启动 ACP 会话。
+
+```json
+{
+  "enabledProviders": ["acp-codexl", "cliproxy-claude-work", "cliproxy-claude-personal"],
+  "cliproxy": {
+    "managementBaseUrl": "http://127.0.0.1:8317/v0/management",
+    "managementKeyFile": "/home/me/.config/cliproxyapi/management.key",
+    "accounts": [
+      {
+        "id": "claude-work",
+        "provider": "claude",
+        "authIndex": "<stable-auth_index-from-Cliproxy>",
+        "label": "Claude 工作账号"
+      },
+      {
+        "id": "claude-personal",
+        "provider": "claude",
+        "account": "personal",
+        "label": "Claude 个人账号"
+      },
+      {
+        "id": "other-provider",
+        "provider": "other-provider",
+        "authIndex": "<stable-auth_index-from-Cliproxy>",
+        "label": "其他供应商账号",
+        "cachedWindows": [
+          {
+            "label": "月额度",
+            "usedPercentSignal": "X-Provider-Used-Percent",
+            "resetsAtSignal": "X-Provider-Reset-At",
+            "scale": "percent"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+`authIndex` 是 Cliproxy `/auth-files` 返回的稳定运行时 ID，优先使用；它可避免相同 provider 下多个账号名称相同或变更时选错账户。若不想保存 ID，可用 `account` 精确匹配 Cliproxy 返回的 `account`、`email`、`name` 或 `label` 字段；匹配到多个账号时插件会拒绝查询并提示改用 `authIndex`。`managementKeyEnv` 优先于 `managementKeyFile`，密钥值本身永远不写入 JSON 或日志。
+
+Claude 账号通过 Cliproxy 的 `/api-call` 在服务端代入 OAuth token，读取 Anthropic 官方 usage 响应；响应不可用时，会降级显示 Cliproxy 缓存的 5 小时、周和 scoped 周限额信号。其他 provider 可以用 `cachedWindows` 把 Cliproxy 缓存的响应头信号映射到 BB；`scale` 选 `fraction` 时会将 0–1 转为百分比，默认为 `percent`。没有额度数据绝不显示为零。单个账号失败不会影响其余账号。
 
 ## 安装
 
@@ -87,6 +134,7 @@ Copilot 使用 `--acp`，Full Access 映射 `--yolo`；CodeBuddy 使用 `--acp`�
 - CodexL：app-server 账户接口，显示各模型组额度窗口，不启动模型回合。
 - Kiro：内置 `/usage` 的套餐 credits；重置只有日期，因此不伪造 UTC 时刻或倒计时。
 - AGY：内置 `/usage` 的各模型组剩余百分比转换为已用百分比，保留 UTC 重置时间。
+- Cliproxy：每个配置账户独立显示；Claude 显示官方 session/weekly/scoped weekly 窗口，查询失败时仅显示已缓存且可验证的限额信号。
 - CLI 未提供的信息保持为空；未知格式、超时、非零退出等不显示成零用量。
 - 查询有输出上限、20 秒超时、取消与进程清理；同一 bridge 中的重复查询合并。支持 POSIX/macOS，Windows 尚未实测。
 - Copilot/CodeBuddy 仅注册入口，不包含额度查询。

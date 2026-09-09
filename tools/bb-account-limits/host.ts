@@ -1,23 +1,52 @@
 import { config } from "./config.js";
 import { experimental_acpProviderBridge } from "@get-bb/plugin-sdk/provider-bridge/acp";
-import { bridgeRequestEnvelopeSchema, createBridgeIo, experimental_defineProviderBridge, providerMaintenanceParamsSchema, type ProviderBridgeEntry, type ProviderUsageResult } from "@get-bb/plugin-sdk/provider-bridge";
-import { readAgyUsage, readCodexUsage, readKiroUsage, usageError } from "./usage.js";
+import { bridgeRequestEnvelopeSchema, createBridgeIo, experimental_defineProviderBridge, modelListParamsSchema, providerMaintenanceParamsSchema, type ProviderBridgeEntry, type ProviderUsageResult } from "@get-bb/plugin-sdk/provider-bridge";
+import { readAgyUsage, readCliproxyManagementKey, readCliproxyUsage, readCodexUsage, readKiroUsage, usageError } from "./usage.js";
 
 // usage 查询支持的本插件 provider ID：三个原生入口 + config.codexAccounts 里的额外 Codex 账号。
 const usageProviderIds = new Set([
   "acp-codexl", "acp-kiro", "acp-agy",
   ...config.codexAccounts.map(account => account.id),
+  ...config.cliproxy.accounts.filter(account => account.enabled !== false).map(account => `cliproxy-${account.id}`),
 ]);
+const usageOnlyProviderIds = new Set(config.cliproxy.accounts
+  .filter(account => account.enabled !== false)
+  .map(account => `cliproxy-${account.id}`));
 
-export function resolveUsageReader(id: string, signal: AbortSignal): Promise<ProviderUsageResult> {
+function modelRequestIsUsageOnly(params: unknown, usageOnlyIds: ReadonlySet<string>): boolean {
+  const parsed = modelListParamsSchema.safeParse(params);
+  if (!parsed.success) return false;
+  const values = parsed.data as Record<string, unknown>;
+  const providerOptions = values.providerOptions;
+  const usageOnly = providerOptions !== null && typeof providerOptions === "object"
+    && (providerOptions as Record<string, unknown>).usageOnly === true;
+  return usageOnly || (typeof values.providerId === "string" && usageOnlyIds.has(values.providerId));
+}
+
+export async function resolveUsageReader(id: string, signal: AbortSignal): Promise<ProviderUsageResult> {
   const account = config.codexAccounts.find(entry => entry.id === id);
   if (account) return readCodexUsage(account.command, { signal });
+  if (id.startsWith("cliproxy-")) {
+    const cliproxyAccount = config.cliproxy.accounts.find(entry => `cliproxy-${entry.id}` === id);
+    if (!cliproxyAccount) return usageError("Cliproxy account is not configured.");
+    const managementKey = await readCliproxyManagementKey(config.cliproxy);
+    return readCliproxyUsage(cliproxyAccount, {
+      managementBaseUrl: config.cliproxy.managementBaseUrl,
+      managementKey,
+      signal,
+    });
+  }
   return id === "acp-codexl" ? readCodexUsage(undefined, { signal })
     : id === "acp-agy" ? readAgyUsage(undefined, { signal })
     : readKiroUsage(undefined, { signal });
 }
 
-export function withAccountLimits(delegate: ProviderBridgeEntry, read: (id: string, signal: AbortSignal) => Promise<ProviderUsageResult>, write?: (line: string) => void): ProviderBridgeEntry {
+export function withAccountLimits(
+  delegate: ProviderBridgeEntry,
+  read: (id: string, signal: AbortSignal) => Promise<ProviderUsageResult>,
+  write?: (line: string) => void,
+  usageOnlyIds: ReadonlySet<string> = usageOnlyProviderIds,
+): ProviderBridgeEntry {
   const io = createBridgeIo({ write });
   const controller = new AbortController();
   const pending = new Map<string, Promise<ProviderUsageResult>>();
@@ -34,9 +63,14 @@ export function withAccountLimits(delegate: ProviderBridgeEntry, read: (id: stri
     handleLine(line) {
       let raw;
       try { raw = JSON.parse(line); } catch { delegate.handleLine(line); return; }
-      if (raw?.method !== "provider/usage") { delegate.handleLine(line); return; }
+      if (raw?.method !== "provider/usage" && raw?.method !== "model/list") { delegate.handleLine(line); return; }
       const request = bridgeRequestEnvelopeSchema.safeParse(raw);
       if (!request.success) { delegate.handleLine(line); return; }
+      if (raw.method === "model/list") {
+        if (modelRequestIsUsageOnly(request.data.params, usageOnlyIds)) io.sendResult(request.data.id, { models: [], selectedOnlyModels: [] });
+        else delegate.handleLine(line);
+        return;
+      }
       const params = providerMaintenanceParamsSchema.safeParse(request.data.params);
       if (!params.success) { io.sendError(request.data.id, -32602, "Invalid provider usage parameters."); return; }
       const id = params.data.providerId;

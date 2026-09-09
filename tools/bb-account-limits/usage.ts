@@ -1,5 +1,6 @@
 import { config } from "./config.js";
 import { spawn } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { stripVTControlCharacters } from "node:util";
 import { createInterface } from "node:readline";
@@ -67,6 +68,26 @@ export function normalizeKiroUsage(raw: string): ProviderUsageResult {
 }
 
 export interface QueryOptions { timeoutMs?: number; signal?: AbortSignal; cwd?: string; }
+
+export interface CliproxyUsageAccount {
+  provider: string;
+  authIndex?: string;
+  account?: string;
+  label?: string;
+  cachedWindows?: Array<{
+    label: string;
+    usedPercentSignal: string;
+    resetsAtSignal?: string;
+    scale?: "fraction" | "percent";
+  }>;
+}
+
+export interface CliproxyUsageOptions {
+  managementBaseUrl: string;
+  managementKey?: string;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
 
 export function normalizeAgyUsage(raw: string): ProviderUsageResult {
   const text = stripVTControlCharacters(raw).trim();
@@ -194,4 +215,268 @@ async function runQuery(command: string, args: string[], options: QueryOptions, 
       resolve(providerUsageResultSchema.parse(result ?? onExit()));
     });
   });
+}
+
+type JsonRecord = Record<string, unknown>;
+
+function asRecord(value: unknown): JsonRecord | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : null;
+}
+
+function asString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function usageLabel(account: CliproxyUsageAccount): string {
+  return account.label ?? account.account ?? account.authIndex ?? account.provider;
+}
+
+function managementHeaders(key: string | undefined): HeadersInit {
+  return key ? { authorization: `Bearer ${key}` } : {};
+}
+
+function parseReset(value: unknown): string | null {
+  if (typeof value === "number" || (typeof value === "string" && /^\d+(?:\.\d+)?$/.test(value))) {
+    const seconds = Number(value);
+    const date = new Date(seconds * 1000);
+    return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+  }
+  if (typeof value !== "string") return null;
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+}
+
+function cliproxyRecordMatches(record: JsonRecord, account: CliproxyUsageAccount): boolean {
+  if (String(record.provider ?? record.type ?? "").toLowerCase() !== account.provider.toLowerCase()) return false;
+  if (account.authIndex) return record.auth_index === account.authIndex || record.authIndex === account.authIndex;
+  const selected = account.account?.toLowerCase();
+  if (!selected) return false;
+  return [record.account, record.email, record.name, record.label]
+    .some(value => typeof value === "string" && value.toLowerCase() === selected);
+}
+
+function getSelectedCliproxyRecord(raw: unknown, account: CliproxyUsageAccount): JsonRecord | ProviderUsageResult {
+  const response = asRecord(raw);
+  const files = response && Array.isArray(response.files) ? response.files.map(asRecord).filter((value): value is JsonRecord => value !== null) : [];
+  const matches = files.filter(record => cliproxyRecordMatches(record, account));
+  if (matches.length === 1) return matches[0];
+  if (matches.length > 1) return usageError("Cliproxy account selector matches more than one credential; configure authIndex.");
+  return usageError("Cliproxy account was not found; check the configured provider and selector.");
+}
+
+function isUsageResult(value: JsonRecord | ProviderUsageResult): value is ProviderUsageResult {
+  return "supported" in value;
+}
+
+function hasOkUsage(result: ProviderUsageResult): boolean {
+  return asRecord(result.usage)?.status === "ok";
+}
+
+function labelForClaudeLimit(limit: JsonRecord): string {
+  const kind = asString(limit.kind) ?? asString(limit.group) ?? "quota";
+  const labels: Record<string, string> = {
+    session: "5-hour limit",
+    weekly_all: "Weekly limit",
+    weekly_scoped: "Weekly scoped limit",
+  };
+  return labels[kind] ?? kind.replaceAll("_", " ");
+}
+
+export function normalizeClaudeUsage(raw: unknown, account: CliproxyUsageAccount): ProviderUsageResult {
+  const response = asRecord(raw);
+  const limits = response && Array.isArray(response.limits) ? response.limits.map(asRecord).filter((value): value is JsonRecord => value !== null) : [];
+  const windows = limits.flatMap(limit => {
+    const usedPercent = Number(limit.percent);
+    if (!Number.isFinite(usedPercent) || usedPercent < 0 || usedPercent > 100) return [];
+    return [{ label: labelForClaudeLimit(limit), usedPercent, resetsAt: parseReset(limit.resets_at) }];
+  });
+  if (!windows.length) return usageError("Cliproxy returned an unrecognized Claude quota response.");
+  return { supported: true, usage: { status: "ok", accountEmail: null, planLabel: usageLabel(account), windows } };
+}
+
+function cachedQuotaSignals(record: JsonRecord): JsonRecord[] {
+  const sources: JsonRecord[] = [];
+  const quota = asRecord(record.quota);
+  if (quota) sources.push(quota);
+  const modelQuotas = asRecord(record.model_quotas);
+  if (modelQuotas) {
+    for (const value of Object.values(modelQuotas)) {
+      const source = asRecord(value);
+      if (source) sources.push(source);
+    }
+  }
+  return sources.sort((left, right) => {
+    const leftTime = Date.parse(asString(left.observed_at) ?? "") || 0;
+    const rightTime = Date.parse(asString(right.observed_at) ?? "") || 0;
+    return rightTime - leftTime;
+  });
+}
+
+function signalWindowLabel(segment: string): string {
+  const labels: Record<string, string> = {
+    "5h": "5-hour limit",
+    "7d": "Weekly limit",
+    "7d_oi": "Weekly Opus limit",
+  };
+  return labels[segment.toLowerCase()] ?? segment.replaceAll("_", " ");
+}
+
+function readCachedSignal(sources: JsonRecord[], signalName: string): unknown {
+  for (const source of sources) {
+    const signals = asRecord(source.signals);
+    if (!signals) continue;
+    const match = Object.entries(signals).find(([name]) => name.toLowerCase() === signalName.toLowerCase());
+    if (match) return match[1];
+  }
+  return undefined;
+}
+
+function normalizeConfiguredCachedWindows(sources: JsonRecord[], account: CliproxyUsageAccount): ProviderUsageResult | null {
+  if (!account.cachedWindows?.length) return null;
+  const windows = account.cachedWindows.flatMap(window => {
+    const sourceValue = Number(readCachedSignal(sources, window.usedPercentSignal));
+    const usedPercent = window.scale === "fraction" ? sourceValue * 100 : sourceValue;
+    if (!Number.isFinite(usedPercent) || usedPercent < 0 || usedPercent > 100) return [];
+    return [{
+      label: window.label,
+      usedPercent,
+      resetsAt: window.resetsAtSignal ? parseReset(readCachedSignal(sources, window.resetsAtSignal)) : null,
+    }];
+  });
+  if (!windows.length) return usageError("Cliproxy has no cached quota signals matching this account's configured windows.");
+  return { supported: true, usage: {
+    status: "ok", accountEmail: null, planLabel: `${usageLabel(account)} (cached)`, windows,
+  } };
+}
+
+export function normalizeCliproxyCachedUsage(raw: unknown, account: CliproxyUsageAccount): ProviderUsageResult {
+  const record = asRecord(raw);
+  if (!record) return usageError("Cliproxy returned an unrecognized credential record.");
+  const sources = cachedQuotaSignals(record);
+  const configured = normalizeConfiguredCachedWindows(sources, account);
+  if (configured) return configured;
+  const windows = new Map<string, { label: string; usedPercent: number; resetsAt: string | null }>();
+  for (const source of sources) {
+    const signals = asRecord(source.signals);
+    if (!signals) continue;
+    for (const [name, rawUtilization] of Object.entries(signals)) {
+      const match = /^anthropic-ratelimit-unified-(.+)-utilization$/i.exec(name);
+      if (!match) continue;
+      const utilization = Number(rawUtilization);
+      if (!Number.isFinite(utilization) || utilization < 0 || utilization > 1) continue;
+      const segment = match[1].toLowerCase();
+      if (windows.has(segment)) continue;
+      const resetKey = name.replace(/-utilization$/i, "-reset");
+      const resetValue = Object.entries(signals).find(([key]) => key.toLowerCase() === resetKey.toLowerCase())?.[1];
+      windows.set(segment, {
+        label: signalWindowLabel(segment),
+        usedPercent: utilization * 100,
+        resetsAt: parseReset(resetValue),
+      });
+    }
+  }
+  if (!windows.size) return usageError("Cliproxy has no cached quota signals for this account yet.");
+  return { supported: true, usage: {
+    status: "ok", accountEmail: null, planLabel: `${usageLabel(account)} (cached)`, windows: [...windows.values()],
+  } };
+}
+
+async function readJson(response: Response): Promise<unknown> {
+  try { return await response.json(); } catch { return null; }
+}
+
+async function fetchCliproxy(
+  input: string,
+  init: RequestInit,
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+): Promise<Response> {
+  if (signal?.aborted) throw new Error("cliproxy-query-cancelled");
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+  const abort = () => controller.abort();
+  signal?.addEventListener("abort", abort, { once: true });
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (timedOut) throw new Error("cliproxy-query-timed-out");
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", abort);
+  }
+}
+
+async function readClaudeUsageThroughCliproxy(
+  managementBaseUrl: string,
+  managementKey: string | undefined,
+  authIndex: string,
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+): Promise<{ status: number; body: unknown }> {
+  const response = await fetchCliproxy(`${managementBaseUrl}/api-call`, {
+    method: "POST",
+    headers: { ...managementHeaders(managementKey), "content-type": "application/json" },
+    body: JSON.stringify({
+      auth_index: authIndex,
+      method: "GET",
+      url: "https://api.anthropic.com/api/oauth/usage",
+      header: { Authorization: "Bearer $TOKEN$", "anthropic-beta": "oauth-2025-04-20" },
+    }),
+  }, signal, timeoutMs);
+  const envelope = asRecord(await readJson(response));
+  const status = typeof envelope?.status_code === "number" ? envelope.status_code : response.status;
+  const body = typeof envelope?.body === "string" ? (() => { try { return JSON.parse(envelope.body); } catch { return null; } })() : envelope?.body;
+  return { status, body };
+}
+
+/**
+ * Query a selected credential via CLIProxyAPI's authenticated management API.
+ * Claude uses the proxy's token substitution for a fresh official usage read;
+ * cached rate-limit signals provide a read-only fallback when the upstream call
+ * is temporarily unavailable.
+ */
+export async function readCliproxyUsage(account: CliproxyUsageAccount, options: CliproxyUsageOptions): Promise<ProviderUsageResult> {
+  const managementBaseUrl = options.managementBaseUrl.replace(/\/$/, "");
+  const timeoutMs = options.timeoutMs ?? 20_000;
+  try {
+    const response = await fetchCliproxy(`${managementBaseUrl}/auth-files`, {
+      headers: managementHeaders(options.managementKey),
+    }, options.signal, timeoutMs);
+    if (!response.ok) return usageError(`Cliproxy credential query failed (${response.status}).`);
+    const selected = getSelectedCliproxyRecord(await readJson(response), account);
+    if (isUsageResult(selected)) return selected;
+    const authIndex = asString(selected.auth_index) ?? asString(selected.authIndex);
+    if (account.provider.toLowerCase() === "claude" && authIndex) {
+      const upstream = await readClaudeUsageThroughCliproxy(managementBaseUrl, options.managementKey, authIndex, options.signal, timeoutMs);
+      if (upstream.status >= 200 && upstream.status < 300) {
+        const normalized = normalizeClaudeUsage(upstream.body, account);
+        if (hasOkUsage(normalized)) return normalized;
+      }
+      const cached = normalizeCliproxyCachedUsage(selected, account);
+      if (hasOkUsage(cached)) return cached;
+      return usageError(`Cliproxy could not read Claude quota (${upstream.status}).`);
+    }
+    return normalizeCliproxyCachedUsage(selected, account);
+  } catch (error) {
+    if (options.signal?.aborted || (error as Error).message === "cliproxy-query-cancelled") return usageError("Cliproxy quota query cancelled.");
+    if ((error as Error).message === "cliproxy-query-timed-out") return usageError("Cliproxy quota query timed out.");
+    return usageError("Could not query Cliproxy quota.");
+  }
+}
+
+export async function readCliproxyManagementKey(options: {
+  managementKeyEnv?: string;
+  managementKeyFile?: string;
+}): Promise<string | undefined> {
+  const fromEnv = options.managementKeyEnv ? process.env[options.managementKeyEnv]?.trim() : undefined;
+  if (fromEnv) return fromEnv;
+  if (!options.managementKeyFile) return undefined;
+  try {
+    const fromFile = (await readFile(options.managementKeyFile, "utf8")).trim();
+    return fromFile || undefined;
+  } catch {
+    return undefined;
+  }
 }

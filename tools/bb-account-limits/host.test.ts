@@ -28,6 +28,39 @@ test("usage replies use BB's protocol; concurrent queries share work, other meth
   assert.equal(JSON.parse(forwarded[0]).params.providerThreadId, "preserved");
 });
 
+test("usage-only Cliproxy providers expose no models", async () => {
+  const output: any[] = [];
+  const bridge = withAccountLimits(
+    { experimental_apiVersion: 1, handleLine() {} },
+    async () => usageError("unused"),
+    line => output.push(JSON.parse(line)),
+    new Set(["cliproxy-claude-work"]),
+  );
+  bridge.handleLine(JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "model/list",
+    params: { providerId: "cliproxy-claude-work" },
+  }));
+  assert.deepEqual(output, [{ jsonrpc: "2.0", id: 1, result: { models: [], selectedOnlyModels: [] } }]);
+});
+
+test("usage-only provider flag also works when BB omits providerId from model/list", () => {
+  const output: any[] = [];
+  const bridge = withAccountLimits(
+    { experimental_apiVersion: 1, handleLine() {} },
+    async () => usageError("unused"),
+    line => output.push(JSON.parse(line)),
+  );
+  bridge.handleLine(JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "model/list",
+    params: { providerOptions: { usageOnly: true } },
+  }));
+  assert.deepEqual(output, [{ jsonrpc: "2.0", id: 1, result: { models: [], selectedOnlyModels: [] } }]);
+});
+
 test("provider bridge passes SDK conformance with an offline ACP agent", { timeout: 25000 }, async () => {
   const { stdout } = await promisify(execFile)(process.execPath, ["--import", "./test-runtime.mjs", "--import", "tsx", "./fixtures/conformance.mjs"], { timeout: 22000, maxBuffer: 1024 * 1024 });
   const report = JSON.parse(stdout);
