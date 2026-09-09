@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { normalizeAgyUsage, normalizeClaudeUsage, normalizeCliproxyCachedUsage, readAgyUsage, readCliproxyUsage, normalizeCodexLimits, normalizeKiroUsage, readCodexUsage, readKiroUsage } from "./usage.js";
+import { normalizeAgyUsage, normalizeClaudeUsage, normalizeCliproxyCachedUsage, normalizeGrokUsage, readAgyUsage, readCliproxyProviderUsage, readCliproxyUsage, normalizeCodexLimits, normalizeKiroUsage, readCodexUsage, readKiroUsage } from "./usage.js";
 
 const agy = "Gemini Models\tWeekly Limit Remaining\t94%\t2026-09-11T02:49:57Z\nClaude and GPT models\tFive Hour Limit Remaining\t99.5%\t2026-09-07T08:07:15Z\n";
 
@@ -101,6 +101,19 @@ test("Claude usage converts Cliproxy's official usage response into BB windows",
   }
 });
 
+test("Grok usage exposes both the current period and product quota", () => {
+  const result = normalizeGrokUsage({ config: {
+    currentPeriod: { type: "USAGE_PERIOD_TYPE_WEEKLY", end: "2026-09-12T06:53:49.038097+00:00" },
+    creditUsagePercent: 7,
+    productUsage: [{ product: "GrokBuild", usagePercent: 7 }],
+  } }, { provider: "xai", authIndex: "account-1", label: "Grok" });
+  assert.ok(result.supported && result.usage.status === "ok");
+  assert.deepEqual(result.usage.windows, [
+    { label: "Weekly limit", usedPercent: 7, resetsAt: "2026-09-12T06:53:49.038Z" },
+    { label: "GrokBuild", usedPercent: 7, resetsAt: "2026-09-12T06:53:49.038Z" },
+  ]);
+});
+
 test("cached Claude rate-limit signals are a safe fallback and deduplicate model snapshots", () => {
   const result = normalizeCliproxyCachedUsage({ model_quotas: {
     latest: { observed_at: "2026-09-09T10:00:00Z", signals: {
@@ -169,6 +182,38 @@ test("Cliproxy queries the selected credential, uses token substitution only ins
     assert.equal(new Headers(requests[0].init?.headers).get("authorization"), "Bearer test-management-key");
     const apiCall = JSON.parse(String(requests[1].init?.body));
     assert.deepEqual(apiCall.header, { Authorization: "Bearer $TOKEN$", "anthropic-beta": "oauth-2025-04-20" });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Cliproxy provider aggregation keeps successful account limits when another account fails", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: string[] = [];
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    requests.push(url);
+    if (url.endsWith("/auth-files")) return new Response(JSON.stringify({ files: [
+      { provider: "claude", auth_index: "account-1" },
+      { provider: "claude", auth_index: "account-2" },
+    ] }), { status: 200 });
+    const body = JSON.parse(String(init?.body));
+    if (body.auth_index === "account-2") return new Response(JSON.stringify({ status_code: 503, body: "{}" }), { status: 200 });
+    return new Response(JSON.stringify({ status_code: 200, body: JSON.stringify({ limits: [
+      { kind: "weekly_all", percent: 42, resets_at: "2026-09-12T10:00:00Z" },
+    ] }) }), { status: 200 });
+  };
+  try {
+    const result = await readCliproxyProviderUsage([
+      { provider: "claude", authIndex: "account-1", label: "账号 1" },
+      { provider: "claude", authIndex: "account-2", label: "账号 2" },
+    ], { managementBaseUrl: "http://cliproxy.test/v0/management" });
+    assert.ok(result.supported && result.usage.status === "ok");
+    assert.equal(result.usage.planLabel, "Claude · Cliproxy · 1/2 accounts");
+    assert.deepEqual(result.usage.windows, [
+      { label: "账号 1 · Weekly limit", usedPercent: 42, resetsAt: "2026-09-12T10:00:00.000Z" },
+    ]);
+    assert.equal(requests.filter(url => url.endsWith("/auth-files")).length, 1);
   } finally {
     globalThis.fetch = originalFetch;
   }

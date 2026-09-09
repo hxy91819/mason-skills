@@ -1,4 +1,9 @@
-import { config } from "./config.js";
+import {
+  activeCliproxyAccountsByProvider,
+  cliproxyProviderDisplayName,
+  cliproxyProviderId,
+  config,
+} from "./config.js";
 import type { BbPluginApi, PluginProviderDeclaration } from "@get-bb/plugin-sdk";
 import { agyProvider } from "./agy-provider.js";
 import { extraProviders } from "./extra-providers.js";
@@ -13,9 +18,9 @@ const agents: Array<{ id: string; displayName: string; command: string; args: st
   { id: "acp-kiro", displayName: "Kiro", command: config.kiro, args: ["acp"], env: {}, login: "kiro-cli login", icon: "Bug" },
   // These entries exist solely for BB's native usage surface. Empty fallback
   // models keep an account quota from being chosen as an executable ACP agent.
-  ...config.cliproxy.accounts.filter(account => account.enabled !== false).map(account => ({
-    id: `cliproxy-${account.id}`,
-    displayName: account.label ?? `${account.provider} quota`,
+  ...[...activeCliproxyAccountsByProvider(config.cliproxy.accounts).keys()].map(provider => ({
+    id: cliproxyProviderId(provider),
+    displayName: `${cliproxyProviderDisplayName(provider)} · Cliproxy`,
     command: "cliproxy-quota-only",
     args: [] as string[],
     env: {},

@@ -1,17 +1,21 @@
-import { config } from "./config.js";
+import {
+  activeCliproxyAccountsByProvider,
+  cliproxyProviderId,
+  config,
+} from "./config.js";
 import { experimental_acpProviderBridge } from "@get-bb/plugin-sdk/provider-bridge/acp";
 import { bridgeRequestEnvelopeSchema, createBridgeIo, experimental_defineProviderBridge, modelListParamsSchema, providerMaintenanceParamsSchema, type ProviderBridgeEntry, type ProviderUsageResult } from "@get-bb/plugin-sdk/provider-bridge";
-import { readAgyUsage, readCliproxyManagementKey, readCliproxyUsage, readCodexUsage, readKiroUsage, usageError } from "./usage.js";
+import { readAgyUsage, readCliproxyManagementKey, readCliproxyProviderUsage, readCodexUsage, readKiroUsage, usageError } from "./usage.js";
 
 // usage 查询支持的本插件 provider ID：三个原生入口 + config.codexAccounts 里的额外 Codex 账号。
 const usageProviderIds = new Set([
   "acp-codexl", "acp-kiro", "acp-agy",
   ...config.codexAccounts.map(account => account.id),
-  ...config.cliproxy.accounts.filter(account => account.enabled !== false).map(account => `cliproxy-${account.id}`),
+  ...[...activeCliproxyAccountsByProvider(config.cliproxy.accounts).keys()].map(cliproxyProviderId),
 ]);
-const usageOnlyProviderIds = new Set(config.cliproxy.accounts
-  .filter(account => account.enabled !== false)
-  .map(account => `cliproxy-${account.id}`));
+const usageOnlyProviderIds = new Set(
+  [...activeCliproxyAccountsByProvider(config.cliproxy.accounts).keys()].map(cliproxyProviderId),
+);
 
 function modelRequestIsUsageOnly(params: unknown, usageOnlyIds: ReadonlySet<string>): boolean {
   const parsed = modelListParamsSchema.safeParse(params);
@@ -27,10 +31,11 @@ export async function resolveUsageReader(id: string, signal: AbortSignal): Promi
   const account = config.codexAccounts.find(entry => entry.id === id);
   if (account) return readCodexUsage(account.command, { signal });
   if (id.startsWith("cliproxy-")) {
-    const cliproxyAccount = config.cliproxy.accounts.find(entry => `cliproxy-${entry.id}` === id);
-    if (!cliproxyAccount) return usageError("Cliproxy account is not configured.");
+    const provider = id.slice("cliproxy-".length).toLowerCase();
+    const cliproxyAccounts = activeCliproxyAccountsByProvider(config.cliproxy.accounts).get(provider);
+    if (!cliproxyAccounts?.length) return usageError("Cliproxy provider is not configured.");
     const managementKey = await readCliproxyManagementKey(config.cliproxy);
-    return readCliproxyUsage(cliproxyAccount, {
+    return readCliproxyProviderUsage(cliproxyAccounts, {
       managementBaseUrl: config.cliproxy.managementBaseUrl,
       managementKey,
       signal,

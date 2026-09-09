@@ -294,6 +294,40 @@ export function normalizeClaudeUsage(raw: unknown, account: CliproxyUsageAccount
   return { supported: true, usage: { status: "ok", accountEmail: null, planLabel: usageLabel(account), windows } };
 }
 
+function xaiPeriodLabel(value: unknown): string {
+  const type = asString(value)?.toLowerCase() ?? "";
+  if (type.includes("week")) return "Weekly limit";
+  if (type.includes("month")) return "Monthly limit";
+  return "Current period";
+}
+
+export function normalizeGrokUsage(raw: unknown, account: CliproxyUsageAccount): ProviderUsageResult {
+  const response = asRecord(raw);
+  const quota = response && asRecord(response.config);
+  if (!quota) return usageError("Cliproxy returned an unrecognized Grok quota response.");
+  const period = asRecord(quota.currentPeriod);
+  const resetsAt = parseReset(period?.end ?? quota.billingPeriodEnd);
+  const windows: Array<{ label: string; usedPercent: number; resetsAt: string | null }> = [];
+  const periodUsage = Number(quota.creditUsagePercent);
+  if (Number.isFinite(periodUsage) && periodUsage >= 0 && periodUsage <= 100) {
+    windows.push({
+      label: xaiPeriodLabel(period?.type),
+      usedPercent: periodUsage,
+      resetsAt,
+    });
+  }
+  const products = Array.isArray(quota.productUsage) ? quota.productUsage.map(asRecord) : [];
+  for (const product of products) {
+    if (!product) continue;
+    const name = asString(product.product);
+    const usedPercent = Number(product.usagePercent);
+    if (!name || !Number.isFinite(usedPercent) || usedPercent < 0 || usedPercent > 100) continue;
+    windows.push({ label: name, usedPercent, resetsAt });
+  }
+  if (!windows.length) return usageError("Cliproxy returned no usable Grok quota windows.");
+  return { supported: true, usage: { status: "ok", accountEmail: null, planLabel: usageLabel(account), windows } };
+}
+
 function cachedQuotaSignals(record: JsonRecord): JsonRecord[] {
   const sources: JsonRecord[] = [];
   const quota = asRecord(record.quota);
@@ -431,6 +465,118 @@ async function readClaudeUsageThroughCliproxy(
   return { status, body };
 }
 
+async function readGrokUsageThroughCliproxy(
+  managementBaseUrl: string,
+  managementKey: string | undefined,
+  authIndex: string,
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+): Promise<{ status: number; body: unknown }> {
+  const response = await fetchCliproxy(`${managementBaseUrl}/api-call`, {
+    method: "POST",
+    headers: { ...managementHeaders(managementKey), "content-type": "application/json" },
+    body: JSON.stringify({
+      auth_index: authIndex,
+      method: "GET",
+      url: "https://cli-chat-proxy.grok.com/v1/billing?format=credits",
+      header: {
+        Authorization: "Bearer $TOKEN$",
+        "x-xai-token-auth": "xai-grok-cli",
+        "x-grok-client-version": "0.2.91",
+        accept: "*/*",
+        "user-agent": "grok-pager/0.2.91 grok-shell/0.2.91 (linux; x86_64)",
+      },
+    }),
+  }, signal, timeoutMs);
+  const envelope = asRecord(await readJson(response));
+  const status = typeof envelope?.status_code === "number" ? envelope.status_code : response.status;
+  const body = typeof envelope?.body === "string" ? (() => { try { return JSON.parse(envelope.body); } catch { return null; } })() : envelope?.body;
+  return { status, body };
+}
+
+async function readCliproxyAccountUsage(
+  account: CliproxyUsageAccount,
+  selected: JsonRecord,
+  options: CliproxyUsageOptions,
+): Promise<ProviderUsageResult> {
+  const managementBaseUrl = options.managementBaseUrl.replace(/\/$/, "");
+  const timeoutMs = options.timeoutMs ?? 20_000;
+  const authIndex = asString(selected.auth_index) ?? asString(selected.authIndex);
+  if (account.provider.toLowerCase() === "claude" && authIndex) {
+    const upstream = await readClaudeUsageThroughCliproxy(managementBaseUrl, options.managementKey, authIndex, options.signal, timeoutMs);
+    if (upstream.status >= 200 && upstream.status < 300) {
+      const normalized = normalizeClaudeUsage(upstream.body, account);
+      if (hasOkUsage(normalized)) return normalized;
+    }
+    const cached = normalizeCliproxyCachedUsage(selected, account);
+    if (hasOkUsage(cached)) return cached;
+    return usageError(`Cliproxy could not read Claude quota (${upstream.status}).`);
+  }
+  if (account.provider.toLowerCase() === "xai" && authIndex) {
+    const upstream = await readGrokUsageThroughCliproxy(managementBaseUrl, options.managementKey, authIndex, options.signal, timeoutMs);
+    if (upstream.status >= 200 && upstream.status < 300) {
+      const normalized = normalizeGrokUsage(upstream.body, account);
+      if (hasOkUsage(normalized)) return normalized;
+    }
+    const cached = normalizeCliproxyCachedUsage(selected, account);
+    if (hasOkUsage(cached)) return cached;
+    return usageError(`Cliproxy could not read Grok quota (${upstream.status}).`);
+  }
+  return normalizeCliproxyCachedUsage(selected, account);
+}
+
+function aggregateCliproxyUsage(
+  accounts: readonly CliproxyUsageAccount[],
+  results: readonly ProviderUsageResult[],
+): ProviderUsageResult {
+  const windows = results.flatMap((result, index) => {
+    const usage = asRecord(result.usage);
+    if (usage?.status !== "ok" || !Array.isArray(usage.windows)) return [];
+    return usage.windows.flatMap(rawWindow => {
+      const window = asRecord(rawWindow);
+      if (!window) return [];
+      const label = asString(window.label);
+      const usedPercent = Number(window.usedPercent);
+      if (!label || !Number.isFinite(usedPercent) || usedPercent < 0 || usedPercent > 100) return [];
+      return [{
+        label: `${usageLabel(accounts[index]!)} · ${label}`,
+        usedPercent,
+        resetsAt: typeof window.resetsAt === "string" ? window.resetsAt : null,
+      }];
+    });
+  });
+  if (!windows.length) return usageError("Cliproxy did not return quota data for any configured account.");
+  const provider = accounts[0]?.provider.toLowerCase();
+  const displayName = provider === "xai" ? "Grok" : provider === "claude" ? "Claude" : accounts[0]?.provider ?? "Cliproxy";
+  const successful = results.filter(hasOkUsage).length;
+  return {
+    supported: true,
+    usage: {
+      status: "ok",
+      accountEmail: null,
+      planLabel: `${displayName} · Cliproxy · ${successful}/${accounts.length} accounts`,
+      windows,
+    },
+  };
+}
+
+async function readCliproxyAuthFiles(options: CliproxyUsageOptions): Promise<unknown> {
+  const managementBaseUrl = options.managementBaseUrl.replace(/\/$/, "");
+  const response = await fetchCliproxy(`${managementBaseUrl}/auth-files`, {
+    headers: managementHeaders(options.managementKey),
+  }, options.signal, options.timeoutMs ?? 20_000);
+  if (!response.ok) throw new Error(`cliproxy-credential-query-${response.status}`);
+  return readJson(response);
+}
+
+function cliproxyQueryError(error: unknown, signal: AbortSignal | undefined): ProviderUsageResult {
+  if (signal?.aborted || (error as Error).message === "cliproxy-query-cancelled") return usageError("Cliproxy quota query cancelled.");
+  if ((error as Error).message === "cliproxy-query-timed-out") return usageError("Cliproxy quota query timed out.");
+  const status = /^cliproxy-credential-query-(\d+)$/u.exec((error as Error).message)?.[1];
+  if (status) return usageError(`Cliproxy credential query failed (${status}).`);
+  return usageError("Could not query Cliproxy quota.");
+}
+
 /**
  * Query a selected credential via CLIProxyAPI's authenticated management API.
  * Claude uses the proxy's token substitution for a fresh official usage read;
@@ -438,31 +584,35 @@ async function readClaudeUsageThroughCliproxy(
  * is temporarily unavailable.
  */
 export async function readCliproxyUsage(account: CliproxyUsageAccount, options: CliproxyUsageOptions): Promise<ProviderUsageResult> {
-  const managementBaseUrl = options.managementBaseUrl.replace(/\/$/, "");
-  const timeoutMs = options.timeoutMs ?? 20_000;
   try {
-    const response = await fetchCliproxy(`${managementBaseUrl}/auth-files`, {
-      headers: managementHeaders(options.managementKey),
-    }, options.signal, timeoutMs);
-    if (!response.ok) return usageError(`Cliproxy credential query failed (${response.status}).`);
-    const selected = getSelectedCliproxyRecord(await readJson(response), account);
+    const selected = getSelectedCliproxyRecord(await readCliproxyAuthFiles(options), account);
     if (isUsageResult(selected)) return selected;
-    const authIndex = asString(selected.auth_index) ?? asString(selected.authIndex);
-    if (account.provider.toLowerCase() === "claude" && authIndex) {
-      const upstream = await readClaudeUsageThroughCliproxy(managementBaseUrl, options.managementKey, authIndex, options.signal, timeoutMs);
-      if (upstream.status >= 200 && upstream.status < 300) {
-        const normalized = normalizeClaudeUsage(upstream.body, account);
-        if (hasOkUsage(normalized)) return normalized;
-      }
-      const cached = normalizeCliproxyCachedUsage(selected, account);
-      if (hasOkUsage(cached)) return cached;
-      return usageError(`Cliproxy could not read Claude quota (${upstream.status}).`);
-    }
-    return normalizeCliproxyCachedUsage(selected, account);
+    return await readCliproxyAccountUsage(account, selected, options);
   } catch (error) {
-    if (options.signal?.aborted || (error as Error).message === "cliproxy-query-cancelled") return usageError("Cliproxy quota query cancelled.");
-    if ((error as Error).message === "cliproxy-query-timed-out") return usageError("Cliproxy quota query timed out.");
-    return usageError("Could not query Cliproxy quota.");
+    return cliproxyQueryError(error, options.signal);
+  }
+}
+
+export async function readCliproxyProviderUsage(
+  accounts: readonly CliproxyUsageAccount[],
+  options: CliproxyUsageOptions,
+): Promise<ProviderUsageResult> {
+  if (!accounts.length) return usageError("Cliproxy provider has no configured accounts.");
+  try {
+    const authFiles = await readCliproxyAuthFiles(options);
+    const results = await Promise.all(accounts.map(async account => {
+      try {
+        const selected = getSelectedCliproxyRecord(authFiles, account);
+        return isUsageResult(selected)
+          ? selected
+          : await readCliproxyAccountUsage(account, selected, options);
+      } catch (error) {
+        return cliproxyQueryError(error, options.signal);
+      }
+    }));
+    return aggregateCliproxyUsage(accounts, results);
+  } catch (error) {
+    return cliproxyQueryError(error, options.signal);
   }
 }
 

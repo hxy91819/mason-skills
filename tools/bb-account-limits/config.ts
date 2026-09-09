@@ -81,6 +81,33 @@ export type CliproxyAccount = z.infer<typeof cliproxyAccountSchema>;
 export type CliproxyConfig = z.infer<typeof cliproxyConfigSchema>;
 export type AccountLimitsConfig = Omit<typeof defaults, "cliproxy"> & { cliproxy: CliproxyConfig };
 
+export function cliproxyProviderId(provider: string): string {
+  return `cliproxy-${provider.toLowerCase()}`;
+}
+
+export function cliproxyProviderDisplayName(provider: string): string {
+  const labels: Record<string, string> = {
+    claude: "Claude",
+    xai: "Grok",
+  };
+  const normalized = provider.toLowerCase();
+  return labels[normalized] ?? provider;
+}
+
+export function activeCliproxyAccountsByProvider(
+  accounts: readonly CliproxyAccount[],
+): Map<string, CliproxyAccount[]> {
+  const groups = new Map<string, CliproxyAccount[]>();
+  for (const account of accounts) {
+    if (account.enabled === false) continue;
+    const provider = account.provider.toLowerCase();
+    const group = groups.get(provider);
+    if (group) group.push(account);
+    else groups.set(provider, [account]);
+  }
+  return groups;
+}
+
 export function loadLocalAccountLimitsConfigFile(
   file: URL,
   warn: (message: string) => void,
