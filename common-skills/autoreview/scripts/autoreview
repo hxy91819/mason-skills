@@ -12601,7 +12601,10 @@ def parse_args() -> argparse.Namespace:
         "--engine",
         choices=ENGINE_CHOICES,
         default=None,
-        help="Review engine. Env default: AUTOREVIEW_ENGINE. Built-in default: codex.",
+        help=(
+            "Review engine. Env default: AUTOREVIEW_ENGINE. Built-in default: "
+            "bb in an active BB thread, codex otherwise."
+        ),
     )
     parser.add_argument("--reviewers", help="Comma-separated review panel, e.g. codex,claude,pi,bb or codex:gpt-5.6-sol:high.")
     parser.add_argument("--panel", action="store_true", help="Run a Codex/Claude review panel unless --engine changes the first reviewer.")
@@ -12760,8 +12763,13 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     env_engine = os.environ.get("AUTOREVIEW_ENGINE")
     args.engine_explicit = args.engine is not None or env_engine is not None
+    built_in_engine = (
+        "bb" if os.environ.get("BB_THREAD_ID", "").strip() else "codex"
+    )
     args.engine = normalize_engine(
-        args.engine if args.engine is not None else (env_engine if env_engine is not None else "codex")
+        args.engine
+        if args.engine is not None
+        else (env_engine if env_engine is not None else built_in_engine)
     )
     if args.cursor_allow_workspace_instructions is None:
         args.cursor_allow_workspace_instructions = env_truthy("AUTOREVIEW_CURSOR_ALLOW_WORKSPACE_INSTRUCTIONS")
@@ -12878,7 +12886,9 @@ def reviewer_args(args: argparse.Namespace) -> list[argparse.Namespace]:
             tokens = list(ALL_REVIEWERS)
         reviewers = [parse_reviewer_token(token) for token in tokens]
     elif args.panel:
-        engines = [args.engine]
+        engines = [
+            args.engine if getattr(args, "engine_explicit", True) else "codex"
+        ]
         for engine in ("codex", "claude"):
             if engine not in engines:
                 engines.append(engine)

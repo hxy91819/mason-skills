@@ -876,6 +876,72 @@ class AutoreviewHardeningTests(unittest.TestCase):
             accepted.stdout,
         )
 
+    def test_active_bb_session_defaults_to_bb_with_explicit_trust_gate(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            repo = init_repo(Path(tempdir))
+            env = os.environ.copy()
+            env.pop("AUTOREVIEW_ENGINE", None)
+            env["BB_THREAD_ID"] = "thr_parent"
+            refused = subprocess.run(
+                [sys.executable, str(SCRIPT), "--mode", "local", "--dry-run"],
+                cwd=repo,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            accepted = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--mode",
+                    "local",
+                    "--bb-trusted-input",
+                    "--dry-run",
+                ],
+                cwd=repo,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            env_override = subprocess.run(
+                [sys.executable, str(SCRIPT), "--mode", "local", "--dry-run"],
+                cwd=repo,
+                env={**env, "AUTOREVIEW_ENGINE": "codex"},
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            panel = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--mode",
+                    "local",
+                    "--panel",
+                    "--dry-run",
+                ],
+                cwd=repo,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("requires --bb-trusted-input", refused.stderr)
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertIn("engine: bb", accepted.stdout)
+        self.assertEqual(env_override.returncode, 0, env_override.stderr)
+        self.assertIn("engine: codex", env_override.stdout)
+        self.assertEqual(panel.returncode, 0, panel.stderr)
+        self.assertIn("reviewers: codex", panel.stdout)
+        self.assertIn("claude", panel.stdout)
+        self.assertNotIn("bb", panel.stdout)
+
     def test_local_bundle_omits_sensitive_untracked_file_without_blocking(self) -> None:
         for rel in (".env", "tokens/session.dat", "secrets/local.py"):
             with self.subTest(rel=rel), tempfile.TemporaryDirectory() as tempdir:
@@ -7953,6 +8019,7 @@ class AutoreviewSubagentEngineTests(unittest.TestCase):
             }
         )
         env.pop("AUTOREVIEW_ENGINE", None)
+        env.pop("BB_THREAD_ID", None)
         return repo, env
 
     def run_cli(
