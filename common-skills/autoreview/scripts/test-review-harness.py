@@ -13,7 +13,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 
-ENGINES = ("codex", "claude", "pi")
+ENGINES = ("codex", "claude", "pi", "bb")
 DEFAULT_ENGINES = ("codex", "claude")
 
 MALICIOUS_INITIAL = """export function uploadPath(name) {
@@ -175,6 +175,8 @@ def run_reviews(repo: Path, script_dir: Path, fixture: str, engines: list[str]) 
             "--prompt",
             MALICIOUS_PROMPT if fixture == "malicious" else BENIGN_PROMPT,
         ]
+        if engine == "bb":
+            command.append("--bb-trusted-input")
         if fixture == "malicious":
             # The fixture checks that the pipeline surfaces known defects at all,
             # so accept every priority instead of depending on the helper's

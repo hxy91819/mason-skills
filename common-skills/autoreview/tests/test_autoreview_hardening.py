@@ -839,9 +839,42 @@ class AutoreviewHardeningTests(unittest.TestCase):
     def test_powershell_harness_exposes_runnable_engines_only(self) -> None:
         harness = SCRIPT.with_name("test-review-harness.ps1").read_text(encoding="utf-8")
 
-        self.assertIn("[ValidateSet('codex', 'claude', 'pi')]", harness)
+        self.assertIn("[ValidateSet('codex', 'claude', 'pi', 'bb')]", harness)
         for disabled_engine in ("droid", "copilot", "opencode", "cursor"):
             self.assertNotIn(f"'{disabled_engine}'", harness)
+
+    def test_bb_dry_run_discloses_missing_host_read_isolation(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            repo = init_repo(Path(tempdir))
+            refused = subprocess.run(
+                [sys.executable, str(SCRIPT), "--engine", "bb", "--dry-run"],
+                cwd=repo,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            accepted = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--engine",
+                    "bb",
+                    "--bb-trusted-input",
+                    "--dry-run",
+                ],
+                cwd=repo,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("requires --bb-trusted-input", refused.stderr)
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertIn(
+            "reviewer isolation: none (BB session tools are not confined to the review bundle)",
+            accepted.stdout,
+        )
 
     def test_local_bundle_omits_sensitive_untracked_file_without_blocking(self) -> None:
         for rel in (".env", "tokens/session.dat", "secrets/local.py"):
@@ -4800,7 +4833,10 @@ class AutoreviewHardeningTests(unittest.TestCase):
                 "Review sandbox: . (intentionally contains no reviewed repository files)",
                 prompt,
             )
-            self.assertIn("Read-only tools cannot access unchanged repository files", prompt)
+            self.assertIn(
+                "Treat the change bundle and explicit prompt or datasets as the only reviewed-repository source",
+                prompt,
+            )
             self.assertIn(
                 "Do not report a missing import, symbol, definition, call site, config entry",
                 prompt,
@@ -7866,6 +7902,7 @@ class AutoreviewHardeningTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("autoreview engine isolation self-test: ok", result.stdout)
+        self.assertIn("self-test BB engine: ok", result.stdout)
 
 
 def subagent_result(

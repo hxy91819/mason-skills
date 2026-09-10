@@ -38,6 +38,7 @@ ENGINES = (
     "pi",
     "opencode",
     "cursor",
+    "bb",
     "subagent",
 )
 ENGINE_ALIASES = {"cursor-agent": "cursor"}
@@ -50,6 +51,9 @@ ALL_REVIEWERS = ("codex", "claude", "pi")
 EXIT_AWAITING_EXTERNAL_RESULT = 3
 SUBAGENT_INDEPENDENCE_NOTE = (
     "reviewer independence: none (subagent shares the author model/context)"
+)
+BB_ISOLATION_NOTE = (
+    "reviewer isolation: none (BB session tools are not confined to the review bundle)"
 )
 MAX_SUBAGENT_RESULT_BYTES = 1_000_000
 # Access-only fallback chains: claude passes --fallback-model to its CLI; pi
@@ -1177,6 +1181,10 @@ def safe_engine_env(
         "OPENAI_ORGANIZATION",
         "OPENAI_PROJECT",
     }
+    bb_allowed_exact = {
+        "BB_HOST_DAEMON_PORT",
+        "BB_SERVER_URL",
+    }
     claude_allowed_exact = {
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
@@ -1261,6 +1269,7 @@ def safe_engine_env(
         "PI_TELEMETRY",
     }
     engine_allowed_exact = {
+        "bb": bb_allowed_exact,
         "claude": claude_allowed_exact,
         "codex": codex_allowed_exact,
         "opencode": multi_provider_allowed_exact,
@@ -9397,7 +9406,7 @@ def render_review_prompt(
         - Do not modify files.
         - Do not invoke nested reviewers or review tools.
         - Forbidden nested review commands include: codex review, autoreview, claude review, oracle review.
-        - The review sandbox is intentionally empty. The change bundle and explicit prompt or datasets are the only reviewed-repository source. Read-only tools cannot access unchanged repository files.
+        - The review workspace intentionally contains no reviewed repository files. Treat the change bundle and explicit prompt or datasets as the only reviewed-repository source; do not seek unchanged repository files elsewhere.
         - You may use read-only tools and web search to inspect external dependency contracts, upstream docs, current public behavior, and security implications.
         - Do not report a missing import, symbol, definition, call site, config entry, or other unchanged context solely because it is absent from the change bundle. Such a finding requires direct proof in the bundle or explicit datasets.
         - Shell commands, if available, must be read-only inspection commands. Do not run tests, formatters, package installs, generators, network mutation commands, git mutation commands, or commands that write files.
@@ -10775,6 +10784,254 @@ def run_pi(args: argparse.Namespace, repo: Path, prompt: str) -> str:
     raise AssertionError("unreachable")
 
 
+class BbSessionConfig(NamedTuple):
+    project_id: str
+    host_id: str
+    provider_id: str
+    model: str | None
+    reasoning_level: str | None
+    service_tier: str | None
+
+
+BB_REVIEW_INSTRUCTION = (
+    "Read review-prompt.md from the current workspace and follow it as the only "
+    "repository input. Use read-only tools only to open that file; do not inspect "
+    "any other path. Return exactly the JSON object it requests and nothing else."
+)
+
+
+def bb_json_result(
+    result: subprocess.CompletedProcess[str],
+    operation: str,
+) -> Any:
+    if result.returncode != 0:
+        detail = display_escape(result.stderr or result.stdout, 4000, multiline=True)
+        raise SystemExit(f"BB {operation} failed ({result.returncode})\n{detail}")
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        raise SystemExit(f"BB {operation} returned malformed JSON") from None
+
+
+def bb_session_config(
+    args: argparse.Namespace,
+    repo: Path,
+    bb_bin: str,
+    engine_env: dict[str, str],
+    cwd: Path,
+) -> BbSessionConfig:
+    current_thread_id = os.environ.get("BB_THREAD_ID", "").strip()
+    if not current_thread_id:
+        raise SystemExit("BB engine requires an active BB thread (BB_THREAD_ID is unset)")
+
+    shown = bb_json_result(
+        run(
+            [bb_bin, "thread", "show", current_thread_id, "--json"],
+            cwd,
+            check=False,
+            env=engine_env,
+        ),
+        "current-thread lookup",
+    )
+    if not isinstance(shown, dict):
+        raise SystemExit("BB current-thread lookup returned an unexpected JSON shape")
+    thread = shown.get("thread")
+    environment = shown.get("environment")
+    if not isinstance(thread, dict) or not isinstance(environment, dict):
+        raise SystemExit("BB current-thread lookup omitted thread or environment metadata")
+
+    project_id = thread.get("projectId")
+    host_id = environment.get("hostId")
+    provider_id = thread.get("providerId")
+    if not all(isinstance(value, str) and value.strip() for value in (project_id, host_id, provider_id)):
+        raise SystemExit("BB current-thread metadata omitted project, host, or provider")
+
+    events = bb_json_result(
+        run(
+            [bb_bin, "thread", "log", current_thread_id, "--json", "--all"],
+            cwd,
+            check=False,
+            env=engine_env,
+        ),
+        "current execution lookup",
+    )
+    if not isinstance(events, list):
+        raise SystemExit("BB current execution lookup returned an unexpected JSON shape")
+    execution: dict[str, Any] | None = None
+    for event in events:
+        if not isinstance(event, dict) or event.get("type") != "client/turn/requested":
+            continue
+        data = event.get("data")
+        candidate = data.get("execution") if isinstance(data, dict) else None
+        if isinstance(candidate, dict):
+            execution = candidate
+    if execution is None:
+        raise SystemExit("BB current thread has no recorded execution configuration")
+
+    def optional_string(key: str) -> str | None:
+        value = execution.get(key)
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value.strip():
+            raise SystemExit(f"BB current execution has an invalid {key}")
+        return value.strip()
+
+    model = args.model or optional_string("model")
+    reasoning_level = args.thinking or optional_string("reasoningLevel")
+    service_tier = optional_string("serviceTier")
+    if service_tier and service_tier not in {"fast", "default"}:
+        raise SystemExit(f"BB current execution uses unsupported service tier: {service_tier}")
+    return BbSessionConfig(
+        project_id=project_id,
+        host_id=host_id,
+        provider_id=provider_id,
+        model=model,
+        reasoning_level=reasoning_level,
+        service_tier=service_tier,
+    )
+
+
+def cleanup_bb_review_thread(
+    bb_bin: str,
+    thread_id: str,
+    cwd: Path,
+    engine_env: dict[str, str],
+) -> None:
+    for action in ("archive", "stop"):
+        result = run(
+            [bb_bin, "thread", action, thread_id, "--json"],
+            cwd,
+            check=False,
+            env=engine_env,
+        )
+        if result.returncode != 0:
+            detail = display_escape(result.stderr or result.stdout, 1000, multiline=True)
+            print(
+                f"warning: unable to {action} BB review thread {thread_id}: {detail}",
+                file=sys.stderr,
+            )
+
+
+def require_bb_trusted_input(args: argparse.Namespace) -> None:
+    if not args.bb_trusted_input:
+        raise SystemExit(
+            f"{BB_ISOLATION_NOTE}\n"
+            "--engine bb requires --bb-trusted-input to confirm that the change bundle, "
+            "prompt, and datasets are all trusted"
+        )
+
+
+def run_bb(args: argparse.Namespace, repo: Path, prompt: str) -> str:
+    require_bb_trusted_input(args)
+    if not args.tools:
+        raise SystemExit("--no-tools is not supported by the BB engine")
+    bb_bin = resolve_command(args.bb_bin, repo)
+    engine_env = safe_engine_env(
+        repo,
+        [Path(bb_bin).parent],
+        engine="bb",
+    )
+    temp_root = safe_temp_root(repo)
+    thread_id: str | None = None
+    with tempfile.TemporaryDirectory(
+        prefix="autoreview-bb-workspace.",
+        dir=temp_root,
+    ) as workspace_dir:
+        workspace = Path(workspace_dir)
+        # A Git root avoids provider sandbox-init fallback; the temporary
+        # repository contains only the review prompt.
+        run(
+            [resolve_command("git", repo), "init", "--quiet"],
+            workspace,
+            env=safe_git_env(repo),
+        )
+        prompt_path = workspace / "review-prompt.md"
+        write_private_text(prompt_path, prompt)
+        config = bb_session_config(args, repo, bb_bin, engine_env, workspace)
+        args.model = config.model
+        args.thinking = config.reasoning_level
+        print(
+            "bb session config: "
+            f"provider={display_escape(config.provider_id, 200)} "
+            f"model={display_escape(config.model or '(provider default)', 300)} "
+            f"reasoning={display_escape(config.reasoning_level or '(provider default)', 100)} "
+            f"service_tier={display_escape(config.service_tier or '(provider default)', 100)}"
+        )
+
+        spawn_cmd = [
+            bb_bin,
+            "thread",
+            "spawn",
+            "--project",
+            config.project_id,
+            "--environment",
+            str(workspace),
+            "--machine",
+            config.host_id,
+            "--provider",
+            config.provider_id,
+            "--prompt",
+            BB_REVIEW_INSTRUCTION,
+            "--file",
+            str(prompt_path),
+            "--title",
+            "Autoreview BB session",
+            "--visibility",
+            "hidden",
+            "--permission-mode",
+            "auto",
+            "--json",
+        ]
+        if config.model:
+            spawn_cmd.extend(["--model", config.model])
+        if config.reasoning_level:
+            spawn_cmd.extend(["--reasoning-level", config.reasoning_level])
+        if config.service_tier:
+            spawn_cmd.extend(["--service-tier", config.service_tier])
+
+        spawned = bb_json_result(
+            run(spawn_cmd, workspace, check=False, env=engine_env),
+            "review-thread spawn",
+        )
+        if not isinstance(spawned, dict) or not isinstance(spawned.get("id"), str):
+            raise SystemExit("BB review-thread spawn omitted the thread id")
+        thread_id = spawned["id"]
+        print(f"bb review thread: {display_escape(thread_id, 200)}", flush=True)
+        try:
+            wait_result = run_with_heartbeat(
+                [
+                    bb_bin,
+                    "thread",
+                    "wait",
+                    thread_id,
+                    "--event",
+                    "turn/completed",
+                    "--timeout",
+                    str(args.bb_timeout),
+                    "--json",
+                ],
+                workspace,
+                label="bb",
+                env=engine_env,
+                resolve_root=repo,
+            )
+            bb_json_result(wait_result, "review-thread wait")
+            output = bb_json_result(
+                run(
+                    [bb_bin, "thread", "output", thread_id, "--json"],
+                    workspace,
+                    check=False,
+                    env=engine_env,
+                ),
+                "review-thread output",
+            )
+            if not isinstance(output, dict) or not isinstance(output.get("output"), str):
+                raise SystemExit("BB review thread produced no final output")
+            return output["output"]
+        finally:
+            cleanup_bb_review_thread(bb_bin, thread_id, workspace, engine_env)
+
+
 class CodexStreamDisplay:
     def __init__(self, *, activity_seconds: int = 20) -> None:
         self.activity_seconds = activity_seconds
@@ -11318,6 +11575,77 @@ report = {
 }
 print(json.dumps(report))
 	'''
+
+
+def fake_bb_script() -> str:
+    return r'''#!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
+import sys
+
+args = sys.argv[1:]
+record = Path(os.environ["AUTOREVIEW_FAKE_BB_RECORD"])
+entry = {
+    "argv": args,
+    "cwd": os.getcwd(),
+    "server_url": os.environ.get("BB_SERVER_URL"),
+}
+if args[:2] == ["thread", "spawn"]:
+    attachment = Path(args[args.index("--file") + 1])
+    entry["attachment"] = attachment.read_text(encoding="utf-8")
+with record.open("a", encoding="utf-8") as handle:
+    handle.write(json.dumps(entry) + "\n")
+
+if args[:3] == ["thread", "show", "thr_parent"]:
+    print(json.dumps({
+        "thread": {
+            "id": "thr_parent",
+            "projectId": "proj_review",
+            "providerId": "codex",
+        },
+        "environment": {"hostId": "host_review"},
+    }))
+elif args[:3] == ["thread", "log", "thr_parent"]:
+    print(json.dumps([
+        {
+            "type": "client/turn/requested",
+            "data": {"execution": {
+                "model": "old-model",
+                "reasoningLevel": "low",
+                "serviceTier": "default",
+            }},
+        },
+        {
+            "type": "client/turn/requested",
+            "data": {"execution": {
+                "model": "current-model",
+                "reasoningLevel": "ultra",
+                "serviceTier": "fast",
+            }},
+        },
+    ]))
+elif args[:2] == ["thread", "spawn"]:
+    print(json.dumps({"id": "thr_bb_review"}))
+elif args[:3] == ["thread", "wait", "thr_bb_review"]:
+    if os.environ.get("AUTOREVIEW_FAKE_BB_WAIT_FAILURE") == "1":
+        print("review thread failed", file=sys.stderr)
+        raise SystemExit(4)
+    print(json.dumps({"threadId": "thr_bb_review", "matched": True}))
+elif args[:3] == ["thread", "output", "thr_bb_review"]:
+    report = {
+        "findings": [],
+        "overall_correctness": "patch is correct",
+        "overall_explanation": "fake BB clean",
+        "overall_confidence": 0.99,
+    }
+    print(json.dumps({"output": json.dumps(report)}))
+elif args[:3] in (["thread", "archive", "thr_bb_review"], ["thread", "stop", "thr_bb_review"]):
+    print("{}")
+else:
+    print("unexpected fake BB invocation", file=sys.stderr)
+    raise SystemExit(2)
+'''
 
 
 def fake_opencode_script() -> str:
@@ -12254,6 +12582,16 @@ def env_truthy(name: str) -> bool:
     raise SystemExit(f"invalid boolean environment value for {name}: {value}")
 
 
+def positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("must be a positive integer") from None
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Bundle-driven AI code review.")
     parser.add_argument("--mode", choices=["auto", "local", "uncommitted", "branch", "commit"], default="auto")
@@ -12265,14 +12603,14 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Review engine. Env default: AUTOREVIEW_ENGINE. Built-in default: codex.",
     )
-    parser.add_argument("--reviewers", help="Comma-separated review panel, e.g. codex,claude,pi or codex:gpt-5.6-sol:high.")
+    parser.add_argument("--reviewers", help="Comma-separated review panel, e.g. codex,claude,pi,bb or codex:gpt-5.6-sol:high.")
     parser.add_argument("--panel", action="store_true", help="Run a Codex/Claude review panel unless --engine changes the first reviewer.")
     parser.add_argument(
         "--model",
         action="append",
         help="Model for all reviewers or engine=model. Repeatable. Defaults: codex=gpt-5.6-sol with an access-only gpt-5.6-terra retry. Claude inherits the current Claude Code model unless this flag or AUTOREVIEW_CLAUDE_MODEL is set.",
     )
-    parser.add_argument("--thinking", action="append", help="Thinking/effort for all reviewers or engine=level. Repeatable. Codex: none, minimal, low, medium, high, xhigh, max. Claude: low, medium, high, xhigh, max. Droid: off, none, low, medium, high, xhigh, max. Pi: off, minimal, low, medium, high, xhigh, max. OpenCode: minimal, low, medium, high, max. Cursor: none.")
+    parser.add_argument("--thinking", action="append", help="Thinking/effort for all reviewers or engine=level. Repeatable. BB values are validated by BB. Codex: none, minimal, low, medium, high, xhigh, max. Claude: low, medium, high, xhigh, max. Droid: off, none, low, medium, high, xhigh, max. Pi: off, minimal, low, medium, high, xhigh, max. OpenCode: minimal, low, medium, high, max. Cursor: none.")
     parser.add_argument(
         "--fallback-model",
         action="append",
@@ -12307,7 +12645,23 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--opencode-bin", default=os.environ.get("OPENCODE_BIN", "opencode"))
     parser.add_argument("--pi-bin", default=os.environ.get("PI_BIN", "pi"))
-    parser.add_argument("--no-tools", dest="tools", action="store_false", default=True, help="Disable tools for engines that support it. Codex, Droid, copilot, opencode, and cursor reject no-tools review.")
+    parser.add_argument(
+        "--bb-bin",
+        default=os.environ.get("AUTOREVIEW_BB_BIN") or os.environ.get("BB_CLI", "bb"),
+        help="BB CLI for --engine bb. Env default: AUTOREVIEW_BB_BIN, then BB_CLI.",
+    )
+    parser.add_argument(
+        "--bb-timeout",
+        type=positive_int,
+        default=os.environ.get("AUTOREVIEW_BB_TIMEOUT_SECONDS", "1800"),
+        help="Seconds to wait for a BB review thread (default 1800). Env: AUTOREVIEW_BB_TIMEOUT_SECONDS.",
+    )
+    parser.add_argument(
+        "--bb-trusted-input",
+        action="store_true",
+        help="Confirm that the BB review bundle, prompt, and datasets are trusted; required because BB session tools are not host-read isolated.",
+    )
+    parser.add_argument("--no-tools", dest="tools", action="store_false", default=True, help="Disable tools for engines that support it. Codex, Droid, copilot, opencode, cursor, and BB reject no-tools review.")
     parser.add_argument("--self-test", action="store_true", help="Run deterministic local autoreview self-tests.")
     parser.add_argument("--self-test-opencode-jsonl-parser", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--self-test-opencode-isolation", action="store_true", help=argparse.SUPPRESS)
@@ -12440,6 +12794,8 @@ def run_engine(args: argparse.Namespace, repo: Path, prompt: str) -> str:
         return run_opencode(args, repo, prompt)
     if args.engine == "cursor":
         return run_cursor(args, repo, prompt)
+    if args.engine == "bb":
+        return run_bb(args, repo, prompt)
     if args.engine == "subagent":
         raise SystemExit(
             "subagent engine runs no review subprocess; use the handoff and --resume-run"
@@ -12598,7 +12954,7 @@ def reviewer_args(args: argparse.Namespace) -> list[argparse.Namespace]:
             fallback_model = DEFAULT_CODEX_ACCESS_FALLBACK_MODEL
         else:
             fallback_model = None
-        if thinking and thinking not in THINKING_LEVELS_BY_ENGINE[engine]:
+        if engine != "bb" and thinking and thinking not in THINKING_LEVELS_BY_ENGINE[engine]:
             valid = ", ".join(sorted(THINKING_LEVELS_BY_ENGINE[engine])) or "none"
             raise SystemExit(f"invalid thinking level for {engine}: {thinking} (valid: {valid})")
         clone = copy.copy(args)
@@ -12762,6 +13118,10 @@ def reviewer_test_args(**overrides: Any) -> argparse.Namespace:
         "fallback_model": None,
         "codex_config": None,
         "codex_speed": None,
+        "bb_bin": os.environ.get("AUTOREVIEW_BB_BIN") or os.environ.get("BB_CLI", "bb"),
+        "bb_timeout": 1800,
+        "bb_trusted_input": False,
+        "stream_engine_output": False,
         "tools": True,
     }
     defaults.update(overrides)
@@ -12820,6 +13180,9 @@ def self_test_config_defaults() -> None:
         max_effort = reviewer_args(reviewer_test_args(engine="codex", thinking=["max"]))[0]
         if max_effort.thinking != "max":
             raise SystemExit("self-test config defaults failed: Codex max thinking should be accepted")
+        bb_ultra = reviewer_args(reviewer_test_args(engine="bb", thinking=["ultra"]))[0]
+        if bb_ultra.thinking != "ultra":
+            raise SystemExit("self-test config defaults failed: BB thinking should be delegated")
         default_claude = reviewer_args(reviewer_test_args(engine="claude"))[0]
         if default_claude.model is not None:
             raise SystemExit(f"self-test config defaults failed: default claude model={default_claude.model!r}")
@@ -13105,6 +13468,104 @@ print(json.dumps({"type": "result", "result": json.dumps(report), "session_id": 
     print("self-test pi fallback: ok")
 
 
+def self_test_bb_engine() -> None:
+    keys = (
+        "AUTOREVIEW_FAKE_BB_RECORD",
+        "AUTOREVIEW_FAKE_BB_WAIT_FAILURE",
+        "BB_SERVER_URL",
+        "BB_THREAD_ID",
+    )
+    with preserve_env(list(keys)), tempfile.TemporaryDirectory(
+        prefix="autoreview-bb-engine-test."
+    ) as tempdir:
+        root = Path(tempdir)
+        repo = root / "repo"
+        repo.mkdir()
+        record_path = root / "bb-invocations.jsonl"
+        bb_bin = write_executable(root / "bb", fake_bb_script())
+        os.environ.update(
+            {
+                "AUTOREVIEW_FAKE_BB_RECORD": str(record_path),
+                "BB_SERVER_URL": "http://bb.test",
+                "BB_THREAD_ID": "thr_parent",
+            }
+        )
+        reviewer = reviewer_args(
+            reviewer_test_args(
+                engine="bb",
+                bb_bin=str(bb_bin),
+                bb_timeout=17,
+                bb_trusted_input=True,
+            )
+        )[0]
+        output = run_engine(reviewer, repo, "review prompt")
+        if "fake BB clean" not in output:
+            raise SystemExit("self-test BB engine failed: review output was lost")
+        if reviewer.model != "current-model" or reviewer.thinking != "ultra":
+            raise SystemExit("self-test BB engine failed: current execution config was not inherited")
+
+        invocations = [
+            json.loads(line)
+            for line in record_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        operations = [entry["argv"][1] for entry in invocations]
+        if operations != ["show", "log", "spawn", "wait", "output", "archive", "stop"]:
+            raise SystemExit(f"self-test BB engine failed: unexpected lifecycle {operations}")
+        wait_argv = invocations[3]["argv"]
+        if "--event" not in wait_argv or wait_argv[wait_argv.index("--event") + 1] != "turn/completed":
+            raise SystemExit("self-test BB engine failed: worker wait did not require terminal turn completion")
+        if "--status" in wait_argv:
+            raise SystemExit("self-test BB engine failed: worker wait accepted transient thread status")
+        spawn = invocations[2]
+        argv = spawn["argv"]
+        expected_flags = {
+            "--project": "proj_review",
+            "--machine": "host_review",
+            "--provider": "codex",
+            "--model": "current-model",
+            "--reasoning-level": "ultra",
+            "--service-tier": "fast",
+            "--permission-mode": "auto",
+            "--visibility": "hidden",
+        }
+        for flag, expected in expected_flags.items():
+            if flag not in argv or argv[argv.index(flag) + 1] != expected:
+                raise SystemExit(
+                    f"self-test BB engine failed: {flag} did not preserve {expected}"
+                )
+        if "--parent-self" in argv or "--parent-thread" in argv:
+            raise SystemExit("self-test BB engine failed: worker could notify the active parent turn")
+        if spawn.get("attachment") != "review prompt":
+            raise SystemExit("self-test BB engine failed: review prompt attachment changed")
+        workspace = Path(spawn["cwd"])
+        if workspace == repo.resolve() or is_within(workspace, repo.resolve()):
+            raise SystemExit("self-test BB engine failed: reviewer ran inside the reviewed repo")
+        if workspace.exists():
+            raise SystemExit("self-test BB engine failed: temporary workspace was not removed")
+        if any(entry.get("server_url") != "http://bb.test" for entry in invocations):
+            raise SystemExit("self-test BB engine failed: BB server selection was not preserved")
+
+        record_path.unlink()
+        os.environ["AUTOREVIEW_FAKE_BB_WAIT_FAILURE"] = "1"
+        failed = False
+        try:
+            run_engine(reviewer, repo, "review prompt")
+        except SystemExit as exc:
+            failed = "BB review-thread wait failed (4)" in str(exc)
+        if not failed:
+            raise SystemExit("self-test BB engine failed: wait failure was not reported")
+        failed_invocations = [
+            json.loads(line)
+            for line in record_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        failed_operations = [entry["argv"][1] for entry in failed_invocations]
+        if failed_operations[-2:] != ["archive", "stop"]:
+            raise SystemExit("self-test BB engine failed: failed worker was not archived and stopped")
+    print("self-test BB engine: ok")
+
+
 def self_test_history() -> None:
     with tempfile.TemporaryDirectory(prefix="autoreview-history-test.") as tempdir:
         root = Path(tempdir)
@@ -13237,6 +13698,7 @@ def self_test() -> int:
     self_test_config_defaults()
     self_test_fallback_scope()
     self_test_pi_fallback()
+    self_test_bb_engine()
     self_test_history()
     self_test_heartbeat_metrics()
     self_test_json_array_parser()
@@ -13594,6 +14056,8 @@ def history_summary_text(history: dict[str, Any], last: int) -> str:
         )
     if any(key.startswith("subagent|") for key in buckets):
         lines.append("note: subagent runs are non-independent reviews")
+    if any(key.startswith("bb|") for key in buckets):
+        lines.append("note: BB session tools are not confined to the review bundle")
     recent = history["runs"][-last:]
     if recent:
         lines.append("")
@@ -13982,6 +14446,8 @@ def main() -> int:
     repo = repo_root()
     reviewers = apply_codex_usage_cooldown(args, reviewers, repo)
     reviewers = apply_missing_engine_fallback(args, reviewers, repo)
+    if any(reviewer.engine == "bb" for reviewer in reviewers):
+        require_bb_trusted_input(args)
     reject_repo_output_paths(args, repo)
     target, target_ref = choose_target(repo, args.mode, args.base)
     print(f"autoreview target: {target}")
@@ -14005,6 +14471,8 @@ def main() -> int:
                 print(f"codex_speed: {speed}")
     else:
         print(f"reviewers: {', '.join(reviewer_label(reviewer) for reviewer in reviewers)}")
+    if any(reviewer.engine == "bb" for reviewer in reviewers):
+        print(BB_ISOLATION_NOTE)
     tool_states = {reviewer.tools for reviewer in reviewers}
     tools_label = "mixed" if len(tool_states) > 1 else ("on" if tool_states.pop() else "off")
     print(f"tools: {tools_label}")
