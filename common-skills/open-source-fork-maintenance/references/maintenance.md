@@ -35,6 +35,12 @@ Incremental packaging requires a clean root checkout on `local/aggregate` and a 
 
 If a cherry-pick conflicts, abort it and repair the source worktree. Do not make a product-only fix on the aggregate branch.
 
+## Publish completed snapshots
+
+After the aggregate verification and registry updates succeed, push every completed source branch and `local/aggregate` to the configured personal-fork remote with ordinary, non-forced pushes. First verify that each remote ref is absent or an ancestor of its local ref; a divergent published ref requires a user decision rather than a force-push. Verify the remote SHA after pushing.
+
+The published aggregate is a reproducible source snapshot for another environment. It does not replace that environment's dependency installation or build, and it must never be used as an upstream pull-request branch.
+
 ## Complete rebuild
 
 Use a temporary integration worktree based on the selected upstream, cherry-pick the confirmed source branches with `-x`, and verify the result. Before replacing the root `local/aggregate`, show the user the candidate SHA, the aggregate SHA being replaced, the source branches, and verification results. Obtain a second explicit confirmation for that replacement. Create a recoverable local backup ref; never silently use a destructive reset.

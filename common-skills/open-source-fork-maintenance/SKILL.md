@@ -14,10 +14,12 @@ Use this skill only after confirming that the repository is a public fork or ups
 
 The project owns its branch registry, its feedback records, its verification commands, and any local service deployment. The skill owns the repeatable maintenance model:
 
-- the main checkout stays on `local/aggregate` for local integration and experience;
+- the main checkout stays on `local/aggregate` for integration and experience;
 - every product change lives on its own `feature/*` or `fix/*` branch and worktree;
 - the aggregate receives verified source commits with `git cherry-pick -x`;
 - a committed project manifest records each source commit, aggregate commit, and upstream feedback issue.
+
+The personal fork is the handoff channel: after verified packaging, push each completed source branch and `local/aggregate` to that fork with ordinary fast-forward pushes. Those published aggregate commits are reusable source snapshots for another environment, never upstream contribution branches.
 
 Read [references/setup.md](references/setup.md) before initializing a repository. Initialization creates branches, project files, and a project-local skill link, so perform it only after the user explicitly authorizes setup.
 
@@ -27,4 +29,4 @@ Do not rebase, rebuild the aggregate, update a local service, push rewritten his
 
 ## Completion
 
-An aggregation is complete only when the project manifest and its `AGENTS.md` overview agree on every included branch, each aggregate commit retains its `-x` source reference, relevant verification has passed from the aggregate checkout, and any requested local deployment has passed its project-specific health check.
+An aggregation is complete only when the project manifest and its `AGENTS.md` overview agree on every included branch, each aggregate commit retains its `-x` source reference, relevant verification has passed from the aggregate checkout, any requested local deployment has passed its project-specific health check, and the completed source and aggregate refs match their personal-fork refs.
