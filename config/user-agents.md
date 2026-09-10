@@ -17,3 +17,7 @@ alwaysApply: true
 - 将产生副作用的 stash 与 autostash 视为不可用。需要保全现场时创建本地 commit；运行 rebase、merge 或 pull 时传入 `--no-autostash`。
 - Git 返回退出码 77 表示 stash 或 autostash 被拒绝；以 stderr、`git --wrapper-help` 和 `mason-skills/tools/git-shared-worktree-guard/README.md` 为准。
 - 发现并发修改时先重新读取并合并可兼容的改动；只有同一处语义冲突且无法安全判断保留哪一方时，才停止受影响文件并询问用户。
+
+## BB 本机资源安全
+
+- 在 BB 仓库执行全量测试、资源密集构建或源码 App 启动时，必须通过 `bb-resource-run -- <command>` 运行；本地聚合打包使用 `bb-resource-run --profile package -- <command>`。命令不可用、scope 已占用或进程因 OOM 退出时，停止该项重型操作并报告，不得绕过隔离器重试。
