@@ -13,6 +13,8 @@ import {
 import { extraProviders } from "./extra-providers.js";
 
 export const CLIPROXY_USAGE_CACHE_MAX_AGE_MS = 30 * 60 * 1000;
+export const CLIPROXY_USAGE_REFRESH_SCHEDULE_NAME = "refresh-cliproxy-usage";
+export const CLIPROXY_USAGE_REFRESH_CRON = "*/30 * * * *";
 
 type PanelProvider = AccountLimitsPanelSnapshot["machines"][number]["providers"][number];
 type CachedProvider = Omit<PanelProvider, "updatedAt"> & { updatedAtMs: number };
@@ -160,6 +162,15 @@ export function createPanelSnapshotReader(deps: PanelSnapshotReaderDependencies)
   };
 }
 
+export function registerCliproxyUsageRefreshSchedule(
+  background: Pick<BbPluginApi["background"], "schedule">,
+  refresh: (input: AccountLimitsPanelReadInput) => unknown,
+) {
+  background.schedule(CLIPROXY_USAGE_REFRESH_SCHEDULE_NAME, CLIPROXY_USAGE_REFRESH_CRON, async () => {
+    await refresh({ force: true });
+  });
+}
+
 const agents: Array<{ id: string; displayName: string; command: string; args: string[]; env: Record<string, string>; login: string; icon: string }> = [
   { id: "acp-codexl", displayName: "CodexL", command: config.codexAcp, args: [], env: { CODEX_PATH: config.codex, INITIAL_AGENT_MODE: "agent-full-access" }, login: "codexl-bb login", icon: "Terminal" },
   // 额外 Codex 账号与 acp-codexl 同构：codex-acp 通过 CODEX_PATH 拿到账号隔离的 codex 包装 CLI。
@@ -217,6 +228,7 @@ export default function accountLimitsPlugin(bb: BbPluginApi) {
     now: () => Date.now(),
   });
   bb.rpc.register(accountLimitsPanelRpcContract, { readCliproxyUsage: readPanelSnapshot });
+  registerCliproxyUsageRefreshSchedule(bb.background, readPanelSnapshot);
   bb.cli.register({
     name: "account-limits",
     summary: "Query native provider limits and the Cliproxy account-limits panel data",

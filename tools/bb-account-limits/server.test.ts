@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CLIPROXY_USAGE_CACHE_MAX_AGE_MS, createInMemoryPanelCache, createPanelSnapshotReader, providers } from "./server.js";
+import {
+  CLIPROXY_USAGE_CACHE_MAX_AGE_MS,
+  CLIPROXY_USAGE_REFRESH_CRON,
+  CLIPROXY_USAGE_REFRESH_SCHEDULE_NAME,
+  createInMemoryPanelCache,
+  createPanelSnapshotReader,
+  providers,
+  registerCliproxyUsageRefreshSchedule,
+} from "./server.js";
 import type { CliproxyUsageSnapshot } from "./contract.js";
 
 function acpLaunchEnv(provider: typeof providers[number]) {
@@ -64,6 +72,39 @@ test("额度面板在 30 分钟内复用缓存，过期才重新读取完整快�
   assert.equal(usedPercent(initial.machines[0]?.providers[0]), 1);
   assert.equal(usedPercent(cached.machines[0]?.providers[0]), 1);
   assert.equal(usedPercent(refreshed.machines[0]?.providers[0]), 2);
+});
+
+test("强制更新会绕过未过期的完整快照缓存", async () => {
+  let now = 1_700_000_000_000;
+  let calls = 0;
+  const reader = createPanelSnapshotReader({
+    cache: createInMemoryPanelCache(),
+    listHosts: async () => [{ id: "host-local", name: "本机", status: "connected" }],
+    readHost: async () => cliproxySnapshot(++calls, calls),
+    now: () => now,
+  });
+
+  await reader({});
+  now += 60_000;
+  const refreshed = await reader({ force: true });
+
+  assert.equal(calls, 2);
+  assert.equal(usedPercent(refreshed.machines[0]?.providers[0]), 2);
+});
+
+test("插件注册每 30 分钟一次的完整额度缓存刷新", async () => {
+  let scheduled: (() => void | Promise<void>) | undefined;
+  const inputs: unknown[] = [];
+  registerCliproxyUsageRefreshSchedule({
+    schedule(name, cron, fn) {
+      assert.equal(name, CLIPROXY_USAGE_REFRESH_SCHEDULE_NAME);
+      assert.equal(cron, CLIPROXY_USAGE_REFRESH_CRON);
+      scheduled = fn;
+    },
+  }, async input => { inputs.push(input); });
+
+  await scheduled?.();
+  assert.deepEqual(inputs, [{ force: true }]);
 });
 
 test("单供应商刷新只请求该供应商，并保留其余缓存数据", async () => {

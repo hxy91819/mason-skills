@@ -47,7 +47,7 @@ test("账户额度页面注册为导航面板并显示独立 Cliproxy 数据", a
     rpc: { readCliproxyUsage: () => snapshot },
   });
   await slot.findByText("Claude");
-  assert.ok(slot.getByText(/数据最多缓存 30 分钟，供应商卡片可单独刷新。/));
+  assert.ok(slot.getByText(/插件每 30 分钟更新缓存，供应商卡片可单独刷新。/));
   assert.ok(slot.getByRole("region", { name: "Claude 工作账号 的额度" }));
   assert.ok(slot.getByRole("region", { name: "Claude 个人账号 的额度" }));
   await act(async () => {

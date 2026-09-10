@@ -125,7 +125,7 @@ function AccountLimitsPanel() {
   return <main className="h-full overflow-auto p-4 md:p-5">
     <div className="mx-auto max-w-3xl space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="text-sm text-muted-foreground">按上游供应商聚合的 Cliproxy 账户额度；数据最多缓存 30 分钟，供应商卡片可单独刷新。</p>
+        <p className="text-sm text-muted-foreground">按上游供应商聚合的 Cliproxy 账户额度；插件每 30 分钟更新缓存，供应商卡片可单独刷新。</p>
       </div>
       {error && <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{error}</p>}
       {!snapshot && loading && <p className="text-sm text-muted-foreground">正在读取账户额度…</p>}
