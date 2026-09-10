@@ -7,6 +7,8 @@ defaults:
   complex: primary
   debug: primary
   test: primary
+  # 可选：为编排异常裁决单独选模型/推理级别；省略时沿用 complex。
+  judge: primary
 agents:
   primary:
     provider: <provider-id>

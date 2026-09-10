@@ -473,6 +473,7 @@ class DriverTest(unittest.TestCase):
         dispatches = self.read_world()["dispatches"]
         self.assertEqual(dispatches[-1]["title"], "STORY-01 judge")
         self.assertEqual(dispatches[-1]["difficulty"], "complex")
+        self.assertEqual(dispatches[-1]["kind"], "judge")
         judge_task = self.read_world()["threads"][dispatches[-1]["thread"]]["task"]
         self.assertIn("Worker 报告 blocked", judge_task)
 
@@ -487,6 +488,9 @@ class DriverTest(unittest.TestCase):
         self.assertEqual(self.story("STORY-01")["status"], "done")
         workers = [d for d in self.read_world()["dispatches"] if d["title"] == "STORY-01 worker"]
         self.assertEqual([d["difficulty"] for d in workers], ["medium", "complex"])
+        self.assertEqual([d["kind"] for d in workers], ["general", "general"])
+        judge = next(d for d in self.read_world()["dispatches"] if d["title"] == "STORY-01 judge")
+        self.assertEqual((judge["difficulty"], judge["kind"]), ("complex", "judge"))
 
     def test_out_of_scope_write_goes_to_judge(self) -> None:
         self.set_world({

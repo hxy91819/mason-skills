@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """确定性 driver：用 BB 线程持续执行 large-task-planning v2 计划。
 
-happy path 不调用任何强模型：脚本选 frontier、领取 Story、通过 bb-dispatch 派 Worker 与 Validator、
+正常路径由脚本选 frontier、领取 Story、通过 bb-dispatch 派 Worker 与 Validator、
 等待线程、解析结构化报告、更新计划 JSON 并创建 Git checkpoint。只有异常（Worker 报告 blocked/failed、
 Validator 多轮 FAIL、越界写入、线程出错、待处理交互）才派一次性的 strong judge 线程，让它在固定动作集里
 选一个。真正需要用户的情况 driver 停下并打印原因。
@@ -980,7 +980,7 @@ Validator 线程：{state.validator_thread}
         if state.judge_rounds > self.args.max_judge_rounds:
             raise DriverStop(f"{story_id}: judge 已介入 {state.judge_rounds - 1} 次仍未收敛。最近情况：{situation}")
         story = self.read_story(story_id)
-        thread_id = self.dispatch_thread(difficulty="complex", kind="general", title=f"{story_id} judge",
+        thread_id = self.dispatch_thread(difficulty="complex", kind="judge", title=f"{story_id} judge",
                                          task=self.judge_task(story_id, story, state, situation), role="judge")
         outcome = self.wait_thread(thread_id)
         while outcome == "busy":

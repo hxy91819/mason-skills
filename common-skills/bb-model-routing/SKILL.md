@@ -44,12 +44,12 @@ bb-dispatch --difficulty medium --kind test --task '<测试目标、范围与验
 ## 作为编排后端
 
 `large-task-orchestrator` 的确定性 driver 通过本技能派 Worker、Validator 与异常时的 Judge：Worker 按
-能力档映射为 `--difficulty`，Validator 固定 `--difficulty simple --kind test`，Judge 固定 `complex`。
-driver 只传任务文本、难度与已有环境，路由仍由本配置决定；状态机、wait/output/tell 兼容性见其
+能力档映射为 `--difficulty`，Validator 固定 `--difficulty simple --kind test`，Judge 固定 `--difficulty complex --kind judge`。
+driver 只传任务文本、难度、类型与已有环境，路由仍由本配置决定；状态机、wait/output/tell 兼容性见其
 [`references/bb-dispatch-loop.md`](../large-task-orchestrator/references/bb-dispatch-loop.md)。
 
-成本提示：`defaults.test` 决定 Validator 的模型。Validator 只逐条核对验收并跑命令，便宜模型的中档
-reasoning 即可；把它指到与 `complex` 同级的强模型会让校验比实现还贵。`complex` 同时承担 Judge，应保持强模型。
+`defaults.test` 决定 Validator 路由，`defaults.judge` 单独决定 Judge 路由，Worker 使用难度路由或
+`debug` 路由。各角色的模型与 reasoning 按用户要求配置；未配置 `judge` 时沿用 `complex`，兼容旧配置。
 
 ## 可观测性
 

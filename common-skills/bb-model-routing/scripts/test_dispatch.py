@@ -80,6 +80,50 @@ environments:
         result = m.dispatch(self.args('--kind', 'debug', '--agent', 'primary', '--dry-run'), self.fake)
         self.assertEqual(result['selection']['agent'], 'primary')
 
+    def test_judge_uses_independent_reasoning_from_complex_worker(self):
+        config = m.yaml.safe_load(self.config.read_text())
+        config['defaults']['judge'] = 'arbiter'
+        config['agents']['arbiter'] = {'provider': 'specialist', 'model': 'deep-model', 'reasoning': 'max'}
+        self.config.write_text(m.yaml.safe_dump(config))
+        for dry_run in (False, True):
+            extra = ['--dry-run'] if dry_run else []
+            worker = m.dispatch(self.args('--difficulty', 'complex', *extra), self.fake)
+            judge = m.dispatch(self.args('--difficulty', 'complex', '--kind', 'judge', *extra), self.fake)
+            self.assertEqual(worker['selection']['model'], judge['selection']['model'])
+            self.assertEqual(worker['selection']['reasoning'], 'medium')
+            self.assertEqual(judge['selection']['reasoning'], 'max')
+            self.assertEqual(judge['selection']['kind'], 'judge')
+            command = judge['argv'] if dry_run else self.calls[-1]
+            self.assertEqual(command[command.index('--prompt') + 1], self.args().task)
+
+    def test_judge_without_new_default_preserves_environment_complex_route(self):
+        result = m.dispatch(self.args('--difficulty', 'complex', '--kind', 'judge',
+                                      '--environment', 'env_other', '--dry-run'), self.fake)
+        self.assertEqual(result['selection']['provider'], 'remote-provider')
+        self.assertEqual(result['selection']['reasoning'], 'medium')
+        self.assertEqual(result['selection']['kind'], 'judge')
+
+    def test_judge_environment_and_explicit_alias_take_precedence(self):
+        config = m.yaml.safe_load(self.config.read_text())
+        config['defaults']['judge'] = 'specialist'
+        config['environments']['env_other']['defaults'] = {'judge': 'primary'}
+        self.config.write_text(m.yaml.safe_dump(config))
+        result = m.dispatch(self.args('--kind', 'judge', '--environment', 'env_other', '--dry-run'), self.fake)
+        self.assertEqual(result['selection']['agent'], 'primary')
+        result = m.dispatch(self.args('--kind', 'judge', '--environment', 'env_other',
+                                      '--agent', 'specialist', '--dry-run'), self.fake)
+        self.assertEqual(result['selection']['provider'], 'remote-provider')
+
+    def test_invalid_explicit_judge_route_does_not_fall_back_or_spawn(self):
+        config = m.yaml.safe_load(self.config.read_text())
+        for alias in (None, '', 'missing'):
+            with self.subTest(alias=alias):
+                config['defaults']['judge'] = alias
+                self.config.write_text(m.yaml.safe_dump(config))
+                with self.assertRaises(m.DispatchError):
+                    m.dispatch(self.args('--difficulty', 'complex', '--kind', 'judge'), self.fake)
+        self.assertFalse(any(c[:2] == ('thread', 'spawn') for c in self.calls))
+
     def test_unknown_provider_rejected_before_model_query(self):
         self.providers = []
         with self.assertRaises(m.DispatchError):

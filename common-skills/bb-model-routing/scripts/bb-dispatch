@@ -86,7 +86,10 @@ def dispatch(args, call=bb):
     override = mapping(mapping(config.get("environments", {}), "environments").get(environment, {}), "environment config")
     defaults = {**mapping(config.get("defaults", {}), "defaults"), **mapping(override.get("defaults", {}), "environment defaults")}
     agents = {**mapping(config.get("agents", {}), "agents"), **mapping(override.get("agents", {}), "environment agents")}
-    route = args.kind if args.kind in ("debug", "test") else args.difficulty
+    route = args.kind if args.kind in ("debug", "test", "judge") else args.difficulty
+    # 旧配置让 Judge 共用 complex；仅缺少新键时保留该行为，失效的显式路由仍报错。
+    if route == "judge" and "judge" not in defaults:
+        route = "complex"
     alias = string(args.agent or defaults.get(route), f"defaults.{route}")
     agent = mapping(agents.get(alias), f"agents.{alias}")
     provider = string(agent.get("provider"), "provider")
@@ -144,7 +147,7 @@ def parser():
     p.add_argument("--config", default=os.environ.get("BB_DISPATCH_CONFIG", str(Path.home() / ".config/bb-dispatch/config.yaml")), help="用户 YAML 配置路径，也可设置 BB_DISPATCH_CONFIG")
     p.add_argument("--difficulty", required=True, choices=["simple", "medium", "complex"], help="任务难度")
     p.add_argument("--task", required=True, help="任务目标、范围和验收要求")
-    p.add_argument("--kind", choices=["general", "debug", "test"], default="general", help="排障选 debug，测试验证选 test")
+    p.add_argument("--kind", choices=["general", "debug", "test", "judge"], default="general", help="排障选 debug，测试验证选 test，编排异常裁决选 judge")
     p.add_argument("--agent", help="配置中的工具别名，覆盖默认路由")
     p.add_argument("--reasoning", help="覆盖推理级别，仍校验模型目录")
     p.add_argument("--project", help="项目 ID；默认目标环境所属项目")

@@ -46,7 +46,7 @@ python3 <orchestrator-skill>/scripts/large_task_driver.py start \
 
 ## 正常循环与异常
 
-正常路径不调用强模型：driver 选择 ready frontier、领取 Story、派 Worker、核对改动；按配置决定是否派
+正常路径由 driver 选择 ready frontier、领取 Story、派 Worker、核对改动；按配置决定是否派
 Validator；通过后更新 Handoff、刷新投影并创建只含本 Story 路径的 checkpoint。
 
 发生 Worker `blocked`/`failed`、线程 error、待处理 interaction、越界写入、空改动、报告无法解析或
@@ -61,7 +61,8 @@ ready Story 时退出并把最小原因写到 stderr。
 ## 能力档
 
 Story 的首轮 `difficulty` 与 `kind` 由 [`large-task-planning`](../large-task-planning/SKILL.md) 定义；driver
-只消费它们并在 Judge 升档后覆盖实际难度。Validator 固定 `simple --kind test`。
+只消费它们并在 Judge 升档后覆盖实际难度。Validator 固定 `simple --kind test`，Judge 固定
+`complex --kind judge`，通过 `bb-model-routing` 的 `defaults.judge` 与 complex Worker 分别配置。
 
 ## 报告契约
 
