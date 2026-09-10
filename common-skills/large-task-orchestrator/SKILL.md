@@ -58,6 +58,11 @@ ready Story 时退出并把最小原因写到 stderr。
 `status --json`、计划状态和该计划的 jsonl；只有在既定 Goal 和授权内作出必要处理后，才在下一次本 Skill 调用时
 按上述流程重新 `start`。需要凭据、权限、外部/破坏性动作、显著成本或稳定边界变更时才请用户决定。
 
+旧运行若已丢失 dirty baseline，且 Judge 或用户已经确认该 Worker 实际修改的精确路径，使用
+`repair-baseline --story <id> --worker-path <path>...` 恢复；命令只接受仍为 dirty、位于当前 Story
+`write_scope` 内的路径，并要求 driver 已停止、Story 已恢复为 `in_progress`。它把其余 dirty 路径保留为共享
+基线。不要直接编辑 `.local` 状态文件。
+
 ## 能力档
 
 Story 的首轮 `difficulty` 与 `kind` 由 [`large-task-planning`](../large-task-planning/SKILL.md) 定义；driver

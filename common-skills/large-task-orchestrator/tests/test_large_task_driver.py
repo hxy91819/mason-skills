@@ -620,6 +620,42 @@ class DriverTest(unittest.TestCase):
         self.assertEqual(self.story("STORY-01")["status"], "done")
         self.assertEqual(self.read_world()["spawned"]["STORY-01:worker"], 1)
 
+    def test_repair_baseline_attributes_only_confirmed_dirty_worker_paths(self) -> None:
+        story = self.story("STORY-01")
+        story["status"] = "in_progress"
+        story["owner"] = "thr_existing_worker"
+        self.write_json(self.stories / "STORY-01-first.json", story)
+        self.planning("render")
+        (self.repo / "src").mkdir()
+        (self.repo / "src" / "feature.py").write_text("value = 1\n", encoding="utf-8")
+        (self.repo / "parallel.txt").write_text("other work\n", encoding="utf-8")
+
+        repaired = self.run_command(
+            "repair-baseline", "--story", "STORY-01", "--worker-path", "src/feature.py",
+        )
+
+        self.assertIn("REPAIRED: STORY-01", repaired.stdout)
+        state_file = next((self.repo / ".local" / "large-task-orchestrator").glob("*/state.json"))
+        state = json.loads(state_file.read_text(encoding="utf-8"))["stories"]["STORY-01"]
+        self.assertEqual(state["worker_thread"], "thr_existing_worker")
+        self.assertEqual(state["attempts"], 1)
+        self.assertIn("parallel.txt", state["baseline_dirty"])
+        self.assertNotIn("src/feature.py", state["baseline_dirty"])
+
+    def test_repair_baseline_rejects_path_outside_write_scope(self) -> None:
+        story = self.story("STORY-01")
+        story["status"] = "in_progress"
+        story["owner"] = "thr_existing_worker"
+        self.write_json(self.stories / "STORY-01-first.json", story)
+        self.planning("render")
+        (self.repo / "parallel.txt").write_text("other work\n", encoding="utf-8")
+
+        rejected = self.run_command(
+            "repair-baseline", "--story", "STORY-01", "--worker-path", "parallel.txt", expected=2,
+        )
+
+        self.assertIn("write_scope", rejected.stderr)
+
     def test_worker_error_retries_once_then_judge_replaces_worker(self) -> None:
         self.set_world({
             "STORY-01:worker": [

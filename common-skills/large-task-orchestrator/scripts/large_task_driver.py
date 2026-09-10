@@ -26,7 +26,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Sequence
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
@@ -1335,6 +1335,13 @@ def build_parser() -> argparse.ArgumentParser:
     stop_parser = commands.add_parser("stop", help="请求后台 driver 在当前 run_once 后退出")
     add_common_arguments(stop_parser)
     stop_parser.add_argument("--wait", action="store_true", help="等待 driver 退出，最长 --wait-timeout 秒")
+    repair_parser = commands.add_parser("repair-baseline", help="按已确认的 Worker 路径修复旧运行的 dirty baseline")
+    add_common_arguments(repair_parser)
+    repair_parser.add_argument("--story", required=True, help="需要恢复的 in_progress Story ID")
+    repair_parser.add_argument(
+        "--worker-path", action="append", required=True,
+        help="该 Worker 已确认修改的仓库相对路径；可重复传入",
+    )
     return parser
 
 
@@ -1530,6 +1537,69 @@ def stop_driver(args: argparse.Namespace) -> int:
     return 0
 
 
+def repair_baseline(args: argparse.Namespace) -> int:
+    """显式归属旧 Worker 改动，其余当前 dirty 路径恢复为共享基线。"""
+    driver = Driver(args)
+    record = read_pid_record(driver.pid_path)
+    if record and process_alive(record["pid"]):
+        raise DriverError(f"driver pid {record['pid']} 仍在运行；先执行 stop --wait。")
+    driver.check()
+    story = driver.read_story(args.story)
+    if story.get("status") != "in_progress":
+        raise DriverError(f"{args.story} 必须先处于 in_progress，当前为 {story.get('status')!r}。")
+    owner = story.get("owner")
+    if not isinstance(owner, str) or not owner.startswith("thr_"):
+        raise DriverError(f"{args.story} 缺少可恢复的 Worker owner。")
+
+    worker_paths: list[str] = []
+    for raw in args.worker_path:
+        candidate = PurePosixPath(raw)
+        normalized = candidate.as_posix()
+        unsafe_parts = any(part in ("", ".", "..") for part in candidate.parts)
+        if candidate.is_absolute() or "\\" in raw or normalized != raw or unsafe_parts:
+            raise DriverError(f"Worker 路径必须是规范的仓库相对路径：{raw!r}")
+        if raw not in worker_paths:
+            worker_paths.append(raw)
+
+    dirty = driver.dirty_paths()
+    missing = [path for path in worker_paths if path not in dirty]
+    if missing:
+        raise DriverError(f"以下 Worker 路径当前不是 dirty，不能据此恢复：{missing}")
+    management = [path for path in worker_paths if driver.is_driver_management_path(path)]
+    offenders = driver.out_of_scope(story, worker_paths)
+    if management or offenders:
+        raise DriverError(f"Worker 路径越过 Story write_scope：{list(dict.fromkeys([*management, *offenders]))}")
+
+    state = driver.story_state(args.story)
+    if state.worker_thread and state.worker_thread != owner:
+        raise DriverError(
+            f"{args.story} 本地 Worker {state.worker_thread} 与计划 owner {owner} 不一致。"
+        )
+    state.worker_thread = owner
+    state.validator_thread = None
+    state.phase = "working"
+    state.attempts = max(state.attempts, 1)
+    story_difficulty = story.get("difficulty")
+    state.difficulty = state.difficulty or (
+        str(story_difficulty) if story_difficulty in DIFFICULTIES else args.default_difficulty
+    )
+    state.baseline_commit = driver.head()
+    attributed = set(worker_paths)
+    state.baseline_dirty = [path for path in dirty if path not in attributed]
+    state.reformat_rounds = 0
+    driver.clear_worker_report(args.story, state.attempts)
+    driver.set_story_state(args.story, state)
+    driver.log(
+        "story.baseline_repaired", story=args.story, thread=owner,
+        worker_paths=worker_paths, baseline_dirty_count=len(state.baseline_dirty),
+    )
+    print(
+        f"REPAIRED: {args.story}; worker={owner}; "
+        f"worker_paths={len(worker_paths)}; baseline_dirty={len(state.baseline_dirty)}"
+    )
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
@@ -1546,6 +1616,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if args.command == "stop":
             return stop_driver(args)
+        if args.command == "repair-baseline":
+            return repair_baseline(args)
         raise DriverError(f"未知子命令: {args.command}")
     except DriverAlreadyRunning as error:
         print(f"RUNNING: {error}", file=sys.stderr)
