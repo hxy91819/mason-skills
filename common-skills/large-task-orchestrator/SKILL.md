@@ -66,19 +66,27 @@ Story 的首轮 `difficulty` 与 `kind` 由 [`large-task-planning`](../large-tas
 
 ## 报告契约
 
-契约字段以中文为准，因为 Worker 通常运行在要求中文回复的系统提示下；driver 同时接受旧的英文字段名
-和常见同义写法（如「已变更」「剩余工作」「交接说明」），值也接受「完成 / 通过 / 成立」等同义词。
-Worker 回复不可解析时 driver 先让同一线程按契约重发一次，再派 Judge。
+Worker 的自然语言终答不是控制协议。每个 Worker 任务都包含一次性报告命令；Worker 必须调用
+`scripts/large_task_report.py worker`，向 driver 指定路径提交 JSON。脚本严格校验字段、枚举、长度和仓库
+相对路径，以 `0600` 原子写入；driver 再按当前 Story、attempt 和 intent version 读取。缺失或无效时只让
+同一 Worker 重交一次，仍失败才派 Judge。
 
-Worker 的「变更」「验证」最多各 8 行，「交接」最多 400 字符；最终只回复：
+Worker 提交的 payload 只有以下字段，不接受额外字段：
 
-```text
-结果：worker_done | blocked | failed
-变更：<可观察结果和文件>
-验证：<命令及结果>
-剩余：<未完成工作，或 无>
-交接：<下一位 Worker 所需事实>
+```json
+{
+  "result": "worker_done | blocked | failed",
+  "changes": [{"path": "仓库相对路径", "summary": "可观察变更"}],
+  "verification": [{"command": "实际命令", "outcome": "passed | failed | not_run", "summary": "结果"}],
+  "remaining": [],
+  "handoff": "下一位 Worker 所需事实"
+}
 ```
+
+`changes`、`verification` 和 `remaining` 各最多 8 项，`handoff` 最多 400 字符。`worker_done` 至少有一项
+verification；`blocked` 与 `failed` 至少有一项 remaining。最终终答只需通知报告已提交。
+
+Validator 和 Judge 暂仍使用短文本契约；字段以中文为准，同时接受已有英文和常见同义写法。
 
 Validator 只读核验 Acceptance，不做代码审查。driver 在任务里列出自己维护的计划状态与投影路径，
 Validator 不得因这些路径判越界：

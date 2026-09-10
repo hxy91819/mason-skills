@@ -32,6 +32,7 @@ from typing import Any, Callable, Sequence
 SKILL_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_PLANNING_SCRIPT = SKILL_DIR.parent / "large-task-planning" / "scripts" / "epic_story.py"
 DEFAULT_DISPATCH_SCRIPT = SKILL_DIR.parent / "bb-model-routing" / "scripts" / "bb-dispatch"
+DEFAULT_REPORT_SCRIPT = SKILL_DIR / "scripts" / "large_task_report.py"
 STATE_ROOT_RELATIVE = Path(".local/large-task-orchestrator")
 STATE_FILENAME = "state.json"
 LOG_FILENAME = "log.jsonl"
@@ -40,7 +41,6 @@ LAST_STOP_FILENAME = "last-stop.txt"
 OUTPUT_FILENAME = "driver.out"
 
 DIFFICULTIES = ("simple", "medium", "complex")
-WORKER_RESULTS = ("worker_done", "blocked", "failed")
 VERDICTS = ("PASS", "FAIL")
 JUDGE_ACTIONS = ("retry", "escalate", "patch", "block", "replan", "stop")
 THREAD_BUSY = ("pending", "starting", "active", "stopping")
@@ -153,15 +153,7 @@ def clear_pid_lock(path: Path, pid: int) -> None:
 # --------------------------------------------------------------------------- 报告解析
 
 
-# 报告契约以中文字段为准：Worker 多运行在要求中文回复的系统提示下，英文字段会被"翻译"掉。
-# 每个规范字段附带常见同义写法，解析时统一映射回规范名；值同样接受中英文同义词。
-WORKER_FIELDS: dict[str, tuple[str, ...]] = {
-    "Result": ("结果", "Result", "状态"),
-    "Changed": ("变更", "Changed", "已变更", "已更改", "改动", "修改"),
-    "Verified": ("验证", "Verified", "已验证", "校验"),
-    "Remaining": ("剩余", "Remaining", "剩余工作", "未完成"),
-    "Handoff": ("交接", "Handoff", "交接说明", "移交"),
-}
+# Validator 和 Judge 仍用短文本契约；每个规范字段附带常见同义写法。
 VALIDATOR_FIELDS: dict[str, tuple[str, ...]] = {
     "Verdict": ("结论", "Verdict", "判定"),
     "Acceptance": ("验收", "Acceptance", "验收项"),
@@ -210,15 +202,6 @@ def canonical_value(raw: str, allowed: Sequence[str], *, suffix: str = "") -> st
         if mapped in allowed:
             return mapped
     return ""
-
-
-def parse_worker_report(text: str) -> dict[str, str] | None:
-    fields = parse_fields(text, WORKER_FIELDS)
-    result = canonical_value(fields.get("Result", ""), WORKER_RESULTS)
-    if not result:
-        return None
-    fields["Result"] = result
-    return fields
 
 
 def parse_validator_report(text: str) -> dict[str, Any] | None:
@@ -330,6 +313,9 @@ class Driver:
         self.stories_dir = Path(args.stories_dir).resolve()
         self.topic_dir = self.plan_path.parent.parent
         self.planning_script = Path(args.planning_script).resolve()
+        self.report_script = Path(args.report_script).resolve()
+        if not self.report_script.is_file():
+            raise DriverError(f"找不到 Worker 报告脚本：{self.report_script}")
         self.dispatch = self._resolve_dispatch(args.dispatch)
         self.state_dir = self.repository / STATE_ROOT_RELATIVE / topic_slug(self.repository, self.plan_path)
         self.state_path = self.state_dir / STATE_FILENAME
@@ -750,6 +736,74 @@ class Driver:
         self.note_thread_event(thread_id)
         self.log("thread.told", thread=thread_id, chars=len(message))
 
+    # ----------------------------------------------------------------- Worker 报告
+
+    def worker_report_path(self, story_id: str, attempt: int) -> Path:
+        return self.state_dir / "reports" / story_id / f"attempt-{attempt}-worker.json"
+
+    def clear_worker_report(self, story_id: str, attempt: int) -> None:
+        try:
+            self.worker_report_path(story_id, attempt).unlink()
+        except FileNotFoundError:
+            pass
+
+    def worker_report_instructions(self, story_id: str, story: dict[str, Any], attempt: int) -> str:
+        path = self.worker_report_path(story_id, attempt)
+        command = shlex.join([
+            sys.executable, str(self.report_script), "worker", "--output", str(path),
+            "--story-id", story_id, "--attempt", str(attempt),
+            "--intent-version", str(story["intent_version"]),
+        ])
+        template = {
+            "result": "worker_done",
+            "changes": [{"path": "relative/path", "summary": "可观察变更"}],
+            "verification": [{"command": "实际执行的命令", "outcome": "passed", "summary": "结果摘要"}],
+            "remaining": [],
+            "handoff": "下一位 Worker 所需事实",
+        }
+        return f"""完成工作后必须提交结构化报告。下面的命令、Story、attempt、intent version 和输出路径均不可修改：
+
+```bash
+{command} <<'JSON'
+{json.dumps(template, ensure_ascii=False, indent=2)}
+JSON
+```
+
+`result` 只能是 `worker_done|blocked|failed`；`verification[].outcome` 只能是
+`passed|failed|not_run`。`changes[].path` 使用仓库相对路径。`blocked/failed` 必须在
+`remaining` 写明未完成事项。脚本返回 0 且打印 `WORKER_REPORT_WRITTEN` 才算报告成功。
+最终自然语言回复只需说明“结构化报告已提交”，Driver 不从终答文本提取结果。"""
+
+    def read_worker_report(
+        self, story_id: str, story: dict[str, Any], state: StoryState,
+    ) -> tuple[dict[str, str] | None, str]:
+        path = self.worker_report_path(story_id, state.attempts)
+        if not path.is_file():
+            return None, f"未找到结构化报告：{path}"
+        command = [
+            sys.executable, str(self.report_script), "read-worker", "--file", str(path),
+            "--story-id", story_id, "--attempt", str(state.attempts),
+            "--intent-version", str(story["intent_version"]),
+        ]
+        result = run(command, cwd=self.repository, check=False)
+        if result.returncode != 0:
+            return None, result.stderr.strip() or f"报告校验失败，退出码 {result.returncode}"
+        try:
+            report = json.loads(result.stdout)["report"]
+        except (json.JSONDecodeError, KeyError, TypeError) as error:
+            return None, f"报告读取器未返回 canonical envelope：{error}"
+        changed = "\n".join(f"{item['path']}: {item['summary']}" for item in report["changes"])
+        verified = "\n".join(
+            f"{item['command']}: {item['outcome']} — {item['summary']}" for item in report["verification"]
+        )
+        return {
+            "Result": report["result"],
+            "Changed": changed,
+            "Verified": verified,
+            "Remaining": "\n".join(report["remaining"]),
+            "Handoff": report["handoff"],
+        }, ""
+
     # ----------------------------------------------------------------- 任务文本
 
     def repo_context(self) -> str:
@@ -761,7 +815,9 @@ class Driver:
             parts.append(self.args.context)
         return "\n".join(parts)
 
-    def worker_task(self, story_id: str, story: dict[str, Any], brief: str, *, resume_note: str = "") -> str:
+    def worker_task(
+        self, story_id: str, story: dict[str, Any], brief: str, *, attempt: int, resume_note: str = "",
+    ) -> str:
         scope = "\n".join(f"- {item}" for item in story.get("context", {}).get("write_scope", [])) or "- （计划未限定）"
         return f"""你是 Story {story_id} 的 Worker，一次只实现这一张 Story。不要修改计划 JSON、SPEC.md、STATUS.md，不要提交或推送，不要派生其他线程。
 
@@ -779,25 +835,15 @@ class Driver:
 {brief}
 ```
 
-最终回复只包含下面这段，字段名逐字保留、顺序固定，不加其他内容：
-
-结果：worker_done | blocked | failed
-变更：<可观察结果和文件，最多 8 行>
-验证：<运行过的命令与结果，最多 8 行>
-剩余：<未完成工作，或 无>
-交接：<替换 Worker 或下一张 Story 需要的事实，最多 400 字符>
+{self.worker_report_instructions(story_id, story, attempt)}
 """
 
-    @staticmethod
-    def reformat_request() -> str:
-        return """你的上一条回复无法被 driver 解析。不要改代码，只按下面格式重新回复一次，字段名逐字保留：
+    def report_request(self, story_id: str, story: dict[str, Any], state: StoryState, reason: str) -> str:
+        return f"""Driver 未收到可用的结构化报告：{reason}
 
-结果：worker_done | blocked | failed
-变更：<可观察结果和文件>
-验证：<命令与结果>
-剩余：<未完成工作，或 无>
-交接：<下一位 Worker 需要的事实>
-"""
+不要修改代码；按当前事实重新提交一次报告。报告命令如下：
+
+{self.worker_report_instructions(story_id, story, state.attempts)}"""
 
     def validator_task(self, story_id: str, story: dict[str, Any], brief: str, state: StoryState) -> str:
         acceptance = "\n".join(f"- {item['id']}: {item['criterion']}" for item in story["acceptance"])
@@ -885,6 +931,7 @@ Validator 线程：{state.validator_thread}
     def claim_and_dispatch(self, story_id: str, *, difficulty: str | None = None, resume_note: str = "") -> StoryState:
         story = self.read_story(story_id)
         state = self.story_state(story_id)
+        attempt = state.attempts + 1
         story_difficulty = story.get("difficulty")
         state.difficulty = (
             difficulty
@@ -895,17 +942,18 @@ Validator 线程：{state.validator_thread}
             state.baseline_commit = self.head()
             state.baseline_dirty = self.dirty_paths()
         brief = self.brief(story_id)
+        self.clear_worker_report(story_id, attempt)
         thread_id = self.dispatch_thread(
             difficulty=state.difficulty,
             kind=str(story.get("kind")) if story.get("kind") in ("general", "debug") else self.args.kind,
             title=f"{story_id} worker",
-            task=self.worker_task(story_id, story, brief, resume_note=resume_note),
+            task=self.worker_task(story_id, story, brief, attempt=attempt, resume_note=resume_note),
             role="worker",
         )
         state.worker_thread = thread_id
         state.validator_thread = None
         state.phase = "working"
-        state.attempts += 1
+        state.attempts = attempt
         state.patch_rounds = 0
         state.thread_retries = 0
         state.validator_parse_failures = 0
@@ -1021,7 +1069,13 @@ Validator 线程：{state.validator_thread}
             if not state.worker_thread:
                 raise DriverError(f"{story_id}: judge 选择 patch，但没有可接收提示的 Worker 线程。")
             if note.strip().lower() != "interaction handled":
-                self.tell_thread(state.worker_thread, f"修复提示（来自 judge）：\n{note}\n\n修完后按原报告格式回复。")
+                story = self.read_story(story_id)
+                self.clear_worker_report(story_id, state.attempts)
+                self.tell_thread(
+                    state.worker_thread,
+                    f"修复提示（来自 judge）：\n{note}\n\n修完后重新提交结构化报告。\n\n"
+                    + self.worker_report_instructions(story_id, story, state.attempts),
+                )
             state.phase = "working"
             state.patch_rounds += 1
             self.set_story_state(story_id, state)
@@ -1048,6 +1102,11 @@ Validator 线程：{state.validator_thread}
             owner = story.get("owner")
             if owner and owner.startswith("thr_"):
                 state.worker_thread = owner
+                state.attempts = max(state.attempts, 1)
+                story_difficulty = story.get("difficulty")
+                state.difficulty = state.difficulty or (
+                    str(story_difficulty) if story_difficulty in DIFFICULTIES else self.args.default_difficulty
+                )
                 state.baseline_commit = state.baseline_commit or self.head()
                 self.set_story_state(story_id, state)
             else:
@@ -1089,16 +1148,16 @@ Validator 线程：{state.validator_thread}
         return True
 
     def handle_worker_output(self, story_id: str, story: dict[str, Any], state: StoryState, output: str) -> bool:
-        report = parse_worker_report(output)
+        del output  # Worker 终答只给人看；控制协议来自 schema 校验后的报告文件。
+        report, report_error = self.read_worker_report(story_id, story, state)
         if report is None:
-            # 格式漂移比实现失败常见得多，让同一线程按契约重发一次比派 complex Judge 便宜。
             if state.worker_thread and state.reformat_rounds < 1:
                 state.reformat_rounds += 1
                 self.set_story_state(story_id, state)
-                self.tell_thread(state.worker_thread, self.reformat_request())
-                self.log("worker.reformat_requested", story=story_id, thread=state.worker_thread)
+                self.tell_thread(state.worker_thread, self.report_request(story_id, story, state, report_error))
+                self.log("worker.report_requested", story=story_id, thread=state.worker_thread)
                 return True
-            self.consult_judge(story_id, state, f"Worker 回复无法按契约解析：\n{output[-1500:]}")
+            self.consult_judge(story_id, state, f"Worker 未提交有效结构化报告：{report_error}")
             return True
         state.last_worker = report
         self.set_story_state(story_id, state)
@@ -1147,9 +1206,14 @@ Validator 线程：{state.validator_thread}
             state.phase = "working"
             self.set_story_state(story_id, state)
             missing = [key for key, value in report["acceptance"].items() if value == "missing"]
-            self.tell_thread(state.worker_thread,
-                             f"Validator 判定未完成。未成立的 Acceptance：{', '.join(missing) or '见 Gaps'}\n"
-                             f"Gaps：\n{report['gaps']}\n\n只修这些遗漏，修完后按原报告格式回复。")
+            story = self.read_story(story_id)
+            self.clear_worker_report(story_id, state.attempts)
+            self.tell_thread(
+                state.worker_thread,
+                f"Validator 判定未完成。未成立的 Acceptance：{', '.join(missing) or '见 Gaps'}\n"
+                f"Gaps：\n{report['gaps']}\n\n只修这些遗漏，修完后重新提交结构化报告。\n\n"
+                + self.worker_report_instructions(story_id, story, state.attempts),
+            )
             return True
         self.consult_judge(story_id, state, f"Validator 连续 {state.patch_rounds + 1} 轮 FAIL。Gaps：{report['gaps']}")
         return True
@@ -1233,6 +1297,7 @@ def build_parser() -> argparse.ArgumentParser:
         target.add_argument("--stories-dir", required=True, help="同一 agent/ 下的 stories/")
         target.add_argument("--repository", default=".", help="Git 仓库根目录；默认当前目录")
         target.add_argument("--planning-script", default=str(DEFAULT_PLANNING_SCRIPT), help="epic_story.py 路径")
+        target.add_argument("--report-script", default=str(DEFAULT_REPORT_SCRIPT), help="Worker 结构化报告脚本路径")
         target.add_argument("--dispatch", help="bb-dispatch 路径；默认 PATH 或 sibling bb-model-routing")
         target.add_argument("--environment", help="传给 bb-dispatch 的 BB 环境 ID")
         target.add_argument("--context", default="", help="附加给每个线程的仓库说明（基线、命令等）")
@@ -1277,6 +1342,7 @@ def background_command(args: argparse.Namespace) -> list[str]:
     command = [sys.executable, str(Path(__file__).resolve()), "run",
                "--plan", str(args.plan), "--stories-dir", str(args.stories_dir),
                "--repository", str(args.repository), "--planning-script", str(args.planning_script),
+               "--report-script", str(args.report_script),
                "--default-difficulty", args.default_difficulty, "--kind", args.kind,
                "--validator", args.validator, "--max-patch-rounds", str(args.max_patch_rounds),
                "--max-attempts", str(args.max_attempts), "--max-judge-rounds", str(args.max_judge_rounds),
@@ -1303,7 +1369,7 @@ def background_command(args: argparse.Namespace) -> list[str]:
 def status_command(driver: Driver, args: argparse.Namespace) -> str:
     command = [sys.executable, str(Path(__file__).resolve()), "status", "--plan", str(driver.plan_path),
                "--stories-dir", str(driver.stories_dir), "--repository", str(driver.repository),
-               "--planning-script", str(args.planning_script)]
+               "--planning-script", str(args.planning_script), "--report-script", str(args.report_script)]
     if args.dispatch:
         command += ["--dispatch", str(args.dispatch)]
     return shlex.join(command)

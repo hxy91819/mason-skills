@@ -1,8 +1,10 @@
 """用假 bb / bb-dispatch 验证 driver 的可观察行为：计划状态、Git checkpoint、线程调用序列与退出码。"""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import shutil
 import signal
 import stat
@@ -20,7 +22,7 @@ PLANNING = SKILL_DIR.parent / "large-task-planning" / "scripts" / "epic_story.py
 
 # 假 bb：所有线程状态在 world.json 里；每个线程按脚本化的 outputs 队列依次回复。
 FAKE_BB = r'''#!/usr/bin/env python3
-import fcntl, json, os, subprocess, sys
+import fcntl, json, os, shlex, subprocess, sys
 world_path = os.environ["FAKE_WORLD"]
 world_handle = open(world_path, "r+", encoding="utf-8")
 fcntl.flock(world_handle, fcntl.LOCK_EX)
@@ -50,6 +52,20 @@ if args[:2] == ["thread", "wait"]:
             path = os.path.join(os.environ["FAKE_REPO"], rel)
             os.makedirs(os.path.dirname(path), exist_ok=True)
             open(path, "w").write(content)
+        if step.get("worker_report"):
+            command_line = next(line for line in t["task"].splitlines() if "large_task_report.py worker" in line)
+            command = shlex.split(command_line)
+            def flag(name): return command[command.index(name) + 1]
+            envelope = {
+                "schema_version": 1, "role": "worker", "story_id": flag("--story-id"),
+                "attempt": int(flag("--attempt")), "intent_version": int(flag("--intent-version")),
+                "submitted_at": "2026-09-10T12:00:00+00:00", "report": step["worker_report"],
+            }
+            report_path = flag("--output")
+            os.makedirs(os.path.dirname(report_path), exist_ok=True)
+            with open(report_path, "w", encoding="utf-8") as report_handle:
+                json.dump(envelope, report_handle, ensure_ascii=False)
+            os.chmod(report_path, 0o600)
         for thread_id in step.get("clear_interactions_for", []):
             world["threads"][thread_id]["interactions"] = []
         if step.get("render_plan"):
@@ -198,14 +214,50 @@ class DriverTest(unittest.TestCase):
 
     def set_world(self, scripts: dict[str, list[list[dict[str, Any]]]]) -> None:
         interactions = scripts.get("interactions", {})
+        normalized: dict[str, Any] = {}
+        value_aliases = {"完成": "worker_done", "已完成": "worker_done", "阻塞": "blocked", "失败": "failed"}
+        for key, attempts in scripts.items():
+            if key == "interactions":
+                continue
+            normalized[key] = []
+            for queue in attempts:
+                normalized_queue = []
+                for original in queue:
+                    step = dict(original)
+                    output = str(step.get("output") or "")
+                    match = re.search(
+                        r"^(?:Result|结果|状态)\s*[:：]\s*(worker_done|blocked|failed|完成|已完成|阻塞|失败)",
+                        output, re.MULTILINE,
+                    )
+                    if key.endswith(":worker") and match and "worker_report" not in step:
+                        result = value_aliases.get(match.group(1), match.group(1))
+                        paths = [path for path in step.get("files", {}) if not path.startswith(("plan/", ".local/"))]
+                        step["worker_report"] = {
+                            "result": result,
+                            "changes": [{"path": path, "summary": "脚本化 Worker 改动"} for path in paths],
+                            "verification": [{
+                                "command": "scripted verification", "outcome": "passed", "summary": "脚本化结果",
+                            }],
+                            "remaining": [] if result == "worker_done" else ["脚本化未完成事项"],
+                            "handoff": "脚本化交接。",
+                        }
+                    normalized_queue.append(step)
+                normalized[key].append(normalized_queue)
         self.write_json(self.world, {
             "threads": {},
-            "scripts": {key: value for key, value in scripts.items() if key != "interactions"},
+            "scripts": normalized,
             "interactions": interactions,
         })
 
     def read_world(self) -> dict[str, Any]:
         return json.loads(self.world.read_text(encoding="utf-8"))
+
+    def worker_report_path(self, story_id: str, attempt: int) -> Path:
+        digest = hashlib.sha256(b"plan").hexdigest()[:10]
+        return (
+            self.repo / ".local" / "large-task-orchestrator" / f"plan-{digest}"
+            / "reports" / story_id / f"attempt-{attempt}-worker.json"
+        )
 
     def run_command(self, command: str, *extra: str, expected: int = 0, plan: Path | None = None,
                     stories: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -301,7 +353,7 @@ class DriverTest(unittest.TestCase):
         self.assertEqual(dispatches[1]["kind"], "test")
         self.assertEqual(dispatches[1]["difficulty"], "simple")
         worker_task = self.read_world()["threads"]["thr_worker_story01_1"]["task"]
-        self.assertIn("结果：worker_done | blocked | failed", worker_task)
+        self.assertIn("large_task_report.py worker", worker_task)
         self.assertIn("src/", worker_task)
 
     def test_validator_fail_is_sent_back_to_same_worker_then_passes(self) -> None:
@@ -320,7 +372,7 @@ class DriverTest(unittest.TestCase):
         self.assertEqual(world["spawned"]["STORY-01:validator"], 2)
         self.assertEqual(world["spawned"]["STORY-01:worker"], 1)
 
-    def test_chinese_reports_are_parsed_without_judge(self) -> None:
+    def test_worker_human_reply_language_does_not_affect_structured_report(self) -> None:
         worker_cn = "结果：worker_done\n已变更：新增 src/feature.py\n已验证：python3 -m unittest：退出码 0\n剩余工作：无\n交接说明：入口在 src/feature.py。"
         validator_cn = "结论：PASS\n验收：\n- AC-01: 成立 — 返回 1\n缺口：无\n新事实：无"
         self.set_world({
@@ -332,7 +384,44 @@ class DriverTest(unittest.TestCase):
         self.assertNotIn("STORY-01:judge", self.read_world().get("spawned", {}))
         self.assertEqual(self.story("STORY-01")["handoff"]["risks"], [])
 
-    def test_unparsable_worker_reply_gets_one_reformat_request_before_judge(self) -> None:
+    def test_worker_artifact_is_authoritative_instead_of_final_text(self) -> None:
+        report_path = self.worker_report_path("STORY-01", 1)
+        report = {
+            "schema_version": 1,
+            "role": "worker",
+            "story_id": "STORY-01",
+            "attempt": 1,
+            "intent_version": 1,
+            "submitted_at": "2026-09-10T12:00:00+00:00",
+            "report": {
+                "result": "worker_done",
+                "changes": [{"path": "src/feature.py", "summary": "新增公开入口"}],
+                "verification": [{"command": "python3 -m unittest", "outcome": "passed", "summary": "通过"}],
+                "remaining": [],
+                "handoff": "公开入口可供下一张 Story 使用。",
+            },
+        }
+        report_file = os.path.relpath(report_path, self.repo)
+        self.set_world({
+            "STORY-01:worker": [[
+                {
+                    "output": "报告已提交。",
+                    "files": {**WORKER_FILES, report_file: json.dumps(report, ensure_ascii=False)},
+                },
+                {"output": "报告已提交。"},
+            ]],
+            "STORY-01:validator": [[{"output": VALIDATOR_PASS}]],
+            "STORY-01:judge": [[{"output": "Action: stop\nNote: 不应依赖自然语言终答。"}]],
+        })
+
+        self.run_driver("--max-stories", "1")
+
+        self.assertEqual(self.story("STORY-01")["status"], "done")
+        self.assertNotIn("STORY-01:judge", self.read_world().get("spawned", {}))
+        task = self.read_world()["threads"]["thr_worker_story01_1"]["task"]
+        self.assertIn("large_task_report.py worker", task)
+
+    def test_missing_worker_artifact_gets_one_report_request_before_judge(self) -> None:
         self.set_world({
             "STORY-01:worker": [[{"output": "我做完了，测试都通过。", "files": WORKER_FILES},
                                  {"output": WORKER_DONE}]],
@@ -344,7 +433,7 @@ class DriverTest(unittest.TestCase):
         self.assertNotIn("STORY-01:judge", world.get("spawned", {}))
         tells = world["threads"]["thr_worker_story01_1"]["tells"]
         self.assertEqual(len(tells), 1)
-        self.assertIn("结果：worker_done | blocked | failed", tells[0])
+        self.assertIn("large_task_report.py worker", tells[0])
 
     def test_validator_task_marks_driver_managed_paths_as_not_out_of_scope(self) -> None:
         self.set_world({
