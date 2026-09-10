@@ -34,6 +34,20 @@ checkpoint for the default evidence boundary, but the checkpoint is a soft retri
 cursor and never prevents the manager from reopening an earlier window when the evidence
 calls for it.
 
+### BB stage review
+
+When the caller explicitly asks to review a bounded BB stage, use **Review mode** with the
+`repo-harness` profile. Read [BB 阶段复盘](references/bb-stage-review.md) before collecting
+threads. It defines the BB-only adapter: how to freeze the boundary, cover interrupted
+threads with their continuations, request each session's `$distill`, and dispatch one
+read-only aggregator. The adapter never bypasses this Skill's evidence rules or Phase 3
+approval gate.
+
+Use `scripts/bb-stage-retro.py discover` to produce a candidate thread list and
+`scripts/bb-stage-retro.py plan` before its explicit `apply` command. The script only
+coordinates BB records and prompts. It neither decides what is durable nor writes a
+repository artifact. Its exact interface and failure handling live in the BB reference.
+
 ## Phase 1: Replay
 
 Reconstruct the complete session trajectory:
@@ -167,6 +181,16 @@ authoritative location. Record the choice and why it was made, plus constraints 
 consequences needed to apply it correctly. Do not create a duplicate decision log when an
 existing product, architecture, specification, or code surface is already the better
 home.
+
+For a surviving project-knowledge candidate, read
+[核心知识落点](references/knowledge-sinks.md). Route it to the narrowest live source rather
+than adding retrospective prose: `AGENTS.md` for mandatory agent behavior and reachability,
+`CONTEXT.md` for domain boundaries, the documentation index for routing, a domain contract
+for durable decisions and user-visible behavior, and Skills/scripts for repeatable work.
+The source must carry the choice, rationale, scope, authority, and a current verification
+path; code, tests, schema, and configuration remain authoritative for mechanically cheap
+facts. Historical evidence must visibly name its replacement instead of becoming a second
+live procedure.
 
 Simplify documentation in this order:
 
