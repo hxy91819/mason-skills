@@ -638,14 +638,21 @@ class Driver:
     def path_scopes(scopes: Sequence[str]) -> list[str]:
         prefixes: list[str] = []
         for scope in scopes:
+            whole = scope.strip("`'\"。:：()（）[]{}")
+            if whole.startswith("./"):
+                whole = whole[2:]
+            whole = whole.rstrip("*")
             for token in re.split(r"[\s,，、;；]+", scope):
                 candidate = token.strip("`'\"。:：()（）[]{}")
                 if candidate.startswith("./"):
                     candidate = candidate[2:]
                 candidate = candidate.rstrip("*")
-                if "/" in candidate or re.fullmatch(r"[A-Za-z0-9_.-]+\.[A-Za-z0-9_-]+", candidate):
+                # 完整条目本身就是明确边界，包含 Dockerfile 等无扩展名的根目录路径。
+                explicit_path = candidate == whole
+                path_like_token = "/" in candidate or re.fullmatch(r"[A-Za-z0-9_.-]+\.[A-Za-z0-9_-]+", candidate)
+                if explicit_path or path_like_token:
                     prefixes.append(candidate)
-        return prefixes
+        return list(dict.fromkeys(prefixes))
 
     def out_of_scope(self, story: dict[str, Any], changes: list[str]) -> list[str]:
         scopes = [scope.strip() for scope in story.get("context", {}).get("write_scope", []) if scope.strip()]

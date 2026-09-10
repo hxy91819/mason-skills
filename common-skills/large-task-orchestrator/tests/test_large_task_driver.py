@@ -492,6 +492,21 @@ class DriverTest(unittest.TestCase):
         judge = next(d for d in self.read_world()["dispatches"] if d["title"] == "STORY-01 judge")
         self.assertEqual((judge["difficulty"], judge["kind"]), ("complex", "judge"))
 
+    def test_extensionless_root_file_in_write_scope_does_not_go_to_judge(self) -> None:
+        first = self.story("STORY-01")
+        first["context"]["write_scope"] = ["Dockerfile"]
+        self.write_json(self.stories / "STORY-01-first.json", first)
+        self.planning("render")
+        self.set_world({
+            "STORY-01:worker": [[{"output": WORKER_DONE, "files": {"Dockerfile": "FROM scratch\n"}}]],
+            "STORY-01:validator": [[{"output": VALIDATOR_PASS}]],
+        })
+
+        self.run_driver("--max-stories", "1")
+
+        self.assertEqual(self.story("STORY-01")["status"], "done")
+        self.assertNotIn("STORY-01:judge", self.read_world().get("spawned", {}))
+
     def test_out_of_scope_write_goes_to_judge(self) -> None:
         self.set_world({
             "STORY-01:worker": [[{"output": WORKER_DONE, "files": {**WORKER_FILES, "README.md": "oops\n"}}]],
