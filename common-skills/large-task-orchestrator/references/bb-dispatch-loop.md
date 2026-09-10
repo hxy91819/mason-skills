@@ -28,7 +28,9 @@
    改动须经 `--allow-empty-story` 明示，或交 Judge。程序不把计划的 `write_scope` 解释成文件白名单。
 4. 默认每张 Story 都派只读 Validator；只有显式 `--validator standard-up` 才跳过 simple Story。Validator
    逐条核验 Acceptance，并结合 Outcome、边界和实际改动判断是否夹带无关或其他 Story 的工作；`write_scope`
-   只是规划预估。Validator 失败把精确缺口发回同一 Worker；报告两次无效时受控停止。
+   只是规划预估。共享工作区中新出现的 dirty 文件仍可能来自其他会话；Validator 以当前 Worker 的 BB
+   `turn/diff` 确认归属，不以 mtime 或活跃时间窗口推断。无法归属的并行改动记为新事实，不判当前 Story
+   失败。Validator 失败把精确缺口发回同一 Worker；报告两次无效时受控停止。
 5. 完成时写入 Acceptance、受限长度的 Handoff、刷新投影，并用 `git commit --only -- <targets>` 创建
    checkpoint。目标是业务路径加当前 Story/SPEC/STATUS，排除开始前的脏路径和 `.local/`，因此不会提交
    其他 Agent 的既有暂存改动。

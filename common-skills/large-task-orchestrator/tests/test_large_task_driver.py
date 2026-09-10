@@ -553,6 +553,9 @@ class DriverTest(unittest.TestCase):
         self.assertIn("plan/agent/stories/STORY-01-first.json", task)
         self.assertIn("large_task_report.py validator", task)
         self.assertIn("--acceptance-id AC-01", task)
+        self.assertIn("bb thread log thr_worker_story01_1 --all --json", task)
+        self.assertIn("mtime 和 Worker 活跃时间窗口都不能证明归属", task)
+        self.assertIn("只有确认由当前 Worker 修改", task)
 
     def test_standard_up_explicitly_skips_validator_for_simple_story(self) -> None:
         self.set_world({"STORY-01:worker": [[{"output": WORKER_DONE, "files": WORKER_FILES}]]})

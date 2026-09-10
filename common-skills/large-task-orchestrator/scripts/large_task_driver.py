@@ -883,8 +883,11 @@ JSON
 其中下面这些是 driver 自己维护的计划状态与投影，不是 Worker 改的，不算越界，不要因它们判 FAIL：
 {management}
 
-Worker 实际的实现改动只有：
+Driver 从共享工作区 Git 状态推导出的 Story 候选增量如下；其中可能混入 Story 启动后其他会话产生的并行改动，不能仅凭此列表认定 Worker 归属：
 {implementation}
+
+Worker 线程：{state.worker_thread}
+需要判断文件归属时，优先检查 `bb thread log {state.worker_thread} --all --json` 中该线程的 `turn/diff/updated`；mtime 和 Worker 活跃时间窗口都不能证明归属。候选文件未出现在 Worker turn diff 或报告中时，按共享工作区并行改动记入 new_facts，不要据此判 FAIL，也不要要求 Worker 回退。
 
 规划阶段预估的影响区域如下，它只是判断 Story 边界的线索，不是精确文件白名单：
 {planned_scope}
@@ -893,7 +896,7 @@ Worker 报告：
 Changed: {worker.get('Changed', '')}
 Verified: {worker.get('Verified', '')}
 
-任务：逐条核对下面每项 Acceptance 是否真正成立，并判断实际实现改动是否服务本 Story 的 Outcome、Acceptance 和边界，是否夹带无关或其他 Story 的工作。以工作区、命令输出和黄金案例为准，Worker 报告不是证据。文件不在预估区域不自动等于越界；只有语义上不属于本 Story 时才在 gaps 记录并判 FAIL。不做通用代码审查、风格或重构建议。
+任务：逐条核对下面每项 Acceptance 是否真正成立，并判断可归属当前 Worker 的实现改动是否服务本 Story 的 Outcome、Acceptance 和边界，是否夹带无关或其他 Story 的工作。以工作区、命令输出和黄金案例为准，Worker 报告不是 Acceptance 成立的证据。文件不在预估区域不自动等于越界；只有确认由当前 Worker 修改且语义上不属于本 Story 时，才在 gaps 记录并判 FAIL。不做通用代码审查、风格或重构建议。
 
 Acceptance：
 {acceptance}

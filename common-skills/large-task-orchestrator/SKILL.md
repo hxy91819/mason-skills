@@ -92,8 +92,10 @@ Worker 提交的 payload 只有以下字段，不接受额外字段：
 verification；`blocked` 与 `failed` 至少有一项 remaining。
 
 Validator 只读核验 Acceptance，并依据 Outcome、Acceptance、边界和实际 Git 改动判断是否夹带无关或其他
-Story 的工作；计划中的 `write_scope` 只是预估线索，不是文件白名单。报告绑定当前 Worker attempt、Story
-intent version 和 validation round；Acceptance ID 必须与计划顺序、集合完全一致：
+Story 的工作；计划中的 `write_scope` 只是预估线索，不是文件白名单。共享工作区的新 dirty 文件只是候选增量，
+Validator 应以 Worker 的 BB `turn/diff` 确认归属，不得凭 mtime 或活跃时间窗口推断；无法归属的并行改动记为
+新事实，不判当前 Story 失败。报告绑定当前 Worker attempt、Story intent version 和 validation round；
+Acceptance ID 必须与计划顺序、集合完全一致：
 
 ```json
 {
