@@ -71,9 +71,14 @@ driver 没有长会话上下文：它只保存计划、Git、少量本地状态�
 Validator 不是每张 Story 都需要：simple Story 默认采纳 Worker 的短证据，`--validator always` 可强制派发；
 黄金案例仍在 `final_story` 全量复验。这是主要的成本杠杆之一。
 
-默认只有一个 Worker 写共享工作区。只读调查和 Validator 可以并行；多个写入 Worker 只有在已经存在
-隔离环境并明确分配 write scope 时才并行。Worker 与 Validator 都是叶子，不继续派生线程，也不拥有
-计划状态或 Git 交付状态。Validator 的只读靠任务声明与 diff 核对保证，不依赖 BB 权限模式。
+一个计划内同时只有一个 Worker 写工作区；driver 每轮只领取一张 ready Story。Worker 与 Validator 都是
+叶子，不继续派生线程，也不拥有计划状态或 Git 交付状态。Validator 的只读靠任务声明与 diff 核对保证，
+不依赖 BB 权限模式。
+
+并发的单位是计划，不是 Story。想提高吞吐时，在一个计划运行期间去规划下一个计划，并在独立的 BB
+worktree 环境里启动第二个 driver；锁与状态按 `(仓库, 计划)` 隔离，两者互不干扰，各自的 checkpoint 链
+最后按计划一次性合并。Story 级并发（同一 checkout 里多个 Worker）刻意不做：write scope 描述无法保证
+测试互不可见，checkpoint 与 Validator 基线都会失去归属，收益不抵冲突与恢复成本。
 
 ## 端到端闭环
 
