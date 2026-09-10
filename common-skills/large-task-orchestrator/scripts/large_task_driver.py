@@ -1009,7 +1009,13 @@ Validator 线程：{state.validator_thread}
             return
         if action == "replan":
             self.check()
-            self.set_story_state(story_id, None)
+            if self.read_story(story_id).get("status") == "in_progress":
+                # 路线调整后继续同一 Story 时保留认领基线，避免把并行 dirty 现场误算成 Worker 改动。
+                state.phase = "working"
+                state.validator_thread = None
+                self.set_story_state(story_id, state)
+            else:
+                self.set_story_state(story_id, None)
             return
         if action == "patch":
             if not state.worker_thread:
