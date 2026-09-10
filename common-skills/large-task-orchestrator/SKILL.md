@@ -71,10 +71,10 @@ Story 的首轮 `difficulty` 与 `kind` 由 [`large-task-planning`](../large-tas
 
 ## 报告契约
 
-Worker 的自然语言终答不是控制协议。每个 Worker 任务都包含一次性报告命令；Worker 必须调用
-`scripts/large_task_report.py worker`，向 driver 指定路径提交 JSON。脚本严格校验字段、枚举、长度和仓库
-相对路径，以 `0600` 原子写入；driver 再按当前 Story、attempt 和 intent version 读取。缺失或无效时只让
-同一 Worker 重交一次，仍失败才派 Judge。
+各角色的自然语言终答都不是控制协议。任务内的一次性命令调用 `scripts/large_task_report.py`，向 driver
+指定路径提交 JSON；脚本严格校验字段、枚举、长度和执行身份，以 `0600` 原子写入。Worker、Validator
+报告缺失或无效时只让同一线程重交一次；Worker 仍失败才派 Judge，Validator 仍失败则受控停止。Judge
+同样只允许补交一次，仍失败就受控停止。
 
 Worker 提交的 payload 只有以下字段，不接受额外字段：
 
@@ -89,27 +89,30 @@ Worker 提交的 payload 只有以下字段，不接受额外字段：
 ```
 
 `changes`、`verification` 和 `remaining` 各最多 8 项，`handoff` 最多 400 字符。`worker_done` 至少有一项
-verification；`blocked` 与 `failed` 至少有一项 remaining。最终终答只需通知报告已提交。
+verification；`blocked` 与 `failed` 至少有一项 remaining。
 
-Validator 和 Judge 暂仍使用短文本契约；字段以中文为准，同时接受已有英文和常见同义写法。
+Validator 只读核验 Acceptance，不做代码审查。报告绑定当前 Worker attempt、Story intent version 和
+validation round；Acceptance ID 必须与计划顺序、集合完全一致：
 
-Validator 只读核验 Acceptance，不做代码审查。driver 在任务里列出自己维护的计划状态与投影路径，
-Validator 不得因这些路径判越界：
-
-```text
-结论：PASS | FAIL
-验收：
-- AC-01: holds | missing — <命令或观察证据>
-缺口：<遗漏、越界或黄金案例冲突；或 无>
-新事实：<推翻后续假设的发现；或 无>
+```json
+{
+  "verdict": "PASS | FAIL",
+  "acceptance": [{"id": "AC-01", "outcome": "holds | missing", "evidence": "实际证据"}],
+  "gaps": [],
+  "new_facts": []
+}
 ```
 
-Judge 只回复一个动作：
+Judge 报告再绑定 judge round，动作仍限制在固定集合：
 
-```text
-动作：retry | escalate | patch | block | replan | stop
-说明：<给 driver 或用户的事实>
+```json
+{
+  "action": "retry | escalate | patch | block | replan | stop",
+  "note": "给 driver 或用户的事实与理由"
+}
 ```
+
+三类线程最终终答只需通知结构化报告已提交；driver 不从终答文本提取任何状态或决定。
 
 ## 常用参数与退出码
 

@@ -52,20 +52,16 @@ if args[:2] == ["thread", "wait"]:
             path = os.path.join(os.environ["FAKE_REPO"], rel)
             os.makedirs(os.path.dirname(path), exist_ok=True)
             open(path, "w").write(content)
-        if step.get("worker_report"):
-            command_line = next(line for line in t["task"].splitlines() if "large_task_report.py worker" in line)
-            command = shlex.split(command_line)
-            def flag(name): return command[command.index(name) + 1]
-            envelope = {
-                "schema_version": 1, "role": "worker", "story_id": flag("--story-id"),
-                "attempt": int(flag("--attempt")), "intent_version": int(flag("--intent-version")),
-                "submitted_at": "2026-09-10T12:00:00+00:00", "report": step["worker_report"],
-            }
-            report_path = flag("--output")
-            os.makedirs(os.path.dirname(report_path), exist_ok=True)
-            with open(report_path, "w", encoding="utf-8") as report_handle:
-                json.dump(envelope, report_handle, ensure_ascii=False)
-            os.chmod(report_path, 0o600)
+        for role in ("worker", "validator", "judge"):
+            report = step.get(f"{role}_report")
+            if report is None:
+                continue
+            command_line = next(line for line in t["task"].splitlines() if f"large_task_report.py {role}" in line)
+            command_line = command_line.split(" <<", 1)[0]
+            subprocess.run(
+                shlex.split(command_line), input=json.dumps(report, ensure_ascii=False),
+                text=True, check=True, capture_output=True,
+            )
         for thread_id in step.get("clear_interactions_for", []):
             world["threads"][thread_id]["interactions"] = []
         if step.get("render_plan"):
@@ -216,6 +212,9 @@ class DriverTest(unittest.TestCase):
         interactions = scripts.get("interactions", {})
         normalized: dict[str, Any] = {}
         value_aliases = {"完成": "worker_done", "已完成": "worker_done", "阻塞": "blocked", "失败": "failed"}
+        verdict_aliases = {"通过": "PASS", "未通过": "FAIL", "失败": "FAIL"}
+        action_aliases = {"重试": "retry", "升档": "escalate", "修补": "patch", "阻塞": "block",
+                          "重规划": "replan", "停止": "stop"}
         for key, attempts in scripts.items():
             if key == "interactions":
                 continue
@@ -240,6 +239,40 @@ class DriverTest(unittest.TestCase):
                             }],
                             "remaining": [] if result == "worker_done" else ["脚本化未完成事项"],
                             "handoff": "脚本化交接。",
+                        }
+                    verdict_match = re.search(
+                        r"^(?:Verdict|结论|判定)\s*[:：]\s*(PASS|FAIL|通过|未通过|失败)", output, re.MULTILINE,
+                    )
+                    if key.endswith(":validator") and verdict_match and "validator_report" not in step:
+                        verdict = verdict_aliases.get(verdict_match.group(1), verdict_match.group(1))
+                        acceptance = []
+                        for acceptance_id, raw_outcome, evidence in re.findall(
+                            r"^\s*[-*]?\s*(AC-[A-Za-z0-9.-]+)\s*[:：]\s*(holds|missing|成立|缺失|不成立)\s*(?:[—-]\s*)?(.*)$",
+                            output, re.MULTILINE,
+                        ):
+                            outcome = "holds" if raw_outcome in ("holds", "成立") else "missing"
+                            acceptance.append({"id": acceptance_id, "outcome": outcome,
+                                               "evidence": evidence.strip() or "脚本化证据"})
+                        gap_match = re.search(r"^(?:Gaps|缺口)\s*[:：]\s*(.*)$", output, re.MULTILINE)
+                        facts_match = re.search(r"^(?:New facts|新事实)\s*[:：]\s*(.*)$", output, re.MULTILINE)
+                        gap = gap_match.group(1).strip() if gap_match else ""
+                        fact = facts_match.group(1).strip() if facts_match else ""
+                        step["validator_report"] = {
+                            "verdict": verdict,
+                            "acceptance": acceptance,
+                            "gaps": [] if gap.lower() in ("", "none", "无", "无。") else [gap],
+                            "new_facts": [] if fact.lower() in ("", "none", "无", "无。") else [fact],
+                        }
+                    action_match = re.search(
+                        r"^(?:Action|动作|决定)\s*[:：]\s*(retry|escalate|patch|block|replan|stop|重试|升档|修补|阻塞|重规划|停止)",
+                        output, re.MULTILINE,
+                    )
+                    if key.endswith(":judge") and action_match and "judge_report" not in step:
+                        action = action_aliases.get(action_match.group(1), action_match.group(1))
+                        note_match = re.search(r"^(?:Note|说明|备注|原因)\s*[:：]\s*(.*)$", output, re.MULTILINE)
+                        step["judge_report"] = {
+                            "action": action,
+                            "note": note_match.group(1).strip() if note_match else "脚本化裁决。",
                         }
                     normalized_queue.append(step)
                 normalized[key].append(normalized_queue)
@@ -352,9 +385,12 @@ class DriverTest(unittest.TestCase):
                          ["STORY-01 worker", "STORY-01 validator", "STORY-02 worker", "STORY-02 validator"])
         self.assertEqual(dispatches[1]["kind"], "test")
         self.assertEqual(dispatches[1]["difficulty"], "simple")
+        self.assertFalse(any(call[:2] == ["thread", "output"] for call in self.read_world()["calls"]))
         worker_task = self.read_world()["threads"]["thr_worker_story01_1"]["task"]
         self.assertIn("large_task_report.py worker", worker_task)
         self.assertIn("src/", worker_task)
+        validator_task = self.read_world()["threads"]["thr_validator_story01_1"]["task"]
+        self.assertIn("large_task_report.py validator", validator_task)
 
     def test_validator_fail_is_sent_back_to_same_worker_then_passes(self) -> None:
         self.set_world({
@@ -421,6 +457,78 @@ class DriverTest(unittest.TestCase):
         task = self.read_world()["threads"]["thr_worker_story01_1"]["task"]
         self.assertIn("large_task_report.py worker", task)
 
+    def test_validator_artifact_is_authoritative_instead_of_final_text(self) -> None:
+        validator_report = {
+            "verdict": "PASS",
+            "acceptance": [{"id": "AC-01", "outcome": "holds", "evidence": "公开入口返回 1"}],
+            "gaps": [],
+            "new_facts": [],
+        }
+        self.set_world({
+            "STORY-01:worker": [[{"output": WORKER_DONE, "files": WORKER_FILES}]],
+            "STORY-01:validator": [[{
+                "output": "Verdict: FAIL\nAcceptance:\n- AC-01: missing — 不应读取此文本\nGaps: 文本无效",
+                "validator_report": validator_report,
+            }]],
+        })
+
+        self.run_driver("--max-stories", "1")
+
+        self.assertEqual(self.story("STORY-01")["status"], "done")
+        self.assertNotIn("STORY-01:judge", self.read_world().get("spawned", {}))
+
+    def test_judge_artifact_is_authoritative_instead_of_final_text(self) -> None:
+        self.set_world({
+            "STORY-01:worker": [[{
+                "output": WORKER_DONE,
+                "files": {**WORKER_FILES, "README.md": "out of scope\n"},
+            }]],
+            "STORY-01:judge": [[{
+                "output": "Action: patch\nNote: 不应读取此文本。",
+                "judge_report": {"action": "stop", "note": "结构化裁决要求用户处理。"},
+            }]],
+        })
+
+        result = self.run_driver(expected=3)
+
+        self.assertIn("结构化裁决要求用户处理", result.stderr)
+
+    def test_missing_validator_artifact_gets_one_same_thread_report_request(self) -> None:
+        self.set_world({
+            "STORY-01:worker": [[{"output": WORKER_DONE, "files": WORKER_FILES}]],
+            "STORY-01:validator": [[{"output": "核验完成。"}, {"output": VALIDATOR_PASS}]],
+        })
+
+        self.run_driver("--max-stories", "1")
+
+        world = self.read_world()
+        self.assertEqual(self.story("STORY-01")["status"], "done")
+        self.assertEqual(world["spawned"]["STORY-01:validator"], 1)
+        tells = world["threads"]["thr_validator_story01_1"]["tells"]
+        self.assertEqual(len(tells), 1)
+        self.assertIn("large_task_report.py validator", tells[0])
+
+    def test_missing_judge_artifact_gets_one_same_thread_report_request(self) -> None:
+        self.set_world({
+            "STORY-01:worker": [[{
+                "output": WORKER_DONE,
+                "files": {**WORKER_FILES, "README.md": "out of scope\n"},
+            }]],
+            "STORY-01:judge": [[
+                {"output": "已完成裁决。"},
+                {"output": "Action: stop\nNote: 第二次提交结构化裁决。"},
+            ]],
+        })
+
+        result = self.run_driver(expected=3)
+
+        self.assertIn("第二次提交结构化裁决", result.stderr)
+        world = self.read_world()
+        self.assertEqual(world["spawned"]["STORY-01:judge"], 1)
+        tells = world["threads"]["thr_judge_story01_1"]["tells"]
+        self.assertEqual(len(tells), 1)
+        self.assertIn("large_task_report.py judge", tells[0])
+
     def test_missing_worker_artifact_gets_one_report_request_before_judge(self) -> None:
         self.set_world({
             "STORY-01:worker": [[{"output": "我做完了，测试都通过。", "files": WORKER_FILES},
@@ -445,7 +553,8 @@ class DriverTest(unittest.TestCase):
         self.assertIn("不算越界", task)
         self.assertIn("plan/STATUS.md", task)
         self.assertIn("plan/agent/stories/STORY-01-first.json", task)
-        self.assertIn("结论：PASS | FAIL", task)
+        self.assertIn("large_task_report.py validator", task)
+        self.assertIn("--acceptance-id AC-01", task)
 
     def test_simple_story_skips_validator(self) -> None:
         self.set_world({"STORY-01:worker": [[{"output": WORKER_DONE, "files": WORKER_FILES}]]})
@@ -817,17 +926,17 @@ class DriverTest(unittest.TestCase):
         self.run_driver("--default-difficulty", "simple", "--validator", "always", "--max-stories", "1")
         self.assertEqual(self.read_world()["spawned"]["STORY-01:validator"], 1)
 
-    def test_unparsable_validator_is_bounded_then_goes_to_judge(self) -> None:
+    def test_missing_validator_report_is_bounded_then_stops(self) -> None:
         self.set_world({
             "STORY-01:worker": [[{"output": WORKER_DONE, "files": WORKER_FILES}]],
-            "STORY-01:validator": [[{"output": WORKER_DONE}], [{"output": WORKER_DONE}], [{"output": WORKER_DONE}]],
-            "STORY-01:judge": [[{"output": "Action: stop\nNote: Validator 契约不可靠。"}]],
+            "STORY-01:validator": [[{"output": WORKER_DONE}, {"output": WORKER_DONE}]],
         })
         result = self.run_driver(expected=3)
-        self.assertIn("Validator 契约不可靠", result.stderr)
+        self.assertIn("两次未提交有效结构化报告", result.stderr)
         world = self.read_world()
-        self.assertEqual(world["spawned"]["STORY-01:validator"], 3)
-        self.assertEqual(world["spawned"]["STORY-01:judge"], 1)
+        self.assertEqual(world["spawned"]["STORY-01:validator"], 1)
+        self.assertNotIn("STORY-01:judge", world.get("spawned", {}))
+        self.assertEqual(len(world["threads"]["thr_validator_story01_1"]["tells"]), 1)
 
     def test_checkpoint_excludes_preexisting_staged_change(self) -> None:
         (self.repo / "README.md").write_text("并发暂存改动\n", encoding="utf-8")
@@ -920,6 +1029,30 @@ class DriverTest(unittest.TestCase):
         self.wait_for_driver_exit()
         self.assertEqual(self.story("STORY-01")["status"], "done")
         self.assertEqual(self.read_world()["spawned"]["STORY-01:worker"], 1)
+
+    def test_legacy_inflight_validator_resumes_with_structured_round_one_report(self) -> None:
+        self.set_world({
+            "STORY-01:worker": [[{"output": WORKER_DONE, "files": WORKER_FILES}]],
+            "STORY-01:validator": [[{"output": "核验完成。"}, {"output": VALIDATOR_PASS}]],
+        })
+        self.run_driver("--once")
+        self.run_driver("--once")
+        state_path = Path(self.status_payload()["state_dir"]) / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        story_state = state["stories"]["STORY-01"]
+        story_state.pop("validator_rounds")
+        story_state.pop("validator_report_requests")
+        story_state["validator_parse_failures"] = 0
+        self.write_json(state_path, state)
+
+        self.run_driver("--max-stories", "1")
+
+        self.assertEqual(self.story("STORY-01")["status"], "done")
+        world = self.read_world()
+        self.assertEqual(world["spawned"]["STORY-01:validator"], 1)
+        tells = world["threads"]["thr_validator_story01_1"]["tells"]
+        self.assertEqual(len(tells), 1)
+        self.assertIn("--validation-round 1", tells[0])
 
     def test_status_json_reports_last_stop_reason_after_exit_three(self) -> None:
         self.set_world({

@@ -41,10 +41,7 @@ LAST_STOP_FILENAME = "last-stop.txt"
 OUTPUT_FILENAME = "driver.out"
 
 DIFFICULTIES = ("simple", "medium", "complex")
-VERDICTS = ("PASS", "FAIL")
-JUDGE_ACTIONS = ("retry", "escalate", "patch", "block", "replan", "stop")
 THREAD_BUSY = ("pending", "starting", "active", "stopping")
-MAX_VALIDATOR_PARSE_FAILURES = 2
 HANDOFF_TEXT_LIMIT = 400
 HANDOFF_ITEM_LIMIT = 200
 HANDOFF_LIST_LIMIT = 8
@@ -150,84 +147,6 @@ def clear_pid_lock(path: Path, pid: int) -> None:
             pass
 
 
-# --------------------------------------------------------------------------- 报告解析
-
-
-# Validator 和 Judge 仍用短文本契约；每个规范字段附带常见同义写法。
-VALIDATOR_FIELDS: dict[str, tuple[str, ...]] = {
-    "Verdict": ("结论", "Verdict", "判定"),
-    "Acceptance": ("验收", "Acceptance", "验收项"),
-    "Gaps": ("缺口", "Gaps", "遗漏", "问题"),
-    "New facts": ("新事实", "New facts", "新发现"),
-}
-JUDGE_FIELDS: dict[str, tuple[str, ...]] = {
-    "Action": ("动作", "Action", "决定"),
-    "Note": ("说明", "Note", "备注", "原因"),
-}
-# 键带后缀区分同一中文词在不同契约中的含义（"失败"对 Worker 是 failed，对 Validator 是 FAIL）。
-VALUE_ALIASES: dict[str, str] = {
-    "完成": "worker_done", "已完成": "worker_done", "done": "worker_done",
-    "阻塞": "blocked", "受阻": "blocked", "失败": "failed",
-    "通过:v": "PASS", "pass:v": "PASS", "未通过:v": "FAIL", "失败:v": "FAIL", "fail:v": "FAIL",
-    "成立": "holds", "缺失": "missing", "不成立": "missing",
-    "重试": "retry", "升档": "escalate", "修补": "patch", "阻塞:j": "block", "重规划": "replan", "停止": "stop",
-}
-
-
-def parse_fields(text: str, fields: dict[str, tuple[str, ...]]) -> dict[str, str]:
-    """解析 `字段：值` 段落，中英文冒号均可；续行归入上一个字段，直到遇到下一个已知字段。"""
-    alias_to_key = {alias: key for key, aliases in fields.items() for alias in aliases}
-    names = sorted(alias_to_key, key=len, reverse=True)
-    pattern = re.compile(r"^\s*[*_`]*(%s)[*_`]*\s*[:：]\s*(.*)$" % "|".join(re.escape(name) for name in names))
-    result: dict[str, list[str]] = {}
-    current: str | None = None
-    for line in text.splitlines():
-        match = pattern.match(line)
-        if match:
-            current = alias_to_key[match.group(1)]
-            result[current] = [match.group(2).strip()]
-        elif current is not None:
-            result[current].append(line.rstrip())
-    return {key: "\n".join(lines).strip() for key, lines in result.items()}
-
-
-def canonical_value(raw: str, allowed: Sequence[str], *, suffix: str = "") -> str:
-    token = raw.split()[0].strip("`*_。.，,") if raw.strip() else ""
-    lowered = token.lower()
-    for item in allowed:
-        if item.lower() == lowered:
-            return item
-    for key in (lowered + suffix, token + suffix, lowered, token):
-        mapped = VALUE_ALIASES.get(key)
-        if mapped in allowed:
-            return mapped
-    return ""
-
-
-def parse_validator_report(text: str) -> dict[str, Any] | None:
-    fields = parse_fields(text, VALIDATOR_FIELDS)
-    verdict = canonical_value(fields.get("Verdict", ""), VERDICTS, suffix=":v")
-    if not verdict:
-        return None
-    holds: dict[str, str] = {}
-    for line in fields.get("Acceptance", "").splitlines():
-        match = re.match(r"^\s*[-*]?\s*(AC-\d+)\s*[:：]\s*(\S+)", line)
-        if match:
-            status = canonical_value(match.group(2), ("holds", "missing"))
-            if status:
-                holds[match.group(1)] = status
-    return {"verdict": verdict, "acceptance": holds, "gaps": fields.get("Gaps", ""),
-            "new_facts": fields.get("New facts", ""), "raw": text}
-
-
-def parse_judge_report(text: str) -> dict[str, str] | None:
-    fields = parse_fields(text, JUDGE_FIELDS)
-    action = canonical_value(fields.get("Action", ""), JUDGE_ACTIONS, suffix=":j")
-    if not action:
-        return None
-    return {"action": action, "note": fields.get("Note", "")}
-
-
 def split_items(text: str) -> list[str]:
     items = []
     for line in text.splitlines():
@@ -280,7 +199,8 @@ class StoryState:
     attempts: int = 0
     patch_rounds: int = 0
     thread_retries: int = 0
-    validator_parse_failures: int = 0
+    validator_rounds: int = 0
+    validator_report_requests: int = 0
     reformat_rounds: int = 0
     judge_rounds: int = 0
     baseline_commit: str = ""
@@ -291,14 +211,19 @@ class StoryState:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "StoryState":
         known = {name for name in cls.__dataclass_fields__}
-        return cls(**{key: value for key, value in data.items() if key in known})
+        state = cls(**{key: value for key, value in data.items() if key in known})
+        # 结构化 Validator 上线前的 in-flight state 没有 round；首轮固定映射为 1 才能原线程补报。
+        if state.phase == "validating" and state.validator_rounds < 1:
+            state.validator_rounds = 1
+        return state
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "phase": self.phase, "difficulty": self.difficulty, "worker_thread": self.worker_thread,
             "validator_thread": self.validator_thread, "attempts": self.attempts,
             "patch_rounds": self.patch_rounds, "thread_retries": self.thread_retries,
-            "validator_parse_failures": self.validator_parse_failures,
+            "validator_rounds": self.validator_rounds,
+            "validator_report_requests": self.validator_report_requests,
             "reformat_rounds": self.reformat_rounds, "judge_rounds": self.judge_rounds, "baseline_commit": self.baseline_commit,
             "baseline_dirty": self.baseline_dirty, "last_worker": self.last_worker,
             "last_validator": self.last_validator,
@@ -694,10 +619,6 @@ class Driver:
         payload = self.bb_json("thread", "show", thread_id)
         return payload.get("thread") or payload
 
-    def thread_output(self, thread_id: str) -> str:
-        payload = self.bb_json("thread", "output", thread_id)
-        return str(payload.get("output") or "")
-
     def thread_interactions(self, thread_id: str) -> list[dict[str, Any]]:
         payload = self.bb_json("thread", "interactions", "list", thread_id)
         return [item for item in (payload if isinstance(payload, list) else payload.get("interactions", []))
@@ -804,6 +725,129 @@ JSON
             "Handoff": report["handoff"],
         }, ""
 
+    def validator_report_path(self, story_id: str, attempt: int, validation_round: int) -> Path:
+        return self.state_dir / "reports" / story_id / f"attempt-{attempt}-validator-{validation_round}.json"
+
+    def clear_validator_report(self, story_id: str, attempt: int, validation_round: int) -> None:
+        try:
+            self.validator_report_path(story_id, attempt, validation_round).unlink()
+        except FileNotFoundError:
+            pass
+
+    def validator_report_instructions(
+        self, story_id: str, story: dict[str, Any], state: StoryState, validation_round: int,
+    ) -> str:
+        path = self.validator_report_path(story_id, state.attempts, validation_round)
+        acceptance_ids = [str(item["id"]) for item in story["acceptance"]]
+        command = [
+            sys.executable, str(self.report_script), "validator", "--output", str(path),
+            "--story-id", story_id, "--attempt", str(state.attempts),
+            "--intent-version", str(story["intent_version"]),
+            "--validation-round", str(validation_round),
+        ]
+        for acceptance_id in acceptance_ids:
+            command += ["--acceptance-id", acceptance_id]
+        template = {
+            "verdict": "PASS",
+            "acceptance": [
+                {"id": acceptance_id, "outcome": "holds", "evidence": "实际命令或观察证据"}
+                for acceptance_id in acceptance_ids
+            ],
+            "gaps": [],
+            "new_facts": [],
+        }
+        return f"""完成核验后必须提交结构化报告。下面的命令和全部身份参数均不可修改：
+
+```bash
+{shlex.join(command)} <<'JSON'
+{json.dumps(template, ensure_ascii=False, indent=2)}
+JSON
+```
+
+`verdict` 只能是 `PASS|FAIL`；每个 Acceptance ID 必须按给定顺序恰好出现一次，`outcome` 只能是
+`holds|missing`，每项必须写实际 evidence。PASS 要求全部 holds 且 gaps 为空；FAIL 必须至少有一项
+missing 或 gap。脚本返回 0 且打印 `VALIDATOR_REPORT_WRITTEN` 才算报告成功。最终自然语言回复只需说明
+“结构化报告已提交”，Driver 不从终答文本提取结果。"""
+
+    def read_validator_report(
+        self, story_id: str, story: dict[str, Any], state: StoryState,
+    ) -> tuple[dict[str, Any] | None, str]:
+        path = self.validator_report_path(story_id, state.attempts, state.validator_rounds)
+        if not path.is_file():
+            return None, f"未找到 Validator 结构化报告：{path}"
+        command = [
+            sys.executable, str(self.report_script), "read-validator", "--file", str(path),
+            "--story-id", story_id, "--attempt", str(state.attempts),
+            "--intent-version", str(story["intent_version"]),
+            "--validation-round", str(state.validator_rounds),
+        ]
+        for item in story["acceptance"]:
+            command += ["--acceptance-id", str(item["id"])]
+        result = run(command, cwd=self.repository, check=False)
+        if result.returncode != 0:
+            return None, result.stderr.strip() or f"Validator 报告校验失败，退出码 {result.returncode}"
+        try:
+            report = json.loads(result.stdout)["report"]
+        except (json.JSONDecodeError, KeyError, TypeError) as error:
+            return None, f"报告读取器未返回 canonical Validator envelope：{error}"
+        return {
+            "verdict": report["verdict"],
+            "acceptance": {item["id"]: item["outcome"] for item in report["acceptance"]},
+            "evidence": {item["id"]: item["evidence"] for item in report["acceptance"]},
+            "gaps": "\n".join(report["gaps"]),
+            "new_facts": "\n".join(report["new_facts"]),
+        }, ""
+
+    def judge_report_path(self, story_id: str, attempt: int, judge_round: int) -> Path:
+        return self.state_dir / "reports" / story_id / f"attempt-{attempt}-judge-{judge_round}.json"
+
+    def clear_judge_report(self, story_id: str, attempt: int, judge_round: int) -> None:
+        try:
+            self.judge_report_path(story_id, attempt, judge_round).unlink()
+        except FileNotFoundError:
+            pass
+
+    def judge_report_instructions(
+        self, story_id: str, story: dict[str, Any], state: StoryState, judge_round: int,
+    ) -> str:
+        path = self.judge_report_path(story_id, state.attempts, judge_round)
+        command = shlex.join([
+            sys.executable, str(self.report_script), "judge", "--output", str(path),
+            "--story-id", story_id, "--attempt", str(state.attempts),
+            "--intent-version", str(story["intent_version"]), "--judge-round", str(judge_round),
+        ])
+        template = {"action": "patch", "note": "给 Driver 或用户的事实与理由"}
+        return f"""完成裁决后必须提交结构化报告。下面的命令和全部身份参数均不可修改：
+
+```bash
+{command} <<'JSON'
+{json.dumps(template, ensure_ascii=False, indent=2)}
+JSON
+```
+
+`action` 只能是 `retry|escalate|patch|block|replan|stop`，`note` 必须写清事实和理由。脚本返回 0 且打印
+`JUDGE_REPORT_WRITTEN` 才算报告成功。最终自然语言回复只需说明“结构化报告已提交”，Driver 不从终答文本提取结果。"""
+
+    def read_judge_report(
+        self, story_id: str, story: dict[str, Any], state: StoryState, judge_round: int,
+    ) -> tuple[dict[str, str] | None, str]:
+        path = self.judge_report_path(story_id, state.attempts, judge_round)
+        if not path.is_file():
+            return None, f"未找到 Judge 结构化报告：{path}"
+        command = [
+            sys.executable, str(self.report_script), "read-judge", "--file", str(path),
+            "--story-id", story_id, "--attempt", str(state.attempts),
+            "--intent-version", str(story["intent_version"]), "--judge-round", str(judge_round),
+        ]
+        result = run(command, cwd=self.repository, check=False)
+        if result.returncode != 0:
+            return None, result.stderr.strip() or f"Judge 报告校验失败，退出码 {result.returncode}"
+        try:
+            report = json.loads(result.stdout)["report"]
+        except (json.JSONDecodeError, KeyError, TypeError) as error:
+            return None, f"报告读取器未返回 canonical Judge envelope：{error}"
+        return {"action": report["action"], "note": report["note"]}, ""
+
     # ----------------------------------------------------------------- 任务文本
 
     def repo_context(self) -> str:
@@ -845,6 +889,15 @@ JSON
 
 {self.worker_report_instructions(story_id, story, state.attempts)}"""
 
+    def validator_report_request(
+        self, story_id: str, story: dict[str, Any], state: StoryState, reason: str,
+    ) -> str:
+        return f"""Driver 未收到可用的 Validator 结构化报告：{reason}
+
+保持只读；按已经完成的核验事实重新提交一次报告：
+
+{self.validator_report_instructions(story_id, story, state, state.validator_rounds)}"""
+
     def validator_task(self, story_id: str, story: dict[str, Any], brief: str, state: StoryState) -> str:
         acceptance = "\n".join(f"- {item['id']}: {item['criterion']}" for item in story["acceptance"])
         changes = "\n".join(f"- {path}" for path in self.story_changes(state)) or "- （无未提交改动）"
@@ -878,13 +931,7 @@ Acceptance：
 {brief}
 ```
 
-最终回复只包含下面这段，字段名逐字保留：
-
-结论：PASS | FAIL
-验收：
-- AC-01: holds | missing — <命令或观察证据>
-缺口：<遗漏、越界或与黄金案例冲突的事实；或 无>
-新事实：<推翻后续 Story 前提或计划假设的发现；或 无>
+{self.validator_report_instructions(story_id, story, state, state.validator_rounds)}
 """
 
     def judge_task(self, story_id: str, story: dict[str, Any], state: StoryState, situation: str) -> str:
@@ -920,10 +967,7 @@ Validator 线程：{state.validator_thread}
 
 线程正在等待交互时，你可以用 `bb thread interactions list/show/approve/answer/deny` 处理属于计划已授权范围内的交互，处理后选 retry 之外的 `patch`（Note 写 "interaction handled"）让 driver 继续等待；越权的交互选 stop。
 
-最终回复只包含下面两行，字段名逐字保留：
-
-动作：retry | escalate | patch | block | replan | stop
-说明：<给 driver 或用户的说明>
+{self.judge_report_instructions(story_id, story, state, state.judge_rounds)}
 """
 
     # ----------------------------------------------------------------- Story 生命周期
@@ -956,7 +1000,8 @@ Validator 线程：{state.validator_thread}
         state.attempts = attempt
         state.patch_rounds = 0
         state.thread_retries = 0
-        state.validator_parse_failures = 0
+        state.validator_rounds = 0
+        state.validator_report_requests = 0
         state.reformat_rounds = 0
         if story["status"] == "todo":
             self.transition(story_id, "in_progress", expect="todo", owner=thread_id)
@@ -968,6 +1013,9 @@ Validator 线程：{state.validator_thread}
 
     def dispatch_validator(self, story_id: str, state: StoryState) -> None:
         story = self.read_story(story_id)
+        state.validator_rounds += 1
+        state.validator_report_requests = 0
+        self.clear_validator_report(story_id, state.attempts, state.validator_rounds)
         thread_id = self.dispatch_thread(
             difficulty="simple", kind="test", title=f"{story_id} validator",
             task=self.validator_task(story_id, story, self.brief(story_id), state))
@@ -1035,16 +1083,31 @@ Validator 线程：{state.validator_thread}
         if state.judge_rounds > self.args.max_judge_rounds:
             raise DriverStop(f"{story_id}: judge 已介入 {state.judge_rounds - 1} 次仍未收敛。最近情况：{situation}")
         story = self.read_story(story_id)
+        self.clear_judge_report(story_id, state.attempts, state.judge_rounds)
         thread_id = self.dispatch_thread(difficulty="complex", kind="judge", title=f"{story_id} judge",
                                          task=self.judge_task(story_id, story, state, situation), role="judge")
-        outcome = self.wait_thread(thread_id)
-        while outcome == "busy":
+        report: dict[str, str] | None = None
+        report_error = ""
+        for submission_round in range(2):
             outcome = self.wait_thread(thread_id)
-        if outcome != "idle":
-            raise DriverStop(f"{story_id}: judge 线程 {thread_id} 未正常结束（{outcome}）。情况：{situation}")
-        report = parse_judge_report(self.thread_output(thread_id))
+            while outcome == "busy":
+                outcome = self.wait_thread(thread_id)
+            if outcome != "idle":
+                raise DriverStop(f"{story_id}: judge 线程 {thread_id} 未正常结束（{outcome}）。情况：{situation}")
+            report, report_error = self.read_judge_report(story_id, story, state, state.judge_rounds)
+            if report is not None:
+                break
+            if submission_round == 0:
+                self.tell_thread(
+                    thread_id,
+                    f"Driver 未收到可用的 Judge 结构化报告：{report_error}\n\n"
+                    "不要重新裁决；按已完成的裁决事实补交一次报告。\n\n"
+                    + self.judge_report_instructions(story_id, story, state, state.judge_rounds),
+                )
         if report is None:
-            raise DriverStop(f"{story_id}: judge 线程 {thread_id} 的回复无法解析。情况：{situation}")
+            raise DriverStop(
+                f"{story_id}: judge 线程 {thread_id} 两次未提交有效结构化报告：{report_error}"
+            )
         self.log("judge.decided", story=story_id, thread=thread_id, action=report["action"], note=report["note"][:200])
         self.apply_judge(story_id, state, report)
 
@@ -1128,10 +1191,9 @@ Validator 线程：{state.validator_thread}
             return self.handle_thread_error(story_id, state, thread_id)
         if outcome == "error":
             return self.handle_thread_error(story_id, state, thread_id)
-        output = self.thread_output(thread_id)
         if state.phase == "working":
-            return self.handle_worker_output(story_id, story, state, output)
-        return self.handle_validator_output(story_id, state, output)
+            return self.handle_worker_output(story_id, story, state)
+        return self.handle_validator_output(story_id, state)
 
     def handle_thread_error(self, story_id: str, state: StoryState, thread_id: str) -> bool:
         if state.thread_retries < 1:
@@ -1147,8 +1209,7 @@ Validator 线程：{state.validator_thread}
         self.consult_judge(story_id, state, f"Worker 线程 {thread_id} 重试后仍处于 error。")
         return True
 
-    def handle_worker_output(self, story_id: str, story: dict[str, Any], state: StoryState, output: str) -> bool:
-        del output  # Worker 终答只给人看；控制协议来自 schema 校验后的报告文件。
+    def handle_worker_output(self, story_id: str, story: dict[str, Any], state: StoryState) -> bool:
         report, report_error = self.read_worker_report(story_id, story, state)
         if report is None:
             if state.worker_thread and state.reformat_rounds < 1:
@@ -1174,28 +1235,30 @@ Validator 线程：{state.validator_thread}
             self.consult_judge(story_id, state, "Worker 报告完成，但工作区没有任何新改动。")
             return True
         if self.needs_validator(state):
+            state.validator_report_requests = 0
             self.dispatch_validator(story_id, state)
         else:
             self.complete_story(story_id, state)
         return True
 
-    def handle_validator_output(self, story_id: str, state: StoryState, output: str) -> bool:
-        report = parse_validator_report(output)
+    def handle_validator_output(self, story_id: str, state: StoryState) -> bool:
+        story = self.read_story(story_id)
+        report, report_error = self.read_validator_report(story_id, story, state)
         if report is None:
-            state.validator_parse_failures += 1
-            self.set_story_state(story_id, state)
-            if state.validator_parse_failures > MAX_VALIDATOR_PARSE_FAILURES:
-                self.consult_judge(
-                    story_id, state,
-                    f"Validator 已有 {state.validator_parse_failures} 次回复无法按契约解析：\n{output[-1500:]}",
+            if state.validator_thread and state.validator_report_requests < 1:
+                state.validator_report_requests += 1
+                self.set_story_state(story_id, state)
+                self.tell_thread(
+                    state.validator_thread,
+                    self.validator_report_request(story_id, story, state, report_error),
                 )
+                self.log("validator.report_requested", story=story_id, thread=state.validator_thread)
                 return True
-            self.dispatch_validator(story_id, state)
-            self.log("validator.unparsable", story=story_id, thread=state.validator_thread,
-                     failures=state.validator_parse_failures)
-            return True
+            raise DriverStop(
+                f"{story_id}: Validator {state.validator_thread} 两次未提交有效结构化报告：{report_error}"
+            )
         state.last_validator = report
-        state.validator_parse_failures = 0
+        state.validator_report_requests = 0
         self.set_story_state(story_id, state)
         self.log("validator.reported", story=story_id, thread=state.validator_thread, verdict=report["verdict"])
         if report["verdict"] == "PASS" and "missing" not in report["acceptance"].values():
@@ -1577,6 +1640,8 @@ def repair_baseline(args: argparse.Namespace) -> int:
         )
     state.worker_thread = owner
     state.validator_thread = None
+    state.validator_rounds = 0
+    state.validator_report_requests = 0
     state.phase = "working"
     state.attempts = max(state.attempts, 1)
     story_difficulty = story.get("difficulty")
