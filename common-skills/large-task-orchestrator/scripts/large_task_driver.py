@@ -3,7 +3,7 @@
 
 正常路径由脚本选 frontier、领取 Story、通过 bb-dispatch 派 Worker 与 Validator、
 等待线程、解析结构化报告、更新计划 JSON 并创建 Git checkpoint。只有异常（Worker 报告 blocked/failed、
-Validator 多轮 FAIL、越界写入、线程出错、待处理交互）才派一次性的 strong judge 线程，让它在固定动作集里
+Validator 多轮 FAIL、线程出错、待处理交互）才派一次性的 strong judge 线程，让它在固定动作集里
 选一个。真正需要用户的情况 driver 停下并打印原因。
 
 权威状态在计划 JSON 与 Git；Story.owner 保存 Worker 线程 ID。本地状态文件只缓存阶段、Validator 线程与
@@ -545,40 +545,6 @@ class Driver:
         return [path for path in self.story_changes(state)
                 if path not in management and not self.is_driver_management_path(path)]
 
-    @staticmethod
-    def path_scopes(scopes: Sequence[str]) -> list[str]:
-        prefixes: list[str] = []
-        for scope in scopes:
-            whole = scope.strip("`'\"。:：()（）[]{}")
-            if whole.startswith("./"):
-                whole = whole[2:]
-            whole = whole.rstrip("*")
-            for token in re.split(r"[\s,，、;；]+", scope):
-                candidate = token.strip("`'\"。:：()（）[]{}")
-                if candidate.startswith("./"):
-                    candidate = candidate[2:]
-                candidate = candidate.rstrip("*")
-                # 完整条目本身就是明确边界，包含 Dockerfile 等无扩展名的根目录路径。
-                explicit_path = candidate == whole
-                path_like_token = "/" in candidate or re.fullmatch(r"[A-Za-z0-9_.-]+\.[A-Za-z0-9_-]+", candidate)
-                if explicit_path or path_like_token:
-                    prefixes.append(candidate)
-        return list(dict.fromkeys(prefixes))
-
-    def out_of_scope(self, story: dict[str, Any], changes: list[str]) -> list[str]:
-        scopes = [scope.strip() for scope in story.get("context", {}).get("write_scope", []) if scope.strip()]
-        topic = os.path.relpath(self.topic_dir, self.repository)
-        allowed_prefixes = [topic, ".local/"]
-        offenders = []
-        for path in changes:
-            if any(self.path_within(path, prefix) for prefix in allowed_prefixes):
-                continue
-            # 只从 write_scope 中提取明确的路径 token，文字性边界留给 judge 裁决。
-            if any(self.path_within(path, prefix) for prefix in self.path_scopes(scopes)):
-                continue
-            offenders.append(path)
-        return offenders
-
     def checkpoint(self, story_id: str, state: StoryState) -> str:
         baseline = set(state.baseline_dirty)
         candidates = [*self.implementation_changes(story_id, state), *self.management_paths(story_id)]
@@ -867,7 +833,7 @@ JSON
 
 {self.repo_context()}
 
-只允许修改这些区域（write scope）：
+计划预估的影响区域（write scope）如下；它不是完整文件白名单。以 Outcome 和 Acceptance 为准，合理需要其他路径时如实修改并在报告中列全：
 {scope}
 
 工作区可能有他人并发改动：保留它们，不要回滚或格式化无关文件。
@@ -904,6 +870,9 @@ JSON
         worker = state.last_worker
         management = "\n".join(f"- {path}" for path in self.management_paths(story_id))
         implementation = "\n".join(f"- {path}" for path in self.implementation_changes(story_id, state)) or "- （无）"
+        planned_scope = "\n".join(
+            f"- {item}" for item in story.get("context", {}).get("write_scope", [])
+        ) or "- （计划未提供）"
         return f"""你是 Story {story_id} 的 Validator。你没有参与实现；只读，不修改任何文件，不提交。可以运行测试与验收命令。
 
 {self.repo_context()}
@@ -917,11 +886,14 @@ JSON
 Worker 实际的实现改动只有：
 {implementation}
 
+规划阶段预估的影响区域如下，它只是判断 Story 边界的线索，不是精确文件白名单：
+{planned_scope}
+
 Worker 报告：
 Changed: {worker.get('Changed', '')}
 Verified: {worker.get('Verified', '')}
 
-任务：逐条核对下面每项 Acceptance 是否真正成立，以工作区、命令输出和黄金案例为准，Worker 报告不是证据。不做代码审查、风格或重构建议。
+任务：逐条核对下面每项 Acceptance 是否真正成立，并判断实际实现改动是否服务本 Story 的 Outcome、Acceptance 和边界，是否夹带无关或其他 Story 的工作。以工作区、命令输出和黄金案例为准，Worker 报告不是证据。文件不在预估区域不自动等于越界；只有语义上不属于本 Story 时才在 gaps 记录并判 FAIL。不做通用代码审查、风格或重构建议。
 
 Acceptance：
 {acceptance}
@@ -1227,10 +1199,6 @@ Validator 线程：{state.validator_thread}
             self.consult_judge(story_id, state, f"Worker 报告 {report['Result']}。")
             return True
         changes = self.implementation_changes(story_id, state)
-        offenders = self.out_of_scope(story, changes)
-        if offenders:
-            self.consult_judge(story_id, state, f"Worker 修改了 write scope 之外的路径：{offenders}")
-            return True
         if not changes and not self.args.allow_empty_story:
             self.consult_judge(story_id, state, "Worker 报告完成，但工作区没有任何新改动。")
             return True
@@ -1366,8 +1334,8 @@ def build_parser() -> argparse.ArgumentParser:
         target.add_argument("--context", default="", help="附加给每个线程的仓库说明（基线、命令等）")
         target.add_argument("--default-difficulty", choices=DIFFICULTIES, default="medium", help="首轮 Worker 难度")
         target.add_argument("--kind", choices=["general", "debug"], default="general", help="Worker 的 bb-dispatch --kind")
-        target.add_argument("--validator", choices=["always", "standard-up"], default="standard-up",
-                            help="standard-up（默认）：simple 档 Story 跳过 Validator，采信 Worker 证据；always：每张都派")
+        target.add_argument("--validator", choices=["always", "standard-up"], default="always",
+                            help="always（默认）：每张 Story 都派 Validator；standard-up：simple 档跳过")
         target.add_argument("--max-patch-rounds", type=int, default=2, help="Validator FAIL 后发回同一 Worker 的最大轮数")
         target.add_argument("--max-attempts", type=int, default=3, help="同一 Story 的最大 Worker 线程数")
         target.add_argument("--max-judge-rounds", type=int, default=3, help="同一 Story 的最大 judge 介入次数")
@@ -1628,10 +1596,13 @@ def repair_baseline(args: argparse.Namespace) -> int:
     missing = [path for path in worker_paths if path not in dirty]
     if missing:
         raise DriverError(f"以下 Worker 路径当前不是 dirty，不能据此恢复：{missing}")
-    management = [path for path in worker_paths if driver.is_driver_management_path(path)]
-    offenders = driver.out_of_scope(story, worker_paths)
-    if management or offenders:
-        raise DriverError(f"Worker 路径越过 Story write_scope：{list(dict.fromkeys([*management, *offenders]))}")
+    current_management = set(driver.management_paths(args.story))
+    management = [
+        path for path in worker_paths
+        if path in current_management or driver.is_driver_management_path(path)
+    ]
+    if management:
+        raise DriverError(f"Worker 路径包含 Driver 管理的计划状态：{management}")
 
     state = driver.story_state(args.story)
     if state.worker_thread and state.worker_thread != owner:

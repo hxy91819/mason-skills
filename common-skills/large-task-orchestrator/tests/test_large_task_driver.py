@@ -480,8 +480,7 @@ class DriverTest(unittest.TestCase):
     def test_judge_artifact_is_authoritative_instead_of_final_text(self) -> None:
         self.set_world({
             "STORY-01:worker": [[{
-                "output": WORKER_DONE,
-                "files": {**WORKER_FILES, "README.md": "out of scope\n"},
+                "output": "Result: failed\nChanged: none\nVerified: failed\nRemaining: 实现失败\nHandoff: 交给 Judge",
             }]],
             "STORY-01:judge": [[{
                 "output": "Action: patch\nNote: 不应读取此文本。",
@@ -511,8 +510,7 @@ class DriverTest(unittest.TestCase):
     def test_missing_judge_artifact_gets_one_same_thread_report_request(self) -> None:
         self.set_world({
             "STORY-01:worker": [[{
-                "output": WORKER_DONE,
-                "files": {**WORKER_FILES, "README.md": "out of scope\n"},
+                "output": "Result: failed\nChanged: none\nVerified: failed\nRemaining: 实现失败\nHandoff: 交给 Judge",
             }]],
             "STORY-01:judge": [[
                 {"output": "已完成裁决。"},
@@ -556,9 +554,9 @@ class DriverTest(unittest.TestCase):
         self.assertIn("large_task_report.py validator", task)
         self.assertIn("--acceptance-id AC-01", task)
 
-    def test_simple_story_skips_validator(self) -> None:
+    def test_standard_up_explicitly_skips_validator_for_simple_story(self) -> None:
         self.set_world({"STORY-01:worker": [[{"output": WORKER_DONE, "files": WORKER_FILES}]]})
-        self.run_driver("--max-stories", "1", "--default-difficulty", "simple")
+        self.run_driver("--max-stories", "1", "--default-difficulty", "simple", "--validator", "standard-up")
         self.assertEqual(self.story("STORY-01")["status"], "done")
         self.assertNotIn("STORY-01:validator", self.read_world().get("spawned", {}))
         self.assertTrue(any("Validator skipped" in item for item in self.story("STORY-01")["handoff"]["verification"]))
@@ -577,7 +575,7 @@ class DriverTest(unittest.TestCase):
             "STORY-02:worker": [[{"output": WORKER_DONE, "files": {"src/final.py": "done = True\n"}}]],
             "STORY-02:validator": [[{"output": VALIDATOR_PASS}]],
         })
-        self.run_driver("--default-difficulty", "medium")
+        self.run_driver("--default-difficulty", "medium", "--validator", "standard-up")
         workers = [item for item in self.read_world()["dispatches"] if item["title"].endswith("worker")]
         self.assertEqual(
             [(item["title"], item["difficulty"], item["kind"]) for item in workers],
@@ -690,7 +688,7 @@ class DriverTest(unittest.TestCase):
         judge = next(d for d in self.read_world()["dispatches"] if d["title"] == "STORY-01 judge")
         self.assertEqual((judge["difficulty"], judge["kind"]), ("complex", "judge"))
 
-    def test_extensionless_root_file_in_write_scope_does_not_go_to_judge(self) -> None:
+    def test_extensionless_root_file_reaches_validator(self) -> None:
         first = self.story("STORY-01")
         first["context"]["write_scope"] = ["Dockerfile"]
         self.write_json(self.stories / "STORY-01-first.json", first)
@@ -705,15 +703,18 @@ class DriverTest(unittest.TestCase):
         self.assertEqual(self.story("STORY-01")["status"], "done")
         self.assertNotIn("STORY-01:judge", self.read_world().get("spawned", {}))
 
-    def test_out_of_scope_write_goes_to_judge(self) -> None:
+    def test_path_outside_planned_scope_is_delegated_to_validator(self) -> None:
         self.set_world({
             "STORY-01:worker": [[{"output": WORKER_DONE, "files": {**WORKER_FILES, "README.md": "oops\n"}}]],
-            "STORY-01:judge": [[{"output": "Action: stop\nNote: 越界修改 README。"}]],
+            "STORY-01:validator": [[{"output": VALIDATOR_PASS}]],
         })
-        result = self.run_driver(expected=3)
-        self.assertIn("越界修改 README", result.stderr)
-        judge_task = self.read_world()["threads"]["thr_judge_story01_1"]["task"]
-        self.assertIn("README.md", judge_task)
+        self.run_driver("--max-stories", "1")
+        world = self.read_world()
+        self.assertEqual(self.story("STORY-01")["status"], "done")
+        self.assertNotIn("STORY-01:judge", world.get("spawned", {}))
+        validator_task = world["threads"]["thr_validator_story01_1"]["task"]
+        self.assertIn("README.md", validator_task)
+        self.assertIn("文件不在预估区域不自动等于越界", validator_task)
 
     def test_resume_reuses_thread_recorded_in_owner(self) -> None:
         self.set_world({
@@ -751,19 +752,19 @@ class DriverTest(unittest.TestCase):
         self.assertIn("parallel.txt", state["baseline_dirty"])
         self.assertNotIn("src/feature.py", state["baseline_dirty"])
 
-    def test_repair_baseline_rejects_path_outside_write_scope(self) -> None:
+    def test_repair_baseline_rejects_driver_management_path(self) -> None:
         story = self.story("STORY-01")
         story["status"] = "in_progress"
         story["owner"] = "thr_existing_worker"
         self.write_json(self.stories / "STORY-01-first.json", story)
         self.planning("render")
-        (self.repo / "parallel.txt").write_text("other work\n", encoding="utf-8")
 
         rejected = self.run_command(
-            "repair-baseline", "--story", "STORY-01", "--worker-path", "parallel.txt", expected=2,
+            "repair-baseline", "--story", "STORY-01",
+            "--worker-path", "plan/agent/stories/STORY-01-first.json", expected=2,
         )
 
-        self.assertIn("write_scope", rejected.stderr)
+        self.assertIn("Driver 管理的计划状态", rejected.stderr)
 
     def test_worker_error_retries_once_then_judge_replaces_worker(self) -> None:
         self.set_world({
@@ -849,36 +850,11 @@ class DriverTest(unittest.TestCase):
         self.assertEqual(self.story("STORY-01")["status"], "done")
         self.assertEqual(self.read_world()["spawned"]["STORY-01:worker"], 2)
 
-    def test_judge_replan_preserves_baseline_when_current_story_continues(self) -> None:
-        replanned = story_data("STORY-01", [])
-        replanned["status"] = "in_progress"
-        replanned["owner"] = "thr_worker_story01_1"
-        replanned["context"]["write_scope"] = ["src/", "generated/"]
-        replan_contents = json.dumps(replanned, ensure_ascii=False, indent=2) + "\n"
-        (self.repo / "parallel.txt").write_text("pre-existing work\n", encoding="utf-8")
-        self.set_world({
-            "STORY-01:worker": [[{
-                "output": WORKER_DONE,
-                "files": {"generated/result.py": "value = 1\n"},
-            }]],
-            "STORY-01:judge": [[{
-                "output": "Action: replan\nNote: 已明确 generated/ 写入范围，当前 Worker 继续。",
-                "files": {"plan/agent/stories/STORY-01-first.json": replan_contents},
-                "render_plan": True,
-            }]],
-            "STORY-01:validator": [[{"output": VALIDATOR_PASS}]],
-        })
-
-        self.run_driver("--max-stories", "1")
-
-        self.assertEqual(self.story("STORY-01")["status"], "done")
-        self.assertEqual(self.read_world()["spawned"]["STORY-01:judge"], 1)
-
     def test_once_calls_resume_a_simple_story_until_done(self) -> None:
         self.set_world({"STORY-01:worker": [[{"output": WORKER_DONE, "files": WORKER_FILES}]]})
-        self.run_driver("--once", "--default-difficulty", "simple")
+        self.run_driver("--once", "--default-difficulty", "simple", "--validator", "standard-up")
         self.assertEqual(self.story("STORY-01")["status"], "in_progress")
-        self.run_driver("--once", "--default-difficulty", "simple")
+        self.run_driver("--once", "--default-difficulty", "simple", "--validator", "standard-up")
         self.assertEqual(self.story("STORY-01")["status"], "done")
 
     def test_wait_timeout_exit_two_is_a_paced_wait_not_a_driver_error(self) -> None:
@@ -899,7 +875,8 @@ class DriverTest(unittest.TestCase):
 
     def test_allow_empty_story_completes_without_judge(self) -> None:
         self.set_world({"STORY-01:worker": [[{"output": WORKER_DONE}]]})
-        self.run_driver("--default-difficulty", "simple", "--allow-empty-story", "--max-stories", "1")
+        self.run_driver("--default-difficulty", "simple", "--validator", "standard-up",
+                        "--allow-empty-story", "--max-stories", "1")
         self.assertEqual(self.story("STORY-01")["status"], "done")
         self.assertNotIn("STORY-01:judge", self.read_world().get("spawned", {}))
 
@@ -912,18 +889,18 @@ class DriverTest(unittest.TestCase):
             f"Handoff: {'交接' * 300}"
         )
         self.set_world({"STORY-01:worker": [[{"output": long_report, "files": WORKER_FILES}]]})
-        self.run_driver("--default-difficulty", "simple", "--max-stories", "1")
+        self.run_driver("--default-difficulty", "simple", "--validator", "standard-up", "--max-stories", "1")
         handoff = self.story("STORY-01")["handoff"]
         self.assertLessEqual(len(handoff["summary"]), 400)
         self.assertLessEqual(len(handoff["next"]), 400)
         self.assertTrue(all(len(item) <= 200 for item in handoff["verification"]))
 
-    def test_validator_always_runs_for_a_simple_story(self) -> None:
+    def test_validator_runs_for_a_simple_story_by_default(self) -> None:
         self.set_world({
             "STORY-01:worker": [[{"output": WORKER_DONE, "files": WORKER_FILES}]],
             "STORY-01:validator": [[{"output": VALIDATOR_PASS}]],
         })
-        self.run_driver("--default-difficulty", "simple", "--validator", "always", "--max-stories", "1")
+        self.run_driver("--default-difficulty", "simple", "--max-stories", "1")
         self.assertEqual(self.read_world()["spawned"]["STORY-01:validator"], 1)
 
     def test_missing_validator_report_is_bounded_then_stops(self) -> None:
@@ -942,7 +919,7 @@ class DriverTest(unittest.TestCase):
         (self.repo / "README.md").write_text("并发暂存改动\n", encoding="utf-8")
         self.git("add", "README.md")
         self.set_world({"STORY-01:worker": [[{"output": WORKER_DONE, "files": WORKER_FILES}]]})
-        self.run_driver("--default-difficulty", "simple", "--max-stories", "1")
+        self.run_driver("--default-difficulty", "simple", "--validator", "standard-up", "--max-stories", "1")
         committed = self.git("show", "--format=", "--name-only", "HEAD").splitlines()
         self.assertNotIn("README.md", committed)
         staged = subprocess.run(["git", "diff", "--cached", "--quiet", "--", "README.md"], cwd=self.repo)
@@ -957,7 +934,7 @@ class DriverTest(unittest.TestCase):
             "STORY-01:worker": [[{"output": WORKER_DONE, "files": WORKER_FILES}]],
             "STORY-02:worker": [[{"output": WORKER_DONE, "files": {"src/final.py": "done = True\n"}}]],
         })
-        self.run_driver("--default-difficulty", "simple", "--push")
+        self.run_driver("--default-difficulty", "simple", "--validator", "standard-up", "--push")
         remote_head = subprocess.run(["git", "--git-dir", str(remote), "rev-parse", "main"],
                                      capture_output=True, text=True, check=True).stdout.strip()
         self.assertEqual(remote_head, self.git("rev-parse", "HEAD").strip())
@@ -990,9 +967,11 @@ class DriverTest(unittest.TestCase):
             "STORY-03:worker": [[{"status": "active"}, {"output": WORKER_DONE}]],
             "STORY-04:worker": [[{"status": "active"}, {"output": WORKER_DONE}]],
         })
-        self.start_driver("--default-difficulty", "simple", "--allow-empty-story", "--max-stories", "1",
+        self.start_driver("--default-difficulty", "simple", "--validator", "standard-up",
+                          "--allow-empty-story", "--max-stories", "1",
                           plan=plan_a, stories=stories_a)
-        self.start_driver("--default-difficulty", "simple", "--allow-empty-story", "--max-stories", "1",
+        self.start_driver("--default-difficulty", "simple", "--validator", "standard-up",
+                          "--allow-empty-story", "--max-stories", "1",
                           plan=plan_b, stories=stories_b)
         payload_a = self.wait_for(lambda: value if (value := self.status_payload(plan=plan_a, stories=stories_a))["alive"]
                                   and value["in_progress"] else None)
@@ -1001,9 +980,11 @@ class DriverTest(unittest.TestCase):
         self.assertNotEqual(payload_a["state_dir"], payload_b["state_dir"])
         self.run_command("stop", "--wait", "--wait-timeout", "5", plan=plan_a, stories=stories_a)
         self.run_command("stop", "--wait", "--wait-timeout", "5", plan=plan_b, stories=stories_b)
-        self.run_command("run", "--default-difficulty", "simple", "--allow-empty-story", "--max-stories", "1",
+        self.run_command("run", "--default-difficulty", "simple", "--validator", "standard-up",
+                         "--allow-empty-story", "--max-stories", "1",
                          plan=plan_a, stories=stories_a)
-        self.run_command("run", "--default-difficulty", "simple", "--allow-empty-story", "--max-stories", "1",
+        self.run_command("run", "--default-difficulty", "simple", "--validator", "standard-up",
+                         "--allow-empty-story", "--max-stories", "1",
                          plan=plan_b, stories=stories_b)
         self.assertEqual(json.loads((stories_a / "STORY-03.json").read_text(encoding="utf-8"))["status"], "done")
         self.assertEqual(json.loads((stories_b / "STORY-04.json").read_text(encoding="utf-8"))["status"], "done")
@@ -1018,14 +999,14 @@ class DriverTest(unittest.TestCase):
         self.set_world({
             "STORY-01:worker": [[{"status": "active"}, {"output": WORKER_DONE, "files": WORKER_FILES}]],
         })
-        self.start_driver("--default-difficulty", "simple", "--max-stories", "1")
+        self.start_driver("--default-difficulty", "simple", "--validator", "standard-up", "--max-stories", "1")
         self.wait_for(lambda: value if (value := self.status_payload())["alive"] and value["in_progress"] else None)
         self.run_command("stop", "--wait", "--wait-timeout", "5")
         self.assertEqual(self.story("STORY-01")["status"], "in_progress")
         stopped = self.status_payload()
         self.assertFalse(stopped["alive"])
         self.assertFalse((Path(stopped["state_dir"]) / "driver.pid").exists())
-        self.start_driver("--default-difficulty", "simple", "--max-stories", "1")
+        self.start_driver("--default-difficulty", "simple", "--validator", "standard-up", "--max-stories", "1")
         self.wait_for_driver_exit()
         self.assertEqual(self.story("STORY-01")["status"], "done")
         self.assertEqual(self.read_world()["spawned"]["STORY-01:worker"], 1)

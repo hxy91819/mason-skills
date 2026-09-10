@@ -24,10 +24,11 @@
    退出码 2；只要线程仍是 `pending|starting|active|stopping`，这表示 busy，不是命令错误。driver 补足
    poll 间隔，避免主循环忙等。busy 自最近一次 driver 对该线程的事件超过 `--stall-minutes` 时，driver 先
    `bb thread stop` 并记录 `thread.stalled`，再让 Worker retry 一次后交 Judge，或直接改派 Validator。
-3. Worker `worker_done` 时，driver 只将业务改动与 `write_scope` 比对；计划投影和 `.local/` 不算越界。
-   没有业务改动须经 `--allow-empty-story` 明示，或交 Judge。
-4. simple Story 默认直接采纳 Worker 证据；其余 Story（或 `--validator always`）派只读 Validator。
-   Validator 失败把精确缺口发回同一 Worker；三次不能解析的 Validator 输出交 Judge，防止无限重派。
+3. Worker `worker_done` 时，driver 从 Git 区分业务改动、计划投影、`.local/` 与起始 dirty baseline；没有业务
+   改动须经 `--allow-empty-story` 明示，或交 Judge。程序不把计划的 `write_scope` 解释成文件白名单。
+4. 默认每张 Story 都派只读 Validator；只有显式 `--validator standard-up` 才跳过 simple Story。Validator
+   逐条核验 Acceptance，并结合 Outcome、边界和实际改动判断是否夹带无关或其他 Story 的工作；`write_scope`
+   只是规划预估。Validator 失败把精确缺口发回同一 Worker；报告两次无效时受控停止。
 5. 完成时写入 Acceptance、受限长度的 Handoff、刷新投影，并用 `git commit --only -- <targets>` 创建
    checkpoint。目标是业务路径加当前 Story/SPEC/STATUS，排除开始前的脏路径和 `.local/`，因此不会提交
    其他 Agent 的既有暂存改动。
@@ -41,8 +42,7 @@ Worker 与 Judge 的累计派发量分别受 `--max-workers-total`（0 表示 St
 `--max-judges-total` 约束；同一 Story 的 blocked 累计达到 `--max-blocked-per-story` 后停止并要求用户修改计划。
 
 同一仓库的不同计划可以同时运行。其他已由 driver 管理的计划的 `SPEC.md`、`STATUS.md`、`agent/plan.json` 和
-`agent/stories/` 投影不计入当前 Story 的业务改动或 checkpoint，避免并发状态转换被误判为越界；业务文件仍按当前
-Story 的 `write_scope` 检查。
+`agent/stories/` 投影不计入当前 Story 的业务改动或 checkpoint，避免并发状态转换被误算成 Worker 改动。
 
 ## Judge 与回执
 
