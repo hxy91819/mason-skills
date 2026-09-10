@@ -492,6 +492,21 @@ class DriverTest(unittest.TestCase):
         judge = next(d for d in self.read_world()["dispatches"] if d["title"] == "STORY-01 judge")
         self.assertEqual((judge["difficulty"], judge["kind"]), ("complex", "judge"))
 
+    def test_extensionless_root_file_in_write_scope_does_not_go_to_judge(self) -> None:
+        first = self.story("STORY-01")
+        first["context"]["write_scope"] = ["Dockerfile"]
+        self.write_json(self.stories / "STORY-01-first.json", first)
+        self.planning("render")
+        self.set_world({
+            "STORY-01:worker": [[{"output": WORKER_DONE, "files": {"Dockerfile": "FROM scratch\n"}}]],
+            "STORY-01:validator": [[{"output": VALIDATOR_PASS}]],
+        })
+
+        self.run_driver("--max-stories", "1")
+
+        self.assertEqual(self.story("STORY-01")["status"], "done")
+        self.assertNotIn("STORY-01:judge", self.read_world().get("spawned", {}))
+
     def test_out_of_scope_write_goes_to_judge(self) -> None:
         self.set_world({
             "STORY-01:worker": [[{"output": WORKER_DONE, "files": {**WORKER_FILES, "README.md": "oops\n"}}]],
@@ -599,6 +614,31 @@ class DriverTest(unittest.TestCase):
         self.run_driver("--max-stories", "1")
         self.assertEqual(self.story("STORY-01")["status"], "done")
         self.assertEqual(self.read_world()["spawned"]["STORY-01:worker"], 2)
+
+    def test_judge_replan_preserves_baseline_when_current_story_continues(self) -> None:
+        replanned = story_data("STORY-01", [])
+        replanned["status"] = "in_progress"
+        replanned["owner"] = "thr_worker_story01_1"
+        replanned["context"]["write_scope"] = ["src/", "generated/"]
+        replan_contents = json.dumps(replanned, ensure_ascii=False, indent=2) + "\n"
+        (self.repo / "parallel.txt").write_text("pre-existing work\n", encoding="utf-8")
+        self.set_world({
+            "STORY-01:worker": [[{
+                "output": WORKER_DONE,
+                "files": {"generated/result.py": "value = 1\n"},
+            }]],
+            "STORY-01:judge": [[{
+                "output": "Action: replan\nNote: 已明确 generated/ 写入范围，当前 Worker 继续。",
+                "files": {"plan/agent/stories/STORY-01-first.json": replan_contents},
+                "render_plan": True,
+            }]],
+            "STORY-01:validator": [[{"output": VALIDATOR_PASS}]],
+        })
+
+        self.run_driver("--max-stories", "1")
+
+        self.assertEqual(self.story("STORY-01")["status"], "done")
+        self.assertEqual(self.read_world()["spawned"]["STORY-01:judge"], 1)
 
     def test_once_calls_resume_a_simple_story_until_done(self) -> None:
         self.set_world({"STORY-01:worker": [[{"output": WORKER_DONE, "files": WORKER_FILES}]]})
