@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "aggregate": {
+    "branch": "local/aggregate",
+    "upstreamRef": "replace-with-upstream-ref",
+    "lastIntegratedUpstreamCommit": "replace-with-upstream-commit",
+    "stableTagPattern": null
+  },
+  "features": []
+}
