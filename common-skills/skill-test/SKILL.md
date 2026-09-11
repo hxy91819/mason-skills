@@ -2,6 +2,8 @@
 name: skill-test
 description: 用宿主原生 subagent 对 skill 做隔离的行为测试与盲 A/B。
 disable-model-invocation: true
+triggers:
+  - user
 ---
 
 # Skill Test

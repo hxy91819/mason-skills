@@ -2,6 +2,8 @@
 name: distill
 description: Review the current conversation or a bounded set of recent sessions as a harness and project-knowledge retrospective, with an explicit audit of repository Skills and AGENTS.md instructions, then prune or strengthen the surfaces that shape future human and agent work. Use only when a user or scheduler explicitly invokes $distill after substantial agent work, debugging, retries, user corrections, or skill execution, or for a periodic or milestone review.
 disable-model-invocation: true
+triggers:
+  - user
 ---
 
 # Distill Session Evidence into the Harness and Project Knowledge

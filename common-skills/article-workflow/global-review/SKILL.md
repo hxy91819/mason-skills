@@ -2,6 +2,8 @@
 name: article-workflow-global-review
 description: "Phase 4 of the staged article optimization workflow: global coherence review. Use when the user asks to execute Phase 4, global review, whole-article coherence review, or generate `.article-workflow/04-global-review/` from `brief.md`, `03.5-ai-edit-pass/revised-sources/` (or `00-cleaned-sources/`), `02-evidence-pool/`."
 disable-model-invocation: true
+triggers:
+  - user
 ---
 
 # Article Workflow Global Review

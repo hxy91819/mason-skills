@@ -2,6 +2,8 @@
 name: ppt-visual-review
 description: PPT 式 HTML 的逐页版式视觉验收：统一间隔、留白与对称，直接改版式并输出改前改后对比报告。仅在用户显式调用 $ppt-visual-review 时运行。
 disable-model-invocation: true
+triggers:
+  - user
 ---
 
 # PPT Visual Review

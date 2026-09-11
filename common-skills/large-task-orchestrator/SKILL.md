@@ -2,6 +2,8 @@
 name: large-task-orchestrator
 description: 启动确定性 driver 执行大型任务计划，并在它停下时处理用户决策。
 disable-model-invocation: true
+triggers:
+  - user
 ---
 
 # 大型任务 driver

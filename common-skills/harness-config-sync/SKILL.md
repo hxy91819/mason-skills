@@ -2,6 +2,8 @@
 name: harness-config-sync
 description: 在多个 Agent 宿主之间自动收敛用户级或项目级 prompts 与 skills，标准内容保留单一事实源，宿主专有路径使用软链接入。
 disable-model-invocation: true
+triggers:
+  - user
 ---
 
 # Harness Config Sync

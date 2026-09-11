@@ -2,6 +2,8 @@
 name: droid-config
 description: "配置、升级和验证 Factory Droid，并维护脱敏的本地运行审计。仅供用户通过 $droid-config 手动调用。"
 disable-model-invocation: true
+triggers:
+  - user
 ---
 
 # Droid 配置

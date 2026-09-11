@@ -2,6 +2,8 @@
 name: local-test
 description: Use only when actually starting, reusing, checking, or stopping a local multi-service integration or project-preview environment, or configuring its `lt` CLI. Do not use for ordinary code edits, unit tests, static HTML publishing, code review, or remote-only deployment.
 disable-model-invocation: true
+triggers:
+  - user
 ---
 
 # Local Test 环境规范与治理

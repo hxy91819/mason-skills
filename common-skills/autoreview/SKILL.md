@@ -2,6 +2,8 @@
 name: autoreview
 description: "Pre-commit/ship code review: Codex default; optional Claude, Pi, or BB session; zero-config subagent fallback."
 disable-model-invocation: true
+triggers:
+  - user
 ---
 
 # Auto Review

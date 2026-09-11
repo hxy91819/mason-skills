@@ -2,6 +2,8 @@
 name: article-workflow-skill-maker
 description: "Meta skill for turning a manually executed article workflow phase into a reusable `article-workflow-*` skill. Use when the user says they manually followed the article optimization workflow overview, adjusted through conversation, checked the result, and now wants to summarize the current session into a workflow skill."
 disable-model-invocation: true
+triggers:
+  - user
 ---
 
 # Article Workflow Skill Maker

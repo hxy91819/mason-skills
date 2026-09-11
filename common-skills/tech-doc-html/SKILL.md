@@ -2,6 +2,8 @@
 name: tech-doc-html
 description: Generate vivid, interactive, easy-to-understand single-file HTML visualizations from technical design documents.
 disable-model-invocation: true
+triggers:
+  - user
 ---
 
 # Technical Design HTML Visualization

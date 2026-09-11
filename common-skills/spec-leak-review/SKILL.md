@@ -2,6 +2,8 @@
 name: spec-leak-review
 description: 审查网站界面或任意文本中的 spec leak 与明显的用户提示词残留，给出保留、改写、降级或删除建议并输出 HTML 报告。仅在用户显式调用 $spec-leak-review 时运行。
 disable-model-invocation: true
+triggers:
+  - user
 ---
 
 # Spec Leak Review

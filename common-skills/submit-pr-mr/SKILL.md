@@ -2,6 +2,8 @@
 name: submit-pr-mr
 description: 提交 MR/PR（创建 merge request 或 pull request）时使用。先遵循目标仓库自身的 PR/MR 规则，再按四要素组织描述：问题、问题证据、修复方案、修复后证据或本地验证。
 disable-model-invocation: true
+triggers:
+  - user
 ---
 
 # Submit PR/MR
