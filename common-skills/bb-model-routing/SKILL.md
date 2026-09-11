@@ -49,7 +49,8 @@ driver 只传任务文本、难度、类型与已有环境，路由仍由本配�
 [`references/bb-dispatch-loop.md`](../large-task-orchestrator/references/bb-dispatch-loop.md)。
 
 `defaults.test` 决定 Validator 路由，`defaults.judge` 单独决定 Judge 路由，Worker 使用难度路由或
-`debug` 路由。各角色的模型与 reasoning 按用户要求配置；未配置 `judge` 时沿用 `complex`，兼容旧配置。
+`debug` 路由。`agents.<别名>.routes` 按角色、难度和 `default` 项配置模型与 reasoning，选择规则见
+[配置与派发](references/dispatch.md)。
 
 ## 可观测性
 

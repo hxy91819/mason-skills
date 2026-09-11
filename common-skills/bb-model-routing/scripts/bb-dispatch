@@ -18,6 +18,9 @@ class DispatchError(Exception):
     pass
 
 
+ROUTE_KEYS = frozenset(("simple", "medium", "complex", "debug", "test", "judge", "default"))
+
+
 def bb(*args):
     creating = args[:2] == ("thread", "spawn")
     try:
@@ -65,13 +68,33 @@ def thread_title(title, task):
     return "[Agent] " + text
 
 
+def model_and_reasoning(agent, alias, route, difficulty):
+    if "model" in agent or "reasoning" in agent:
+        raise DispatchError(f"agents.{alias} 的 model/reasoning 必须放在 routes.<路由> 下。")
+    routes = mapping(agent.get("routes"), f"agents.{alias}.routes")
+    unknown = [repr(key) for key in routes if key not in ROUTE_KEYS]
+    if unknown:
+        raise DispatchError(f"agents.{alias}.routes 只支持 {sorted(ROUTE_KEYS)}；未知项：{', '.join(unknown)}。")
+    profile_name = next((key for key in (route, difficulty, "default") if key in routes), None)
+    if profile_name is None:
+        raise DispatchError(
+            f"agents.{alias}.routes 缺少 {route!r}、{difficulty!r} 或 'default'；请为该路由配置模型。"
+        )
+    profile = mapping(routes[profile_name], f"agents.{alias}.routes.{profile_name}")
+    model = string(profile.get("model"), f"agents.{alias}.routes.{profile_name}.model")
+    reasoning = profile.get("reasoning")
+    if reasoning is not None:
+        reasoning = string(reasoning, f"agents.{alias}.routes.{profile_name}.reasoning")
+    return model, reasoning
+
+
 def dispatch(args, call=bb):
     try:
         config = mapping(yaml.safe_load(Path(args.config).expanduser().read_text()), "config")
     except (OSError, yaml.YAMLError) as exc:
         raise DispatchError(f"无法读取配置 {args.config}：{exc}") from exc
-    if config.get("version") != 1:
-        raise DispatchError("配置必须包含 version: 1。")
+    if config.get("version") != 2:
+        raise DispatchError("配置必须包含 version: 2。")
     context = call("status") if not (args.project and args.environment) else {}
     current_project = (context.get("project") or {}).get("id")
     current_env = ((context.get("thread") or {}).get("environment") or {}).get("display", {}).get("id")
@@ -87,16 +110,10 @@ def dispatch(args, call=bb):
     defaults = {**mapping(config.get("defaults", {}), "defaults"), **mapping(override.get("defaults", {}), "environment defaults")}
     agents = {**mapping(config.get("agents", {}), "agents"), **mapping(override.get("agents", {}), "environment agents")}
     route = args.kind if args.kind in ("debug", "test", "judge") else args.difficulty
-    # 旧配置让 Judge 共用 complex；仅缺少新键时保留该行为，失效的显式路由仍报错。
-    if route == "judge" and "judge" not in defaults:
-        route = "complex"
     alias = string(args.agent or defaults.get(route), f"defaults.{route}")
     agent = mapping(agents.get(alias), f"agents.{alias}")
     provider = string(agent.get("provider"), "provider")
-    model = string(agent.get("model"), "model")
-    reasoning = agent.get("reasoning")
-    if isinstance(reasoning, dict):
-        reasoning = reasoning.get(args.difficulty)
+    model, reasoning = model_and_reasoning(agent, alias, route, args.difficulty)
     reasoning = args.reasoning if args.reasoning is not None else reasoning
     if reasoning is not None:
         reasoning = string(reasoning, "reasoning")

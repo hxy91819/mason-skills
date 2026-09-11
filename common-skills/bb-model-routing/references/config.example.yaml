@@ -1,27 +1,41 @@
-version: 1
+version: 2
 permission_mode: accept-edits
-# 别名是用户自定义标签；可先让所有任务共用一个已验证的路由。
+# defaults 只选择 provider 别名；模型与推理级别在 agents.<别名>.routes 中定义。
 defaults:
   simple: primary
   medium: primary
   complex: primary
   debug: primary
   test: primary
-  # 可选：为编排异常裁决单独选模型/推理级别；省略时沿用 complex。
+  # 编排异常裁决使用独立 Judge 路由。
   judge: primary
 agents:
   primary:
     provider: <provider-id>
-    model: <model-id>
-    # 可选：从该模型目录选择支持的值；省略时使用 provider 默认值。
-    # reasoning: <reasoning-level>
-    # 也可按难度配置：{simple: <level>, medium: <level>, complex: <level>}
+    routes:
+      simple:
+        model: <simple-model-id>
+        reasoning: <simple-reasoning-level>
+      medium:
+        model: <medium-model-id>
+        reasoning: <medium-reasoning-level>
+      complex:
+        model: <complex-model-id>
+        reasoning: <complex-reasoning-level>
+      # debug、test、judge 是角色项，优先于同一次派发的 difficulty。
+      test:
+        model: <validator-model-id>
+        reasoning: <validator-reasoning-level>
+      # default 仅在没有匹配角色或难度项时使用。
+      default:
+        model: <fallback-model-id>
 environments: {}
-# 环境 ID 来自 bb；同名别名整体替换，不继承顶层的模型设置。
+# 环境 ID 来自 bb；同名别名整体替换，不继承顶层 routes。
 # environments:
 #   <environment-id>:
 #     defaults: {complex: specialist, debug: specialist}
 #     agents:
 #       specialist:
 #         provider: <provider-id>
-#         model: <model-id>
+#         routes:
+#           complex: {model: <model-id>, reasoning: <reasoning-level>}

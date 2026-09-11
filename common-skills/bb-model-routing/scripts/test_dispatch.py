@@ -17,16 +17,30 @@ class DispatchTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.config = Path(self.temp.name) / 'config.yaml'
-        self.config.write_text('''version: 1
+        self.config.write_text('''version: 2
 permission_mode: accept-edits
-defaults: {simple: primary, medium: primary, complex: specialist, debug: specialist, test: primary}
+defaults: {simple: primary, medium: primary, complex: specialist, debug: specialist, test: primary, judge: specialist}
 agents:
-  primary: {provider: primary, model: fast-model, reasoning: max}
-  specialist: {provider: specialist, model: deep-model, reasoning: {simple: low, medium: medium, complex: medium}}
+  primary:
+    provider: primary
+    routes:
+      simple: {model: fast-model, reasoning: max}
+      medium: {model: medium-model, reasoning: high}
+      test: {model: validator-model, reasoning: high}
+  specialist:
+    provider: specialist
+    routes:
+      simple: {model: deep-model, reasoning: low}
+      medium: {model: deep-model, reasoning: medium}
+      complex: {model: deep-model, reasoning: medium}
+      judge: {model: deep-model, reasoning: max}
 environments:
   env_other:
     agents:
-      specialist: {provider: remote-provider, model: remote-model, reasoning: medium}
+      specialist:
+        provider: remote-provider
+        routes:
+          default: {model: remote-model, reasoning: medium}
 ''')
         self.calls = []
         self.providers = [{'id': name, 'available': True, 'capabilities': {'permissionModes': ['accept-edits']}} for name in ['primary', 'specialist', 'remote-provider']]
@@ -40,8 +54,14 @@ environments:
         if args[:2] == ('provider', 'list'):
             return self.providers
         if args[:2] == ('provider', 'models'):
-            model = {'primary': 'fast-model', 'specialist': 'deep-model', 'remote-provider': 'remote-model'}[args[2]]
-            return [{'id': model, 'supportedReasoningEfforts': [{'reasoningEffort': x} for x in ['low', 'medium', 'max']]}]
+            models = {
+                'primary': ['fast-model', 'medium-model', 'validator-model'],
+                'specialist': ['deep-model'],
+                'remote-provider': ['remote-model'],
+            }[args[2]]
+            return [{'id': model, 'supportedReasoningEfforts': [
+                {'reasoningEffort': x} for x in ['low', 'medium', 'high', 'xhigh', 'max']
+            ]} for model in models]
         if args[:2] == ('thread', 'spawn'):
             return {'thread': {'id': 'created', 'status': 'queued'}}
         raise AssertionError(args)
@@ -66,6 +86,8 @@ environments:
     def test_kind_test_uses_test_default_and_spawns_once(self):
         result = m.dispatch(self.args('--kind', 'test'), self.fake)
         self.assertEqual(result['selection']['agent'], 'primary')
+        self.assertEqual(result['selection']['model'], 'validator-model')
+        self.assertEqual(result['selection']['reasoning'], 'high')
         self.assertEqual(result['selection']['kind'], 'test')
         self.assertEqual(result['result']['thread']['status'], 'queued')
         self.assertEqual(sum(c[:2] == ('thread', 'spawn') for c in self.calls), 1)
@@ -81,10 +103,6 @@ environments:
         self.assertEqual(result['selection']['agent'], 'primary')
 
     def test_judge_uses_independent_reasoning_from_complex_worker(self):
-        config = m.yaml.safe_load(self.config.read_text())
-        config['defaults']['judge'] = 'arbiter'
-        config['agents']['arbiter'] = {'provider': 'specialist', 'model': 'deep-model', 'reasoning': 'max'}
-        self.config.write_text(m.yaml.safe_dump(config))
         for dry_run in (False, True):
             extra = ['--dry-run'] if dry_run else []
             worker = m.dispatch(self.args('--difficulty', 'complex', *extra), self.fake)
@@ -96,16 +114,23 @@ environments:
             command = judge['argv'] if dry_run else self.calls[-1]
             self.assertEqual(command[command.index('--prompt') + 1], self.args().task)
 
-    def test_judge_without_new_default_preserves_environment_complex_route(self):
-        result = m.dispatch(self.args('--difficulty', 'complex', '--kind', 'judge',
-                                      '--environment', 'env_other', '--dry-run'), self.fake)
-        self.assertEqual(result['selection']['provider'], 'remote-provider')
-        self.assertEqual(result['selection']['reasoning'], 'medium')
-        self.assertEqual(result['selection']['kind'], 'judge')
+    def test_routes_use_role_then_difficulty_then_default(self):
+        primary = m.yaml.safe_load(self.config.read_text())['agents']['primary']['routes']
+        primary['default'] = {'model': 'fast-model', 'reasoning': 'low'}
+        config = m.yaml.safe_load(self.config.read_text())
+        config['agents']['primary']['routes'] = primary
+        self.config.write_text(m.yaml.safe_dump(config))
+        medium = m.dispatch(self.args('--difficulty', 'medium', '--dry-run'), self.fake)
+        self.assertEqual((medium['selection']['model'], medium['selection']['reasoning']), ('medium-model', 'high'))
+        debug = m.dispatch(self.args('--kind', 'debug', '--agent', 'primary', '--dry-run'), self.fake)
+        self.assertEqual((debug['selection']['model'], debug['selection']['reasoning']), ('fast-model', 'max'))
+        fallback = m.dispatch(self.args('--difficulty', 'complex', '--agent', 'primary', '--dry-run'), self.fake)
+        self.assertEqual((fallback['selection']['model'], fallback['selection']['reasoning']), ('fast-model', 'low'))
 
     def test_judge_environment_and_explicit_alias_take_precedence(self):
         config = m.yaml.safe_load(self.config.read_text())
         config['defaults']['judge'] = 'specialist'
+        config['agents']['primary']['routes']['default'] = {'model': 'fast-model', 'reasoning': 'max'}
         config['environments']['env_other']['defaults'] = {'judge': 'primary'}
         self.config.write_text(m.yaml.safe_dump(config))
         result = m.dispatch(self.args('--kind', 'judge', '--environment', 'env_other', '--dry-run'), self.fake)
@@ -139,16 +164,20 @@ environments:
         self.assertEqual(result['selection']['permission_mode'], 'full')
 
     def test_invalid_model_reasoning_and_project_do_not_spawn(self):
-        for extra in [('--reasoning', 'high'), ('--project', 'wrong')]:
+        for extra in [('--reasoning', 'ultra'), ('--project', 'wrong')]:
             with self.assertRaises(m.DispatchError):
                 m.dispatch(self.args(*extra), self.fake)
-        self.config.write_text(self.config.read_text().replace('model: fast-model', 'model: missing'))
+        config = m.yaml.safe_load(self.config.read_text())
+        config['agents']['primary']['routes']['simple']['model'] = 'missing'
+        self.config.write_text(m.yaml.safe_dump(config))
         with self.assertRaises(m.DispatchError):
             m.dispatch(self.args(), self.fake)
         self.assertFalse(any(c[:2] == ('thread', 'spawn') for c in self.calls))
 
     def test_provider_without_reasoning_uses_default(self):
-        self.config.write_text(self.config.read_text().replace(', reasoning: max', ''))
+        config = m.yaml.safe_load(self.config.read_text())
+        del config['agents']['primary']['routes']['simple']['reasoning']
+        self.config.write_text(m.yaml.safe_dump(config))
         def no_levels(*args):
             if args[:2] == ('provider', 'models'):
                 return [{'id': 'fast-model'}]
@@ -166,11 +195,26 @@ environments:
             m.dispatch(self.args(), self.fake)
         self.assertEqual(self.calls, [])
 
-    def test_partial_reasoning_map_uses_default(self):
-        self.config.write_text(self.config.read_text().replace('simple: low, ', ''))
-        result = m.dispatch(self.args('--kind', 'debug', '--dry-run'), self.fake)
-        self.assertIsNone(result['selection']['reasoning'])
-        self.assertNotIn('--reasoning-level', result['argv'])
+    def test_invalid_or_missing_routes_do_not_spawn(self):
+        config = m.yaml.safe_load(self.config.read_text())
+        config['agents']['primary']['model'] = 'fast-model'
+        self.config.write_text(m.yaml.safe_dump(config))
+        with self.assertRaises(m.DispatchError):
+            m.dispatch(self.args(), self.fake)
+        config['agents']['primary'].pop('model')
+        config['agents']['primary']['routes'].pop('simple')
+        self.config.write_text(m.yaml.safe_dump(config))
+        with self.assertRaises(m.DispatchError):
+            m.dispatch(self.args(), self.fake)
+        self.assertFalse(any(c[:2] == ('thread', 'spawn') for c in self.calls))
+
+    def test_version_one_config_is_rejected_before_calling_bb(self):
+        config = m.yaml.safe_load(self.config.read_text())
+        config['version'] = 1
+        self.config.write_text(m.yaml.safe_dump(config))
+        with self.assertRaises(m.DispatchError):
+            m.dispatch(self.args(), self.fake)
+        self.assertEqual(self.calls, [])
 
     def test_titles_are_prefixed_in_preview_and_spawn(self):
         cases = [(None, '[Agent] literal $(touch nope) "text"'),

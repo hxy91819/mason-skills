@@ -16,7 +16,7 @@ bb provider models <provider-id> --environment <environment-id> --json
 
 从可用 provider 中选择符合用户要求的模型，检查 `permissionModes` 和模型的 `supportedReasoningEfforts`；多个候选缺乏选择依据时询问用户。目录能证明可用性，不能证明价格和任务质量。将选择写入任意别名，例如 `primary`，然后配置各难度、debug、test 和 judge 的默认别名；不要求安装特定 provider 或购买特定渠道。
 
-迁移时保留已有别名和无关设置，将失效路由替换为目标环境的实际 ID；同一配置服务多个环境时使用 `environments` 覆盖。脚本只读取配置，不安装 provider 或覆盖配置。新配置先运行 `--dry-run` 验证，再派发。模型目录不会自动生成用户的模型偏好。
+配置格式为 `version: 2`。迁移时把扁平的 `agents.<别名>.model/reasoning` 移到 `agents.<别名>.routes.<路由>`；同一 provider 的不同模型、难度和角色保留在这个别名下。脚本不接受旧格式。配置服务多个环境时使用 `environments` 覆盖。脚本只读取配置，不安装 provider 或覆盖配置。新配置先运行 `--dry-run` 验证，再派发。模型目录不会自动生成用户的模型偏好。
 
 ## 派发与配置规则
 
@@ -32,11 +32,11 @@ bb-dispatch --difficulty medium --agent primary --task '执行已授权的任务
 
 默认权限为 `accept-edits`。用户可在顶层或环境配置中设置已授权的 `permission_mode`；权限不兼容时报告错误，不自动升级。
 
-配置 `version: 1`。`defaults` 将 simple/medium/complex/debug/test/judge 映射到工具别名，`agents` 为别名定义 provider/model/reasoning。reasoning 可省略或设为 null，也可以是固定字符串或按 simple/medium/complex 配置的映射；映射中缺失的难度使用 provider 默认值。显式值仍须通过模型目录校验。`environments.<精确环境 ID>` 可覆盖 defaults、agents、permission_mode；同名工具配置整体替换，必须写出 provider 和 model；reasoning 可省略或设为 null，表示使用 provider 默认值。无环境覆盖时使用顶层配置；实际可用性仍向目标环境校验。
+配置 `version: 2`。`defaults` 将 simple/medium/complex/debug/test/judge 映射到 provider 别名；每个 `agents.<别名>` 只写一次 `provider`，并在 `routes.<路由>` 中为每个难度或角色写 `model` 与可选的 `reasoning`。同一 provider 因而可按难度选择不同模型，且无需为模型组合创建别名。显式 reasoning 仍须通过模型目录校验；省略或设为 null 时使用 provider 默认值。
 
-`defaults.judge` 是可选项：合并环境配置后仍缺少该键时，Judge 沿用 `defaults.complex`，兼容旧配置。显式填写空值、失效别名或不可用路由时仍报错。要让 complex Worker 与 Judge 使用同一模型的不同推理级别，为两者分别定义别名并设置 reasoning。
+路由解析顺序为 `debug`、`test`、`judge` 等角色项，其次是 `simple`、`medium`、`complex` 难度项，最后才是可选 `default` 项。例如 Validator 固定传 `simple --kind test`，所以优先选 `routes.test`；若配置只有 `routes.simple`，才选它。没有任何匹配项会报错，不会猜测模型。所有 `defaults` 键都是显式配置，Judge 不再自动沿用 complex。
 
-优先级：命令行覆盖 > 环境配置 > 顶层配置。`--kind debug|test|judge` 优先难度路由，`--agent` 优先类型路由。脚本不从任务文本猜测类型；调用 Agent 负责识别排障、测试或编排异常裁决任务。模型和思考深度的明确要求用配置别名、`--reasoning` 表达，缺失配置时先补齐，不静默替换。
+优先级：命令行覆盖 > 环境配置 > 顶层配置。`--kind debug|test|judge` 先决定 defaults 和 routes 的角色项，`--agent` 覆盖 defaults；它仍使用本次的 kind 和 difficulty 选择该 agent 的 routes。`environments.<精确环境 ID>` 可覆盖 defaults、agents、permission_mode；同名 agent 整体替换，必须写出 provider 和 routes。脚本不从任务文本猜测类型；调用 Agent 负责识别排障、测试或编排异常裁决任务。模型和思考深度的明确要求用配置别名、`--reasoning` 表达，缺失配置时先补齐，不静默替换。
 
 默认从 `bb status` 解析环境，项目使用该环境的所属项目。`--project` 和 `--environment` 可显式指定，但必须匹配；只使用现有环境，不建分支或 worktree。同项目同环境时关联当前父线程。
 
