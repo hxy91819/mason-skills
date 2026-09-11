@@ -22,7 +22,8 @@
 1. `status --json` 给出 ready frontier；driver 领取一张 todo Story，记录基线并经 `bb-dispatch` 派 Worker。
 2. `bb thread wait <id> --timeout <poll>` 后读取 `show`、interactions 和 `output`。当前 BB 在 timeout 时返回
    退出码 2；只要线程仍是 `pending|starting|active|stopping`，这表示 busy，不是命令错误。driver 补足
-   poll 间隔，避免主循环忙等。busy 自最近一次 driver 对该线程的事件超过 `--stall-minutes` 时，driver 先
+   poll 间隔，避免主循环忙等。driver 同时吸收 BB `thread.updatedAt`，因此外部续跑或 steer 也会刷新
+   watchdog；busy 自最近一次已观察事件超过 `--stall-minutes` 时，driver 先
    `bb thread stop` 并记录 `thread.stalled`，再让 Worker retry 一次后交 Judge，或直接改派 Validator。
 3. Worker `worker_done` 时，driver 从 Git 区分业务改动、计划投影、`.local/` 与起始 dirty baseline；没有业务
    改动须经 `--allow-empty-story` 明示，或交 Judge。程序不把计划的 `write_scope` 解释成文件白名单。

@@ -38,7 +38,10 @@ if args[:1] == ["status"]:
     out({"project": {"id": "proj"}, "thread": {"id": "thr_parent", "environment": {"display": {"id": "env"}}}})
 if args[:2] == ["thread", "show"]:
     t = world["threads"][args[2]]
-    out({"thread": {"id": args[2], "status": t["status"]}})
+    thread = {"id": args[2], "status": t["status"]}
+    if "updatedAt" in t:
+        thread["updatedAt"] = t["updatedAt"]
+    out({"thread": thread})
 if args[:2] == ["thread", "wait"]:
     t = world["threads"][args[2]]
     wait_exit = 0
@@ -618,6 +621,23 @@ class DriverTest(unittest.TestCase):
         self.assertIn(["thread", "retry", "thr_worker_story01_1"], world["calls"])
         payload = self.status_payload()
         self.assertTrue(any(event["event"] == "thread.stalled" for event in payload["recent_events"]))
+
+    def test_external_worker_resume_refreshes_stall_watchdog(self) -> None:
+        self.set_world({"STORY-01:worker": [[{"status": "active"}]]})
+        self.run_driver("--once")
+        state_path = next((self.repo / ".local" / "large-task-orchestrator").glob("*/state.json"))
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["thread_events"]["thr_worker_story01_1"] = time.time() - 7200
+        self.write_json(state_path, state)
+        world = self.read_world()
+        world["threads"]["thr_worker_story01_1"]["updatedAt"] = int(time.time() * 1000)
+        self.write_json(self.world, world)
+
+        self.run_driver("--once", "--stall-minutes", "1")
+
+        calls = self.read_world()["calls"]
+        self.assertNotIn(["thread", "stop", "thr_worker_story01_1"], calls)
+        self.assertNotIn(["thread", "retry", "thr_worker_story01_1"], calls)
 
     def test_stalled_validator_is_reassigned(self) -> None:
         self.set_world({

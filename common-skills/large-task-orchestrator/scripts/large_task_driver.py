@@ -351,6 +351,17 @@ class Driver:
         self.state["thread_events"][thread_id] = time.time()
         self._save_state()
 
+    def observe_thread_event(self, thread_id: str, thread: dict[str, Any]) -> None:
+        updated_at = thread.get("updatedAt")
+        if not isinstance(updated_at, (int, float)):
+            return
+        observed_at = updated_at / 1000 if updated_at > 10_000_000_000 else updated_at
+        previous = self.state["thread_events"].get(thread_id)
+        if isinstance(previous, (int, float)) and previous >= observed_at:
+            return
+        self.state["thread_events"][thread_id] = observed_at
+        self._save_state()
+
     def thread_is_stalled(self, thread_id: str) -> bool:
         events = self.state["thread_events"]
         last_event = events.get(thread_id)
@@ -621,7 +632,9 @@ class Driver:
         if timeout <= 0:
             raise DriverError("--poll-seconds 与 --wait-timeout 必须为正整数。")
         result = self.bb("thread", "wait", thread_id, "--timeout", str(timeout), check=False)
-        status = str(self.thread_status(thread_id).get("status") or "")
+        thread = self.thread_status(thread_id)
+        self.observe_thread_event(thread_id, thread)
+        status = str(thread.get("status") or "")
         if status == "idle":
             return "idle"
         if status == "error":
