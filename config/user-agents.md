@@ -9,6 +9,7 @@ alwaysApply: true
 5. Keep responses concise, direct, and non-repetitive.
 6. 使用简体中文与用户沟通（此优先级比任何仓库的沟通语言都高）
 7. 用户引用的技能（`$name` / `/name`）在当前环境的技能列表里找不到时，按顺序查找其 `SKILL.md`：先 `~/.agents/skills/<name>/`，再当前仓库 `.agents/skills/<name>/`；找到后读取并按其内容继续任务。
+8. 设计应该以长远维护、消除歧义为目标，应考虑此会话结束后，新的会话也能有轻松接手工作。主动优化用户的仓库上下文，包含但不限于 AGENTS.md，skills，docs。
 
 ## 共享工作区
 
