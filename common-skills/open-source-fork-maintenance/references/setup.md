@@ -31,7 +31,7 @@ After authorization, preserve unrelated worktree changes and perform these steps
    For example, a project that discovers skills from `.bb/skills` passes `--skills-dir .bb/skills`. The helper only creates an absent link or accepts an identical one. It never replaces a file, directory, or different link.
 3. Create `config/local-aggregate-features.json` from [../assets/local-aggregate-features.json](../assets/local-aggregate-features.json). Replace both upstream placeholders with the selected ref and its resolved commit. If the project has an existing machine-readable configuration convention, locate the registry there and update the project-specific `AGENTS.md` block to name that path.
 4. Add the marked content from [../assets/AGENTS.local-aggregate.md](../assets/AGENTS.local-aggregate.md) to the root `AGENTS.md`. Update an existing `open-source-fork-maintenance` marked block in place; never duplicate it. Add a short table that mirrors the registry when the first feature is packaged.
-5. Find every local `feature/*` and `fix/*` branch and worktree. Register each one after it has an upstream issue or feedback comment, committed implementation, and relevant verification. They are default aggregation candidates, not opt-in candidates.
+5. Find every local `feature/*` and `fix/*` branch and worktree. Register each one after it has an upstream issue or feedback comment and a committed, verified implementation. They are default aggregation candidates, not opt-in candidates.
 
 The registry schema is version 2. `aggregate.lastIntegratedUpstreamCommit` changes only after a complete aggregate rebuild based on a new upstream commit. Each feature has this shape:
 

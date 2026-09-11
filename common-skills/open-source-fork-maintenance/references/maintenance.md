@@ -27,11 +27,11 @@ git -C <feature-worktree> status --short
 git -C <feature-worktree> rebase --no-autostash <upstream-ref>
 ```
 
-Resolve product conflicts there and run the relevant verification there. Rebase rewrites history, so get separate approval before `git push --force-with-lease` to a published fork branch. A rewritten source history requires a complete aggregate rebuild; its previous package record cannot be treated as an incremental range.
+Resolve product conflicts there, rerun the relevant verification, and finish `$autoreview` closeout there before treating the rewritten branch as verified. Rebase rewrites history, so get separate approval before `git push --force-with-lease` to a published fork branch. A rewritten source history requires a complete aggregate rebuild; its previous package record cannot be treated as an incremental range.
 
 ## Incremental packaging
 
-Incremental packaging requires a clean root checkout on `local/aggregate` and a recorded source commit that remains an ancestor of the source branch. Cherry-pick commits in topological order with `-x`. For a first package, use `git merge-base local/aggregate <branch>` as the lower bound; do not accidentally package unrelated new upstream commits.
+Incremental packaging requires a clean root checkout on `local/aggregate` and a recorded source commit that remains an ancestor of the source branch. Package only verified source deltas. If `$autoreview` closeout has not completed in the source worktree, finish it there before cherry-picking. Cherry-pick commits in topological order with `-x`. For a first package, use `git merge-base local/aggregate <branch>` as the lower bound; do not accidentally package unrelated new upstream commits.
 
 If a cherry-pick conflicts, abort it and repair the source worktree. Do not make a product-only fix on the aggregate branch.
 

@@ -16,6 +16,7 @@ The project owns its branch registry, its feedback records, its verification com
 
 - the main checkout stays on `local/aggregate` for integration and experience;
 - every product change lives on its own `feature/*` or `fix/*` branch and worktree;
+- a source branch is verified after relevant project checks pass in its worktree and `$autoreview` closeout there reports no accepted/actionable findings;
 - the aggregate receives verified source commits with `git cherry-pick -x`;
 - a committed project manifest records each source commit, aggregate commit, and upstream feedback issue.
 
