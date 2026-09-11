@@ -86,7 +86,8 @@ worktree 环境里启动第二个 driver；锁与状态按 `(仓库, 计划)` �
 2. driver 从 frontier 原子领取一张 Story，再用 `brief` 派发 fresh Worker。
 3. Worker 在公共 seam 上以 red → green 纵向小循环实现并报告证据。
 4. 独立 Validator 逐条确认 Acceptance 是否真正成立，或由验收脚本直接判定；修复留在同一 Worker 线程。
-5. driver 核对工作区事实，更新验收与 Handoff，刷新人读视图并提交只包含本 Story 路径的 checkpoint。
+5. Validator 从 Worker turn diff 确认本 Story 的路径归属；driver 更新验收与 Handoff、刷新人读视图，并
+   只提交这些路径的 checkpoint。
 6. Judge 的新证据触发最小计划调整，然后 driver 继续下一项可执行结果，不在 Story 之间等待人工确认。
 7. `final_story` 在同一 acceptance commit 上重跑全部黄金案例和整合检查。
 8. 完成门禁、测试、授权提交与真实远端 HEAD 同时成立后，目标才算完成。

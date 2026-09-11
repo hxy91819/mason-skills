@@ -31,9 +31,11 @@
    只是规划预估。共享工作区中新出现的 dirty 文件仍可能来自其他会话；Validator 以当前 Worker 的 BB
    `turn/diff` 确认归属，不以 mtime 或活跃时间窗口推断。无法归属的并行改动记为新事实，不判当前 Story
    失败。Validator 失败把精确缺口发回同一 Worker；报告两次无效时受控停止。
-5. 完成时写入 Acceptance、受限长度的 Handoff、刷新投影，并用 `git commit --only -- <targets>` 创建
-   checkpoint。目标是业务路径加当前 Story/SPEC/STATUS，排除开始前的脏路径和 `.local/`，因此不会提交
-   其他 Agent 的既有暂存改动。
+5. Validator 报告用严格 `worker_paths` 列出从 Worker `turn/diff` 确认归属的精确 dirty 文件路径；目录、
+   已变干净的路径、Driver 管理路径和 Story 开始前已有的 dirty 文件均拒绝。完成时写入
+   Acceptance、受限长度的 Handoff、刷新投影，并用 `git commit --only -- <targets>` 创建 checkpoint。
+   业务目标只取 `worker_paths`，再加当前 Story/SPEC/STATUS；开始前的脏路径和 `.local/` 仍排除，因此
+   Story 启动后出现的其他会话改动也不会被共享 dirty 增量带入。
 
 `error` 首次执行 `bb thread retry`；第二次 Worker error 交 Judge，第二次 Validator error 改派新的
 Validator。pending interaction 的完整内容交 Judge；Judge 处理已授权交互并回复 `patch` 加

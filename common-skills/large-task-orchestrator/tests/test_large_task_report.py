@@ -30,6 +30,7 @@ def valid_validator_report() -> dict[str, object]:
             {"id": "AC-01", "outcome": "holds", "evidence": "公开命令退出码为 0"},
             {"id": "AC-02", "outcome": "holds", "evidence": "公开接口返回预期结果"},
         ],
+        "worker_paths": ["src/feature.py"],
         "gaps": [],
         "new_facts": [],
     }
@@ -162,6 +163,19 @@ class ReportTest(unittest.TestCase):
         )
         self.assertEqual(read.returncode, 2)
         self.assertIn("validation_round", read.stderr)
+
+    def test_validator_report_rejects_unsafe_or_duplicate_worker_paths(self) -> None:
+        unsafe = valid_validator_report()
+        unsafe["worker_paths"] = ["../parallel.txt"]
+        rejected = self.submit_validator(unsafe)
+        self.assertEqual(rejected.returncode, 2)
+        self.assertIn("normalized repository-relative path", rejected.stderr)
+
+        duplicate = valid_validator_report()
+        duplicate["worker_paths"] = ["src/feature.py", "src/feature.py"]
+        rejected = self.submit_validator(duplicate)
+        self.assertEqual(rejected.returncode, 2)
+        self.assertIn("duplicate path", rejected.stderr)
 
     def test_judge_report_rejects_unknown_action_and_invalidates_previous_report(self) -> None:
         submitted = self.submit_judge(valid_judge_report())

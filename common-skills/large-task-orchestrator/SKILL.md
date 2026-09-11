@@ -47,7 +47,8 @@ python3 <orchestrator-skill>/scripts/large_task_driver.py start \
 ## 正常循环与异常
 
 正常路径由 driver 选择 ready frontier、领取 Story、派 Worker、核对 Git 改动事实，再派 Validator 判断
-Acceptance 与 Story 边界；通过后更新 Handoff、刷新投影并创建只含本 Story 路径的 checkpoint。
+Acceptance、Story 边界和 Worker 路径归属；通过后更新 Handoff、刷新投影并只 checkpoint Validator
+确认归属的 Worker 路径。
 
 发生 Worker `blocked`/`failed`、线程 error、待处理 interaction、空改动、报告无法解析或
 Validator 多轮失败时，driver 才派 `complex` Judge。Judge 只能选择 `retry`、`escalate`、`patch`、
@@ -101,6 +102,7 @@ Acceptance ID 必须与计划顺序、集合完全一致：
 {
   "verdict": "PASS | FAIL",
   "acceptance": [{"id": "AC-01", "outcome": "holds | missing", "evidence": "实际证据"}],
+  "worker_paths": ["Validator 从 Worker turn diff 确认归属的精确 dirty 文件路径"],
   "gaps": [],
   "new_facts": []
 }

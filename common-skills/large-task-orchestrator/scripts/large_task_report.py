@@ -30,7 +30,7 @@ VALIDATOR_VERDICTS = ("PASS", "FAIL")
 ACCEPTANCE_OUTCOMES = ("holds", "missing")
 JUDGE_ACTIONS = ("retry", "escalate", "patch", "block", "replan", "stop")
 WORKER_REPORT_FIELDS = {"result", "changes", "verification", "remaining", "handoff"}
-VALIDATOR_REPORT_FIELDS = {"verdict", "acceptance", "gaps", "new_facts"}
+VALIDATOR_REPORT_FIELDS = {"verdict", "acceptance", "worker_paths", "gaps", "new_facts"}
 JUDGE_REPORT_FIELDS = {"action", "note"}
 BASE_ENVELOPE_FIELDS = {
     "schema_version", "role", "story_id", "attempt", "intent_version", "submitted_at", "report",
@@ -40,6 +40,7 @@ VALIDATOR_ENVELOPE_FIELDS = BASE_ENVELOPE_FIELDS | {"validation_round"}
 JUDGE_ENVELOPE_FIELDS = BASE_ENVELOPE_FIELDS | {"judge_round"}
 ITEM_LIMIT = 8
 ACCEPTANCE_LIMIT = 32
+WORKER_PATH_LIMIT = 128
 SUMMARY_LIMIT = 400
 COMMAND_LIMIT = 1000
 HANDOFF_LIMIT = 400
@@ -214,6 +215,18 @@ def validate_validator_report(value: Any, *, acceptance_ids: list[str]) -> dict[
     if actual_ids != expected_ids:
         raise ReportError(f"report.acceptance ids must exactly equal: {', '.join(expected_ids)}")
 
+    raw_worker_paths = report["worker_paths"]
+    if not isinstance(raw_worker_paths, list):
+        raise ReportError("report.worker_paths must be an array")
+    if len(raw_worker_paths) > WORKER_PATH_LIMIT:
+        raise ReportError(f"report.worker_paths contains more than {WORKER_PATH_LIMIT} items")
+    worker_paths: list[str] = []
+    for index, raw_path in enumerate(raw_worker_paths):
+        path = validate_change_path(raw_path, f"report.worker_paths[{index}]")
+        if path in worker_paths:
+            raise ReportError(f"report.worker_paths contains duplicate path: {path}")
+        worker_paths.append(path)
+
     gaps = [
         require_text(item, f"report.gaps[{index}]", limit=SUMMARY_LIMIT)
         for index, item in enumerate(require_list(report["gaps"], "report.gaps"))
@@ -227,7 +240,13 @@ def validate_validator_report(value: Any, *, acceptance_ids: list[str]) -> dict[
         raise ReportError("PASS requires every acceptance to hold and gaps to be empty")
     if verdict == "FAIL" and not (missing or gaps):
         raise ReportError("FAIL requires at least one missing acceptance or gap")
-    return {"verdict": verdict, "acceptance": acceptance, "gaps": gaps, "new_facts": new_facts}
+    return {
+        "verdict": verdict,
+        "acceptance": acceptance,
+        "worker_paths": worker_paths,
+        "gaps": gaps,
+        "new_facts": new_facts,
+    }
 
 
 def validate_judge_report(value: Any) -> dict[str, Any]:

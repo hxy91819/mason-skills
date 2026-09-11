@@ -221,6 +221,12 @@ class DriverTest(unittest.TestCase):
             normalized[key] = []
             for queue in attempts:
                 normalized_queue = []
+                queue_paths = sorted({
+                    path
+                    for queued_step in queue
+                    for path in queued_step.get("files", {})
+                    if not path.startswith(("plan/", ".local/"))
+                })
                 for original in queue:
                     step = dict(original)
                     output = str(step.get("output") or "")
@@ -230,10 +236,9 @@ class DriverTest(unittest.TestCase):
                     )
                     if key.endswith(":worker") and match and "worker_report" not in step:
                         result = value_aliases.get(match.group(1), match.group(1))
-                        paths = [path for path in step.get("files", {}) if not path.startswith(("plan/", ".local/"))]
                         step["worker_report"] = {
                             "result": result,
-                            "changes": [{"path": path, "summary": "脚本化 Worker 改动"} for path in paths],
+                            "changes": [{"path": path, "summary": "脚本化 Worker 改动"} for path in queue_paths],
                             "verification": [{
                                 "command": "scripted verification", "outcome": "passed", "summary": "脚本化结果",
                             }],
@@ -245,6 +250,22 @@ class DriverTest(unittest.TestCase):
                     )
                     if key.endswith(":validator") and verdict_match and "validator_report" not in step:
                         verdict = verdict_aliases.get(verdict_match.group(1), verdict_match.group(1))
+                        worker_key = f"{key.split(':', 1)[0]}:worker"
+                        worker_attempt = scripts.get(worker_key, [[]])[-1]
+                        explicit_reports = [
+                            queued_step["worker_report"]
+                            for queued_step in worker_attempt
+                            if "worker_report" in queued_step
+                        ]
+                        if explicit_reports:
+                            attributed_paths = [item["path"] for item in explicit_reports[-1]["changes"]]
+                        else:
+                            attributed_paths = sorted({
+                                path
+                                for queued_step in worker_attempt
+                                for path in queued_step.get("files", {})
+                                if not path.startswith(("plan/", ".local/"))
+                            })
                         acceptance = []
                         for acceptance_id, raw_outcome, evidence in re.findall(
                             r"^\s*[-*]?\s*(AC-[A-Za-z0-9.-]+)\s*[:：]\s*(holds|missing|成立|缺失|不成立)\s*(?:[—-]\s*)?(.*)$",
@@ -260,6 +281,7 @@ class DriverTest(unittest.TestCase):
                         step["validator_report"] = {
                             "verdict": verdict,
                             "acceptance": acceptance,
+                            "worker_paths": attributed_paths,
                             "gaps": [] if gap.lower() in ("", "none", "无", "无。") else [gap],
                             "new_facts": [] if fact.lower() in ("", "none", "无", "无。") else [fact],
                         }
@@ -461,6 +483,7 @@ class DriverTest(unittest.TestCase):
         validator_report = {
             "verdict": "PASS",
             "acceptance": [{"id": "AC-01", "outcome": "holds", "evidence": "公开入口返回 1"}],
+            "worker_paths": ["src/feature.py"],
             "gaps": [],
             "new_facts": [],
         }
@@ -718,6 +741,41 @@ class DriverTest(unittest.TestCase):
         validator_task = world["threads"]["thr_validator_story01_1"]["task"]
         self.assertIn("README.md", validator_task)
         self.assertIn("文件不在预估区域不自动等于越界", validator_task)
+
+    def test_checkpoint_uses_only_validator_confirmed_worker_paths(self) -> None:
+        worker_report = {
+            "result": "worker_done",
+            "changes": [{"path": "src/feature.py", "summary": "实现公开入口"}],
+            "verification": [{
+                "command": "scripted verification", "outcome": "passed", "summary": "通过",
+            }],
+            "remaining": [],
+            "handoff": "公开入口可用。",
+        }
+        validator_report = {
+            "verdict": "PASS",
+            "acceptance": [{"id": "AC-01", "outcome": "holds", "evidence": "公开入口返回 1"}],
+            "worker_paths": ["src/feature.py"],
+            "gaps": [],
+            "new_facts": ["parallel.txt 属共享工作区并行改动。"],
+        }
+        self.set_world({
+            "STORY-01:worker": [[{
+                "output": "报告已提交。",
+                "files": {**WORKER_FILES, "parallel.txt": "other work\n"},
+                "worker_report": worker_report,
+            }]],
+            "STORY-01:validator": [[{
+                "output": "结构化报告已提交。", "validator_report": validator_report,
+            }]],
+        })
+
+        self.run_driver("--max-stories", "1")
+
+        committed = self.git("show", "--format=", "--name-only", "HEAD").splitlines()
+        self.assertIn("src/feature.py", committed)
+        self.assertNotIn("parallel.txt", committed)
+        self.assertIn("?? parallel.txt", self.git("status", "--short"))
 
     def test_resume_reuses_thread_recorded_in_owner(self) -> None:
         self.set_world({

@@ -205,7 +205,7 @@ class StoryState:
     judge_rounds: int = 0
     baseline_commit: str = ""
     baseline_dirty: list[str] = field(default_factory=list)
-    last_worker: dict[str, str] = field(default_factory=dict)
+    last_worker: dict[str, Any] = field(default_factory=dict)
     last_validator: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -545,9 +545,33 @@ class Driver:
         return [path for path in self.story_changes(state)
                 if path not in management and not self.is_driver_management_path(path)]
 
+    def attribution_error(self, story_id: str, state: StoryState, paths: list[str]) -> str:
+        dirty = set(self.dirty_paths())
+        baseline = set(state.baseline_dirty)
+        management = set(self.management_paths(story_id))
+        missing = [path for path in paths if path not in dirty]
+        preexisting = [path for path in paths if path in baseline]
+        reserved = [
+            path for path in paths
+            if path in management or self.path_within(path, ".local/") or self.is_driver_management_path(path)
+        ]
+        reasons = []
+        if missing:
+            reasons.append(f"不是当前精确 dirty 文件：{', '.join(missing)}")
+        if preexisting:
+            reasons.append(f"Story 开始前已 dirty，不能按整文件归属：{', '.join(preexisting)}")
+        if reserved:
+            reasons.append(f"属于 Driver 管理路径：{', '.join(reserved)}")
+        return "；".join(reasons)
+
     def checkpoint(self, story_id: str, state: StoryState) -> str:
         baseline = set(state.baseline_dirty)
-        candidates = [*self.implementation_changes(story_id, state), *self.management_paths(story_id)]
+        worker_paths = (
+            state.last_validator.get("worker_paths", [])
+            if state.last_validator
+            else state.last_worker.get("Paths", [])
+        )
+        candidates = [*worker_paths, *self.management_paths(story_id)]
         targets = list(dict.fromkeys(
             path for path in candidates if path not in baseline and not self.path_within(path, ".local/")
         ))
@@ -663,7 +687,7 @@ JSON
 
     def read_worker_report(
         self, story_id: str, story: dict[str, Any], state: StoryState,
-    ) -> tuple[dict[str, str] | None, str]:
+    ) -> tuple[dict[str, Any] | None, str]:
         path = self.worker_report_path(story_id, state.attempts)
         if not path.is_file():
             return None, f"未找到结构化报告：{path}"
@@ -689,6 +713,7 @@ JSON
             "Verified": verified,
             "Remaining": "\n".join(report["remaining"]),
             "Handoff": report["handoff"],
+            "Paths": [item["path"] for item in report["changes"]],
         }, ""
 
     def validator_report_path(self, story_id: str, attempt: int, validation_round: int) -> Path:
@@ -719,6 +744,7 @@ JSON
                 {"id": acceptance_id, "outcome": "holds", "evidence": "实际命令或观察证据"}
                 for acceptance_id in acceptance_ids
             ],
+            "worker_paths": list(state.last_worker.get("Paths", [])),
             "gaps": [],
             "new_facts": [],
         }
@@ -731,8 +757,9 @@ JSON
 ```
 
 `verdict` 只能是 `PASS|FAIL`；每个 Acceptance ID 必须按给定顺序恰好出现一次，`outcome` 只能是
-`holds|missing`，每项必须写实际 evidence。PASS 要求全部 holds 且 gaps 为空；FAIL 必须至少有一项
-missing 或 gap。脚本返回 0 且打印 `VALIDATOR_REPORT_WRITTEN` 才算报告成功。最终自然语言回复只需说明
+`holds|missing`，每项必须写实际 evidence。`worker_paths` 必须逐项列出从 Worker 的 BB turn diff
+确认归属该 Worker 的当前仓库相对路径；Driver 只会 checkpoint 这些路径。PASS 要求全部 holds 且
+gaps 为空；FAIL 必须至少有一项 missing 或 gap。脚本返回 0 且打印 `VALIDATOR_REPORT_WRITTEN` 才算报告成功。最终自然语言回复只需说明
 “结构化报告已提交”，Driver 不从终答文本提取结果。"""
 
     def read_validator_report(
@@ -756,10 +783,16 @@ missing 或 gap。脚本返回 0 且打印 `VALIDATOR_REPORT_WRITTEN` 才算报�
             report = json.loads(result.stdout)["report"]
         except (json.JSONDecodeError, KeyError, TypeError) as error:
             return None, f"报告读取器未返回 canonical Validator envelope：{error}"
+        attribution_error = self.attribution_error(story_id, state, report["worker_paths"])
+        if attribution_error:
+            return None, f"Validator worker_paths 不是可安全 checkpoint 的精确 Worker 文件：{attribution_error}"
+        if report["verdict"] == "PASS" and state.last_worker.get("Paths") and not report["worker_paths"]:
+            return None, "Validator PASS 但 worker_paths 为空，无法 checkpoint Worker 申报的改动"
         return {
             "verdict": report["verdict"],
             "acceptance": {item["id"]: item["outcome"] for item in report["acceptance"]},
             "evidence": {item["id"]: item["evidence"] for item in report["acceptance"]},
+            "worker_paths": report["worker_paths"],
             "gaps": "\n".join(report["gaps"]),
             "new_facts": "\n".join(report["new_facts"]),
         }, ""
@@ -868,6 +901,7 @@ JSON
         acceptance = "\n".join(f"- {item['id']}: {item['criterion']}" for item in story["acceptance"])
         changes = "\n".join(f"- {path}" for path in self.story_changes(state)) or "- （无未提交改动）"
         worker = state.last_worker
+        claimed = "\n".join(f"- {path}" for path in worker.get("Paths", [])) or "- （无）"
         management = "\n".join(f"- {path}" for path in self.management_paths(story_id))
         implementation = "\n".join(f"- {path}" for path in self.implementation_changes(story_id, state)) or "- （无）"
         planned_scope = "\n".join(
@@ -889,6 +923,9 @@ Driver 从共享工作区 Git 状态推导出的 Story 候选增量如下；其�
 Worker 线程：{state.worker_thread}
 需要判断文件归属时，优先检查 `bb thread log {state.worker_thread} --all --json` 中该线程的 `turn/diff/updated`；mtime 和 Worker 活跃时间窗口都不能证明归属。候选文件未出现在 Worker turn diff 或报告中时，按共享工作区并行改动记入 new_facts，不要据此判 FAIL，也不要要求 Worker 回退。
 
+Worker 自报的改动路径如下；这是待核实声明，不是归属证据：
+{claimed}
+
 规划阶段预估的影响区域如下，它只是判断 Story 边界的线索，不是精确文件白名单：
 {planned_scope}
 
@@ -896,7 +933,7 @@ Worker 报告：
 Changed: {worker.get('Changed', '')}
 Verified: {worker.get('Verified', '')}
 
-任务：逐条核对下面每项 Acceptance 是否真正成立，并判断可归属当前 Worker 的实现改动是否服务本 Story 的 Outcome、Acceptance 和边界，是否夹带无关或其他 Story 的工作。以工作区、命令输出和黄金案例为准，Worker 报告不是 Acceptance 成立的证据。文件不在预估区域不自动等于越界；只有确认由当前 Worker 修改且语义上不属于本 Story 时，才在 gaps 记录并判 FAIL。不做通用代码审查、风格或重构建议。
+任务：逐条核对下面每项 Acceptance 是否真正成立，并判断可归属当前 Worker 的实现改动是否服务本 Story 的 Outcome、Acceptance 和边界，是否夹带无关或其他 Story 的工作。以工作区、命令输出和黄金案例为准，Worker 报告不是 Acceptance 成立的证据。文件不在预估区域不自动等于越界；只有确认由当前 Worker 修改且语义上不属于本 Story 时，才在 gaps 记录并判 FAIL。不做通用代码审查、风格或重构建议。报告中的 `worker_paths` 是 checkpoint 的唯一业务路径来源：列出你从 Worker turn diff 确认归属的全部当前路径，排除 driver 管理路径和无法归属的共享改动。
 
 Acceptance：
 {acceptance}
@@ -1007,6 +1044,12 @@ Validator 线程：{state.validator_thread}
         story = self.read_story(story_id)
         worker = state.last_worker
         validator = state.last_validator
+        worker_paths = (
+            validator.get("worker_paths", []) if validator else worker.get("Paths", [])
+        )
+        attribution_error = self.attribution_error(story_id, state, worker_paths)
+        if attribution_error:
+            raise DriverStop(f"{story_id}: checkpoint 前路径归属已失效：{attribution_error}")
         for item in story["acceptance"]:
             item["passed"] = True
         verification = limited_items(worker.get("Verified", ""))
@@ -1201,9 +1244,13 @@ Validator 线程：{state.validator_thread}
         if report["Result"] != "worker_done":
             self.consult_judge(story_id, state, f"Worker 报告 {report['Result']}。")
             return True
-        changes = self.implementation_changes(story_id, state)
+        changes = report.get("Paths", [])
+        attribution_error = self.attribution_error(story_id, state, changes)
+        if attribution_error:
+            self.consult_judge(story_id, state, f"Worker 申报路径无法安全归属：{attribution_error}")
+            return True
         if not changes and not self.args.allow_empty_story:
-            self.consult_judge(story_id, state, "Worker 报告完成，但工作区没有任何新改动。")
+            self.consult_judge(story_id, state, "Worker 报告完成，但没有申报任何仓库改动。")
             return True
         if self.needs_validator(state):
             state.validator_report_requests = 0
