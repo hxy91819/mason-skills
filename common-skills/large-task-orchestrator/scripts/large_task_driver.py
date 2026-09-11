@@ -3,11 +3,11 @@
 
 正常路径由脚本选 frontier、领取 Story、通过 bb-dispatch 派 Worker 与 Validator、
 等待线程、解析结构化报告、更新计划 JSON 并创建 Git checkpoint。只有异常（Worker 报告 blocked/failed、
-Validator 多轮 FAIL、线程出错、待处理交互）才派一次性的 strong judge 线程，让它在固定动作集里
-选一个。真正需要用户的情况 driver 停下并打印原因。
+Validator 多轮 FAIL、线程出错、待处理交互）才启用该 Story 的 Judge 会话，让它在固定动作集里选一个。
+真正需要用户的情况 driver 停下并打印原因。
 
-权威状态在计划 JSON 与 Git；Story.owner 保存 Worker 线程 ID。本地状态文件只缓存阶段、Validator 线程与
-尝试计数，丢失后可从计划 JSON 与 BB 线程记录恢复。
+权威状态在计划 JSON 与 Git；Story.owner 保存 Worker 线程 ID。本地状态文件缓存阶段、Validator/Judge
+线程与尝试计数，丢失后可从计划 JSON 与 BB 线程记录恢复。
 """
 
 from __future__ import annotations
@@ -196,6 +196,7 @@ class StoryState:
     difficulty: str = ""
     worker_thread: str | None = None
     validator_thread: str | None = None
+    judge_thread: str | None = None
     attempts: int = 0
     patch_rounds: int = 0
     thread_retries: int = 0
@@ -203,6 +204,9 @@ class StoryState:
     validator_report_requests: int = 0
     reformat_rounds: int = 0
     judge_rounds: int = 0
+    judge_applied_rounds: int = 0
+    judge_prompted_round: int = 0
+    judge_report_requests: int = 0
     baseline_commit: str = ""
     baseline_dirty: list[str] = field(default_factory=list)
     last_worker: dict[str, Any] = field(default_factory=dict)
@@ -215,16 +219,24 @@ class StoryState:
         # 结构化 Validator 上线前的 in-flight state 没有 round；首轮固定映射为 1 才能原线程补报。
         if state.phase == "validating" and state.validator_rounds < 1:
             state.validator_rounds = 1
+        # 旧状态没有 Judge 线程，已记录的轮次都已由旧 driver 同步处理完。
+        if not state.judge_thread and "judge_applied_rounds" not in data:
+            state.judge_applied_rounds = state.judge_rounds
         return state
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "phase": self.phase, "difficulty": self.difficulty, "worker_thread": self.worker_thread,
-            "validator_thread": self.validator_thread, "attempts": self.attempts,
+            "validator_thread": self.validator_thread, "judge_thread": self.judge_thread,
+            "attempts": self.attempts,
             "patch_rounds": self.patch_rounds, "thread_retries": self.thread_retries,
             "validator_rounds": self.validator_rounds,
             "validator_report_requests": self.validator_report_requests,
-            "reformat_rounds": self.reformat_rounds, "judge_rounds": self.judge_rounds, "baseline_commit": self.baseline_commit,
+            "reformat_rounds": self.reformat_rounds, "judge_rounds": self.judge_rounds,
+            "judge_applied_rounds": self.judge_applied_rounds,
+            "judge_prompted_round": self.judge_prompted_round,
+            "judge_report_requests": self.judge_report_requests,
+            "baseline_commit": self.baseline_commit,
             "baseline_dirty": self.baseline_dirty, "last_worker": self.last_worker,
             "last_validator": self.last_validator,
         }
@@ -874,19 +886,16 @@ JSON
     def worker_task(
         self, story_id: str, story: dict[str, Any], brief: str, *, attempt: int, resume_note: str = "",
     ) -> str:
-        scope = "\n".join(f"- {item}" for item in story.get("context", {}).get("write_scope", [])) or "- （计划未限定）"
-        return f"""你是 Story {story_id} 的 Worker，一次只实现这一张 Story。不要修改计划 JSON、SPEC.md、STATUS.md，不要提交或推送，不要派生其他线程。
+        return f"""实现 Story {story_id}，一次只处理这一张 Story。
 
 {self.repo_context()}
 
-计划预估的影响区域（write scope）如下；它不是完整文件白名单。以 Outcome 和 Acceptance 为准，合理需要其他路径时如实修改并在报告中列全：
-{scope}
-
-工作区可能有他人并发改动：保留它们，不要回滚或格式化无关文件。
-
-执行方式：先验证现状，在执行包指定的公开测试 seam 上按 red → green 的纵向小循环实现，每一步跑相关测试。Acceptance 全部成立才算完成；做不到就如实报告 blocked 或 failed，不要放宽验收。
+以执行包的 Outcome、Acceptance 和公开测试 seam 为准，按 red → green 小循环实现。`write_scope`
+只是预估；需要其他路径时可以修改并在报告中列全。保留共享工作区的并行改动。计划 JSON、SPEC.md、
+STATUS.md 由 Driver 维护；本线程不提交、推送或派生线程。Acceptance 无法全部成立时如实报告
+`blocked` 或 `failed`，不放宽验收。
 {resume_note}
-执行包（来自计划）：
+执行包：
 ```json
 {brief}
 ```
@@ -910,87 +919,90 @@ JSON
 
 {self.validator_report_instructions(story_id, story, state, state.validator_rounds)}"""
 
-    def validator_task(self, story_id: str, story: dict[str, Any], brief: str, state: StoryState) -> str:
+    def validator_task(self, story_id: str, story: dict[str, Any], state: StoryState) -> str:
         acceptance = "\n".join(f"- {item['id']}: {item['criterion']}" for item in story["acceptance"])
-        changes = "\n".join(f"- {path}" for path in self.story_changes(state)) or "- （无未提交改动）"
         worker = state.last_worker
-        claimed = "\n".join(f"- {path}" for path in worker.get("Paths", [])) or "- （无）"
         management = "\n".join(f"- {path}" for path in self.management_paths(story_id))
         implementation = "\n".join(f"- {path}" for path in self.implementation_changes(story_id, state)) or "- （无）"
-        planned_scope = "\n".join(
-            f"- {item}" for item in story.get("context", {}).get("write_scope", [])
-        ) or "- （计划未提供）"
-        return f"""你是 Story {story_id} 的 Validator。你没有参与实现；只读，不修改任何文件，不提交。可以运行测试与验收命令。
+        worker_summary = json.dumps(worker, ensure_ascii=False, indent=2)
+        return f"""只读核验 Story {story_id}；可以运行测试，不修改文件或提交。
 
 {self.repo_context()}
+计划：{self.plan_path}
+Story：{self.story_path(story_id)}
 本 Story 开始时的基线 commit：{state.baseline_commit}
-本 Story 的未提交改动：
-{changes}
+Worker 线程：{state.worker_thread}
 
-其中下面这些是 driver 自己维护的计划状态与投影，不是 Worker 改的，不算越界，不要因它们判 FAIL：
-{management}
-
-Driver 从共享工作区 Git 状态推导出的 Story 候选增量如下；其中可能混入 Story 启动后其他会话产生的并行改动，不能仅凭此列表认定 Worker 归属：
+候选实现路径（Git 推导，可能含并行改动）：
 {implementation}
 
-Worker 线程：{state.worker_thread}
-需要判断文件归属时，优先检查 `bb thread log {state.worker_thread} --all --json` 中该线程的 `turn/diff/updated`；mtime 和 Worker 活跃时间窗口都不能证明归属。候选文件未出现在 Worker turn diff 或报告中时，按共享工作区并行改动记入 new_facts，不要据此判 FAIL，也不要要求 Worker 回退。
+Driver 管理路径（排除出 `worker_paths`）：
+{management}
 
-Worker 自报的改动路径如下；这是待核实声明，不是归属证据：
-{claimed}
+Worker 自报：
+```json
+{worker_summary}
+```
 
-规划阶段预估的影响区域如下，它只是判断 Story 边界的线索，不是精确文件白名单：
-{planned_scope}
-
-Worker 报告：
-Changed: {worker.get('Changed', '')}
-Verified: {worker.get('Verified', '')}
-
-任务：逐条核对下面每项 Acceptance 是否真正成立，并判断可归属当前 Worker 的实现改动是否服务本 Story 的 Outcome、Acceptance 和边界，是否夹带无关或其他 Story 的工作。以工作区、命令输出和黄金案例为准，Worker 报告不是 Acceptance 成立的证据。文件不在预估区域不自动等于越界；只有确认由当前 Worker 修改且语义上不属于本 Story 时，才在 gaps 记录并判 FAIL。不做通用代码审查、风格或重构建议。报告中的 `worker_paths` 是 checkpoint 的唯一业务路径来源：列出你从 Worker turn diff 确认归属的全部当前路径，排除 driver 管理路径和无法归属的共享改动。
+逐条验证 Acceptance，并判断 Worker 的实现是否服务 Story 的 Outcome 与边界。以工作区和实际命令为准，
+自报不是成立证据。文件归属只认 `bb thread log {state.worker_thread} --all --json` 的 Worker turn diff；
+mtime、活跃时间和候选列表都不是归属证据。无法归属的并行改动写入 `new_facts`。计划 `write_scope`
+只是线索；只有确认属于 Worker 且语义上偏离 Story 才判越界。`worker_paths` 列全可归属的当前业务路径，
+它是 checkpoint 的唯一来源。不做通用代码审查。
 
 Acceptance：
 {acceptance}
 
-执行包（来自计划）：
-```json
-{brief}
-```
-
 {self.validator_report_instructions(story_id, story, state, state.validator_rounds)}
 """
 
-    def judge_task(self, story_id: str, story: dict[str, Any], state: StoryState, situation: str) -> str:
-        return f"""你是 large-task driver 的 judge。driver 是确定性脚本，遇到它无法判断的情况时派你做一次决定。你只回答一个动作，不实现代码。
+    def judge_task(
+        self, story_id: str, story: dict[str, Any], state: StoryState, situation: str, *, continuation: bool,
+    ) -> str:
+        static_context = ""
+        if not continuation:
+            static_context = f"""只为 Story {story_id} 裁决，不实现代码。
 
 {self.repo_context()}
 计划：{self.plan_path}
-Story：{story_id} — {story['title']}
-Story 文件：{self.story_path(story_id)}
-Worker 线程：{state.worker_thread}（difficulty={state.difficulty}，attempts={state.attempts}，patch_rounds={state.patch_rounds}）
-Validator 线程：{state.validator_thread}
-基线 commit：{state.baseline_commit}
+Story：{self.story_path(story_id)}
 
-情况：
-{situation}
+动作只能选一个：
+- `retry`：同档 fresh Worker，适用于环境、配额或线程故障。
+- `escalate`：升档 fresh Worker，适用于能力不足。
+- `patch`：明确的小遗漏发回原 Worker。
+- `block`：记录外部 blocker，继续其他 Story。
+- `replan`：已用 `{self.planning_script} write/transition` 调整计划并通过校验。
+- `stop`：需要用户决定权限、破坏性/外部动作、显著成本、Goal/黄金判据或并发冲突。
 
-最近的 Worker 报告：
-{json.dumps(state.last_worker, ensure_ascii=False, indent=2)}
+已授权范围内的 pending interaction 可直接处理，再以 `patch` 和 note `interaction handled` 继续；
+越权 interaction 选 `stop`。
+"""
+        worker = json.dumps({
+            "result": state.last_worker.get("Result"),
+            "paths": state.last_worker.get("Paths", []),
+            "remaining": state.last_worker.get("Remaining", ""),
+            "handoff": state.last_worker.get("Handoff", ""),
+        }, ensure_ascii=False, separators=(",", ":"))
+        validator = json.dumps({
+            "verdict": state.last_validator.get("verdict"),
+            "acceptance": state.last_validator.get("acceptance", {}),
+            "gaps": state.last_validator.get("gaps", ""),
+            "new_facts": state.last_validator.get("new_facts", ""),
+        }, ensure_ascii=False, separators=(",", ":"))
+        validator_report = (
+            str(self.validator_report_path(story_id, state.attempts, state.validator_rounds))
+            if state.validator_rounds else "尚无 Validator 报告"
+        )
+        return f"""{static_context}裁决第 {state.judge_rounds} 轮异常，只提交一个动作。
 
-最近的 Validator 报告：
-{json.dumps({k: v for k, v in state.last_validator.items() if k != 'raw'}, ensure_ascii=False, indent=2)}
+情况：{situation}
+执行状态：worker={state.worker_thread}, validator={state.validator_thread}, difficulty={state.difficulty}, attempt={state.attempts}, patch_rounds={state.patch_rounds}, baseline={state.baseline_commit}
+Worker 报告：{worker}
+Validator 报告：{validator}
+完整报告：{self.worker_report_path(story_id, state.attempts)}；{validator_report}
 
-可用命令：`bb thread show/output/log <id>`、`git status --short`、`git diff --stat`、
-`python3 {self.planning_script} status|brief ...`。需要看细节时自己去看，但不要读超过必要的内容。
-
-可选动作（只能选一个）：
-- retry：换一个同难度的 fresh Worker 重做（原因是环境、配额、session 或线程本身，而不是能力）。
-- escalate：换一个更高难度档的 fresh Worker（原因是实现能力不够；当前 {state.difficulty}）。
-- patch：把 Note 作为修复提示发回同一 Worker 线程（遗漏明确且小）。
-- block：把 Story 标记为 blocked，Note 写具体 blocker；driver 会继续其他 ready Story。
-- replan：你已经用 `python3 {self.planning_script} write/transition` 修改了计划（插入、拆分、改写未开始的 Story，保留既有 ID，Outcome/Acceptance 变化时递增 intent_version），Note 说明改了什么；driver 会重新校验计划并继续。
-- stop：必须由用户决定（缺凭据或权限、破坏性或外部动作、显著成本、改变 Goal/黄金判据/用户边界、无法协调的并发冲突）。Note 写证据、已尝试的恢复、影响范围和一个最小决策问题。
-
-线程正在等待交互时，你可以用 `bb thread interactions list/show/approve/answer/deny` 处理属于计划已授权范围内的交互，处理后选 retry 之外的 `patch`（Note 写 "interaction handled"）让 driver 继续等待；越权的交互选 stop。
+需要证据时读取对应 BB 线程、Git、计划和 Story；沿用本会话前文的边界与动作定义。
 
 {self.judge_report_instructions(story_id, story, state, state.judge_rounds)}
 """
@@ -1043,7 +1055,7 @@ Validator 线程：{state.validator_thread}
         self.clear_validator_report(story_id, state.attempts, state.validator_rounds)
         thread_id = self.dispatch_thread(
             difficulty="simple", kind="test", title=f"{story_id} validator",
-            task=self.validator_task(story_id, story, self.brief(story_id), state))
+            task=self.validator_task(story_id, story, state))
         state.validator_thread = thread_id
         state.phase = "validating"
         self.set_story_state(story_id, state)
@@ -1109,36 +1121,104 @@ Validator 线程：{state.validator_thread}
     # ----------------------------------------------------------------- 异常 → judge
 
     def consult_judge(self, story_id: str, state: StoryState, situation: str) -> None:
-        state.judge_rounds += 1
-        self.set_story_state(story_id, state)
-        if state.judge_rounds > self.args.max_judge_rounds:
-            raise DriverStop(f"{story_id}: judge 已介入 {state.judge_rounds - 1} 次仍未收敛。最近情况：{situation}")
         story = self.read_story(story_id)
-        self.clear_judge_report(story_id, state.attempts, state.judge_rounds)
-        thread_id = self.dispatch_thread(difficulty="complex", kind="judge", title=f"{story_id} judge",
-                                         task=self.judge_task(story_id, story, state, situation), role="judge")
-        report: dict[str, str] | None = None
-        report_error = ""
-        for submission_round in range(2):
+        pending_round = state.judge_applied_rounds < state.judge_rounds
+        if pending_round:
+            judge_round = state.judge_rounds
+        else:
+            judge_round = state.judge_rounds + 1
+            if judge_round > self.args.max_judge_rounds:
+                raise DriverStop(f"{story_id}: judge 已介入 {state.judge_rounds} 次仍未收敛。最近情况：{situation}")
+            state.judge_rounds = judge_round
+            state.judge_report_requests = 0
+            self.clear_judge_report(story_id, state.attempts, judge_round)
+            self.set_story_state(story_id, state)
+
+        report, report_error = self.read_judge_report(story_id, story, state, judge_round)
+        if report is None:
+            thread_id = state.judge_thread
+            if thread_id:
+                try:
+                    status = str(self.thread_status(thread_id).get("status") or "")
+                except DriverError:
+                    status = "error"
+                if status not in (*THREAD_BUSY, "idle"):
+                    self.log("judge.replaced", story=story_id, thread=thread_id, round=judge_round)
+                    thread_id = None
+                elif not pending_round:
+                    while status in THREAD_BUSY:
+                        outcome = self.wait_thread(thread_id)
+                        if outcome == "busy":
+                            continue
+                        if outcome == "interaction":
+                            raise DriverStop(f"{story_id}: Judge 会话 {thread_id} 有待处理交互，保留现场。")
+                        status = "idle" if outcome == "idle" else "error"
+                    if status == "idle":
+                        self.tell_thread(
+                            thread_id,
+                            self.judge_task(story_id, story, state, situation, continuation=True),
+                        )
+                        state.judge_prompted_round = judge_round
+                        self.set_story_state(story_id, state)
+                        self.log("judge.reused", story=story_id, thread=thread_id, round=judge_round)
+                    else:
+                        self.log("judge.replaced", story=story_id, thread=thread_id, round=judge_round)
+                        thread_id = None
+                elif status == "idle" and state.judge_prompted_round < judge_round:
+                    self.tell_thread(
+                        thread_id,
+                        self.judge_task(story_id, story, state, situation, continuation=True),
+                    )
+                    state.judge_prompted_round = judge_round
+                    self.set_story_state(story_id, state)
+                    self.log("judge.reused", story=story_id, thread=thread_id, round=judge_round)
+            if not thread_id:
+                thread_id = self.dispatch_thread(
+                    difficulty="complex", kind="judge", title=f"{story_id} judge",
+                    task=self.judge_task(story_id, story, state, situation, continuation=False), role="judge",
+                )
+                state.judge_thread = thread_id
+                state.judge_prompted_round = judge_round
+                state.judge_report_requests = 0
+                self.set_story_state(story_id, state)
+
+        thread_id = state.judge_thread
+        if not thread_id:
+            raise DriverError(f"{story_id}: Judge 会话缺少线程 ID。")
+        while report is None:
             outcome = self.wait_thread(thread_id)
             while outcome == "busy":
                 outcome = self.wait_thread(thread_id)
+            if outcome in ("error", "stalled"):
+                self.log("judge.replaced", story=story_id, thread=thread_id, round=judge_round)
+                thread_id = self.dispatch_thread(
+                    difficulty="complex", kind="judge", title=f"{story_id} judge",
+                    task=self.judge_task(story_id, story, state, situation, continuation=False), role="judge",
+                )
+                state.judge_thread = thread_id
+                state.judge_prompted_round = judge_round
+                state.judge_report_requests = 0
+                self.set_story_state(story_id, state)
+                continue
             if outcome != "idle":
                 raise DriverStop(f"{story_id}: judge 线程 {thread_id} 未正常结束（{outcome}）。情况：{situation}")
-            report, report_error = self.read_judge_report(story_id, story, state, state.judge_rounds)
+            report, report_error = self.read_judge_report(story_id, story, state, judge_round)
             if report is not None:
                 break
-            if submission_round == 0:
+            if state.judge_report_requests < 1:
+                state.judge_report_requests += 1
+                self.set_story_state(story_id, state)
                 self.tell_thread(
                     thread_id,
                     f"Driver 未收到可用的 Judge 结构化报告：{report_error}\n\n"
-                    "不要重新裁决；按已完成的裁决事实补交一次报告。\n\n"
-                    + self.judge_report_instructions(story_id, story, state, state.judge_rounds),
+                    "按已完成的裁决事实补交报告：\n\n"
+                    + self.judge_report_instructions(story_id, story, state, judge_round),
                 )
-        if report is None:
-            raise DriverStop(
-                f"{story_id}: judge 线程 {thread_id} 两次未提交有效结构化报告：{report_error}"
-            )
+                continue
+            raise DriverStop(f"{story_id}: judge 线程 {thread_id} 两次未提交有效结构化报告：{report_error}")
+        state.judge_applied_rounds = judge_round
+        state.judge_report_requests = 0
+        self.set_story_state(story_id, state)
         self.log("judge.decided", story=story_id, thread=thread_id, action=report["action"], note=report["note"][:200])
         self.apply_judge(story_id, state, report)
 
@@ -1183,8 +1263,22 @@ Validator 线程：{state.validator_thread}
                 difficulty = DIFFICULTIES[index + 1]
             if state.attempts >= self.args.max_attempts:
                 raise DriverStop(f"{story_id}: Worker 已尝试 {state.attempts} 次。\n{note}")
-            self.claim_and_dispatch(story_id, difficulty=difficulty,
-                                    resume_note=f"\n这是第 {state.attempts + 1} 次尝试。上一轮事实：{json.dumps(state.last_worker, ensure_ascii=False)}\njudge 说明：{note}\n")
+            previous = state.last_worker
+            retry_context = {
+                "result": previous.get("Result"),
+                "paths": previous.get("Paths", []),
+                "remaining": previous.get("Remaining", ""),
+                "handoff": previous.get("Handoff", ""),
+                "judge": note,
+            }
+            self.claim_and_dispatch(
+                story_id,
+                difficulty=difficulty,
+                resume_note=(
+                    f"\n第 {state.attempts + 1} 次尝试；先核对工作区已有改动。上一轮摘要："
+                    f"{json.dumps(retry_context, ensure_ascii=False, separators=(',', ':'))}\n"
+                ),
+            )
 
     # ----------------------------------------------------------------- 主循环
 
@@ -1512,6 +1606,7 @@ def collect_status(driver: Driver, log_events: int) -> dict[str, Any]:
             "difficulty": cached.difficulty or None,
             "worker_thread": cached.worker_thread or story.get("owner"),
             "validator_thread": cached.validator_thread,
+            "judge_thread": cached.judge_thread,
         })
     try:
         last_stop = driver.last_stop_path.read_text(encoding="utf-8").strip() or None

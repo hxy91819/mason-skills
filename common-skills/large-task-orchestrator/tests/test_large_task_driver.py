@@ -59,7 +59,8 @@ if args[:2] == ["thread", "wait"]:
             report = step.get(f"{role}_report")
             if report is None:
                 continue
-            command_line = next(line for line in t["task"].splitlines() if f"large_task_report.py {role}" in line)
+            prompt = t.get("current_task", t["task"])
+            command_line = next(line for line in prompt.splitlines() if f"large_task_report.py {role}" in line)
             command_line = command_line.split(" <<", 1)[0]
             subprocess.run(
                 shlex.split(command_line), input=json.dumps(report, ensure_ascii=False),
@@ -79,7 +80,7 @@ if args[:3] == ["thread", "interactions", "list"]:
     out(world["threads"][args[3]].get("interactions", []))
 if args[:2] == ["thread", "tell"]:
     t = world["threads"][args[2]]
-    t["status"] = "active"; t.setdefault("tells", []).append(args[3]); save()
+    t["status"] = "active"; t["current_task"] = args[3]; t.setdefault("tells", []).append(args[3]); save()
     out({"ok": True})
 if args[:2] == ["thread", "retry"]:
     world["threads"][args[2]]["status"] = "active"; save(); out({"ok": True})
@@ -414,8 +415,12 @@ class DriverTest(unittest.TestCase):
         worker_task = self.read_world()["threads"]["thr_worker_story01_1"]["task"]
         self.assertIn("large_task_report.py worker", worker_task)
         self.assertIn("src/", worker_task)
+        self.assertEqual(worker_task.count('"problem_statement"'), 1)
+        self.assertNotIn("计划预估的影响区域", worker_task)
         validator_task = self.read_world()["threads"]["thr_validator_story01_1"]["task"]
         self.assertIn("large_task_report.py validator", validator_task)
+        self.assertNotIn('"problem_statement"', validator_task)
+        self.assertNotIn("执行包", validator_task)
 
     def test_validator_fail_is_sent_back_to_same_worker_then_passes(self) -> None:
         self.set_world({
@@ -553,6 +558,65 @@ class DriverTest(unittest.TestCase):
         self.assertEqual(len(tells), 1)
         self.assertIn("large_task_report.py judge", tells[0])
 
+    def test_judge_reuses_one_story_session_across_rounds(self) -> None:
+        self.set_world({
+            "STORY-01:worker": [[
+                {"output": "Result: failed\nChanged: none\nVerified: red\nRemaining: first\nHandoff: patch"},
+                {"output": "Result: failed\nChanged: none\nVerified: red\nRemaining: second\nHandoff: stop"},
+            ]],
+            "STORY-01:judge": [[
+                {"output": "Action: patch\nNote: 修补明确遗漏。"},
+                {"output": "Action: stop\nNote: 第二轮需要用户决定。"},
+            ]],
+        })
+
+        result = self.run_driver(expected=3)
+
+        self.assertIn("第二轮需要用户决定", result.stderr)
+        world = self.read_world()
+        self.assertEqual(world["spawned"]["STORY-01:judge"], 1)
+        judge = world["threads"]["thr_judge_story01_1"]
+        continuation = next(message for message in judge["tells"] if "裁决第 2 轮异常" in message)
+        self.assertNotIn("动作只能选一个", continuation)
+        self.assertIn("沿用本会话前文", continuation)
+        state_dir = Path(self.status_payload()["state_dir"])
+        self.assertTrue((state_dir / "reports/STORY-01/attempt-1-judge-1.json").is_file())
+        self.assertTrue((state_dir / "reports/STORY-01/attempt-1-judge-2.json").is_file())
+        events = [json.loads(line) for line in (state_dir / "log.jsonl").read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(sum(event["event"] == "thread.spawned" and event.get("kind") == "judge" for event in events), 1)
+        self.assertEqual(sum(event["event"] == "judge.reused" for event in events), 1)
+
+    def test_pending_judge_round_delivers_unsent_situation_after_restart(self) -> None:
+        self.set_world({
+            "STORY-01:worker": [[
+                {"output": "Result: failed\nChanged: none\nVerified: red\nRemaining: first\nHandoff: patch"},
+                {"output": "Result: failed\nChanged: none\nVerified: red\nRemaining: second\nHandoff: stop"},
+            ]],
+            "STORY-01:judge": [[
+                {"output": "Action: patch\nNote: 修补明确遗漏。"},
+                {"output": "Action: stop\nNote: 第二轮需要用户决定。"},
+            ]],
+        })
+        self.run_driver("--once")
+        self.run_driver("--once")
+        state_path = Path(self.status_payload()["state_dir"]) / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        story_state = state["stories"]["STORY-01"]
+        story_state["judge_rounds"] = 2
+        story_state["judge_applied_rounds"] = 1
+        story_state["judge_prompted_round"] = 1
+        self.write_json(state_path, state)
+
+        result = self.run_driver(expected=3)
+
+        self.assertIn("第二轮需要用户决定", result.stderr)
+        world = self.read_world()
+        judge = world["threads"]["thr_judge_story01_1"]
+        continuation = next(message for message in judge["tells"] if "裁决第 2 轮异常" in message)
+        self.assertIn("Worker 报告 failed", continuation)
+        self.assertNotIn("补交报告", continuation)
+        self.assertEqual(world["spawned"]["STORY-01:judge"], 1)
+
     def test_missing_worker_artifact_gets_one_report_request_before_judge(self) -> None:
         self.set_world({
             "STORY-01:worker": [[{"output": "我做完了，测试都通过。", "files": WORKER_FILES},
@@ -574,14 +638,14 @@ class DriverTest(unittest.TestCase):
         })
         self.run_driver("--max-stories", "1")
         task = self.read_world()["threads"]["thr_validator_story01_1"]["task"]
-        self.assertIn("不算越界", task)
+        self.assertIn("Driver 管理路径", task)
         self.assertIn("plan/STATUS.md", task)
         self.assertIn("plan/agent/stories/STORY-01-first.json", task)
         self.assertIn("large_task_report.py validator", task)
         self.assertIn("--acceptance-id AC-01", task)
         self.assertIn("bb thread log thr_worker_story01_1 --all --json", task)
-        self.assertIn("mtime 和 Worker 活跃时间窗口都不能证明归属", task)
-        self.assertIn("只有确认由当前 Worker 修改", task)
+        self.assertIn("mtime、活跃时间和候选列表都不是归属证据", task)
+        self.assertIn("只有确认属于 Worker 且语义上偏离 Story 才判越界", task)
 
     def test_standard_up_explicitly_skips_validator_for_simple_story(self) -> None:
         self.set_world({"STORY-01:worker": [[{"output": WORKER_DONE, "files": WORKER_FILES}]]})
@@ -760,7 +824,7 @@ class DriverTest(unittest.TestCase):
         self.assertNotIn("STORY-01:judge", world.get("spawned", {}))
         validator_task = world["threads"]["thr_validator_story01_1"]["task"]
         self.assertIn("README.md", validator_task)
-        self.assertIn("文件不在预估区域不自动等于越界", validator_task)
+        self.assertIn("write_scope`\n只是线索", validator_task)
 
     def test_checkpoint_uses_only_validator_confirmed_worker_paths(self) -> None:
         worker_report = {

@@ -8,7 +8,8 @@ disable-model-invocation: true
 
 这是流程类 Skill，仅在用户显式调用 `$large-task-orchestrator` 时运行。它只接管已经通过
 `large-task-planning` v2 校验的计划：脚本是控制面，Worker、Validator 和异常时的 Judge 都是经
-`bb-dispatch` 创建的短生命周期 BB 线程。
+`bb-dispatch` 创建的 BB 线程。Worker 和 Validator 按轮次独立；每张 Story 的 Judge 使用一个独立会话，
+后续裁决在同一会话续聊。
 
 开始前阅读相邻的 `large-task-planning` 计划格式、[`bb-model-routing`](../bb-model-routing/SKILL.md)
 和[联合设计](../../docs/large-task-system-design.md)。计划 JSON 与 Git 是权威状态；每个 `(仓库, 计划)` 的
@@ -51,7 +52,8 @@ Acceptance、Story 边界和 Worker 路径归属；通过后更新 Handoff、刷
 确认归属的 Worker 路径。
 
 发生 Worker `blocked`/`failed`、线程 error、待处理 interaction、空改动、报告无法解析或
-Validator 多轮失败时，driver 才派 `complex` Judge。Judge 只能选择 `retry`、`escalate`、`patch`、
+Validator 多轮失败时，driver 才启用 `complex` Judge；同一 Story 后续异常复用该会话，线程失效时才替换。
+Judge 只能选择 `retry`、`escalate`、`patch`、
 `block`、`replan` 或 `stop`。`block` 后继续其他 ready Story；`replan` 后重新校验计划；`stop` 或没有
 ready Story 时退出并把最小原因写到 stderr。
 
@@ -124,10 +126,10 @@ Judge 报告再绑定 judge round，动作仍限制在固定集合：
 - `--default-difficulty simple|medium|complex`：Story 缺少 `difficulty` 时的首轮档位；Story 的值优先，Judge 升档结果再优先。
 - `--kind general|debug`：Story 缺少 `kind` 时的 Worker 派发类型；Story 的值优先。
 - `--validator always|standard-up`：默认每张 Story 都验；显式 `standard-up` 才跳过 simple Story。
-- `--max-patch-rounds`、`--max-attempts`、`--max-judge-rounds`：恢复上限，耗尽后停给用户。
+- `--max-patch-rounds`、`--max-attempts`、`--max-judge-rounds`：恢复与裁决轮次上限，耗尽后停给用户。
 - `--stall-minutes`（默认 90）：单个 busy 线程超过此时长会被停止；Worker 走一次 retry 后再交 Judge，Validator 改派。
 - `--no-progress-hours`（默认 3）：本次 `run` 启动后若没有新的 `story.done` 超过此时长，driver 以退出码 3 停下。
-- `--max-judges-total`（默认 12）、`--max-workers-total`（默认 0，即 Story 总数的 3 倍）：计划级累计派发上限，跨 replan 与 reopen 保留。
+- `--max-judges-total`（默认 12）、`--max-workers-total`（默认 0，即 Story 总数的 3 倍）：计划级累计新建线程上限，跨 replan 与 reopen 保留；Judge 续聊不增加前者。
 - `--max-blocked-per-story`（默认 2）：同一 Story 累计进入 blocked 的上限；耗尽表示需要用户修改计划。
 - `--poll-seconds`：每次 `bb thread wait` 的节奏；`--wait-timeout` 是该轮等待上限。
 - `--allow-empty-story`：仅纯验证 Story 可无业务改动完成。

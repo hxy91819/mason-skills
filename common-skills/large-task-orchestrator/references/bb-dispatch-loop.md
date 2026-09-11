@@ -51,8 +51,10 @@ Worker 与 Judge 的累计派发量分别受 `--max-workers-total`（0 表示 St
 
 ## Judge 与回执
 
-异常才经 `bb-dispatch --difficulty complex --kind judge` 派 Judge，路由来自 `defaults.judge` 与该 agent 的
-`routes.judge`。它的动作含义：
+异常才经 `bb-dispatch --difficulty complex --kind judge` 为 Story 创建 Judge。线程 ID 保存在 Story state；
+后续裁决通过 `bb thread tell` 续接同一会话，并为每轮写独立报告。会话进入 `error` 或无法读取时才新建替代
+线程；`judge.reused` 与 `judge.replaced` 事件记录该选择。路由来自 `defaults.judge` 与该 agent 的
+`routes.judge`。动作含义：
 
 - `retry`：同档 fresh Worker；`escalate`：高一档 Worker；`patch`：向现有 Worker 发送小修复提示。
 - `block`：写 blocker 后继续其他 ready Story；`replan`：Judge 已改计划，driver 重新 `check`；`stop`：退出码 3。
