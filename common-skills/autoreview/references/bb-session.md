@@ -1,7 +1,7 @@
 # BB session engine
 
-Use this mode as the default for trusted current-task input from an active BB
-thread:
+Use this mode from an active BB thread when the review should run as a fresh BB
+session instead of a direct reviewer CLI process:
 
 ```bash
 "$AUTOREVIEW" --engine bb --bb-trusted-input --mode local
@@ -12,12 +12,6 @@ provider, model, reasoning level, and service tier into the review thread. An
 explicit `--model bb=<model>` or `--thinking bb=<level>` overrides the matching
 inherited value. `AUTOREVIEW_BB_MODEL` and `AUTOREVIEW_BB_THINKING` provide the
 same overrides through the existing per-engine environment convention.
-
-The helper selects BB automatically when `BB_THREAD_ID` is present and neither
-`--engine` nor `AUTOREVIEW_ENGINE` chooses an engine. The skill workflow still
-passes `--engine bb` explicitly so an older environment preference cannot
-silently change this default. For external contributions or any input whose
-trust cannot be established, use `--engine codex` instead.
 
 BB mode requires `BB_THREAD_ID` and a reachable BB CLI. Use `--bb-bin` or
 `AUTOREVIEW_BB_BIN` to select the CLI; otherwise the helper uses `BB_CLI`, then
@@ -65,9 +59,8 @@ Cleanup failures are warnings and do not replace a valid review result. Spawn,
 wait, or output failures fail the review closed. The temporary workspace is
 removed when the engine returns.
 
-BB is the single-reviewer default in an active BB thread and is not included in
-`--reviewers all`. It may be selected explicitly in a panel, but one BB reviewer
-is the normal session-mode use.
+BB is opt-in and is not included in `--reviewers all`. It may be selected
+explicitly in a panel, but a single BB reviewer is the normal session-mode use.
 
 ## Proof
 
