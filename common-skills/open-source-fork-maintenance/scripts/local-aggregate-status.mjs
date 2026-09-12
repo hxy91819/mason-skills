@@ -204,6 +204,21 @@ function latestStableRelease(aggregate) {
   return { tag, commit, state: "diverged", commits: [] };
 }
 
+function recommendedIntegration(aggregate, stableRelease) {
+  if (stableRelease.state === "not-configured" || stableRelease.state === "not-found") {
+    return {
+      kind: "upstream-ref",
+      ref: aggregate.upstreamRef,
+      commit: revision(aggregate.upstreamRef),
+    };
+  }
+  return {
+    kind: "stable-tag",
+    ref: stableRelease.tag,
+    commit: stableRelease.commit,
+  };
+}
+
 function summarize(value) {
   const normalized = value.replace(/\s+/gu, " ").trim();
   return normalized.length > 180 ? `${normalized.slice(0, 177)}…` : normalized;
@@ -400,6 +415,7 @@ const upstream = inspectRevision(
   manifest.aggregate.upstreamRef,
 );
 const stableRelease = latestStableRelease(manifest.aggregate);
+const integration = recommendedIntegration(manifest.aggregate, stableRelease);
 const workingTree = statusEntries();
 const discoveredBranches = localFeatureBranches();
 const unregisteredBranches = discoveredBranches.filter((branch) => !registeredBranches.has(branch));
@@ -412,6 +428,7 @@ const report = {
     lastIntegratedUpstreamCommit: manifest.aggregate.lastIntegratedUpstreamCommit,
     upstream,
     stableRelease,
+    recommendedIntegration: integration,
   },
   workingTree,
   features: featureStatuses,
@@ -459,6 +476,11 @@ if (outputJson) {
     console.log("- Stable release tag: no matching reachable tag");
   } else {
     console.log(`- Stable release tag: \`${stableRelease.tag}\` — ${stableRelease.state}`);
+  }
+  if (integration.kind === "stable-tag") {
+    console.log(`- Recommended integration: \`${integration.ref}\` (latest stable tag)`);
+  } else {
+    console.log(`- Recommended integration: \`${integration.ref}\` (upstream ref)`);
   }
   console.log(`- Working tree: ${workingTree.tracked.length} tracked change(s), ${workingTree.untracked.length} untracked item(s)`);
   console.log("\n## Registered branches\n");

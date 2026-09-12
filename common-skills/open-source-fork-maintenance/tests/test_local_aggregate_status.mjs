@@ -58,6 +58,8 @@ try {
   assert.equal(report.aggregate.currentBranch, "local/aggregate");
   assert.equal(report.aggregate.upstream.state, "packaged");
   assert.equal(report.aggregate.stableRelease.state, "not-configured");
+  assert.equal(report.aggregate.recommendedIntegration.kind, "upstream-ref");
+  assert.equal(report.aggregate.recommendedIntegration.ref, "main");
   assert.deepEqual(report.unregisteredBranches.map((branch) => branch.branch), ["feature/example"]);
 
   const fakeBin = join(repository, "fake-bin");
@@ -124,6 +126,52 @@ fi
     { encoding: "utf8", env: environment },
   );
   assert.match(textReport, /Aggregate mapping: INVALID — aggregate commit does not retain the source SHA/);
+
+  git(["switch", "-q", "main"]);
+  writeFileSync(join(repository, "STABLE.md"), "stable\n");
+  git(["add", "STABLE.md"]);
+  git(["commit", "-qm", "stable"]);
+  const stableCommit = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: repository,
+    encoding: "utf8",
+  }).trim();
+  git(["tag", "desktop-v1.0.0"]);
+  git(["switch", "-q", "local/aggregate"]);
+  writeFileSync(
+    join(repository, "stable-manifest.json"),
+    `${JSON.stringify(
+      {
+        version: 2,
+        aggregate: {
+          branch: "local/aggregate",
+          upstreamRef: "main",
+          lastIntegratedUpstreamCommit: baseline,
+          stableTagPattern: "^desktop-v\\d+\\.\\d+\\.\\d+$",
+        },
+        features: [],
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  const stableReport = JSON.parse(
+    execFileSync(
+      "node",
+      [script, "--repo", repository, "--manifest", "stable-manifest.json", "--json"],
+      { encoding: "utf8" },
+    ),
+  );
+  assert.equal(stableReport.aggregate.stableRelease.state, "released-after-baseline");
+  assert.equal(stableReport.aggregate.stableRelease.tag, "desktop-v1.0.0");
+  assert.equal(stableReport.aggregate.recommendedIntegration.kind, "stable-tag");
+  assert.equal(stableReport.aggregate.recommendedIntegration.ref, "desktop-v1.0.0");
+  assert.equal(stableReport.aggregate.recommendedIntegration.commit, stableCommit);
+  const stableText = execFileSync(
+    "node",
+    [script, "--repo", repository, "--manifest", "stable-manifest.json"],
+    { encoding: "utf8" },
+  );
+  assert.match(stableText, /Recommended integration: `desktop-v1\.0\.0` \(latest stable tag\)/);
 
   writeFileSync(
     join(repository, "invalid-manifest.json"),
