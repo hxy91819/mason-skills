@@ -1,6 +1,6 @@
 ---
 name: secure-release
-description: Design, integrate, migrate, and verify fail-closed software release pipelines with immutable source identity, one hashed artifact set, least privilege, OIDC publication, registry smoke tests, and GitHub Release readback. Use when creating or reviewing release automation for npm or when evaluating adapters for PyPI, Cargo, Go/GitHub binaries, or containers; only the bundled npm adapter is currently implemented.
+description: "Use when the user invokes $secure-release to create, migrate, or review release automation, or assess an ecosystem adapter."
 disable-model-invocation: true
 triggers:
   - user

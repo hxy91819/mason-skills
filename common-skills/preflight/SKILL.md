@@ -1,10 +1,12 @@
 ---
 name: preflight
-description: "Verify before implementation starts that a spec or task instruction can actually be completed in this environment: credentials, permissions, tools, and external dependencies are checked and dispositioned."
+description: "Use when the user invokes $preflight to check a task's credentials, permissions, tools, and external dependencies before implementation."
 disable-model-invocation: true
 triggers:
   - user
 ---
+
+仅在用户显式调用 `$preflight` 时运行。已有明确授权覆盖的环境准备无需再次确认；只对新增权限范围、缺失的用户决策或未授权的外部写入提问，继续不依赖答复的只读核查。
 
 开工前核查：spec 或当前指令所依赖的凭据、权限、工具和外部环境是否真正可用。目标：让后续执行任务的 worker 能长时间无人值守运行——worker 往往用较弱的模型，遇到障碍和歧义无法自行解决，所以凡是会让它跑到一半停下来等用户确认的障碍（缺权限、缺工具、缺 token）都在开工前移除或预先授权，而不是开工后撞上。在 to-spec 之后、implement 之前跑最合适。上下文已有 spec 就核查 spec，否则以当前指令为目标；两者都构不成完整目标时，先请用户补充，不做臆测。
 
@@ -16,7 +18,7 @@ triggers:
 
 3. **逐项归态。** 每项依赖必须落到三态之一，不允许“以后再说”：
    - **verified**：实测通过，附证据。
-   - **resolved-now**：缺的工具或配置现在补齐；涉及安装、写配置等环境改动时，先向用户说明并获同意。
+   - **resolved-now**：缺的工具或配置现在补齐；复用用户已授予的环境修改权限，未授权的安装或配置写入先说明具体目标与影响并取得同意。
    - **spec'd**：现在解决不了（需要申请权限、token），写进 spec 的“前置条件与授权”章节：具体缺什么、用户找谁申请什么、拿到后配置到哪里（哪个 profile 或环境变量）、worker 怎么用。spec 没有该章节就追加一节；spec 发布在 issue tracker 就写到 issue 里。
    - 需要用户决策才能归态的项，停下来问；拿到答复再归态，不跳过。
 

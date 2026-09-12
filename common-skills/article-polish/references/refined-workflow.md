@@ -4,8 +4,8 @@ This file provides detailed guidelines for each workflow step. Steps are shared 
 
 - **Quick**: Polish only (no steps from this file)
 - **Normal**: Step 1 (Analysis) → Polish
-- **Refined**: Step 1 (Analysis) → Step 2 (Draft) → Step 3 (Review) → Step 4 (Revision) → Step 5 (Finalize)
-- **Normal → Upgrade**: After normal mode, user can continue with Step 3 → Step 4 → Step 5
+- **Refined**: Steps 1–6 (analysis → prompt → draft → review → revision → finalize)
+- **Normal → Upgrade**: Preserve the normal result as `03-draft.md`, then continue with Steps 4–6
 
 All intermediate results are saved as files in the output directory.
 
@@ -78,7 +78,7 @@ Save to `03-draft.md` in the output directory.
 
 For chunked content, the subagent produces this draft (merged from chunk polishes). For non-chunked content, the main agent produces it directly.
 
-Polish the full content following `02-prompt.md`. Apply all **Polishing principles** from SKILL.md.
+Polish the full content following `02-prompt.md` and the [output invariants](../SKILL.md#output-and-invariants).
 
 ## Step 4: Critical Review
 
@@ -148,7 +148,7 @@ Final pass on `05-revision.md` for publication quality:
 
 ## Subagent Responsibility
 
-Each subagent (one per chunk) is responsible **only** for producing the initial polished version of its chunk (Step 3). The main agent assembles the shared prompt (Step 2), spawns all subagents in parallel, then takes over for critical review (Step 4), revision (Step 5), and finalize (Step 6).
+If delegation is available, authorized, and useful, each chunk subagent produces only its draft (Step 3). The main agent owns the shared prompt, merged result, review, revision, and finalization. Otherwise polish sequentially with the same shared context.
 
 ## Chunked Refined Polish
 
@@ -157,7 +157,7 @@ When content exceeds the chunk threshold and uses refined mode:
 1. Main agent runs analysis (Step 1) on the **entire** document first → `01-analysis.md`
 2. Main agent assembles polish prompt → `02-prompt.md`
 3. Split into chunks → `chunks/`
-4. Spawn one subagent per chunk in parallel (each reads `02-prompt.md` for shared context) → merge all results into `03-draft.md`
+4. Polish chunks with shared `02-prompt.md`, sequentially or through permitted subagents → merge all results into `03-draft.md`
 5. Main agent critically reviews the merged draft → `04-critique.md`
 6. Main agent revises based on critique → `05-revision.md`
 7. Main agent finalizes → `polished.md`
