@@ -7,7 +7,7 @@ Add each skill as a subdirectory here. Every skill must include a `SKILL.md` fil
 ```markdown
 ---
 name: my-skill
-description: What this skill does and when the agent should use it.
+description: Use when the user's request matches this specific task.
 ---
 
 # My Skill
@@ -28,5 +28,7 @@ Instructions for the agent go here.
 | `reference.md` | Long-form reference material the agent can read on demand |
 | `examples.md` | Input/output examples |
 | `scripts/` | Helper scripts the agent can execute |
+
+Read [repository authoring policy](../docs/skill-authoring.md) when creating or changing a skill. Keep the entrypoint focused on shared constraints and completion; link conditional details with the task that needs them. Preserve the configured invocation policy and validate affected behavior before delivery.
 
 See the [Cursor skills documentation](https://docs.cursor.com/context/skills) for full authoring guidance.
