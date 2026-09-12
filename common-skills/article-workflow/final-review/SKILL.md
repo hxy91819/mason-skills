@@ -2,6 +2,8 @@
 name: article-workflow-final-review
 description: "Phase 6 of the article staged optimization workflow: Final refinement and reader testing. Use when the user asks to execute Phase 6, final review, final refinement, pre-publish check, insert illustrations, or generate `.article-workflow/06-final-review/final.md` and `.article-workflow/06-final-review/06-final-review.md` from `polished-draft.md`, `style-bible.md`, and optional visual plan assets."
 disable-model-invocation: true
+triggers:
+  - user
 ---
 
 # Article Workflow Final Review

@@ -2,6 +2,8 @@
 name: use-worktree
 description: Create one isolated Git worktree for the current task and clean it up after delivery.
 disable-model-invocation: true
+triggers:
+  - user
 ---
 
 # Use Worktree

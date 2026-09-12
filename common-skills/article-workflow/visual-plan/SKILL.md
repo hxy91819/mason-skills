@@ -2,6 +2,8 @@
 name: article-workflow-visual-plan
 description: "Phase 4.6 of the article staged optimization workflow: Illustration & Visual Aid Planning. Use when the user asks to execute Phase 4.6, illustration planning, visual plan, illustration plan, or generate `.article-workflow/04.6-visual-plan/` from `brief.md`, main draft, evidence pool, and source images."
 disable-model-invocation: true
+triggers:
+  - user
 ---
 
 # Article Workflow Visual Plan

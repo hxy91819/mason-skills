@@ -2,6 +2,8 @@
 name: readiness-fix
 description: 修复最近一次 readiness 报告中失败的信号；无报告时先问是否生成。仅在用户显式调用 $readiness-fix 时运行。
 disable-model-invocation: true
+triggers:
+  - user
 ---
 
 # Readiness Fix

@@ -2,6 +2,8 @@
 name: large-task-planning
 description: 把超出单次上下文的大型工程目标编译为人读 SPEC/STATUS 与 Agent JSON 执行计划。
 disable-model-invocation: true
+triggers:
+  - user
 ---
 
 # Large Task Planning

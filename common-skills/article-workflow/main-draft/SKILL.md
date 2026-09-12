@@ -2,6 +2,8 @@
 name: article-workflow-main-draft
 description: "Phase 4.5 of the article phased optimization workflow: Integrate main draft. Use when the user asks to execute Phase 4.5, integrate main draft, combine into a continuous article, main draft, or generate `.article-workflow/04.5-main-draft/` from `brief.md`, `03.5-ai-edit-pass/revised-sources/` (or `00-cleaned-sources/`), `02-evidence-pool/`, `04-global-review/global-review.md`."
 disable-model-invocation: true
+triggers:
+  - user
 ---
 
 # Article Workflow Main Draft

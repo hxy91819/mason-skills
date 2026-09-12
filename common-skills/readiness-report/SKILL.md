@@ -2,6 +2,8 @@
 name: readiness-report
 description: 对当前 Git 仓库做只读的 Agent-Readiness 静态审计并输出本地评分报告。仅在用户显式调用 $readiness-report 时运行。
 disable-model-invocation: true
+triggers:
+  - user
 ---
 
 # Readiness Report

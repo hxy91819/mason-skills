@@ -2,6 +2,8 @@
 name: skill-manifest-sync
 description: 按 config/skill-symlinks.yaml 清单把本机 user-scope skill 软链收敛到仓库推荐状态；需要用户显式调用 $skill-manifest-sync。
 disable-model-invocation: true
+triggers:
+  - user
 ---
 
 # Skill Manifest Sync

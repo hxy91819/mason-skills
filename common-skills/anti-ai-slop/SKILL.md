@@ -2,6 +2,8 @@
 name: anti-ai-slop
 description: 检查当前 diff 或已提交 commit（代码与文档）里的 AI slop：补偿性授权、格式 echo、否定式免责、元文案、提示词残留、没人要的抽象和重复实现。
 disable-model-invocation: true
+triggers:
+  - user
 ---
 
 # Anti AI Slop

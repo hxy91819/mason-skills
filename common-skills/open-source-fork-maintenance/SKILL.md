@@ -2,6 +2,8 @@
 name: open-source-fork-maintenance
 description: Maintain a non-maintainer public fork through its local aggregate workspace.
 disable-model-invocation: true
+triggers:
+  - user
 ---
 
 # Open-source fork maintenance

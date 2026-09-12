@@ -2,6 +2,8 @@
 name: ask-oracle
 description: Prepare a concise decision brief to seek an oracle's technical guidance.
 disable-model-invocation: true
+triggers:
+  - user
 ---
 
 # Ask Oracle

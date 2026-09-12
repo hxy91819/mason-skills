@@ -14,7 +14,7 @@
 
 分类依据是 skill 的实际工作流和风险，不是目录名称。可参考仓库现有设置：`anti-ai-slop`、`distill`、`autoreview`、`large-task-planning`、`use-worktree`、`story-direction-review` 和 `ask-oracle` 为显式触发；`open-source-contribution` 为允许隐式触发。
 
-仓库存在两种触发标记：Codex 优先读取 `agents/openai.yaml` 的 `policy.allow_implicit_invocation`；部分兼容旧技能还在 `SKILL.md` frontmatter 使用 `disable-model-invocation: true`。流程类 skill 必须以 `allow_implicit_invocation: false` 为 Codex 默认值，并保留或同步已有的 `disable-model-invocation: true`；被动型 skill 不得遗留与允许隐式触发相冲突的禁用标记。
+仓库存在三种触发标记：Codex 优先读取 `agents/openai.yaml` 的 `policy.allow_implicit_invocation`；`SKILL.md` frontmatter 的 `disable-model-invocation: true` 服务 Claude、Kimi 等兼容宿主；`triggers: [user]` 服务 Devin（其缺省 `[user, model]` 允许 model 自动触发）。流程类 skill 必须以 `allow_implicit_invocation: false` 为 Codex 默认值，并同时保留 `disable-model-invocation: true` 与 `triggers: [user]`；被动型 skill 不得遗留与允许隐式触发相冲突的禁用标记。
 
 ### 配置与告知机制
 

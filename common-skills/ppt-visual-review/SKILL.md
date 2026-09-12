@@ -2,6 +2,8 @@
 name: ppt-visual-review
 description: 当用户显式调用 $ppt-visual-review，要求逐页审查 PPT 式 HTML 的视觉效果或修复版式时使用。
 disable-model-invocation: true
+triggers:
+  - user
 ---
 
 # PPT Visual Review

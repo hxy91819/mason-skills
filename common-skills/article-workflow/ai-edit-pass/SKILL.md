@@ -2,6 +2,8 @@
 name: article-workflow-ai-edit-pass
 description: "Article phased optimization workflow Phase 3.5: AI executes edits based on confirmed feedback. Use when the user asks to execute Phase 3.5, AI edit pass, edit based on confirmed feedback, or generate `.article-workflow/03.5-ai-edit-pass/` from `brief.md`, `00-cleaned-sources/`, `01-section-reviews/`, `02-evidence-pool/`."
 disable-model-invocation: true
+triggers:
+  - user
 ---
 
 # Article Workflow AI Edit Pass

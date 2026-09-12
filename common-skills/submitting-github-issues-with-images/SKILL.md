@@ -2,6 +2,8 @@
 name: submitting-github-issues-with-images
 description: "Upload local screenshots, videos, or diagnostic attachments as GitHub Release Assets, embed them in an issue, PR body, or comment, and read the published result back online. Flow skill: explicit user invocation, or reuse by an authorized caller workflow."
 disable-model-invocation: true
+triggers:
+  - user
 ---
 
 # Submitting GitHub Evidence With Images

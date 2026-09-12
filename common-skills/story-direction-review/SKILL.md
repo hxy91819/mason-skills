@@ -2,6 +2,8 @@
 name: story-direction-review
 description: 独立检查已实现 Story 是否仍朝向结构化计划的 Goal，以及后续路线是否需要调整。
 disable-model-invocation: true
+triggers:
+  - user
 ---
 
 # Story Direction Review

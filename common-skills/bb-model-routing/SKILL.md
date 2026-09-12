@@ -2,6 +2,8 @@
 name: bb-model-routing
 description: 用户要求用 BB 派发任务或开线程时使用，通过 `$bb-model-routing` 显式调用。查看或继续已有线程、模型咨询及修改本技能时不触发。
 disable-model-invocation: true
+triggers:
+  - user
 ---
 
 # BB 任务派发

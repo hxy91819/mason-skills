@@ -2,6 +2,8 @@
 name: worktree-cleanup
 description: Explicitly audit and retire clean Git worktrees whose HEAD is durably stored on GitHub, using review-bound approval tokens and .local backups.
 disable-model-invocation: true
+triggers:
+  - user
 ---
 
 # Worktree Cleanup

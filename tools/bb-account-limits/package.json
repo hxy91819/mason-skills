@@ -10,7 +10,7 @@
     "name": "Account Limits",
     "description": "Native provider limits plus a dedicated Cliproxy account-limits panel.",
     "branding": {
-      "icon": "ChartColumn"
+      "icon": "CircleDollarSign"
     },
     "server": "./server.ts",
     "host": "./host.ts",

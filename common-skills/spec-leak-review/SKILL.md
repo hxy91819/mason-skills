@@ -2,6 +2,8 @@
 name: spec-leak-review
 description: 当用户显式调用 $spec-leak-review，要求检查网站、幻灯片或文本中的需求/制作说明外泄与提示词残留时使用。
 disable-model-invocation: true
+triggers:
+  - user
 ---
 
 # Spec Leak Review
