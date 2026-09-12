@@ -46,6 +46,31 @@ function loadPlaywright() {
 }
 
 function parseArgs() {
+  if (process.argv.includes('--help') || process.argv.includes('-h')) {
+    console.log(`Usage: node measure-deck.js (--file <html> | --url <URL>) [options]
+测量 PPT HTML 的版面几何；flags 是看图线索，不是视觉验收结论。
+Options:
+  --out <dir>          输出目录，默认 /tmp/ppt-visual-review
+  --label <name>       产物前缀，默认 before
+  --slide-sel <css>    页选择器，默认 .slide
+  --ignore-sel <css>   测量忽略项，默认 .sr-only
+  --viewport <WxH>    初始视口，默认 1600x900；测量会尝试归一到原画布
+  --tol <px>          几何容差，默认 2
+  --slack <px>        留白线索阈值，默认 24
+  --near <px>         间隔档位邻近阈值，默认 6
+  --min-gap <px>      档位统计下限，默认 8
+  --min-span <ratio>  测量容器宽度下限占比，默认 0.3
+  --shot              逐页生成 plain 与 ruler PNG
+  --gate              有 flag 时退出 4；不能据此声明 clean
+  -h, --help          显示帮助
+Outputs: <out>/<label>.json，--shot 时生成逐页 PNG；stdout 摘要。
+Exit: 0 成功；1 脚本错误；2 参数错误；3 未命中页；4 几何线索未清零。
+Examples:
+  node measure-deck.js --file deck.html --label before --shot
+  node measure-deck.js --url http://localhost:8000 --label after --shot --gate`);
+    process.exit(0);
+  }
+  const fail = message => { console.error(message); process.exit(2); };
   const o = {
     out: '/tmp/ppt-visual-review', label: 'before', slideSel: '.slide',
     ignoreSel: '.sr-only', tol: 2, slack: 24, near: 6, minGap: 8, minSpan: 0.3,
@@ -56,6 +81,10 @@ function parseArgs() {
     const k = a[i].replace(/^--/, '');
     if (k === 'shot' || k === 'gate') { o[k] = true; continue; }
     const v = a[++i];
+    if (!['file', 'url', 'out', 'label', 'slide-sel', 'ignore-sel', 'viewport', 'tol', 'slack', 'near',
+      'minSpan', 'min-span', 'min-gap'].includes(k) || v === undefined || v.startsWith('--')) {
+      fail(`未知参数或缺少值：--${k}；使用 --help 查看用法`);
+    }
     if (k === 'slide-sel') o.slideSel = v;
     else if (k === 'ignore-sel') o.ignoreSel = v;
     else if (['tol', 'slack', 'near', 'minSpan', 'min-span', 'min-gap'].includes(k)) {
@@ -64,6 +93,11 @@ function parseArgs() {
     else o[k] = v;
   }
   if (!o.file && !o.url) { console.error('必须提供 --file 或 --url'); process.exit(2); }
+  if (!/^[\w.-]+$/.test(o.label) || ['.', '..'].includes(o.label)) fail('--label 只能是文件名，不含路径');
+  if (!/^\d+x\d+$/.test(o.viewport) || o.viewport.split('x').some(v => Number(v) < 1)) fail('--viewport 应为正整数 WxH');
+  if (['tol', 'slack', 'near', 'minGap', 'minSpan'].some(k => !Number.isFinite(o[k]) || o[k] < 0) || o.minSpan > 1) {
+    fail('阈值必须非负，--min-span 必须在 0 到 1 之间');
+  }
   return o;
 }
 

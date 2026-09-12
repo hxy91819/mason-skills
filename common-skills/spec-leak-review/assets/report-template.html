@@ -5,6 +5,8 @@
   - 替换所有 {{...}} 占位符；标记 REPEAT 的块按 finding 数量复制。
   - severity class 取 blocking | should | optional，同时决定角标文字。
   - 没有 finding 的严重度分组整段删除；待确认清单为空时删除该 section。
+  - clean 仅用于请求范围全部复核且无发现/待确认；缺页、未看图、位图不可读或交互未核对时标覆盖不足。
+  - 建议从未执行，不以改后画面或已修改标签呈现。
   - 不留任何 {{...}} 或 REPEAT 注释在成品里。
 -->
 <html lang="zh-CN">
@@ -80,7 +82,7 @@
 <main>
 
   <h1>内容审查 · {{target}}</h1>
-  <p class="sub">审查模式：{{文本模式|网站模式}} · 审查视角：产品体验 · 只读，未修改任何被审文件 · 状态 {{clean|有待修项}} · {{date}}</p>
+  <p class="sub">审查模式：{{文本模式|视觉模式（网站/幻灯片）}} · 审查视角：产品体验 · 只读，未修改任何被审文件 · 状态 {{clean|有待修项|覆盖不足}} · {{date}}</p>
 
   <h2>受众与决策</h2>
   <div class="card audience">
@@ -101,7 +103,13 @@
   </div>
 
   <h2>证据与覆盖范围</h2>
-  <!-- 网站模式：每个真实渲染并截图的界面一张全景图，用 annotate-shot.py 的 overview 产物。文本模式删除此 overview。 -->
+  <div class="card">
+    <p>输入版本 / 哈希：{{target revision}} · 技能源码版本：{{skill revision}} · 线程 / 执行身份：{{host record}}</p>
+    <p>{{逐页/状态覆盖：实际总数、已采集数、已打开看图数；纯文本填已读文件与范围}}</p>
+    <p>{{位图区域已读 / 待读 / 不可辨认数量与位置；适用交互已操作 / 未覆盖及原因}}</p>
+    <p>{{每页具体视觉观察与截图对应、实际操作步骤和结果；文本模式填上下文核对}}</p>
+  </div>
+  <!-- 视觉模式：每个真实渲染并截图的界面一张全景图，用 annotate-shot.py 的 overview 产物。文本模式删除此 overview。 -->
   <div class="overview">
     <figure class="shot">
       <img alt="{{界面名}} 全景" src="{{overview data URI}}">
@@ -113,7 +121,7 @@
     <strong>文本证据</strong>
     {{文件路径 · 用途 · 覆盖行数与行号范围 · 生成/引用来源}}
   </div>
-  <!-- 网站模式有采集不到的范围时保留；文本模式删除此段。 -->
+  <!-- 视觉模式有采集不到的范围时保留；文本模式删除此段。 -->
   <div class="noshot">
     <strong>未覆盖范围：</strong>{{网站中哪些界面或状态没采到，各自的原因；文本中哪些行/分支未读到及原因}}
   </div>
@@ -128,17 +136,17 @@
       <span class="tag">{{结论：改写 / 降级 / 删除}}</span>
       <span class="loc">{{file:line 或 运行时数据}}</span>
     </div>
-    <p class="why">{{为什么这个受众不需要它——落到受众带来的疑问和要做的决定上}}</p>
+    <p class="why">{{受众影响及证据；来源为用户已指出 / 本轮独立发现 / 旧项复核}}</p>
     <div class="diff">
       <div class="side before"><div class="lbl">现状</div><div class="txt">{{原文}}</div></div>
       <div class="side after"><div class="lbl">建议</div><div class="txt">{{可直接替换的完整文案，或 <span class="drop">删除，不替换</span> / <span class="drop">降级到 tooltip</span>}}</div></div>
     </div>
-    <!-- 网站模式的渲染面 finding 必须有这张标注图；红框圈住被判定的原文。 -->
+    <!-- 视觉模式的渲染面 finding 必须有这张标注图；红框圈住被判定的原文。 -->
     <figure class="shot">
       <img alt="{{原文}} 在真实界面中的位置" src="{{annotate-shot.py 产出的 data URI}}">
       <figcaption>{{它在界面里的位置与占比，例如「首屏标题正下方，页面第二行」}}</figcaption>
     </figure>
-    <!-- 网站模式的纯代码轨 finding 用这一段替换上面的 figure，写明为什么没有截图。 -->
+    <!-- 视觉模式的纯代码轨 finding 用这一段替换上面的 figure，写明为什么没有截图。 -->
     <div class="noshot">未截图：{{原因，如 该界面需要 IOA 鉴权，本次采集不到}}</div>
     <!-- 文本模式删除上面的 figure/noshot，改为：<div class="text-evidence">原文位置：{{file:line}} · 上下文：{{...}}</div> -->
   </div>
@@ -159,7 +167,7 @@
     </ol>
   </div>
 
-  <h2>改写后的整页文案</h2>
+  <h2>建议稿 · 尚未执行</h2>
   <div class="final">
     <!-- 按界面实际结构逐段列出改写后文本，删除的元素标注为「删除」，让用户能一眼看到整体效果 -->
     <h3>{{区块名}}</h3>
