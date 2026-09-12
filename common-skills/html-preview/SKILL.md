@@ -1,6 +1,6 @@
 ---
 name: html-preview
-description: Use only when an agent-generated static HTML report, chart, or demo must be published as a browser link for the user, or when renewing, inspecting, or deleting an existing HTML preview. Do not use for merely writing HTML files, editing application code, running project servers, or publishing production sites.
+description: "Use when generated static HTML needs a browser link, or managing an existing preview. Excludes project servers and production sites."
 ---
 
 # HTML 预览发布

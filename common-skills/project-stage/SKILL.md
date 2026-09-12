@@ -1,6 +1,6 @@
 ---
 name: project-stage
-description: Declare a repository's lifecycle stage (experimental or production) in its agent instruction file so agents stop adding compatibility layers that no consumer needs. Use only when the user explicitly invokes $project-stage, typically once when starting a project, once more when it graduates to production, or when adding the declaration to an existing project.
+description: "Use when the user invokes $project-stage to declare or update a repository's experimental or production stage."
 disable-model-invocation: true
 triggers:
   - user
