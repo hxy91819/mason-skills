@@ -52,7 +52,7 @@ The registry schema is version 2. `aggregate.lastIntegratedUpstreamCommit` chang
 }
 ```
 
-Use `null` for `lastPackaged` only while a registered branch has not yet been aggregated. `stableTagPattern` may be `null`; set it to a regular-expression string only when the upstream's stable-release tag namespace is known.
+Use `null` for `lastPackaged` only while a registered branch has not yet been aggregated. `stableTagPattern` may be `null`. Set it to a regular-expression string when the upstream's stable-release tag namespace is known; the latest matching tag reachable from `upstreamRef` then becomes the default rebase and rebuild target, and a rebuild records that tag's commit as `lastIntegratedUpstreamCommit`.
 
 ## Verify setup
 

@@ -26,7 +26,9 @@ The personal fork is the handoff channel: after verified packaging, push each co
 
 Read [references/setup.md](references/setup.md) before initializing a repository. Initialization creates branches, project files, and a project-local skill link, so perform it only after the user explicitly authorizes setup.
 
-For an already initialized fork, read [references/maintenance.md](references/maintenance.md). Run the linked `scripts/local-aggregate-status.mjs` from the project root after fetching the configured upstream. It reports source-branch changes, unregistered local feature/fix branches, upstream changes, stable releases when configured, and the state of every registered upstream feedback issue.
+For an already initialized fork, read [references/maintenance.md](references/maintenance.md). Run the linked `scripts/local-aggregate-status.mjs` from the project root after fetching the configured upstream. It reports source-branch changes, unregistered local feature/fix branches, upstream changes, stable releases when configured, the recommended integration ref, and the state of every registered upstream feedback issue.
+
+When the registry has a `stableTagPattern`, the default rebase and rebuild target is the latest matching tag reachable from the upstream ref. Commits on that upstream ref after the tag are unreleased trunk: report them, and wait for an explicit choice before tracking them. When no pattern is configured, the upstream ref itself is the integration target.
 
 Do not rebase, rebuild the aggregate, update a local service, push rewritten history, or discard a worktree merely because the report found work. Present the resulting maintenance choices to the user first. All local `feature/*` and `fix/*` worktrees are default candidates for aggregation once they are committed, verified, and registered; do not ask whether to include them.
 
