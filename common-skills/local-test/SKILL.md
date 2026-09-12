@@ -1,6 +1,6 @@
 ---
 name: local-test
-description: Use only when actually starting, reusing, checking, or stopping a local multi-service integration or project-preview environment, or configuring its `lt` CLI. Do not use for ordinary code edits, unit tests, static HTML publishing, code review, or remote-only deployment.
+description: "Use when the user invokes $local-test to manage a local multi-service test or preview environment, or configure its lt CLI."
 disable-model-invocation: true
 triggers:
   - user
@@ -24,7 +24,7 @@ triggers:
 
 ## 一、先跑 doctor
 
-把 `bin/lt` 复制或软链到项目 `bin/lt`，任何操作前先 `lt doctor`：它检查 git、docker、cksum、进程组隔离方案（setsid / perl / bash job control，macOS 无 setsid 时自动回退并报告采用了哪种）与配置合法性，不启动任何东西。缺件先补，不要带着未知环境直接 `start`。
+首次配置或启动前把 `bin/lt` 复制或软链到项目 `bin/lt`，运行 `lt doctor` 检查依赖、配置及进程组隔离。检查通过后复用结果，配置或依赖变化、启动失败时再检查；只读 `status` / `logs` 和故障收尾不以 doctor 通过为前提。缺件只阻塞依赖它的启动步骤。
 
 ## 二、无配置时：扫描仓库生成
 
@@ -73,7 +73,7 @@ preview_url: http://127.0.0.1:$LOCAL_TEST_PORT_WEB
 * **归属消失即回收**：worktree 被移除、进程组已死、登记失效，由 `lt gc` 与 teardown 自动回收，不算"空闲超时"。空闲回收只在项目或用户明确配置时启用。
 * **默认保留数据**：`stop` 只关服务与容器，保留数据文件与 Volume；只有用户明确要求"彻底重置本地测试数据"才 `lt reset --yes`。
 
-项目有 worktree teardown 脚本时在末尾调 `lt destroy`；没有就由 agent 在任务结束时 `lt stop` 或 `lt destroy`。
+worktree 确认退役、其本地数据可删除时，teardown 调 `lt destroy`。普通任务结束按上述用途决定保留或 `lt stop`；`destroy` 会删库，不能代替保留数据的停止操作。
 
 ## 五、外部系统依赖
 
