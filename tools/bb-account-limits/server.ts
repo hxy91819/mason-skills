@@ -1,5 +1,6 @@
 import { config } from "./config.js";
 import type { BbPluginApi, PluginProviderDeclaration } from "@get-bb/plugin-sdk";
+import { z } from "zod";
 import { agyProvider } from "./agy-provider.js";
 import {
   accountLimitsHostContract,
@@ -181,6 +182,17 @@ const agents: Array<{ id: string; displayName: string; command: string; args: st
   { id: "acp-kiro", displayName: "Kiro", command: config.kiro, args: ["acp"], env: {}, login: "kiro-cli login", icon: "Bug" },
 ];
 
+const codexGoalExtensionKind = "account-limits/goal";
+const codexGoalStateSchema = z
+  .object({
+    objective: z.string(),
+    status: z.enum(["active", "paused", "blocked", "budgetLimited", "complete"]),
+    tokenBudget: z.number().nullable(),
+    tokensUsed: z.number(),
+    timeUsedSeconds: z.number(),
+  })
+  .nullable();
+
 export const providers = agents.map((agent): PluginProviderDeclaration => ({
   id: agent.id,
   displayName: agent.displayName,
@@ -194,6 +206,7 @@ export const providers = agents.map((agent): PluginProviderDeclaration => ({
   experimental_bridgeOptions: {
     acpDialect: "generic",
     acpLaunchSpec: { displayName: agent.displayName, command: agent.command, args: agent.args, env: agent.env },
+    ...(agent.id === "acp-kiro" ? {} : { goalExtensionKind: codexGoalExtensionKind }),
   },
   maintenance: { health: true, usage: true, installation: false },
   models: { scope: "host" },
@@ -208,7 +221,12 @@ export const providers = agents.map((agent): PluginProviderDeclaration => ({
     reasoningLevels: ["low", "medium", "high", "xhigh", "max"],
   },
   serviceTiers: [{ id: "default", label: "Default" }, { id: "fast", label: "Fast" }],
-  composerActions: [],
+  ...(agent.id === "acp-kiro"
+    ? { composerActions: [] }
+    : {
+        composerActions: ["goal" as const],
+        extensionKinds: { goal: { state: codexGoalStateSchema } },
+      }),
 }));
 
 export default function accountLimitsPlugin(bb: BbPluginApi) {

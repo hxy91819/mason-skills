@@ -42,6 +42,8 @@ BB 本地 provider 插件：将 CodexL、Kiro、AGY 账户额度接入原生 `sy
 
 CodexL 包装脚本应原样转发参数，不固定注入 `danger-full-access` 或 `approval=never`。如果不需要账户隔离，`codex` 配置可直接填已登录的 `codex` 命令；provider ID 仍为 `acp-codexl`。
 
+Codex ACP provider 会声明 BB Goal 能力；在 composer 中可使用 Goal 操作，状态由 `codex-acp` 的 ACP Goal 扩展同步到线程。
+
 ### Cliproxy 供应商聚合额度
 
 Cliproxy 配额以**账户**为单位配置、以**上游供应商**为单位显示。相同 `provider` 的账户会聚合成“账户额度”侧边栏页面中的一张卡：每个额度行带账号标签，不会把不同账号或不同限额池相加。`cliproxy-<provider>` 只控制这张卡是否显示；不注册为 BB Provider，因此不会出现在模型选择器或原生 Provider Usage 面板。
