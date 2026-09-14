@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """验证 HTML 发布的可观察生命周期和删除边界。
-用法：python3 -m unittest discover -s common-skills/html-preview/scripts -p 'test_*.py'
+用法：python3 -m unittest discover -s common-skills/dev-html-preview/scripts -p 'test_*.py'
 输出：unittest 结果；所有产物位于自动清理的临时目录，不操作真实网关。
 """
 import json

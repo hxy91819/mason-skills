@@ -53,7 +53,7 @@ user 级 prompt 正文不在此清单范围内：由 [`config/user-agents.md`](.
 | 18 | `use-worktree` | 在隔离的 Git worktree 中安全开展并发任务 | 显式调用 (`$use-worktree`) |
 | 19 | `what-changed` | 用平实人读语言说明变更内容 | 显式调用 (`$what-changed`) |
 | 20 | `worktree-cleanup` | 审计并安全清理已完成使命的 Git worktree | 显式调用 (`$worktree-cleanup`) |
-| 21 | `html-preview` | 将生成的静态 HTML 发布为带认证和有效期的浏览器链接 | 允许隐式触发（窄条件） |
+| 21 | `dev-html-preview` | 将生成的静态 HTML 发布为带认证和有效期的浏览器链接 | 允许隐式触发（窄条件） |
 
 ---
 

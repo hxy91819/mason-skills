@@ -25,6 +25,8 @@ skills:
 - name: codebase-design
   source: mattpocock-skills
   note: 深模块设计的共享词汇与改进时机
+- name: dev-html-preview
+  note: 将生成的静态 HTML 发布为带认证和有效期的用户预览链接
 - name: diagnosing-bugs
   source: mattpocock-skills
   note: 疑难 bug 与性能回归的系统诊断循环
@@ -47,8 +49,6 @@ skills:
   note: 把当前会话压缩成交接文档交给下一个 agent
 - name: harness-config-sync
   note: 跨宿主收敛 prompts/skills 软链布局(含 agy)
-- name: html-preview
-  note: 将生成的静态 HTML 发布为带认证和有效期的用户预览链接
 - name: implement
   source: mattpocock-skills
   note: 按规格或工单实现，缝合处驱动 tdd
