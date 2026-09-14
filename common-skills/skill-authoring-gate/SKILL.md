@@ -1,25 +1,48 @@
 ---
 name: skill-authoring-gate
-description: 创建、迁移、重命名或修改任何 skill 前的强制门禁。任务涉及 SKILL.md、agents/openai.yaml，或会改变 skill 行为的 references/scripts 时使用：先加载写作指南，判定触发类型，再修改内容与配置。
+description: 创建、迁移、重命名或修改 Skill 的 SKILL.md、调用策略或影响行为的 references/scripts 时使用。
 ---
 
 # Skill 编写门禁
 
+目标是让 Agent 在任务匹配时找到需要的能力，并在实际执行处遵守权限。自动发现、任务范围和操作授权分别设计。
+
 ## 开始编辑前
 
-1. 加载 `~/.agents/skills/writing-for-agents/SKILL.md`；涉及 frontmatter、触发方式或 router 时，继续加载同目录的 `SKILL-MECHANICS.md`。
-2. 加载 `~/.agents/skills/.system/skill-creator/SKILL.md`；它是系统 skill，不是目标仓库的 skill。不要把"系统可能自动选中 Skill Creator"当作门禁，规则本身必须保证被执行。
-3. 先读取目标 `SKILL.md` 和 `agents/openai.yaml`（如果存在），按实际工作流判断默认触发类型，再修改内容与配置。
-4. `SKILL.md` frontmatter 的 `description` 是触发规则，不是功能介绍。只写用户请求或任务形状何时匹配；能力、角色、实现和本轮改动写进正文。改行为时默认保持 `description` 不变，除非触发条件本身变了。
+1. 读取 `~/.agents/skills/writing-for-agents/SKILL.md`；涉及 frontmatter、调用策略或 router 时，再读取同目录 `SKILL-MECHANICS.md`。
+2. 读取系统 `~/.agents/skills/.system/skill-creator/SKILL.md`，按其当前指导决定结构和调用策略。
+3. 读取目标 `SKILL.md`、已有 `agents/openai.yaml` 及仓库的调用清单（若有），检查实际任务入口和调用链。
+4. `description` 只说明何时匹配：具体任务、对象/平台和必要前提。能力说明、参数和执行步骤放正文；本次未改变触发条件时保留原描述。
 
-## 分类与配置一致
+## 默认自动发现，触发条件要窄
 
-- **流程类 Skill**（规划、审查、复盘、治理、发布、迁移、编排，或带审批、用户决策、明显副作用的多步流程）：默认仅显式触发，同时设置 `policy.allow_implicit_invocation: false`、frontmatter `disable-model-invocation: true` 和 `triggers: [user]`（Devin 的等效标记），三层都必须存在。用户通过宿主原生语法显式调用：Codex、Pi、OpenCode 用 `$skill-name`，Kimi 用 `/skill:skill-name`，Devin 用 `/skill-name`。
-- **被动型 Skill**（低风险的格式化、生成、查询或验证能力）：默认允许隐式触发，设置 `policy.allow_implicit_invocation: true`，且不得遗留 `disable-model-invocation: true`。
-- **无法明确分类或混合型 Skill**：采用流程类的保守默认值；用户要改成允许隐式触发时，必须明确提出并说明风险与影响。
+- 新 Skill 默认允许隐式调用。查询、生成、诊断、编排或含写入分支，都不单凭“流程类”“有审批”“多步”“混合风险”改为仅手动。
+- 任务可由自然语言、已核实上下文或当前流程的必要下一步匹配，无需用户记住 `$skill-name`。描述只覆盖当前能力，避免用“排查”“数据库”“工作流”等单个泛词吸引无关任务。
+- 独立治理、发布、通知或任务登记等工作，只在当前请求或既有授权已包含该目标时匹配；工单中提到某工具/API 不等于要求运行整套流程。
+- 只有用户明确要求“仅手动/仅命令调用”时，才设置显式专用入口。说明取舍：它将不再被 Agent 自动发现，也可能截断其他 Skill 的调用链。
+- 修改已有 Skill 时，不顺手批量翻转无关策略；本次要求触发策略审计时，逐项检查正向用例、相邻不匹配用例与执行边界后调整。用户明确意图优先于历史分类默认值。
+
+## 调用配置一致
+
+| 策略 | `agents/openai.yaml` | `SKILL.md` frontmatter |
+|---|---|---|
+| 自动发现（默认） | `policy.allow_implicit_invocation: true` | 不保留 `disable-model-invocation: true`；若有 Devin 的 `triggers: [user]`，去除此限制，使用宿主允许 model 的默认值 |
+| 用户指定仅手动 | `policy.allow_implicit_invocation: false` | `disable-model-invocation: true`；支持 Devin 时同步 `triggers: [user]` |
+
+保留无关的 interface/dependencies 字段；同步仓库调用清单。手动调用仍可作为自动发现 Skill 的快捷入口，不把“也可手动调用”写成“必须手动调用”。
+
+## 授权放在执行边界
+
+加载 Skill 不授予网络访问、写入、发布或发送消息权限。只读取证、本地草稿与实际外部操作分别说明：
+
+- 已有授权覆盖精确动作和目标时继续，不要求用户重复调用 Skill 或再次确认同一事项。
+- 缺少影响执行的目标、归属或权限时，只暂停依赖该信息的操作，完成可以独立推进的分析或草稿。
+- 写操作仍经过目标核验、现有审批、环境 guard、审计及回读；禁止项不能靠自动触发或口头“继续”绕过。
+- 为需要人决定的动作先准备具体目标、影响及可审阅材料，再询问未决事项。不要将“需批准执行”升级为“需批准加载 Skill”。
 
 ## 交付前
 
-- 运行 Skill validator、YAML 解析和 `git diff --check`；如果 validator 尚不识别兼容性的 `disable-model-invocation` 或 `triggers` 字段，记录该工具限制并补做 frontmatter 结构检查，不得为了让 validator 通过而删除流程类 Skill 的禁用标记。
-- 核对 `description` 仍是触发匹配，没有被改成能力说明书。
-- 向用户报告：分类、默认策略、判断依据、配置位置，以及显式触发 Skill 的 `$skill-name` 用法；用户明确意图与默认分类冲突时，以用户意图为准并说明。
+- 用真实任务形状走查：应匹配的请求、容易误选的相邻请求、流程中的后续调用，以及缺授权时能停在正确边界的请求。静态结构检查不等于模型触发效果评测。
+- 运行适用的 Skill validator、YAML 解析和 `git diff --check`；校验调用清单、frontmatter 与宿主配置一致。validator 不认识兼容字段时，记录限制并补结构检查，不为过检改变所选策略。
+- 检查正文、路由和使用文档中是否还有“仅手动”“每次先问”等与最终策略冲突的说明；不要写只匹配文案的测试。
+- 报告匹配范围、自动/手动策略、执行授权边界与配置位置；若保留仅手动入口，说明用户要求及 `$skill-name` 用法。
