@@ -1,11 +1,11 @@
 ---
-name: html-preview
+name: dev-html-preview
 description: Use only when an agent-generated static HTML report, chart, or demo must be published as a browser link for the user, or when renewing, inspecting, or deleting an existing HTML preview. Do not use for merely writing HTML files, editing application code, running project servers, or publishing production sites.
 ---
 
 # HTML 预览发布
 
-流程类 skill；按用户明确要求允许隐式触发，也可显式调用 `$html-preview`。只处理已生成且需要交付浏览器链接的静态 HTML，以及这些预览的生命周期。用户只要文件或已使用 IDE 内嵌展示并未要求服务器链接时，不额外发布。
+流程类 skill；按用户明确要求允许隐式触发，也可显式调用 `$dev-html-preview`。只处理已生成且需要交付浏览器链接的静态 HTML，以及这些预览的生命周期。用户只要文件或已使用 IDE 内嵌展示并未要求服务器链接时，不额外发布。
 
 ## 发布前
 
@@ -18,8 +18,8 @@ description: Use only when an agent-generated static HTML report, chart, or demo
 使用 [scripts/preview.py](scripts/preview.py)，参数契约见 `--help`。发布/续期默认 24 小时，允许 1 到 168 小时；用户说“临时看一下”无需再问 TTL，发布时必须告知到期时间。显式要求更长时先商定保留方式，不静默改成永久。
 
 ```bash
-python3 /path/to/html-preview/scripts/preview.py --config /etc/html-preview/publish.json publish /absolute/path/report.html
-python3 /path/to/html-preview/scripts/preview.py --config /etc/html-preview/publish.json show
+python3 /path/to/dev-html-preview/scripts/preview.py --config /etc/html-preview/publish.json publish /absolute/path/report.html
+python3 /path/to/dev-html-preview/scripts/preview.py --config /etc/html-preview/publish.json show
 ```
 
 脚本输出 ID、完整预览 URL、入口登录 URL、UTC 到期时间以及副本存在状态。将到期时间换算为用户时区，在回复中给出 `[入口登录](实际登录URL)`、`[打开预览](实际URL)` 和到期时间；用户已登录时可直接打开预览。只能从实际配置及命令输出取地址，不用服务器 localhost，也不把 `access_verified: false` 当作验收成功。

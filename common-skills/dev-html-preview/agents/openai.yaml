@@ -1,0 +1,6 @@
+interface:
+  display_name: "Dev HTML Preview"
+  short_description: "Publish temporary HTML previews through an authenticated gateway."
+  default_prompt: "Use $dev-html-preview to publish this generated HTML as an authenticated browser preview with an expiry time."
+policy:
+  allow_implicit_invocation: true
