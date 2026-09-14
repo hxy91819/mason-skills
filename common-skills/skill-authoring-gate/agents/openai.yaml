@@ -1,6 +1,6 @@
 interface:
   display_name: "Skill Authoring Gate"
-  short_description: "创建或修改任何 skill 前的强制门禁：加载指南、判定触发类型、验证交付"
+  short_description: "以窄触发条件设计自动发现，区分能力选择与执行授权，并验证调用配置"
   default_prompt: "Use $skill-authoring-gate before creating or modifying any skill."
 
 policy:
