@@ -1,6 +1,6 @@
 interface:
   display_name: "Skill Authoring Gate"
-  short_description: "以窄触发条件设计自动发现，区分能力选择与执行授权，并验证调用配置"
+  short_description: "按上下文判断调用需求，新技能默认手动，仅为必要的能力或下游开放自动发现"
   default_prompt: "Use $skill-authoring-gate before creating or modifying any skill."
 
 policy:

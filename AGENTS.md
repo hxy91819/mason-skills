@@ -2,12 +2,9 @@
 
 ## Skill invocation policy
 
-修改 Skill 时先读取 [skill-authoring-gate](common-skills/skill-authoring-gate/SKILL.md)，并在交付时说明最终触发范围和执行边界。
+修改 Skill 时先读取 [skill-authoring-gate](common-skills/skill-authoring-gate/SKILL.md)。按用户维护偏好，新技能默认手动；只有当前任务中 Agent 必须自行选用的能力，或已启动流程确实依赖的自动下游，才开放自动发现并说明调用上下文。
 
-- 默认允许自动发现，用具体任务、对象/平台和上下文前提收窄 description；流程、多步、审批或写入分支本身不构成仅手动调用的理由。
-- 加载 Skill 与授权执行分开：自然语言请求和已核实上下文可触发选择，外部写入仍需现有目标、权限、guard 和审计约束。
-- 仅当用户明确要求只能手动调用时设置显式策略；未要求触发策略调整时保留无关 Skill 的既有配置。
-- 同步 `agents/openai.yaml`、frontmatter 和仓库调用清单，保留其他 UI/依赖字段；具体宿主配置及验收按门禁执行，不在此维护另一套分类默认值。
+不以步骤数、审批或写入分支直接分类；DB/TAPD 查询等能力不能因包含鉴权流程而误设为手动。保留未要求调整的既有策略，配置一致性与执行授权按门禁检查。
 
 ## Skill 清单维护
 
