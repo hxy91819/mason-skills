@@ -2,10 +2,12 @@
 <!--
   Spec Leak Review 报告骨架。
   渲染规则：
-  - 替换所有 {{...}} 占位符；标记 REPEAT 的块按 finding 数量复制。
+  - 替换所有 {{...}} 占位符；标记 REPEAT 的块按 finding / 覆盖项目数量复制。
   - severity class 取 blocking | should | optional，同时决定角标文字。
   - 没有 finding 的严重度分组整段删除；待确认清单为空时删除该 section。
   - clean 仅用于请求范围全部复核且无发现/待确认；缺页、未看图、位图不可读或交互未核对时标覆盖不足。
+  - 证据与覆盖范围：视觉模式采用紧凑结构化状态表格展现，严禁平铺所有页面的全景大图。
+  - Findings：每项必须具备「核心变化（Change Summary）」字段，提炼简单直观的改动实质，并支持便捷状态反馈与复制。
   - 建议从未执行，不以改后画面或已修改标签呈现。
   - 不留任何 {{...}} 或 REPEAT 注释在成品里。
 -->
@@ -40,19 +42,53 @@
   .audience dl { display: grid; grid-template-columns: 120px 1fr; gap: 8px 16px; margin: 0; }
   .audience dt { color: var(--muted); font-size: 13px; }
   .audience dd { margin: 0; }
-  .counts { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 8px; }
+  
+  .counts-wrap { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 14px; }
+  .counts { display: flex; flex-wrap: wrap; gap: 10px; }
   .pill { border: 1px solid var(--line); border-radius: 999px; padding: 5px 14px; font-size: 13px; background: var(--card); }
   .pill b { font-variant-numeric: tabular-nums; }
-  .finding { border-left: 4px solid var(--line); }
+  .btn-copy-all {
+    cursor: pointer; border: 1px solid var(--line); background: var(--card);
+    border-radius: 999px; padding: 5px 14px; font-size: 13px; color: var(--text);
+    font-weight: 500; transition: all .15s ease;
+  }
+  .btn-copy-all:hover { border-color: #94a3b8; background: #f8fafc; }
+
+  /* 覆盖范围与状态清单表格 */
+  .coverage-wrap { overflow-x: auto; margin-top: 14px; }
+  .coverage-table { width: 100%; border-collapse: collapse; font-size: 13px; text-align: left; }
+  .coverage-table th, .coverage-table td { padding: 9px 12px; border-bottom: 1px solid var(--line); }
+  .coverage-table th { background: #f8fafc; color: var(--muted); font-weight: 600; white-space: nowrap; }
+  .coverage-table tr:last-child td { border-bottom: none; }
+  .badge-clean { color: var(--ok); font-weight: 600; }
+  .badge-issue { color: var(--should); font-weight: 600; }
+  .badge-skip { color: var(--muted); font-style: italic; }
+
+  /* Finding 样式 */
+  .finding { border-left: 4px solid var(--line); transition: border-left-color .15s ease, background-color .15s ease; }
   .finding.blocking { border-left-color: var(--blocking); }
   .finding.should { border-left-color: var(--should); }
   .finding.optional { border-left-color: var(--optional); }
-  .fhead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+  .fhead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
   .tag { font-size: 12px; padding: 2px 9px; border-radius: 5px; background: #eef0f3; color: var(--muted); }
   .finding.blocking .tag.sev { background: #fdecea; color: var(--blocking); }
   .finding.should .tag.sev { background: #fdf3e3; color: var(--should); }
   .finding.optional .tag.sev { background: #eaf1fd; color: var(--optional); }
   .loc { margin-left: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); }
+  
+  /* 核心变化摘要框 */
+  .change-box {
+    display: flex; align-items: center; gap: 10px;
+    background: #f0f4ff; border: 1px solid #dbeafe; border-radius: 6px;
+    padding: 8px 12px; margin: 10px 0 12px; font-size: 13px;
+  }
+  .change-badge {
+    font-size: 11px; font-weight: 700; padding: 2px 7px;
+    border-radius: 4px; background: #2563eb; color: #fff; white-space: nowrap;
+  }
+  .change-text { flex: 1; color: #1e3a8a; }
+  .change-text strong { font-weight: 600; }
+
   .why { margin: 0 0 14px; }
   .diff { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   @media (max-width: 700px) { .diff { grid-template-columns: 1fr; } .audience dl { grid-template-columns: 1fr; gap: 2px 0; } }
@@ -62,6 +98,34 @@
   .after { background: #f4fbf7; }
   .before .txt { text-decoration: line-through; text-decoration-color: #e9a19b; }
   .drop { color: var(--muted); font-style: italic; }
+  
+  /* 反馈互动栏 */
+  .feedback-bar {
+    display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
+    gap: 10px; margin-top: 14px; padding-top: 10px; border-top: 1px dashed var(--line);
+  }
+  .feedback-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .fb-label { font-size: 12px; color: var(--muted); margin-right: 4px; }
+  .btn-fb {
+    cursor: pointer; border: 1px solid var(--line); background: #fff;
+    border-radius: 6px; padding: 4px 10px; font-size: 12px; color: var(--muted);
+    transition: all .15s ease;
+  }
+  .btn-fb:hover { border-color: #94a3b8; color: var(--text); }
+  .btn-fb.active[data-state="pending"] { background: #f1f5f9; border-color: #94a3b8; color: #475569; font-weight: 600; }
+  .btn-fb.active[data-state="accept"] { background: #ecfdf5; border-color: var(--ok); color: var(--ok); font-weight: 600; }
+  .btn-fb.active[data-state="discuss"] { background: #fffbeb; border-color: var(--should); color: var(--should); font-weight: 600; }
+  .btn-fb.active[data-state="reject"] { background: #fef2f2; border-color: var(--blocking); color: var(--blocking); font-weight: 600; }
+  .btn-copy-fb {
+    cursor: pointer; border: 1px solid var(--line); background: #f8fafc;
+    border-radius: 6px; padding: 4px 10px; font-size: 12px; color: var(--text);
+  }
+  .btn-copy-fb:hover { background: #edf2f7; }
+
+  /* 采纳/驳回后的卡片状态反馈 */
+  .finding.fb-accept { background: #fbfdfc; }
+  .finding.fb-reject { opacity: 0.6; }
+
   ol.pending { padding-left: 22px; }
   ol.pending li { margin-bottom: 8px; }
   .final { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 20px 22px; }
@@ -73,9 +137,16 @@
   figure.shot img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
   figure.shot figcaption { margin-top: 6px; font-size: 12px; color: var(--muted); }
   .noshot { margin: 14px 0 0; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 8px; font-size: 13px; color: var(--muted); }
-  .overview { display: grid; gap: 16px; }
-  .overview figure { margin: 0; }
   .text-evidence { white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+
+  /* Toast 提示 */
+  .toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: rgba(17, 24, 39, 0.9); color: #fff; padding: 8px 18px;
+    border-radius: 20px; font-size: 13px; pointer-events: none;
+    opacity: 0; transition: opacity .25s ease; z-index: 1000;
+  }
+  .toast.show { opacity: 1; }
 </style>
 </head>
 <body>
@@ -94,47 +165,76 @@
     </dl>
   </div>
 
-  <div class="counts">
-    <span class="pill">盘点元素 <b>{{n}}</b></span>
-    <span class="pill">阻断 <b>{{n}}</b></span>
-    <span class="pill">应改 <b>{{n}}</b></span>
-    <span class="pill">可选 <b>{{n}}</b></span>
-    <span class="pill">待确认 <b>{{n}}</b></span>
+  <div class="counts-wrap">
+    <div class="counts">
+      <span class="pill">盘点元素 <b>{{n}}</b></span>
+      <span class="pill">阻断 <b>{{n}}</b></span>
+      <span class="pill">应改 <b>{{n}}</b></span>
+      <span class="pill">可选 <b>{{n}}</b></span>
+      <span class="pill">待确认 <b>{{n}}</b></span>
+    </div>
+    <button type="button" class="btn-copy-all" onclick="copyAllFeedback()">📋 复制全部反馈清单</button>
   </div>
 
   <h2>证据与覆盖范围</h2>
   <div class="card">
     <p>输入版本 / 哈希：{{target revision}} · 技能源码版本：{{skill revision}} · 线程 / 执行身份：{{host record}}</p>
-    <p>{{逐页/状态覆盖：实际总数、已采集数、已打开看图数；纯文本填已读文件与范围}}</p>
+    <p>{{逐页/状态覆盖汇总：实际总数、已采集数、已打开看图数；纯文本填已读文件与范围}}</p>
     <p>{{位图区域已读 / 待读 / 不可辨认数量与位置；适用交互已操作 / 未覆盖及原因}}</p>
     <p>{{每页具体视觉观察与截图对应、实际操作步骤和结果；文本模式填上下文核对}}</p>
+
+    <!-- 视觉模式：紧凑结构化状态表格取代全景大图瀑布流堆叠。文本模式删除此表格。 -->
+    <div class="coverage-wrap">
+      <table class="coverage-table">
+        <thead>
+          <tr>
+            <th>页面 / 状态</th>
+            <th>界面名称与场景</th>
+            <th>检查范围</th>
+            <th>复核结果</th>
+            <th>关联问题</th>
+          </tr>
+        </thead>
+        <tbody>
+          <!-- REPEAT: 覆盖项清单 -->
+          <tr>
+            <td>{{P1 / 模态等}}</td>
+            <td>{{界面名或场景描述}}</td>
+            <td>{{DOM 文本 / 位图内文 / 交互态}}</td>
+            <td><span class="{{badge-clean 或 badge-issue}}">{{通过 或 发现 N 项}}</span></td>
+            <td>{{无 或 F1, F2}}</td>
+          </tr>
+          <!-- /REPEAT -->
+        </tbody>
+      </table>
+    </div>
   </div>
-  <!-- 视觉模式：每个真实渲染并截图的界面一张全景图，用 annotate-shot.py 的 overview 产物。文本模式删除此 overview。 -->
-  <div class="overview">
-    <figure class="shot">
-      <img alt="{{界面名}} 全景" src="{{overview data URI}}">
-      <figcaption>{{界面名}} · {{URL 或路径}} · {{视口}} · {{采集时间}}</figcaption>
-    </figure>
-  </div>
-  <!-- 文本模式：删除上面的 overview，改为列出每个文件的用途、覆盖行数、行号范围和未覆盖原因。 -->
+
+  <!-- 文本模式：删除上面的 coverage-wrap，改为列出每个文件的用途、覆盖行数、行号范围和未覆盖原因。 -->
   <div class="card text-evidence">
     <strong>文本证据</strong>
     {{文件路径 · 用途 · 覆盖行数与行号范围 · 生成/引用来源}}
   </div>
-  <!-- 视觉模式有采集不到的范围时保留；文本模式删除此段。 -->
+
+  <!-- 有未覆盖范围时保留；完全覆盖时删除此段。 -->
   <div class="noshot">
     <strong>未覆盖范围：</strong>{{网站中哪些界面或状态没采到，各自的原因；文本中哪些行/分支未读到及原因}}
   </div>
 
   <h2>阻断</h2>
   <!-- REPEAT: 每条 finding 一个 .finding，severity class 与 .tag.sev 文字对应分组 -->
-  <div class="card finding blocking">
+  <div class="card finding blocking" id="{{finding id}}" data-finding-id="{{finding id}}">
     <div class="fhead">
       <strong>{{元素位置，如「数据接入与运行状态」副标题}}</strong>
       <span class="tag sev">阻断</span>
       <span class="tag">{{类型，如 否定式免责}}</span>
       <span class="tag">{{结论：改写 / 降级 / 删除}}</span>
       <span class="loc">{{file:line 或 运行时数据}}</span>
+    </div>
+    <!-- 核心变化：提炼直观改动点，方便快速审阅与反馈 -->
+    <div class="change-box">
+      <div class="change-badge">核心变化</div>
+      <div class="change-text"><strong>{{动作：删除 / 改写 / 降级}}</strong>：{{一句话简述核心变化，如 删除页脚制作排版指令与工单代号「SL1」}}</div>
     </div>
     <p class="why">{{受众影响及证据；来源为用户已指出 / 本轮独立发现 / 旧项复核}}</p>
     <div class="diff">
@@ -149,6 +249,18 @@
     <!-- 视觉模式的纯代码轨 finding 用这一段替换上面的 figure，写明为什么没有截图。 -->
     <div class="noshot">未截图：{{原因，如 该界面需要 IOA 鉴权，本次采集不到}}</div>
     <!-- 文本模式删除上面的 figure/noshot，改为：<div class="text-evidence">原文位置：{{file:line}} · 上下文：{{...}}</div> -->
+    
+    <!-- 便捷反馈交互栏 -->
+    <div class="feedback-bar">
+      <div class="feedback-actions">
+        <span class="fb-label">反馈:</span>
+        <button type="button" class="btn-fb active" data-state="pending" onclick="setFindingState('{{finding id}}', 'pending')">⚪ 待定</button>
+        <button type="button" class="btn-fb" data-state="accept" onclick="setFindingState('{{finding id}}', 'accept')">✅ 采纳</button>
+        <button type="button" class="btn-fb" data-state="discuss" onclick="setFindingState('{{finding id}}', 'discuss')">💬 讨论</button>
+        <button type="button" class="btn-fb" data-state="reject" onclick="setFindingState('{{finding id}}', 'reject')">❌ 驳回</button>
+      </div>
+      <button type="button" class="btn-copy-fb" onclick="copyFindingFeedback('{{finding id}}')">📋 复制此项反馈</button>
+    </div>
   </div>
   <!-- /REPEAT -->
 
@@ -175,5 +287,82 @@
   </div>
 
 </main>
+
+<div class="toast" id="toast">已复制到剪贴板</div>
+
+<script>
+  const findingStates = {};
+
+  function showToast(text) {
+    const t = document.getElementById('toast');
+    t.textContent = text || '已复制到剪贴板';
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 2000);
+  }
+
+  function setFindingState(id, state) {
+    findingStates[id] = state;
+    const card = document.getElementById(id);
+    if (!card) return;
+    const btns = card.querySelectorAll('.btn-fb');
+    btns.forEach(btn => {
+      if (btn.dataset.state === state) {
+        btn.classList.add('active');
+      } else {
+        btn.classList.remove('active');
+      }
+    });
+    card.classList.remove('fb-accept', 'fb-discuss', 'fb-reject');
+    if (state === 'accept') card.classList.add('fb-accept');
+    if (state === 'reject') card.classList.add('fb-reject');
+  }
+
+  function getFindingSummary(id) {
+    const card = document.getElementById(id);
+    if (!card) return null;
+    const title = card.querySelector('.fhead strong')?.textContent?.trim() || id;
+    const sev = card.querySelector('.tag.sev')?.textContent?.trim() || '';
+    const change = card.querySelector('.change-text')?.textContent?.trim() || '';
+    const state = findingStates[id] || 'pending';
+    const stateMap = {
+      pending: '⚪ 待定',
+      accept: '✅ 采纳',
+      discuss: '💬 讨论',
+      reject: '❌ 驳回'
+    };
+    return { id, title, sev, change, state: stateMap[state] || state };
+  }
+
+  function copyFindingFeedback(id) {
+    const info = getFindingSummary(id);
+    if (!info) return;
+    const text = `[${info.id} ${info.state}] ${info.title} (${info.sev})\n核心变化: ${info.change}`;
+    navigator.clipboard.writeText(text).then(() => {
+      showToast(`已复制 ${id} 反馈格式`);
+    }).catch(() => {
+      prompt('请手动复制反馈文本：', text);
+    });
+  }
+
+  function copyAllFeedback() {
+    const cards = document.querySelectorAll('.card.finding');
+    if (!cards.length) return;
+    const lines = ['### Spec Leak Review 反馈清单\n'];
+    cards.forEach(card => {
+      const id = card.id || card.dataset.findingId;
+      if (!id) return;
+      const info = getFindingSummary(id);
+      if (info) {
+        lines.push(`- **${info.id}** [${info.state}] ${info.title}（${info.sev}）\n  - 核心变化: ${info.change}`);
+      }
+    });
+    const content = lines.join('\n');
+    navigator.clipboard.writeText(content).then(() => {
+      showToast('已复制全部反馈清单');
+    }).catch(() => {
+      prompt('请手动复制全部反馈清单：', content);
+    });
+  }
+</script>
 </body>
 </html>
