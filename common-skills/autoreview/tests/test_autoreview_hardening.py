@@ -5478,6 +5478,8 @@ class AutoreviewHardeningTests(unittest.TestCase):
                     "codex",
                     "--codex-bin",
                     str(codex_bin),
+                    "--external-review-destination",
+                    "codex=fixture Codex endpoint",
                     "--parallel-tests",
                     "true",
                 ],
@@ -5527,6 +5529,8 @@ class AutoreviewHardeningTests(unittest.TestCase):
                     "codex",
                     "--codex-bin",
                     str(codex_bin),
+                    "--external-review-destination",
+                    "codex=fixture Codex endpoint",
                 ],
                 cwd=repo,
                 env=env,
@@ -8438,6 +8442,68 @@ class AutoreviewSubagentEngineTests(unittest.TestCase):
             self.assertIn("independence: none", result.stdout)
             self.assertNotIn("subagent handoff:", result.stdout)
             self.assertFalse((root / "state" / "handoff").exists())
+
+    @unittest.skipIf(os.name == "nt", "the fake executable is POSIX-only")
+    def test_external_review_requires_a_destination_before_building_a_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            repo, env = self.prepare_repo(root)
+            codex_bin = self.helper["write_executable"](
+                root / "codex",
+                self.helper["fake_codex_script"](),
+            )
+            record_path = root / "record.json"
+            env["AUTOREVIEW_FAKE_RECORD"] = str(record_path)
+            env.pop("AUTOREVIEW_FALLBACK_MODEL", None)
+            env.pop("AUTOREVIEW_PI_FALLBACK_MODEL", None)
+
+            refused = self.run_cli(
+                repo,
+                env,
+                "--mode",
+                "local",
+                "--engine",
+                "codex",
+                "--codex-bin",
+                str(codex_bin),
+            )
+
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn("external review requires --external-review-destination", refused.stderr)
+            self.assertNotIn("history run:", refused.stdout)
+            self.assertFalse(record_path.exists())
+
+            panel_refused = self.run_cli(
+                repo,
+                env,
+                "--mode",
+                "local",
+                "--reviewers",
+                "codex,claude",
+                "--external-review-destination",
+                "codex=fixture Codex endpoint",
+            )
+
+            self.assertNotEqual(panel_refused.returncode, 0)
+            self.assertIn("for: claude", panel_refused.stderr)
+            self.assertFalse(record_path.exists())
+
+            authorized = self.run_cli(
+                repo,
+                env,
+                "--mode",
+                "local",
+                "--engine",
+                "codex",
+                "--codex-bin",
+                str(codex_bin),
+                "--external-review-destination",
+                "codex=fixture Codex endpoint",
+            )
+
+            self.assertEqual(authorized.returncode, 0, authorized.stderr)
+            self.assertIn("external_review_destination: codex=fixture Codex endpoint", authorized.stdout)
+            self.assertTrue(record_path.is_file())
 
 
 if __name__ == "__main__":

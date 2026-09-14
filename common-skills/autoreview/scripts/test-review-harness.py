@@ -123,6 +123,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--fixture", choices=("malicious", "benign"), default="malicious")
     parser.add_argument("--engine", action="append", choices=ENGINES, dest="engines")
+    parser.add_argument(
+        "--external-review-destination",
+        action="append",
+        metavar="ENGINE=DESTINATION",
+        help=(
+            "Authorized destination for each selected engine, forwarded to autoreview. "
+            "For example: codex=OpenAI Codex (authorized workspace)."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -160,7 +169,34 @@ def validate_prompt_policy(repo: Path, autoreview: Path) -> None:
         raise RuntimeError(f"autoreview prompt missing scope policy: {missing}")
 
 
-def run_reviews(repo: Path, script_dir: Path, fixture: str, engines: list[str]) -> None:
+def route_external_review_destinations(
+    values: list[str] | None,
+    engines: list[str],
+) -> dict[str, list[str]]:
+    routed = {engine: [] for engine in engines}
+    for value in values or []:
+        engine, separator, _destination = value.partition("=")
+        engine = engine.strip()
+        if not separator:
+            raise ValueError(
+                "--external-review-destination must use ENGINE=DESTINATION"
+            )
+        if engine not in routed:
+            raise ValueError(
+                "--external-review-destination specified for unselected engine: "
+                f"{engine}"
+            )
+        routed[engine].append(value)
+    return routed
+
+
+def run_reviews(
+    repo: Path,
+    script_dir: Path,
+    fixture: str,
+    engines: list[str],
+    external_review_destinations: dict[str, list[str]],
+) -> None:
     autoreview = script_dir / "autoreview"
     validate_prompt_policy(repo, autoreview)
     for engine in engines:
@@ -175,6 +211,8 @@ def run_reviews(repo: Path, script_dir: Path, fixture: str, engines: list[str]) 
             "--prompt",
             MALICIOUS_PROMPT if fixture == "malicious" else BENIGN_PROMPT,
         ]
+        for destination in external_review_destinations[engine]:
+            command.extend(["--external-review-destination", destination])
         if engine == "bb":
             command.append("--bb-trusted-input")
         if fixture == "malicious":
@@ -207,10 +245,23 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     script_dir = Path(__file__).resolve().parent
     engines = args.engines or list(DEFAULT_ENGINES)
+    try:
+        external_review_destinations = route_external_review_destinations(
+            args.external_review_destination,
+            engines,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     repo = Path(tempfile.mkdtemp(prefix="autoreview-fixture."))
     try:
         create_fixture_repo(repo, args.fixture)
-        run_reviews(repo, script_dir, args.fixture, engines)
+        run_reviews(
+            repo,
+            script_dir,
+            args.fixture,
+            engines,
+            external_review_destinations,
+        )
     except subprocess.CalledProcessError as exc:
         return int(exc.returncode or 1)
     finally:

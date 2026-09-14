@@ -70,6 +70,37 @@ Do not require autoreview for a change whose entire diff is prose-only internal 
 - If Gitcrawl reports a portable manifest mismatch, source/runtime DB health error, or stale portable-store checkout, run `gitcrawl doctor --json` and inspect `source_db_health`, `runtime_db_health`, and `portable_store_status` before falling back to live GitHub.
 - Do not push just to review. Push only when the user requested push/ship/PR update.
 
+## External Review Authorization
+
+`$autoreview` authorizes the review workflow; it does not by itself authorize
+sending source material to a remote reviewer. Before a runnable external engine
+receives a bundle, identify the exact receiving service or endpoint and ask for
+the user's explicit confirmation. State that the transfer contains the
+validated, redacted change bundle plus any selected repo-relative prompt files
+or datasets, and that sensitive paths and recognized secret-like material are
+excluded. Do not put bundle contents or credentials in an approval request.
+
+Use the per-engine, repeatable `--external-review-destination
+ENGINE=DESTINATION` flag only after that confirmation. It has no environment
+default, is printed in the run record before bundle construction, and is
+required for each currently runnable external engine: `codex`, `claude`, `pi`,
+and `bb`. A review panel needs one exact destination for every selected
+external engine. `subagent` creates a local handoff and needs no external
+destination. The flag records a received authorization; it never substitutes
+for a host approval prompt. Where the host exposes a permission request, repeat
+the destination and transfer scope there without requesting a broad or
+persistent approval.
+
+Use this concise confirmation when the user has not named the destination:
+
+> May I send the validated, redacted `<target>` review bundle (and the selected
+> repo-relative review context) to `<engine>: <service or endpoint>` for
+> read-only code review?
+
+For a Codex custom provider, name its actual configured service or endpoint;
+for Pi, name the selected provider or endpoint; for BB, name the BB server or
+host. Do not infer any of those from a binary name or local configuration.
+
 ## Scope Governor
 
 Autoreview is a closeout gate, not permission to change the task's product contract. Define scope by the authorized invariant and its architectural owner, not by the first patch.
@@ -179,10 +210,18 @@ $AUTOREVIEW_HARNESS = Join-Path $AgentsHome "skills\autoreview\scripts\test-revi
 
 ## Pick Target
 
+After the user confirms the receiving service or endpoint, set the exact
+per-engine destination for this run. This value is deliberately a command-line
+argument, not a persistent environment default:
+
+```bash
+review_destination='codex=OpenAI Codex (user-authorized workspace)'
+```
+
 Dirty local work:
 
 ```bash
-"$AUTOREVIEW" --mode local
+"$AUTOREVIEW" --external-review-destination "$review_destination" --mode local
 ```
 
 Use this only when the patch is actually unstaged/staged/untracked in the
@@ -195,26 +234,26 @@ only proves there is no local patch.
 Branch/PR work:
 
 ```bash
-"$AUTOREVIEW" --mode branch --base origin/main
+"$AUTOREVIEW" --external-review-destination "$review_destination" --mode branch --base origin/main
 ```
 
 Optional review context is first-class. Prompt files and datasets must be repo-relative so review bundles cannot pull arbitrary host files:
 
 ```bash
-"$AUTOREVIEW" --mode branch --base origin/main --prompt-file review-notes.md --dataset evidence.json
+"$AUTOREVIEW" --external-review-destination "$review_destination" --mode branch --base origin/main --prompt-file review-notes.md --dataset evidence.json
 ```
 
 If an open PR exists, use its actual base:
 
 ```bash
 base=$(gh pr view --json baseRefName --jq .baseRefName)
-"$AUTOREVIEW" --mode branch --base "origin/$base"
+"$AUTOREVIEW" --external-review-destination "$review_destination" --mode branch --base "origin/$base"
 ```
 
 Committed single change:
 
 ```bash
-"$AUTOREVIEW" --mode commit --commit HEAD
+"$AUTOREVIEW" --external-review-destination "$review_destination" --mode commit --commit HEAD
 ```
 
 Use commit review for already-landed or already-pushed work on `main`. Reviewing
@@ -250,7 +289,7 @@ independently semantic artifacts merely to shrink the review.
 Format first if formatting can change line locations. Then it is OK to run tests and review in parallel:
 
 ```bash
-"$AUTOREVIEW" --parallel-tests "<focused test command>"
+"$AUTOREVIEW" --external-review-destination "$review_destination" --parallel-tests "<focused test command>"
 ```
 
 On Windows, the default `--parallel-tests` shell preserves the platform `cmd.exe`
@@ -503,8 +542,13 @@ After setting `AUTOREVIEW` and `AUTOREVIEW_HARNESS` above:
 The smoke harness has thin shell wrappers over a shared Python implementation:
 
 ```bash
-"$AUTOREVIEW_HARNESS" --fixture benign --engine codex
+"$AUTOREVIEW_HARNESS" --fixture benign --engine codex \
+  --external-review-destination 'codex=OpenAI Codex (user-authorized workspace)'
 ```
+
+When the harness runs more than one engine, provide a separate destination for
+each selected engine; it forwards only that engine's declaration to its review
+run.
 
 On native Windows, invoke the extensionless Python helper through Python:
 
@@ -515,7 +559,8 @@ python $AUTOREVIEW --help
 and the smoke harness:
 
 ```powershell
-& $AUTOREVIEW_HARNESS -Fixture benign -Engine codex
+& $AUTOREVIEW_HARNESS -Fixture benign -Engine codex `
+  -ExternalReviewDestination 'codex=OpenAI Codex (user-authorized workspace)'
 ```
 
 The helper:
@@ -531,7 +576,7 @@ The helper:
 - scans safe Git patches in full, recognizes synthetic fixture values tied to their credential field, reviews them in one pass up to the aggregate prompt limit, and automatically uses complete bounded passes above it
 - should be left in `--mode auto` or forced to `--mode branch` for PR/branch work; do not force `--mode local` after committing
 - writes only to stdout unless `--output`, `--json-output`, or live streamed engine stderr is set
-- supports `--dry-run`, `--parallel-tests`, `--parallel-tests-shell`, `--prompt`, repo-relative `--prompt-file`, repo-relative `--dataset`, `--no-tools`, `--no-web-search`, repeatable Codex-only safe model/response tuning with `--codex-config key=value`, Codex-only `--codex-speed fast|flex|default`, BB session selection with `--bb-bin`/`--bb-timeout` plus the required per-run `--bb-trusted-input` gate, and commit refs
+- supports `--dry-run`, `--parallel-tests`, `--parallel-tests-shell`, `--prompt`, repo-relative `--prompt-file`, repo-relative `--dataset`, `--no-tools`, `--no-web-search`, repeatable per-engine `--external-review-destination ENGINE=DESTINATION` authorization records for runnable remote reviewers, repeatable Codex-only safe model/response tuning with `--codex-config key=value`, Codex-only `--codex-speed fast|flex|default`, BB session selection with `--bb-bin`/`--bb-timeout` plus the required per-run `--bb-trusted-input` gate, and commit refs
 - supports `--stream-engine-output` or `AUTOREVIEW_STREAM_ENGINE_OUTPUT=1` for live engine text while preserving structured validation; Codex and Claude hide tool/file event details, emit compact activity summaries, and report usage at turn completion
 - supports opt-in review panels with `--panel` / `--reviewers`, plus per-engine `--model`, `--thinking`, and Claude/pi `--fallback-model`
 - uses built-in defaults `codex=gpt-5.6-sol` with `high` reasoning and an access-only `gpt-5.6-terra` retry; Claude inherits the current Claude Code model and effort unless `--model`/`--thinking` or env overrides are set; honors `AUTOREVIEW_MODEL`, `AUTOREVIEW_THINKING`, `AUTOREVIEW_MAX_PRIORITY`, `AUTOREVIEW_FALLBACK_MODEL`, and per-engine `AUTOREVIEW_<ENGINE>_MODEL` / `AUTOREVIEW_<ENGINE>_THINKING` environment overrides when CLI flags are omitted
