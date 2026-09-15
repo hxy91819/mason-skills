@@ -69,7 +69,8 @@ thread:
 
 ```bash
 "$AUTOREVIEW" --self-test
-"$AUTOREVIEW_HARNESS" --fixture benign --engine bb
+"$AUTOREVIEW_HARNESS" --fixture benign --engine bb \
+  --external-review-destination 'bb=the user-authorized BB server or host'
 ```
 
 The real fixture should print the inherited session configuration and thread

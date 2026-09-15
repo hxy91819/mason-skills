@@ -46,6 +46,10 @@ ENGINE_CHOICES = (*ENGINES, *ENGINE_ALIASES)
 # "subagent" stays out of --reviewers all: it reuses the host agent, so it is
 # never a second opinion and must not silently pad a panel.
 ALL_REVIEWERS = ("codex", "claude", "pi")
+# These are the currently runnable engines that transmit the validated review
+# bundle beyond the invoking process. Engines that fail closed are omitted until
+# their isolation contract allows a real review invocation.
+EXTERNAL_REVIEW_ENGINES = frozenset({"codex", "claude", "pi", "bb"})
 # Phase 1 of the subagent handoff finishes without a report; a distinct exit
 # code lets the host agent tell "results awaited" from clean/dirty reviews.
 EXIT_AWAITING_EXTERNAL_RESULT = 3
@@ -12604,6 +12608,16 @@ def parse_args() -> argparse.Namespace:
         help="Review engine. Env default: AUTOREVIEW_ENGINE. Built-in default: codex.",
     )
     parser.add_argument("--reviewers", help="Comma-separated review panel, e.g. codex,claude,pi,bb or codex:gpt-5.6-sol:high.")
+    parser.add_argument(
+        "--external-review-destination",
+        action="append",
+        metavar="ENGINE=DESTINATION",
+        help=(
+            "User-authorized destination for one external reviewer; repeat for "
+            "each selected external engine, e.g. "
+            "codex=OpenAI Codex (authorized workspace). No environment default."
+        ),
+    )
     parser.add_argument("--panel", action="store_true", help="Run a Codex/Claude review panel unless --engine changes the first reviewer.")
     parser.add_argument(
         "--model",
@@ -12849,6 +12863,67 @@ def parse_keyed_options(values: list[str] | None, option: str) -> tuple[str | No
                 raise SystemExit(f"--{option} global value specified more than once")
             global_value = value
     return global_value, per_engine
+
+
+def external_review_destinations(
+    args: argparse.Namespace,
+    reviewers: list[argparse.Namespace],
+    *,
+    required: bool,
+) -> dict[str, str]:
+    """Validate the per-engine destinations authorized for bundle transmission."""
+    destinations: dict[str, str] = {}
+    for raw in getattr(args, "external_review_destination", None) or []:
+        if "=" not in raw:
+            raise SystemExit(
+                "--external-review-destination must use ENGINE=DESTINATION, "
+                "for example codex=OpenAI Codex (authorized workspace)"
+            )
+        engine, destination = raw.split("=", 1)
+        engine = normalize_engine(engine.strip())
+        destination = " ".join(destination.split())
+        if engine not in ENGINES:
+            raise SystemExit(
+                f"--external-review-destination uses unknown engine: {engine}"
+            )
+        if engine not in EXTERNAL_REVIEW_ENGINES:
+            raise SystemExit(
+                f"--external-review-destination is not applicable to {engine}"
+            )
+        if not destination:
+            raise SystemExit(
+                f"--external-review-destination for {engine} cannot be empty"
+            )
+        if len(destination) > 500 or any(ord(char) < 32 for char in destination):
+            raise SystemExit(
+                f"--external-review-destination for {engine} must be printable and at most 500 characters"
+            )
+        if engine in destinations:
+            raise SystemExit(
+                f"--external-review-destination specified more than once for {engine}"
+            )
+        destinations[engine] = destination
+
+    selected = {
+        reviewer.engine
+        for reviewer in reviewers
+        if reviewer.engine in EXTERNAL_REVIEW_ENGINES
+    }
+    unused = sorted(set(destinations) - selected)
+    if unused:
+        raise SystemExit(
+            "--external-review-destination specified for unselected reviewer: "
+            + ", ".join(unused)
+        )
+    missing = sorted(selected - set(destinations))
+    if missing and required:
+        raise SystemExit(
+            "external review requires --external-review-destination "
+            "ENGINE=DESTINATION for: "
+            + ", ".join(missing)
+            + ". Confirm the exact service or endpoint and the redacted review-bundle scope with the user before retrying."
+        )
+    return destinations
 
 
 def parse_reviewer_token(token: str) -> tuple[str, str | None, str | None]:
@@ -14481,6 +14556,16 @@ def main() -> int:
     display_ref = args.commit if target == "commit" else target_ref
     if display_ref:
         print(f"ref: {display_ref}")
+    external_destinations = external_review_destinations(
+        args,
+        reviewers,
+        required=not args.dry_run,
+    )
+    for engine, destination in sorted(external_destinations.items()):
+        print(
+            f"external_review_destination: {engine}="
+            f"{display_escape(destination, 500)}"
+        )
     if args.dry_run:
         return 0
 

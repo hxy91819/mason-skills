@@ -6,6 +6,8 @@ param(
     [ValidateSet('codex', 'claude', 'pi', 'bb')]
     [string[]] $Engine,
 
+    [string[]] $ExternalReviewDestination,
+
     [Alias('h')]
     [switch] $Help
 )
@@ -26,6 +28,12 @@ if ($PSBoundParameters.ContainsKey('Fixture')) {
 if ($PSBoundParameters.ContainsKey('Engine')) {
     foreach ($SelectedEngine in $Engine) {
         $ForwardedArgs += @('--engine', $SelectedEngine)
+    }
+}
+
+if ($PSBoundParameters.ContainsKey('ExternalReviewDestination')) {
+    foreach ($Destination in $ExternalReviewDestination) {
+        $ForwardedArgs += @('--external-review-destination', $Destination)
     }
 }
 
