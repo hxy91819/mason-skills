@@ -37,18 +37,28 @@ bb-dispatch --difficulty medium --kind test --task '<测试目标、范围与验
 
 权限须符合任务授权；配置缺失或校验失败时说明缺口，不静默换模型或升权。
 
-并发任务可能产生修改冲突时，可以使用 `use-worktree` 隔离；无冲突时沿用当前环境。操作前检查分支、工作区和 worktree，遵守用户授权。隔离环境准备好后用 `--environment` 指定，脚本只使用已有 BB 环境。
-
 派发标题由脚本统一加 `[Agent]` 前缀；需要简短标题时传 `--title`，省略时从任务文本截取。
 
 根据返回结果报告线程 ID、实际选择和状态。创建成功不代表任务完成；创建结果不明时先查询线程，避免重复派发。
+
+## 等待与并发
+
+等待由 BB 的通知驱动，不靠轮询。子线程回合完成、失败或被中断时，BB 会向父线程投递系统通知（父线程忙时先排队，空闲时作为新回合送达，内容含子线程最终输出摘要）；子线程卡在待处理交互时另有求助通知。脚本在父子同项目同环境时自动关联父线程，通知沿这条关联回到父线程。派发后结束当前回合或转做其他工作，收到通知再读取结果、决定下一步；`bb thread wait` 循环、反复 `show` 或 sleep 后重查都属于多余的轮询，只在创建结果未知等需要立即确认时查询一次。
+
+并行前按任务性质分流：
+
+- 只读任务（调研、审查、检索、验证）不改动共享状态，可以连续派发、并行执行。
+- 写入任务先看依赖：后一个任务消费前一个任务的产出时，按依赖顺序串行派发，等前一个的完成通知到达后再派下一个；只有彼此独立、写入目标不重叠的写入任务才并行。
+
+并发写入可能产生修改冲突时，用 `use-worktree` 隔离；无冲突时沿用当前环境。操作前检查分支、工作区和 worktree，遵守用户授权。隔离环境准备好后用 `--environment` 指定，脚本只使用已有 BB 环境。
 
 ## 作为编排后端
 
 `large-task-orchestrator` 的确定性 driver 通过本技能派 Worker、Validator 与异常时的 Judge：Worker 按
 能力档映射为 `--difficulty`，Validator 固定 `--difficulty simple --kind test`，Judge 固定 `--difficulty complex --kind judge`。
 driver 只传任务文本、难度、类型与已有环境，路由仍由本配置决定；状态机、wait/output/tell 兼容性见其
-[`references/bb-dispatch-loop.md`](../large-task-orchestrator/references/bb-dispatch-loop.md)。
+[`references/bb-dispatch-loop.md`](../large-task-orchestrator/references/bb-dispatch-loop.md)。driver 是脚本状态机，
+用 `bb thread wait` 阻塞等待并自带 stall 处理，与会话内父 agent 的通知路径相互独立。
 
 `defaults.test` 决定 Validator 路由，`defaults.judge` 单独决定 Judge 路由，Worker 使用难度路由或
 `debug` 路由。`agents.<别名>.routes` 按角色、难度和 `default` 项配置模型与 reasoning，选择规则见
