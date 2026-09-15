@@ -1,6 +1,9 @@
 ---
 name: mermaid-lint
-description: Create, edit, validate, and fix Mermaid diagrams in Markdown with secure defaults. Use whenever Codex adds or changes a Mermaid diagram, or when the user asks to check Mermaid syntax, renderability, or safety across one file, several files, or a directory.
+description: Create, edit, validate, and fix Mermaid diagrams in Markdown with secure defaults. Use when the user explicitly asks to add or edit a Mermaid diagram, or to check Mermaid syntax, renderability, or safety across one file, several files, or a directory.
+disable-model-invocation: true
+triggers:
+  - user
 ---
 
 # Mermaid Lint

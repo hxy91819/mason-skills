@@ -4,4 +4,4 @@ interface:
   default_prompt: "Use $mermaid-lint to validate and fix the Mermaid diagrams in the requested files."
 
 policy:
-  allow_implicit_invocation: true
+  allow_implicit_invocation: false
