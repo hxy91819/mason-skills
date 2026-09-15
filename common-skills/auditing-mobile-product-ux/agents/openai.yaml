@@ -1,0 +1,7 @@
+interface:
+  display_name: "移动端产品体验审计"
+  short_description: "真实浏览器探索移动端体验并输出截图 HTML 报告"
+  default_prompt: "使用 $auditing-mobile-product-ux 访问指定环境的移动端版本，定位体验问题并输出带真实截图的 HTML 报告。"
+
+policy:
+  allow_implicit_invocation: false

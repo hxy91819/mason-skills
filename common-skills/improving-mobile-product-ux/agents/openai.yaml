@@ -1,0 +1,7 @@
+interface:
+  display_name: "逐项改善移动端产品体验"
+  short_description: "逐项修复审计问题并提供手机、桌面真实前后对比"
+  default_prompt: "使用 $improving-mobile-product-ux 读取移动端体验审计报告，逐项修改；用真实浏览器复查 393×852、402×874 手机和 1920×1080 桌面，确认桌面没有被破坏并区分有意优化与回归，输出使用滑块对比的手机与桌面前后截图 HTML 报告。"
+
+policy:
+  allow_implicit_invocation: false

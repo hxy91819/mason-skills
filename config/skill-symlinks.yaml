@@ -15,6 +15,8 @@ skills:
 - name: ask-matt
   source: mattpocock-skills
   note: 路由：问哪个 skill 或流程适合当前处境
+- name: auditing-mobile-product-ux
+  note: 移动端产品体验审计：真实浏览器探索并输出截图 HTML 报告
 - name: autoreview
   note: 提交/发布前的结构化代码审查
 - name: bb-model-routing
@@ -55,6 +57,8 @@ skills:
 - name: improve-codebase-architecture
   source: mattpocock-skills
   note: 扫描架构深化机会并产出 HTML 报告
+- name: improving-mobile-product-ux
+  note: 逐项改善审计问题：手机+桌面前后真实截图对比报告
 - name: large-task-orchestrator
   note: 用宿主原生 subagent 持续编排大型任务
 - name: large-task-planning
