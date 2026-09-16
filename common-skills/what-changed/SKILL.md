@@ -1,9 +1,12 @@
 ---
 name: what-changed
-description: 用平实语言说明上一轮、当前 diff 或当前 PR/MR 改了什么、为什么这样改。
+description: 显式调用 $what-changed 时，用平实语言说明上一轮、当前 diff 或当前 PR/MR 改了什么、为什么这样改。
+disable-model-invocation: true
 ---
 
 # What Changed
+
+仅在用户显式调用 `$what-changed` 时使用这套精简表达模式；普通“改了什么”按当前请求回答。
 
 用户要听的是改动说明，不是代码走查。核心原则：讲决定，用按意图分类的精简清单呈现。
 

@@ -119,6 +119,12 @@ Agents that discover user-scoped skills from `~/.agents/skills` can link individ
 
 > **Note**: Only 21 core engineering and governance skills are recommended for global user scope. See [docs/recommended-global-skills.md](docs/recommended-global-skills.md) and [`config/skill-symlinks.yaml`](config/skill-symlinks.yaml) for the full list, rationale, and one-command sync instructions.
 
+The external recommendations no longer include `research`,
+`resolving-merge-conflicts`, or standalone `tdd`. `implement` retains behavioral
+test evidence without depending on a `tdd` skill. `codebase-design` and
+`writing-for-agents` remain available as on-demand references and explicit
+user entrypoints; `$what-changed` is an explicit personal summary mode.
+
 ```bash
 # Sync recommended user-scope skills automatically:
 python3 common-skills/skill-manifest-sync/scripts/sync_skill_symlinks.py --mode apply --yes
@@ -144,7 +150,7 @@ python3 common-skills/skill-manifest-sync/scripts/sync_skill_symlinks.py --mode 
 | [mermaid-lint](common-skills/mermaid-lint/) | Validates and fixes mermaid diagrams in markdown. Renders every block against the real mermaid renderer and reports all failures in one pass. Original skill design. |
 | [readiness-report](common-skills/readiness-report/) | Read-only Agent-Readiness audit of the current Git repository with a 1–5 level score and a local JSON report. Adapted from Factory Droid's built-in `/readiness-report` with remote reporting removed. Explicit invocation only. |
 | [readiness-fix](common-skills/readiness-fix/) | Fixes failing signals from the latest local readiness report; asks whether to generate a report first when none exists. Adapted from Factory Droid's built-in `/readiness-fix` with remote report access removed. Explicit invocation only. |
-| [open-source-contribution](common-skills/open-source-contribution/) | Open-source contribution hygiene: identity verification, privacy scanning, Git history cleanup, installer hardening, autoreview, and safe push/PR validation. |
+| [open-source-contribution](common-skills/open-source-contribution/) | Public contribution and publication privacy/identity checks, with task-specific history, security baseline, installer, and proxy references. |
 | [open-source-fork-maintenance](common-skills/open-source-fork-maintenance/) | Maintains a non-maintainer public fork through a project-local `local/aggregate` integration branch. Explicit invocation only. |
 | [secure-release](common-skills/secure-release/) | Integrates fail-closed release pipelines using a versioned CI kit; npm is the first implemented adapter. |
 | [submitting-github-issues-with-images](common-skills/submitting-github-issues-with-images/) | Uploads local screenshots, videos, or diagnostic attachments as GitHub Release Assets, embeds them in issues, PR bodies, or comments, and verifies the published result by reading it back online. Explicit invocation only, with a stated exception for authorized caller workflows. |
@@ -247,14 +253,14 @@ fences carrying an info string, and tilde fences are all recognized.
 
 ### open-source-contribution
 
-Standardizes open-source contribution cleanup and release checks for coding
-agents: scan file content and Git metadata, verify commit author name and email
-against the approved GitHub account, remove local paths and private identities,
-harden installers, preserve streaming behavior in local proxies, run
-gitleaks/pre-commit/tests, use autoreview as a closeout gate, and verify
-history rewrites before pushing. Ships `scripts/check_identity.py` (Python
-stdlib only; needs `git`, `gh` optional) that verifies repository-local Git
-identity and every commit author/committer against the approved GitHub account.
+Checks privacy and Git identity for public contributions and publication, not
+ordinary autoreview or arbitrary PR validation. Read only the relevant task
+references for identity/privacy, approved history cleanup, public-release
+security baselines, installers, or streaming proxies. Release-pipeline work
+resolves the sibling `secure-release` skill in this repository and reports
+missing dependencies instead of assuming a global installation. Ships
+`scripts/check_identity.py` (Python stdlib only; needs `git`, `gh` optional) to
+check repository-local identity and commit authors/committers.
 
 ### secure-release
 

@@ -4,4 +4,4 @@ interface:
   default_prompt: "Use $what-changed to explain what the last turn, the current diff, or the current PR changed and why."
 
 policy:
-  allow_implicit_invocation: true
+  allow_implicit_invocation: false
