@@ -1,14 +1,19 @@
 ---
 name: bb-model-routing
-description: 用户要求用 BB 派发任务或开线程时使用，通过 `$bb-model-routing` 显式调用。查看或继续已有线程、模型咨询及修改本技能时不触发。
-disable-model-invocation: true
-triggers:
-  - user
+description: 在 BB 环境中，准备将具体子任务委派给子 Agent，或用户要求创建执行线程时使用；按配置路由并派发。常规单线程工作、模型咨询及仅查看已有线程不触发。
 ---
 
 # BB 任务派发
 
-本技能默认仅显式触发，使用 `$bb-model-routing` 调用。
+本技能作为已决定委派后的自动下游，也可通过 `$bb-model-routing` 显式调用。
+
+## 何时使用
+
+通常在当前 thread 完成任务；任务复杂或涉及多个文件，本身不构成触发理由。在 BB 环境中，父 Agent 已明确具体子任务并准备创建子 Agent，或用户要求创建执行线程时，优先使用本技能的 `bb-dispatch` 派发。已有任务授权覆盖时，自动选用本技能无需再确认一次。
+
+用户明确指定宿主原生 subagent，或现有流程依赖其特定接口时，遵循该选择。仅讨论是否需要多 Agent、咨询模型、查看或继续已有线程，以及修改本技能时，不触发新派发；已启动流程的续办沿用现有上下文，无需用户重复调用。
+
+## 派发入口
 
 为用户已要求的任务调用 `scripts/bb-dispatch`。工具别名、模型、推理级别和环境映射以用户配置为准；首次配置或调整映射时读取 [配置与派发](references/dispatch.md)，使用其中的配置模板。参数细节查 `bb-dispatch --help`。
 
@@ -54,7 +59,7 @@ bb-dispatch --difficulty medium --kind test --task '<测试目标、范围与验
 
 ## 作为编排后端
 
-`large-task-orchestrator` 的确定性 driver 通过本技能派 Worker、Validator 与异常时的 Judge：Worker 按
+已启动的 `large-task-orchestrator` 可自动使用本技能作为派发后端，其确定性 driver 派 Worker、Validator 与异常时的 Judge：Worker 按
 能力档映射为 `--difficulty`，Validator 固定 `--difficulty simple --kind test`，Judge 固定 `--difficulty complex --kind judge`。
 driver 只传任务文本、难度、类型与已有环境，路由仍由本配置决定；状态机、wait/output/tell 兼容性见其
 [`references/bb-dispatch-loop.md`](../large-task-orchestrator/references/bb-dispatch-loop.md)。driver 是脚本状态机，
