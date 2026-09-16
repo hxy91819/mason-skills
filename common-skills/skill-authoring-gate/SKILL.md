@@ -39,6 +39,18 @@ description: 创建、迁移、重命名或修改 Skill 的 SKILL.md、agents/op
 
 保留无关 UI/依赖字段，同步仓库调用清单。手动入口写明调用方式；自动入口仍可手动调用。手动流程启动后可使用所需能力，续办同一流程不要求用户每步重新输入命令；显式引用其他流程资料也不授权扩大任务。
 
+## 跨 Skill 运行时依赖
+
+Skill 执行另一个 Skill 的脚本时，不使用 `../<skill>/...` 等源码树相对路径；各 Skill 通常独立软链到 user scope，相对位置不是运行时契约。按 user-scope 根目录解析：
+
+```bash
+DEPENDENCY="${AGENTS_HOME:-$HOME/.agents}/skills/<skill-name>/scripts/<entrypoint>"
+```
+
+执行前检查入口存在且可执行；缺失时报告依赖 Skill 未安装，不猜测当前项目里的源码位置。依赖本仓 `common-skills/` 且需要在其他项目运行时，将目标 Skill 登记到 `config/skill-symlinks.yaml`，并用同步脚本校验安装状态。
+
+本 Skill 自己的 `scripts/`、`references/` 和 `assets/` 仍使用 Skill 内相对路径；仓库内仅供编写维护的文档链接也可保持相对路径。本规则只约束跨 Skill 的运行时调用。
+
 ## 实际操作授权
 
 发现策略只控制如何进入技能，不能代替目标、访问权限或写入授权。
@@ -51,6 +63,7 @@ description: 创建、迁移、重命名或修改 Skill 的 SKILL.md、agents/op
 ## 验收与依据
 
 - 走查正例、相邻反例、续办和下游衔接，检查正文/引用是否残留与最终策略冲突的要求。
+- 检查跨 Skill 脚本调用是否从 user scope 解析，且依赖已进入软链清单；不接受依赖源码目录相邻的运行时路径。
 - 运行适用 validator、YAML 解析和 `git diff --check`，核对策略清单、frontmatter 与宿主 metadata。结构检查不能证明模型的触发准确率，不写只匹配固定文案的测试。
 - 报告最终策略、理由、配置位置、执行边界及未验证部分。
 
