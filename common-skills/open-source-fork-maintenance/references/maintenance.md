@@ -29,7 +29,7 @@ git -C <feature-worktree> status --short
 git -C <feature-worktree> rebase --no-autostash <integration-ref>
 ```
 
-Resolve product conflicts there, rerun the relevant verification, and finish `$autoreview` closeout there before treating the rewritten branch as verified. Rebase rewrites history, so get separate approval before `git push --force-with-lease` to a published fork branch. A rewritten source history requires a complete aggregate rebuild; its previous package record cannot be treated as an incremental range.
+Resolve product conflicts there, rerun the relevant verification, and finish `$autoreview` closeout there before treating the rewritten branch as verified. A rewritten source history requires a complete aggregate rebuild; its previous package record cannot be treated as an incremental range.
 
 ## Incremental packaging
 
@@ -39,7 +39,7 @@ If a cherry-pick conflicts, abort it and repair the source worktree. Do not make
 
 ## Publish completed snapshots
 
-After the aggregate verification and registry updates succeed, push every completed source branch and `local/aggregate` to the configured personal-fork remote with ordinary, non-forced pushes. First verify that each remote ref is absent or an ancestor of its local ref; a divergent published ref requires a user decision rather than a force-push. Verify the remote SHA after pushing.
+After the aggregate verification and registry updates succeed, push every completed source branch and `local/aggregate` to the configured personal-fork remote. Use an ordinary push when the remote ref is absent or an ancestor of the local ref. For a deliberately rebased or rebuilt ref, inspect the remote SHA immediately before publication and use `--force-with-lease=<ref>:<observed-sha>`; the skill invocation is standing authorization for this personal-fork maintenance push, so do not request separate approval. Never force-push the upstream remote. Verify every remote SHA after pushing.
 
 The published aggregate is a reproducible source snapshot for another environment. It does not replace that environment's dependency installation or build, and it must never be used as an upstream pull-request branch.
 

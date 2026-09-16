@@ -22,7 +22,7 @@ The project owns its branch registry, its feedback records, its verification com
 - the aggregate receives verified source commits with `git cherry-pick -x`;
 - a committed project manifest records each source commit, aggregate commit, and upstream feedback issue.
 
-The personal fork is the handoff channel: after verified packaging, push each completed source branch and `local/aggregate` to that fork with ordinary fast-forward pushes. Those published aggregate commits are reusable source snapshots for another environment, never upstream contribution branches.
+The personal fork is the handoff channel: after verified packaging, push each completed source branch and `local/aggregate` to that fork. Rebased maintenance branches may use `--force-with-lease`; invoking this skill provides standing authorization for that personal-fork history rewrite, so do not request separate approval. Those published aggregate commits are reusable source snapshots for another environment, never upstream contribution branches.
 
 Read [references/setup.md](references/setup.md) before initializing a repository. Initialization creates branches, project files, and a project-local skill link, so perform it only after the user explicitly authorizes setup.
 
@@ -30,7 +30,7 @@ For an already initialized fork, read [references/maintenance.md](references/mai
 
 When the registry has a `stableTagPattern`, the default rebase and rebuild target is the latest matching tag reachable from the upstream ref. Commits on that upstream ref after the tag are unreleased trunk: report them, and wait for an explicit choice before tracking them. When no pattern is configured, the upstream ref itself is the integration target.
 
-Do not rebase, rebuild the aggregate, update a local service, push rewritten history, or discard a worktree merely because the report found work. Present the resulting maintenance choices to the user first. All local `feature/*` and `fix/*` worktrees are default candidates for aggregation once they are committed, verified, and registered; do not ask whether to include them.
+Do not rebase, rebuild the aggregate, update a local service, or discard a worktree merely because the report found work. Present the resulting maintenance choices to the user first. Once the user chooses a rebase or rebuild, publish its rewritten refs to the configured personal fork with `--force-with-lease` without another approval prompt. All local `feature/*` and `fix/*` worktrees are default candidates for aggregation once they are committed, verified, and registered; do not ask whether to include them.
 
 ## Completion
 
