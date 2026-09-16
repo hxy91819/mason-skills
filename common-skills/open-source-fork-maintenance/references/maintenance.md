@@ -45,6 +45,6 @@ The published aggregate is a reproducible source snapshot for another environmen
 
 ## Complete rebuild
 
-Use a temporary integration worktree based on the chosen integration ref, cherry-pick the confirmed source branches with `-x`, and verify the result. Before replacing the root `local/aggregate`, show the user the candidate SHA, the aggregate SHA being replaced, the source branches, and verification results. Obtain a second explicit confirmation for that replacement. Create a recoverable local backup ref; never silently use a destructive reset.
+Use a temporary integration worktree based on the chosen integration ref, cherry-pick the confirmed source branches with `-x`, and verify the result. Record the candidate SHA, the aggregate SHA being replaced, the source branches, and verification results, then create a recoverable local backup ref and replace the root `local/aggregate` without another approval prompt. The only remaining confirmation is the project deployment workflow's final replacement of a running local BB service. Never silently use a destructive reset.
 
 After a successful rebuild, update every package record, the human overview in `AGENTS.md`, and `aggregate.lastIntegratedUpstreamCommit`. Do not update the upstream baseline after incremental packaging performed without a rebase.

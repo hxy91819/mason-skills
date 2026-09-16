@@ -30,7 +30,7 @@ For an already initialized fork, read [references/maintenance.md](references/mai
 
 When the registry has a `stableTagPattern`, the default rebase and rebuild target is the latest matching tag reachable from the upstream ref. Commits on that upstream ref after the tag are unreleased trunk: report them, and wait for an explicit choice before tracking them. When no pattern is configured, the upstream ref itself is the integration target.
 
-Do not rebase, rebuild the aggregate, update a local service, or discard a worktree merely because the report found work. Present the resulting maintenance choices to the user first. Once the user chooses a rebase or rebuild, publish its rewritten refs to the configured personal fork with `--force-with-lease` without another approval prompt. All local `feature/*` and `fix/*` worktrees are default candidates for aggregation once they are committed, verified, and registered; do not ask whether to include them.
+Do not rebase, rebuild the aggregate, update a local service, or discard a worktree merely because the report found work. Present the resulting maintenance choices to the user first. Once the user chooses a rebase or rebuild, replace the aggregate root and publish rewritten refs to the configured personal fork without another approval prompt. The final replacement of a running local BB service remains a separate explicit authorization boundary owned by the project's deployment workflow. All local `feature/*` and `fix/*` worktrees are default candidates for aggregation once they are committed, verified, and registered; do not ask whether to include them.
 
 ## Completion
 
