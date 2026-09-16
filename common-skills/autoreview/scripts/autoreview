@@ -12613,8 +12613,8 @@ def parse_args() -> argparse.Namespace:
         action="append",
         metavar="ENGINE=DESTINATION",
         help=(
-            "User-authorized destination for one external reviewer; repeat for "
-            "each selected external engine, e.g. "
+            "Optionally record the destination for one external reviewer in the "
+            "run record; repeat for each selected external engine, e.g. "
             "codex=OpenAI Codex (authorized workspace). No environment default."
         ),
     )
@@ -12868,10 +12868,8 @@ def parse_keyed_options(values: list[str] | None, option: str) -> tuple[str | No
 def external_review_destinations(
     args: argparse.Namespace,
     reviewers: list[argparse.Namespace],
-    *,
-    required: bool,
 ) -> dict[str, str]:
-    """Validate the per-engine destinations authorized for bundle transmission."""
+    """Validate the per-engine destinations recorded for bundle transmission."""
     destinations: dict[str, str] = {}
     for raw in getattr(args, "external_review_destination", None) or []:
         if "=" not in raw:
@@ -12914,14 +12912,6 @@ def external_review_destinations(
         raise SystemExit(
             "--external-review-destination specified for unselected reviewer: "
             + ", ".join(unused)
-        )
-    missing = sorted(selected - set(destinations))
-    if missing and required:
-        raise SystemExit(
-            "external review requires --external-review-destination "
-            "ENGINE=DESTINATION for: "
-            + ", ".join(missing)
-            + ". Confirm the exact service or endpoint and the redacted review-bundle scope with the user before retrying."
         )
     return destinations
 
@@ -14556,12 +14546,14 @@ def main() -> int:
     display_ref = args.commit if target == "commit" else target_ref
     if display_ref:
         print(f"ref: {display_ref}")
-    external_destinations = external_review_destinations(
-        args,
-        reviewers,
-        required=not args.dry_run,
-    )
-    for engine, destination in sorted(external_destinations.items()):
+    external_destinations = external_review_destinations(args, reviewers)
+    external_engines = {
+        reviewer.engine
+        for reviewer in reviewers
+        if reviewer.engine in EXTERNAL_REVIEW_ENGINES
+    }
+    for engine in sorted(external_engines):
+        destination = external_destinations.get(engine, "unspecified")
         print(
             f"external_review_destination: {engine}="
             f"{display_escape(destination, 500)}"
