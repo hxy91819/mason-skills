@@ -41,7 +41,7 @@ user 级 prompt 正文不在此清单范围内：由 [`config/user-agents.md`](.
 | 6 | `large-task-planning` | 大型工程任务的双层规划（人读 SPEC/STATUS + Agent 机器执行 plan.json） | 显式调用 (`$large-task-planning`) |
 | 7 | `local-test` | 实际搭建、复用或管理本地联调/项目预览环境 | 允许隐式触发（窄条件） |
 | 8 | `mermaid-lint` | Markdown 中 Mermaid 图表的渲染级批量校验与自动修复 | 显式调用 (`$mermaid-lint`) |
-| 9 | `open-source-contribution` | 开源贡献与发布前的合规与代码卫生审计 | 允许隐式触发 |
+| 9 | `open-source-contribution` | 公开贡献/发布的隐私与 Git 身份检查；按任务读取专项参考 | 允许隐式触发（限公开贡献/发布，不兜底普通 autoreview 或任意 PR） |
 | 10 | `ppt-visual-review` | PPT / 单页视觉效果逐页验收 | 显式调用 (`$ppt-visual-review`) |
 | 11 | `preflight` | 开工前凭据、权限、工具与外部依赖轻量探针核查 | 显式调用 (`$preflight`) |
 | 12 | `readiness-fix` | 根据本地 readiness 报告修复失败的信号项 | 显式调用 (`$readiness-fix`) |
@@ -51,11 +51,17 @@ user 级 prompt 正文不在此清单范围内：由 [`config/user-agents.md`](.
 | 16 | `story-direction-review` | Story 完成后的方向偏差与未决假设独立复核 | 显式调用 (`$story-direction-review`) |
 | 17 | `submit-pr-mr` | 提交 PR / MR 的标准前置检查与推送流程 | 显式调用 (`$submit-pr-mr`) |
 | 18 | `use-worktree` | 在隔离的 Git worktree 中安全开展并发任务 | 显式调用 (`$use-worktree`) |
-| 19 | `what-changed` | 用平实人读语言说明变更内容 | 显式调用 (`$what-changed`) |
+| 19 | `what-changed` | 按决定分类的精简个人表达模式，不接管普通变更问答 | 显式调用 (`$what-changed`) |
 | 20 | `worktree-cleanup` | 审计并安全清理已完成使命的 Git worktree | 显式调用 (`$worktree-cleanup`) |
 | 21 | `dev-html-preview` | 将生成的静态 HTML 发布为带认证和有效期的浏览器链接 | 允许隐式触发（窄条件） |
 
 ---
+
+### 本轮涉及的外部推荐项
+
+以清单为准：移除 `research`、`resolving-merge-conflicts` 和独立 `tdd` 的推荐，不修改本机安装；`script-writing-standard` 不在清单中，不补入。`implement` 继续要求可观察行为的测试证据，不依赖独立 `tdd` 技能。`codebase-design`、`writing-for-agents` 保留用户显式入口，定位为按需架构/写作参考，而非每次实现或编辑文档都必须启动的流程。
+
+`skill-authoring-gate` 保留 Skill 编辑时的窄自动门禁和“新技能默认手动”策略，只在实际需要时读取写作、调用机制或 creator 参考；读取手动下游资料不授予启动独立流程或扩大任务的权限。
 
 ## 三、同步与校验方式
 

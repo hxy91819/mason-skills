@@ -9,9 +9,9 @@ description: 创建、迁移、重命名或修改 Skill 的 SKILL.md、agents/op
 
 ## 编辑前
 
-1. 读取 `~/.agents/skills/writing-for-agents/SKILL.md`；涉及调用策略或 router 时再读同目录 `SKILL-MECHANICS.md`。
-2. 读取系统 `~/.agents/skills/.system/skill-creator/SKILL.md`，按用户偏好和本门禁选择调用方式，其余结构指导仍适用。
-3. 读取目标 Skill、已有 metadata 及调用清单，检查真实使用请求、调用方和自动发现的必要性。窄修改只检查相关路径。
+1. 读取目标 Skill、已有 metadata 及相关调用清单，检查真实使用请求、调用方和自动发现的必要性。窄修改只检查相关路径，不因改一个字段就加载全套指南。
+2. 实际需要写作层级或按需披露设计时，读取已安装的 `writing-for-agents/SKILL.md`；需要调用机制或 router 细节时，再读其 `SKILL-MECHANICS.md`。需要创建结构、资源组织或校验器用法时，读取宿主提供的系统 `skill-creator/SKILL.md`。从当前宿主技能目录解析位置，不假设所有环境都已安装；缺失时报告所需参考的缺口，不阻塞不依赖它的窄修改。
+3. 这些文件是按需参考，不是每次编辑的前置流程。读取手动技能的参考资料不等于自动调用其独立流程，更不授予额外任务或操作权限；用户偏好与本门禁的调用策略仍优先。
 4. description 用简短能力说明加精确触发条件；排除容易混淆的相邻任务。参数、长能力清单和执行步骤放正文，未改变匹配范围时保留原描述。
 
 ## 按调用需求分类

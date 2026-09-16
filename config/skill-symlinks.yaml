@@ -26,7 +26,7 @@ skills:
   note: 双轴审查：仓库编码规范 + 规格符合度
 - name: codebase-design
   source: mattpocock-skills
-  note: 深模块设计的共享词汇与改进时机
+  note: 按需架构参考：深模块设计词汇；保留用户显式入口
 - name: dev-html-preview
   note: 将生成的静态 HTML 发布为带认证和有效期的用户预览链接
 - name: diagnosing-bugs
@@ -53,7 +53,7 @@ skills:
   note: 跨宿主收敛 prompts/skills 软链布局(含 agy)
 - name: implement
   source: mattpocock-skills
-  note: 按规格或工单实现，缝合处驱动 tdd
+  note: 按规格或工单实现，在公共边界验证可观察行为；不依赖独立 tdd 技能
 - name: improve-codebase-architecture
   source: mattpocock-skills
   note: 扫描架构深化机会并产出 HTML 报告
@@ -82,12 +82,6 @@ skills:
   note: 根据本地 readiness 报告修复失败信号
 - name: readiness-report
   note: 只读静态代码库 Agent-Readiness 审计与打分报告
-- name: research
-  source: mattpocock-skills
-  note: 高可信一手来源调研并沉淀 Markdown
-- name: resolving-merge-conflicts
-  source: mattpocock-skills
-  note: 解决进行中的 merge/rebase 冲突
 - name: setup-matt-pocock-skills
   source: mattpocock-skills
   note: 该仓库工程技能的一次性初始配置
@@ -101,9 +95,6 @@ skills:
   note: 提交 MR/PR 的统一流程
 - name: submitting-github-issues-with-images
   note: 把本機截圖等附件上傳 GitHub Release Asset 並嵌入 issue／PR，形成可驗證證據鏈
-- name: tdd
-  source: mattpocock-skills
-  note: 测试驱动开发 red-green-refactor
 - name: teach
   source: mattpocock-skills
   note: 在当前工作区多会话教学一个主题
@@ -128,7 +119,7 @@ skills:
   source: mattpocock-skills
   note: 把超大工作规划成 tracker 决策工单地图
 - name: what-changed
-  note: 用平实语言说明改动内容
+  note: 显式调用的个人表达模式：用平实语言说明改动内容
 - name: wizard
   source: mattpocock-skills
   note: 生成引导人工完成操作的 bash 向导
@@ -136,4 +127,4 @@ skills:
   note: 审计并清理干净 worktree
 - name: writing-for-agents
   source: mattpocock-skills
-  note: 为 agent 写文档(skill/AGENTS.md)的写作参考
+  note: 按需写作参考：skill/AGENTS.md 的层级与披露；保留用户显式入口
