@@ -36,12 +36,15 @@ description: 咨询独立专家模型处理用户明确要求的 Oracle 审查�
 
 ## 派发并交付
 
-调用 `../bb-model-routing/scripts/bb-dispatch`（命令不可用时使用该相对路径）：
+从 user-scope Skills 目录调用 `bb-model-routing` 的派发器，不依赖当前项目或两个 Skill 的相对位置：
 
 ```bash
-bb-dispatch --difficulty complex --kind oracle --permission-mode accept-edits \
+BB_DISPATCH="${AGENTS_HOME:-$HOME/.agents}/skills/bb-model-routing/scripts/bb-dispatch"
+"$BB_DISPATCH" --difficulty complex --kind oracle --permission-mode accept-edits \
   --title 'Oracle: <简短问题>' --task '<上述咨询任务>'
 ```
+
+派发前确认该入口存在且可执行；缺失时报告 user-scope `bb-model-routing` 未安装，不猜测项目内路径。
 
 `oracle` 路由由用户配置决定；推荐默认值为 Codex `gpt-6-astra`、reasoning `xhigh`。不在任务正文中重复 provider、模型或 reasoning。派发失败时报告原路由错误，不静默改用其他模型。
 
