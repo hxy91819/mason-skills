@@ -5,15 +5,11 @@ description: 用户明确要求“使用 BB 派发”或“派发任务”等实
 
 # BB 任务派发
 
-本技能自动匹配用户的明确派发请求，也可通过 `$bb-model-routing` 显式调用。
-
-## 何时使用
-
-用户要求“使用 BB 派发这项任务”“派发任务给其他 Agent”等实际派发操作时，使用本技能的 `bb-dispatch`。自然语言请求即可匹配，无需另输技能名或重复确认。
-
-Agent 自行决定使用 subagent，或用户只要求“用 subagent 检查一下”时，沿用宿主默认机制。任务复杂、涉及多个文件、泛指开线程、讨论多 Agent 或派发方式、咨询模型，以及修改本技能，都不构成派发请求。查看或继续已有线程沿用现有上下文，不因此新建线程。
+<!-- 触发条件集中在 description，避免重复维护。 -->
 
 ## 派发入口
+
+Agent 自行决定使用 subagent，或用户只要求“用 subagent 检查一下”时，沿用宿主默认机制。查看或继续已有线程沿用现有上下文。
 
 为用户已要求的任务调用 `scripts/bb-dispatch`。工具别名、模型、推理级别和环境映射以用户配置为准；首次配置或调整映射时读取 [配置与派发](references/dispatch.md)，使用其中的配置模板。参数细节查 `bb-dispatch --help`。
 
@@ -59,7 +55,8 @@ bb-dispatch --difficulty medium --kind test --task '<测试目标、范围与验
 
 ## 作为编排后端
 
-以下是 `large-task-orchestrator` 已有的脚本集成，不扩展本技能的自然语言触发范围。其确定性 driver 通过 `bb-dispatch` 派 Worker、Validator 与异常时的 Judge：Worker 按
+<!-- 编排器直接调用脚本，不经过技能的自然语言匹配。 -->
+`large-task-orchestrator` 的确定性 driver 通过 `bb-dispatch` 派 Worker、Validator 与异常时的 Judge：Worker 按
 能力档映射为 `--difficulty`，Validator 固定 `--difficulty simple --kind test`，Judge 固定 `--difficulty complex --kind judge`。
 driver 只传任务文本、难度、类型与已有环境，路由仍由本配置决定；状态机、wait/output/tell 兼容性见其
 [`references/bb-dispatch-loop.md`](../large-task-orchestrator/references/bb-dispatch-loop.md)。driver 是脚本状态机，

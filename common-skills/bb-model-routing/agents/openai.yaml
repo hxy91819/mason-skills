@@ -1,3 +1,3 @@
 policy:
-  # 自然语言派发请求需要可发现；具体匹配范围由 SKILL.md 限定。
+  # 自然语言派发请求需要可发现。
   allow_implicit_invocation: true
