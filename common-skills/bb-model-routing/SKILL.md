@@ -1,17 +1,17 @@
 ---
 name: bb-model-routing
-description: 在 BB 环境中，准备将具体子任务委派给子 Agent，或用户要求创建执行线程时使用；按配置路由并派发。常规单线程工作、模型咨询及仅查看已有线程不触发。
+description: 用户明确要求“使用 BB 派发”或“派发任务”等实际派发操作时使用，按配置创建 BB 任务线程。常规任务、默认 subagent 调用、模型咨询及仅查看已有线程不触发。
 ---
 
 # BB 任务派发
 
-本技能作为已决定委派后的自动下游，也可通过 `$bb-model-routing` 显式调用。
+本技能自动匹配用户的明确派发请求，也可通过 `$bb-model-routing` 显式调用。
 
 ## 何时使用
 
-通常在当前 thread 完成任务；任务复杂或涉及多个文件，本身不构成触发理由。在 BB 环境中，父 Agent 已明确具体子任务并准备创建子 Agent，或用户要求创建执行线程时，优先使用本技能的 `bb-dispatch` 派发。已有任务授权覆盖时，自动选用本技能无需再确认一次。
+用户要求“使用 BB 派发这项任务”“派发任务给其他 Agent”等实际派发操作时，使用本技能的 `bb-dispatch`。自然语言请求即可匹配，无需另输技能名或重复确认。
 
-用户明确指定宿主原生 subagent，或现有流程依赖其特定接口时，遵循该选择。仅讨论是否需要多 Agent、咨询模型、查看或继续已有线程，以及修改本技能时，不触发新派发；已启动流程的续办沿用现有上下文，无需用户重复调用。
+Agent 自行决定使用 subagent，或用户只要求“用 subagent 检查一下”时，沿用宿主默认机制。任务复杂、涉及多个文件、泛指开线程、讨论多 Agent 或派发方式、咨询模型，以及修改本技能，都不构成派发请求。查看或继续已有线程沿用现有上下文，不因此新建线程。
 
 ## 派发入口
 
@@ -59,7 +59,7 @@ bb-dispatch --difficulty medium --kind test --task '<测试目标、范围与验
 
 ## 作为编排后端
 
-已启动的 `large-task-orchestrator` 可自动使用本技能作为派发后端，其确定性 driver 派 Worker、Validator 与异常时的 Judge：Worker 按
+以下是 `large-task-orchestrator` 已有的脚本集成，不扩展本技能的自然语言触发范围。其确定性 driver 通过 `bb-dispatch` 派 Worker、Validator 与异常时的 Judge：Worker 按
 能力档映射为 `--difficulty`，Validator 固定 `--difficulty simple --kind test`，Judge 固定 `--difficulty complex --kind judge`。
 driver 只传任务文本、难度、类型与已有环境，路由仍由本配置决定；状态机、wait/output/tell 兼容性见其
 [`references/bb-dispatch-loop.md`](../large-task-orchestrator/references/bb-dispatch-loop.md)。driver 是脚本状态机，

@@ -20,7 +20,7 @@ skills:
 - name: autoreview
   note: 提交/发布前的结构化代码审查
 - name: bb-model-routing
-  note: BB 中已决定委派具体子任务或明确创建执行线程时，自动采用的优先派发路由
+  note: 用户明确要求使用 BB 派发或派发任务时采用，保留默认 subagent 行为
 - name: code-review
   source: mattpocock-skills
   note: 双轴审查：仓库编码规范 + 规格符合度
