@@ -1,6 +1,6 @@
 ---
 name: bb-model-routing
-description: 用户明确要求“使用 BB 派发”或“派发任务”等实际派发操作时使用，按配置创建 BB 任务线程。常规任务、默认 subagent 调用、模型咨询及仅查看已有线程不触发。
+description: 用户明确要求使用 BB 派发时，或已启动的 ask-oracle 等流程需要 BB 下游时使用，按配置创建 BB 任务线程。常规任务、默认 subagent 调用及仅查看已有线程不触发。
 ---
 
 # BB 任务派发
@@ -20,10 +20,12 @@ Agent 自行决定使用 subagent，或用户只要求“用 subagent 检查一�
 - `complex`：跨模块设计、根因难定位或较多不确定性。
 - 排查问题、找 bug 额外传 `--kind debug`，即使任务简单也保留该类型。
 - 专门做测试验证、单测编写或执行验证额外传 `--kind test`。
+- 专家技术咨询固定传 `--difficulty complex --kind oracle`。
 
 ```bash
 bb-dispatch --difficulty medium --kind debug --task '<任务目标、范围与验收要求>'
 bb-dispatch --difficulty medium --kind test --task '<测试目标、范围与验收要求>'
+bb-dispatch --difficulty complex --kind oracle --task '<已调查证据、待裁决问题与预期输出>'
 ```
 
 `--task` 只写任务目标、范围、输入和验收要求。provider、模型、推理级别和可用性检查是派发元数据：由 `bb-dispatch` 根据配置和目录决定，不写入子线程 prompt，也不要求子 agent 在开始前重新查询或确认。用户明确指定 provider 或模型时，将该要求映射到配置别名或配置调整，仍不把路由要求带入 `--task`。
@@ -62,7 +64,7 @@ driver 只传任务文本、难度、类型与已有环境，路由仍由本配�
 [`references/bb-dispatch-loop.md`](../large-task-orchestrator/references/bb-dispatch-loop.md)。driver 是脚本状态机，
 用 `bb thread wait` 阻塞等待并自带 stall 处理，与会话内父 agent 的通知路径相互独立。
 
-`defaults.test` 决定 Validator 路由，`defaults.judge` 单独决定 Judge 路由，Worker 使用难度路由或
+`defaults.test` 决定 Validator 路由，`defaults.judge` 单独决定 Judge 路由，`defaults.oracle` 决定专家咨询路由，Worker 使用难度路由或
 `debug` 路由。`agents.<别名>.routes` 按角色、难度和 `default` 项配置模型与 reasoning，选择规则见
 [配置与派发](references/dispatch.md)。
 

@@ -135,7 +135,7 @@ python3 common-skills/skill-manifest-sync/scripts/sync_skill_symlinks.py --mode 
 | Skill | Description |
 |-------|-------------|
 | [anti-ai-slop](common-skills/anti-ai-slop/) | Reviews the current diff or latest commit for AI slop in code and docs, then deletes it. |
-| [ask-oracle](common-skills/ask-oracle/) | Produces a concise brief containing the original request and all decision-relevant context, reserving technical judgment for an expert oracle. |
+| [ask-oracle](common-skills/ask-oracle/) | Investigates a focused high-impact question, dispatches the configured BB Oracle, and returns its independent technical judgment. |
 | [article-polish](common-skills/article-polish/) | Article polishing with quick / normal / refined modes. Derivative work based on [baoyu-translate](https://github.com/JimLiu/baoyu-skills/tree/main/skills/baoyu-translate). |
 | [article-workflow](common-skills/article-workflow/) | A phased article optimization workflow with 13 skills — from brief generation through final publication. See [workflow README](common-skills/article-workflow/README.md) for phase order and usage. |
 | [distill](common-skills/distill/) | Reviews one session or a bounded periodic cross-session window for evidence-backed harness and project-knowledge improvements, explicitly auditing repository Skills and AGENTS.md instructions for design and usability problems. |
@@ -154,8 +154,9 @@ python3 common-skills/skill-manifest-sync/scripts/sync_skill_symlinks.py --mode 
 
 ### ask-oracle
 
-A manually invoked skill that frames the user's request and all known decision-changing
-context, then asks an expert oracle to supply the technical judgment.
+A narrowly discovered skill that investigates a focused, high-impact technical question, then uses
+the `bb-model-routing` oracle route to obtain and return an independent expert judgment. It also runs
+when explicitly invoked with `$ask-oracle`.
 
 ### article-polish
 
