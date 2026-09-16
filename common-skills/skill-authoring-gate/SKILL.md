@@ -41,15 +41,13 @@ description: 创建、迁移、重命名或修改 Skill 的 SKILL.md、agents/op
 
 ## 跨 Skill 运行时依赖
 
-Skill 执行另一个 Skill 的脚本时，不使用 `../<skill>/...` 等源码树相对路径；各 Skill 通常独立软链到 user scope，相对位置不是运行时契约。按 user-scope 根目录解析：
+Skill 依赖另一个 Skill 的行为或脚本时，通过宿主的 Skill 名称加载目标 Skill；由宿主在 project scope、user scope 或其他已安装来源中解析，不自行拼接安装路径。目标 Skill 加载后，再由它从自己的 Skill 根目录运行内部资源。
 
-```bash
-DEPENDENCY="${AGENTS_HOME:-$HOME/.agents}/skills/<skill-name>/scripts/<entrypoint>"
-```
+不使用 `../<skill>/...`、`${AGENTS_HOME}/skills/<skill>/...` 或 `~/.agents/skills/<skill>/...` 直接跨 Skill 执行文件：前者假设源码目录相邻，后两者把安装 scope 写死。宿主无法加载依赖 Skill 时报告依赖缺失，不搜索项目源码猜测位置。
 
-执行前检查入口存在且可执行；缺失时报告依赖 Skill 未安装，不猜测当前项目里的源码位置。依赖本仓 `common-skills/` 且需要在其他项目运行时，将目标 Skill 登记到 `config/skill-symlinks.yaml`，并用同步脚本校验安装状态。
+若跨 Skill 依赖必须绕过模型调用并直接执行命令，依赖方只能使用目标 Skill 明确定义、由安装流程放入 `PATH` 的稳定命令入口；同时验证该安装契约，不能把某个 scope 的内部文件路径当作命令入口。
 
-本 Skill 自己的 `scripts/`、`references/` 和 `assets/` 仍使用 Skill 内相对路径；仓库内仅供编写维护的文档链接也可保持相对路径。本规则只约束跨 Skill 的运行时调用。
+本 Skill 自己的 `scripts/`、`references/` 和 `assets/` 仍使用 Skill 内相对路径；仓库内仅供编写维护的文档链接也可保持相对路径。需要推荐安装到 user scope 时才登记 `config/skill-symlinks.yaml`，project-scope 依赖不据此强制提升到全局。
 
 ## 实际操作授权
 
@@ -63,7 +61,7 @@ DEPENDENCY="${AGENTS_HOME:-$HOME/.agents}/skills/<skill-name>/scripts/<entrypoin
 ## 验收与依据
 
 - 走查正例、相邻反例、续办和下游衔接，检查正文/引用是否残留与最终策略冲突的要求。
-- 检查跨 Skill 脚本调用是否从 user scope 解析，且依赖已进入软链清单；不接受依赖源码目录相邻的运行时路径。
+- 检查跨 Skill 依赖是否由宿主按 Skill 名称解析；直接命令是否有独立于安装 scope 的稳定入口。不接受写死源码相邻关系或 project/user scope 的运行时文件路径。
 - 运行适用 validator、YAML 解析和 `git diff --check`，核对策略清单、frontmatter 与宿主 metadata。结构检查不能证明模型的触发准确率，不写只匹配固定文案的测试。
 - 报告最终策略、理由、配置位置、执行边界及未验证部分。
 
