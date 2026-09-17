@@ -105,6 +105,28 @@ environments:
         self.assertEqual(result['selection']['kind'], 'oracle')
         self.assertFalse(any(c[:2] == ('thread', 'spawn') for c in self.calls))
 
+    def test_oracle_prompt_boundary_reaches_spawn_and_preview_only_for_oracle(self):
+        task = '用户原话：$ask-oracle 检查重试。\n证据：attempt=2；保留 "原文"。'
+        prompts = []
+        for kind in ('oracle', 'general', 'debug', 'test', 'judge'):
+            for dry_run in (True, False):
+                with self.subTest(kind=kind, dry_run=dry_run):
+                    extra = ['--dry-run'] if dry_run else []
+                    result = m.dispatch(self.args('--difficulty', 'complex', '--kind', kind,
+                                                  '--task', task, *extra), self.fake)
+                    command = result['argv'] if dry_run else self.calls[-1]
+                    prompt = command[command.index('--prompt') + 1]
+                    if kind == 'oracle':
+                        boundary, separator, body = prompt.partition('--- 咨询任务 ---\n')
+                        self.assertTrue(separator)
+                        self.assertTrue(boundary.strip())
+                        self.assertEqual(body, task)
+                        prompts.append(prompt)
+                    else:
+                        self.assertEqual(prompt, task)
+                    self.assertEqual(result['selection']['title'], m.thread_title(None, task))
+        self.assertEqual(prompts[0], prompts[1])
+
     def test_environment_alias_override(self):
         result = m.dispatch(self.args('--environment', 'env_other', '--kind', 'debug', '--dry-run'), self.fake)
         self.assertEqual(result['selection']['provider'], 'remote-provider')
