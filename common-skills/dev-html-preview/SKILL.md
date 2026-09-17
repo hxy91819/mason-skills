@@ -1,11 +1,11 @@
 ---
 name: dev-html-preview
-description: Use only when an agent-generated static HTML report, chart, or demo must be published as a browser link for the user, or when renewing, inspecting, or deleting an existing HTML preview. Do not use for merely writing HTML files, editing application code, running project servers, or publishing production sites.
+description: Publish, renew, inspect, or delete a temporary static HTML browser preview only when the user explicitly invokes `$dev-html-preview`.
 ---
 
 # HTML 预览发布
 
-流程类 skill；按用户明确要求允许隐式触发，也可显式调用 `$dev-html-preview`。只处理已生成且需要交付浏览器链接的静态 HTML，以及这些预览的生命周期。用户只要文件或已使用 IDE 内嵌展示并未要求服务器链接时，不额外发布。
+这是显式启动的流程：仅当用户写出 `$dev-html-preview` 时使用。普通 HTML 文件、图表或示意图请求由当前任务直接处理；用户只要本地文件或 IDE 内嵌展示时，不发布预览。显式启动后可继续处理该预览的续期、查询或删除。
 
 ## 发布前
 

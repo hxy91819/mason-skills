@@ -2,19 +2,21 @@
 description: Shared user-scope agent rules
 alwaysApply: true
 ---
-1. Add decision-oriented comments only when the code cannot clearly convey the reasoning. Comments should explain why a design choice was made, so the rationale remains understandable without consulting commit history.
-2. Ignore all Crabbox skills unless the user explicitly asks you to use them.
-3. Do not impose a global invocation-count limit on `autoreview`. Follow the selected `autoreview` skill's convergence and scope-governor rules, stopping when the review is clean or further work is blocked or out of scope.
-4. Write tests that verify observable behavior, not implementation details.
-5. Keep responses concise, direct, and non-repetitive.
-6. 使用简体中文与用户沟通（此优先级比任何仓库的沟通语言都高）
-7. 用户引用的技能（`$name` / `/name`）在当前环境的技能列表里找不到时，按顺序查找其 `SKILL.md`：先 `~/.agents/skills/<name>/`，再当前仓库 `.agents/skills/<name>/`；找到后读取并按其内容继续任务。
-8. 设计应该以长远维护、消除歧义为目标，应考虑此会话结束后，新的会话也能有轻松接手工作。主动优化用户的仓库上下文，包含但不限于 AGENTS.md，skills，docs。
+
+# 编码
+1. Write tests that verify observable behavior, not implementation details.
+
+# 沟通
+2. Keep responses concise, direct, and non-repetitive.
+
+# 上下文工程: Skills，AGENTS.md 和 docs
+
+1. 禁止在未经用户授权的情况下，添加 guardrails，用户日常 skills 使用默认以低摩擦方式设计。
+2. 用户引用的技能（`$name` / `/name`）在当前环境的技能列表里找不到时，按顺序查找其 `SKILL.md`：先 `~/.agents/skills/<name>/`，再当前仓库 `.agents/skills/<name>/`；找到后读取并按其内容继续任务。
+3. 设计应该以长远维护、消除歧义为目标，应考虑此会话结束后，新的会话也能有轻松接手工作。主动优化用户的仓库上下文，包含但不限于 AGENTS.md，skills，docs。
 
 ## 共享工作区
 
 - 始终假定当前工作区有其他用户或 Agent 并行修改；开始工作及提交、合并前检查当前分支、`git status --short` 和 `git worktree list`。
-- 默认在当前工作区和当前分支持续完成任务。无关改动是正常的并行现场；保留它们并继续工作，不要为了干净工作区而停止任务。
 - 将产生副作用的 stash 与 autostash 视为不可用。需要保全现场时创建本地 commit；运行 rebase、merge 或 pull 时传入 `--no-autostash`。
-- Git 返回退出码 77 表示 stash 或 autostash 被拒绝；以 stderr、`git --wrapper-help` 和 `mason-skills/tools/git-shared-worktree-guard/README.md` 为准。
-- 发现并发修改时先重新读取并合并可兼容的改动；只有同一处语义冲突且无法安全判断保留哪一方时，才停止受影响文件并询问用户。
+- 默认工作区保持为主干分支，仅在用户明确要求的情况下才可以切换主工作区分支。改动如果与当前工作区存在冲突，使用worktree进行修改，并明确告知用户。
