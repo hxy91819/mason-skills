@@ -37,6 +37,18 @@ test("Codex ACP providers start with Codex full access", () => {
   }
 });
 
+test("Codex ACP providers expose the shared user skill root", () => {
+  const codexProviders = providers.filter(provider => provider.id.startsWith("acp-codex"));
+  assert.ok(codexProviders.length > 0);
+
+  for (const provider of codexProviders) {
+    assert.deepEqual(provider.experimental_nativeSkillRoots, {
+      user: [".agents/skills"],
+      project: [],
+    });
+  }
+});
+
 function cliproxySnapshot(claudeUsedPercent: number, grokUsedPercent: number): CliproxyUsageSnapshot {
   return {
     providers: [

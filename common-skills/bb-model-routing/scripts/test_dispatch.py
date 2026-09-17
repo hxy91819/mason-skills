@@ -1,6 +1,7 @@
 """离线验证派发行为；假 BB 边界不创建真实线程。"""
 import importlib.machinery
 import importlib.util
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -108,6 +109,59 @@ environments:
         result = m.dispatch(self.args('--environment', 'env_other', '--kind', 'debug', '--dry-run'), self.fake)
         self.assertEqual(result['selection']['provider'], 'remote-provider')
         self.assertEqual(result['selection']['model'], 'remote-model')
+        self.assertEqual(result['selection']['validation_environment'], 'env_other')
+        self.assertIn('--parent-thread', result['argv'])
+
+    def test_workspace_path_uses_proxy_validation_without_environment_show(self):
+        workspace = Path(self.temp.name) / 'env_other'
+        workspace.mkdir()
+        result = m.dispatch(self.args('--environment', str(workspace), '--kind', 'debug', '--dry-run'), self.fake)
+        self.assertEqual(result['selection']['environment'], str(workspace.resolve()))
+        self.assertEqual(result['selection']['validation_environment'], 'env')
+        self.assertEqual(result['selection']['provider'], 'specialist')
+        self.assertIn(str(workspace.resolve()), result['argv'])
+        self.assertFalse(any(c[:2] == ('environment', 'show') for c in self.calls))
+        self.assertIn(('provider', 'list', '--environment', 'env'), self.calls)
+        self.assertIn(('provider', 'models', 'specialist', '--environment', 'env'), self.calls)
+
+    def test_relative_workspace_path_is_resolved(self):
+        workspace = Path(self.temp.name) / 'workspace'
+        workspace.mkdir()
+        relative = Path(os.path.relpath(workspace, Path.cwd()))
+        result = m.dispatch(self.args('--environment', str(relative), '--dry-run'), self.fake)
+        self.assertEqual(result['selection']['environment'], str(workspace.resolve()))
+        self.assertEqual(result['argv'][result['argv'].index('--environment') + 1], str(workspace.resolve()))
+
+    def test_workspace_path_requires_project(self):
+        workspace = Path(self.temp.name) / 'workspace'
+        workspace.mkdir()
+
+        def status_without_project(*args):
+            if args == ('status',):
+                return {'thread': {'id': 'parent', 'environment': {'display': {'id': 'env'}}}}
+            return self.fake(*args)
+
+        with self.assertRaisesRegex(m.DispatchError, '--project'):
+            m.dispatch(self.args('--environment', str(workspace), '--dry-run'), status_without_project)
+        self.assertFalse(any(c[:2] == ('provider', 'list') for c in self.calls))
+
+    def test_workspace_path_requires_proxy_environment(self):
+        workspace = Path(self.temp.name) / 'workspace'
+        workspace.mkdir()
+
+        def status_without_environment(*args):
+            if args == ('status',):
+                return {'project': {'id': 'proj'}, 'thread': {'id': 'parent'}}
+            return self.fake(*args)
+
+        with self.assertRaisesRegex(m.DispatchError, '代理环境'):
+            m.dispatch(self.args('--environment', str(workspace), '--dry-run'), status_without_environment)
+        self.assertFalse(any(c[:2] == ('provider', 'list') for c in self.calls))
+
+    def test_workspace_path_in_another_project_does_not_link_parent(self):
+        workspace = Path(self.temp.name) / 'workspace'
+        workspace.mkdir()
+        result = m.dispatch(self.args('--project', 'other', '--environment', str(workspace), '--dry-run'), self.fake)
         self.assertNotIn('--parent-thread', result['argv'])
 
     def test_explicit_alias_overrides_debug(self):
