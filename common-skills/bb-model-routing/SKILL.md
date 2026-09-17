@@ -57,7 +57,6 @@ bb-dispatch --difficulty complex --kind oracle --task '<已调查证据、待裁
 
 ## 作为编排后端
 
-<!-- 编排器直接调用脚本，不经过技能的自然语言匹配。 -->
 `large-task-orchestrator` 的确定性 driver 通过 `bb-dispatch` 派 Worker、Validator 与异常时的 Judge：Worker 按
 能力档映射为 `--difficulty`，Validator 固定 `--difficulty simple --kind test`，Judge 固定 `--difficulty complex --kind judge`。
 driver 只传任务文本、难度、类型与已有环境，路由仍由本配置决定；状态机、wait/output/tell 兼容性见其
