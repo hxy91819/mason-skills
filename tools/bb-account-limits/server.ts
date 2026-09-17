@@ -181,6 +181,8 @@ const agents: Array<{ id: string; displayName: string; command: string; args: st
   { id: "acp-kiro", displayName: "Kiro", command: config.kiro, args: ["acp"], env: {}, login: "kiro-cli login", icon: "Bug" },
 ];
 
+const codexNativeSkillRoots = { user: [".agents/skills"], project: [] } as const;
+
 export const providers = agents.map((agent): PluginProviderDeclaration => ({
   id: agent.id,
   displayName: agent.displayName,
@@ -195,6 +197,7 @@ export const providers = agents.map((agent): PluginProviderDeclaration => ({
     acpDialect: "generic",
     acpLaunchSpec: { displayName: agent.displayName, command: agent.command, args: agent.args, env: agent.env },
   },
+  ...(agent.id.startsWith("acp-codex") ? { experimental_nativeSkillRoots: codexNativeSkillRoots } : {}),
   maintenance: { health: true, usage: true, installation: false },
   models: { scope: "host" },
   capabilities: {
