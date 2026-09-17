@@ -35,8 +35,11 @@ description: Use when explicitly managing a local multi-service integration or p
 project: saiens                      # 可选，默认仓库目录名
 middleware: docker-compose.yml       # 可选
 database:
-  prepare: bin/rails db:prepare      # 可选，可读 $LOCAL_TEST_NAMESPACE 推导库名
-  drop: bin/rails db:drop            # 可选，destroy/gc 用
+  mode: rebuildable                  # 默认；retained 仅用于明确不可重建的例外
+  prepare: bin/rails db:prepare      # schema/migrations，可读 $LOCAL_TEST_NAMESPACE
+  seed: bin/rails db:seed            # 仓库基线 + Git-ignored 私有 overlay
+  verify: bin/verify-local-seed      # 回读关键配置，证明空库可恢复
+  drop: bin/rails db:drop            # stop/destroy/gc 精确删除本环境库
 external:
   mode_env: EXTERNAL_MODE            # 可选；有此项时 real 只允许主 checkout
 services:
@@ -50,9 +53,11 @@ preview_url: http://127.0.0.1:$LOCAL_TEST_PORT_WEB
 
 `cmd` 运行时由 `bash -c` 求值，可引用 `$LOCAL_TEST_NAMESPACE` 与 `$LOCAL_TEST_PORT_<服务名大写>`；`preview_url` 只做同名变量替换，不执行。服务顺序即配置顺序：`start` 按序、`stop` 逆序。配置原则：中间件容器化且全机一份、按 namespace 分库；业务服务默认裸进程（利于热重载与断点），不为每个 worktree 复制中间件，不用固定槽位环境池，不把未验证代码合入主干来借环境。
 
+数据库默认采用 `rebuildable`：`prepare` 只负责 schema，`seed` 从仓库声明式基线和 Git-ignored 私有 overlay 写入必要配置，`verify` 从数据库回读并与两者比较。构建、运行、审计和同步历史属于过程数据，不进入 seed；需要稳定复现的历史整理为脱敏场景 fixture。真实账号、凭据、内部地址及个人数据只放私有 overlay 或 `_FILE`，仓库提交 schema、合成值和非敏感基线。`retained` 是明确例外，项目文档需说明不可重建内容、归属和清理方式。
+
 ## 三、命令与退出码
 
-`doctor` 体检 | `init` 生成配置 | `start` 幂等拉起 | `stop` 逆序收敛并校验端口释放（保留数据卷）| `status` 本环境加全机登记 | `logs <svc>` | `gc` 回收孤儿环境 | `destroy` stop 加 drop 库加删登记（供 worktree teardown 调用）| `reset --yes` 清数据卷，仅用户明确要求"彻底重置"时用。
+`doctor` 体检并检查数据库重建闭环 | `init` 生成配置 | `start` 按 prepare → seed → verify 拉起 | `stop` 逆序收敛；`rebuildable` 同时 drop 本环境库，最后一个环境停止共享中间件 | `status` 本环境加全机登记 | `logs <svc>` | `gc` 回收孤儿环境 | `destroy` 确保 drop 库并删登记 | `reset --yes` 清共享数据卷，仅用户明确要求"彻底重置"时用。
 
 退出码：`0` 成功；`1` 参数或配置错误；`2` 环境预检失败（端口被未知进程占用、超 `LOCAL_TEST_MAX_ENVS`、`real` 却不在主 checkout）；`3` 服务启动失败。
 
@@ -65,10 +70,10 @@ preview_url: http://127.0.0.1:$LOCAL_TEST_PORT_WEB
 环境覆盖同一需求的开发、联调与预览验收，可跨多轮对话运行。每次继续任务先 `lt status` 并检查健康状态，复用归属明确、适用于当前目录与配置的服务；只补启缺失服务，热更新可生效就直接复用，确需重启只重启受影响服务。
 
 * **保持运行**：需求仍在开发或修复、后续仍需联调、用户仍需预览、正等待反馈或验收时保留。单轮回复结束、一次测试通过、提交推送完成、短暂无请求，都不代表环境已无用途。
-* **停止资源**：用户明确要求，或上下文已明确需求结束/取消且无后续预览、验收、联调或其他使用者依赖时，停掉不再需要的服务。一次性测试进程可单独释放；仍支撑预览的数据库等依赖继续保留。
+* **停止资源**：当前没有联调、预览或验收使用者时执行 `stop`。它释放业务进程和空闲共享中间件；`rebuildable` 数据库同时删除，下次从 seed 重建。
 * **用途不明确**：暂时保留并在交付里简述运行状态与预览地址，不为每轮保留重复询问；不凭空设定空闲超时。
-* **归属消失即回收**：worktree 被移除、进程组已死、登记失效，由 `lt gc` 与 teardown 自动回收，不算"空闲超时"。空闲回收只在项目或用户明确配置时启用。
-* **默认保留数据**：`stop` 只关服务与容器，保留数据文件与 Volume；只有用户明确要求"彻底重置本地测试数据"才 `lt reset --yes`。
+* **归属消失即回收**：worktree 被移除、进程组已死、登记失效，由 `lt gc` 与 teardown 回收进程及本环境数据库。
+* **保留是例外**：`retained` 数据库和长期运行环境必须在项目文档登记不可重建内容、owner 与清理方式；不要用无限期 Volume 代替数据真源。
 
 项目有 worktree teardown 脚本时在末尾调 `lt destroy`；没有就由 agent 在任务结束时 `lt stop` 或 `lt destroy`。
 

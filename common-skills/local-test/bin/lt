@@ -10,7 +10,7 @@ set -euo pipefail
 #   - 端口被未知进程占用即保守失败，不抢端口——那可能是其他 agent 的现场；
 #   - YAML/JSON 自己解析：CLI 要能在任意技术栈的仓库里直接跑，不引入 ruby/python/yq 依赖；
 #   - 只用 bash 3.2 语法（无关联数组、无 mapfile），保证 macOS 自带 bash 可用。
-LT_VERSION="1.1.0"
+LT_VERSION="1.2.0"
 STATE_DIR=".local-test"
 RUN_DIR="$STATE_DIR/run"
 LOG_DIR="$STATE_DIR/logs"
@@ -34,11 +34,11 @@ usage() {
   doctor           检查 git/docker/setsid/cksum 与配置合法性；不启动任何东西
   init             从 --from-json <file> 或 stdin 的 JSON 生成 .local-test.yml（--force 覆盖）
   start            按中间件 -> 建库 -> 业务服务顺序拉起；幂等，已运行的服务跳过
-  stop             逆序收敛：对进程组 SIGTERM 超时转 SIGKILL，校验端口释放；默认保留数据
+  stop             逆序收敛并释放计算资源；rebuildable 数据库同时 drop，下次 start 重建
   status           打印本环境状态、全机登记，末尾输出 LT_* 机器可读段
   logs <service>   跟踪指定服务日志（Ctrl-C 退出不影响服务）
   gc               回收全机孤儿环境：进程已死删登记；worktree 已删除则停进程、drop 库
-  destroy          stop 后 drop 本环境开发库并删登记；供 worktree teardown 调用，无环境时 no-op
+  destroy          stop 后确保 drop 本环境开发库并删登记；供 worktree teardown 调用，无环境时 no-op
   reset --yes      停止并清理数据卷；仅用户明确要求"彻底重置"时使用
 环境变量:
   LOCAL_TEST_NAMESPACE    覆盖 namespace（默认 linked worktree 取目录名，主 checkout 为空）
@@ -181,7 +181,10 @@ load_config() {
   PROJECT_NAME="$(cfg_get project)"
   [[ -n "$PROJECT_NAME" ]] || PROJECT_NAME="$(basename "$REPO_ROOT")"
   COMPOSE_FILE="$(cfg_get middleware)"
+  DB_MODE="$(cfg_get database.mode)"
   DB_PREPARE_CMD="$(cfg_get database.prepare)"
+  DB_SEED_CMD="$(cfg_get database.seed)"
+  DB_VERIFY_CMD="$(cfg_get database.verify)"
   DB_DROP_CMD="$(cfg_get database.drop)"
   EXTERNAL_MODE_ENV="$(cfg_get external.mode_env)"
   PREVIEW_URL_TPL="$(cfg_get preview_url)"
@@ -431,7 +434,7 @@ stop_one() {
 compose_action() {
   [[ -n "$COMPOSE_FILE" ]] || return 0
   [[ -f "$COMPOSE_FILE" ]] || { log_error "找不到中间件配置 $COMPOSE_FILE"; return 2; }
-  # stop 用 stop 不用 down：容器与卷保留，符合"默认保留数据"
+  # 共享中间件用 stop 不用 down：项目数据库由 drop 命令精确回收，避免误删其他环境的卷。
   docker compose -f "$COMPOSE_FILE" "$@"
 }
 
@@ -450,6 +453,10 @@ cmd_start() {
   if [[ -n "$DB_PREPARE_CMD" && ! -f "$RUN_DIR/db-prepared" ]]; then
     log_info "准备本地开发库 (namespace: ${NAMESPACE:-<none>})"
     bash -c "$DB_PREPARE_CMD" || { log_error "本地开发库准备失败"; return 3; }
+    if [[ "$DB_MODE" == "rebuildable" ]]; then
+      bash -c "$DB_SEED_CMD" || { log_error "本地数据库 seed 失败"; return 3; }
+      bash -c "$DB_VERIFY_CMD" || { log_error "本地数据库重建验证失败"; return 3; }
+    fi
     touch "$RUN_DIR/db-prepared"
   fi
   echo "$PORT_OFFSET" >"$RUN_DIR/port-offset"
@@ -461,18 +468,28 @@ cmd_start() {
   (( rc == 2 )) && log_info "存在被未知进程占用的端口，处置前先 lt status 人工确认"
   return $rc
 }
+drop_local_database() {
+  [[ -n "$DB_DROP_CMD" && -f "$RUN_DIR/db-prepared" ]] || return 0
+  log_info "drop 本地开发库 (namespace: ${NAMESPACE:-<none>})"
+  bash -c "$DB_DROP_CMD" || return 2
+  rm -f "$RUN_DIR/db-prepared"
+}
+
 cmd_stop() {
   local svc rc=0
   for svc in $(reverse_list "$SVC_NAMES"); do
     stop_one "$svc" || rc=2
   done
   registry_remove
+  if [[ "$DB_MODE" == "rebuildable" ]]; then
+    drop_local_database || { log_error "drop 可重建数据库失败"; rc=2; }
+  fi
   # 中间件全机共享：其他环境仍在运行时不停容器
   if (( $(count_live_envs) == 0 )); then
     compose_action stop || rc=2
-    (( rc == 0 )) && log_info "已全部停止（数据卷保留）"
+    (( rc == 0 )) && log_info "已释放本机计算资源"
   else
-    (( rc == 0 )) && log_info "本环境已停止；中间件仍被其他环境使用，保留运行"
+    (( rc == 0 )) && log_info "本环境已停止；中间件仍被其他环境使用"
   fi
   return $rc
 }
@@ -563,6 +580,11 @@ cmd_gc() {
     proj="$(registry_field "$file" project)"
     ns="$(registry_field "$file" namespace)"
     if ! registry_entry_alive "$file"; then
+      if [[ "$proj" == "$PROJECT_NAME" && "$DB_MODE" == "rebuildable" && -n "$DB_DROP_CMD" ]]; then
+        LOCAL_TEST_NAMESPACE="$ns" bash -c "$DB_DROP_CMD" \
+          || { log_error "gc: $key drop 可重建数据库失败"; rc=2; continue; }
+        [[ -n "$path" ]] && rm -f "$path/.local-test/run/db-prepared"
+      fi
       log_info "gc: $key 进程已退出，删除登记"
       rm -f "$file"; reclaimed=$(( reclaimed + 1 )); continue
     fi
@@ -594,10 +616,7 @@ cmd_destroy() {
     return 0
   fi
   cmd_stop || rc=$?
-  if [[ -n "$DB_DROP_CMD" && -f "$RUN_DIR/db-prepared" ]]; then
-    log_info "drop 本地开发库 (namespace: ${NAMESPACE:-<none>})"
-    bash -c "$DB_DROP_CMD" || { log_error "drop 开发库失败"; rc=2; }
-  fi
+  drop_local_database || { log_error "drop 开发库失败"; rc=2; }
   rm -rf "$RUN_DIR"
   registry_remove
   return $rc
@@ -646,8 +665,20 @@ cmd_doctor() {
   echo "  project: $PROJECT_NAME"
   echo "  middleware: ${COMPOSE_FILE:-<none>}"
   if [[ -n "$COMPOSE_FILE" && ! -f "$COMPOSE_FILE" ]]; then echo "  警告: 找不到 $COMPOSE_FILE"; rc=1; fi
+  echo "  database.mode: ${DB_MODE:-<none>}"
   echo "  database.prepare: ${DB_PREPARE_CMD:-<none>}"
+  echo "  database.seed: ${DB_SEED_CMD:-<none>}"
+  echo "  database.verify: ${DB_VERIFY_CMD:-<none>}"
   echo "  database.drop: ${DB_DROP_CMD:-<none>}"
+  if [[ -n "$DB_PREPARE_CMD$DB_SEED_CMD$DB_VERIFY_CMD$DB_DROP_CMD$DB_MODE" ]]; then
+    if [[ "$DB_MODE" == "rebuildable" ]]; then
+      if [[ -z "$DB_PREPARE_CMD" || -z "$DB_SEED_CMD" || -z "$DB_VERIFY_CMD" || -z "$DB_DROP_CMD" ]]; then
+        echo "  rebuildable 数据库必须同时配置 prepare/seed/verify/drop"; rc=1
+      fi
+    elif [[ "$DB_MODE" != "retained" ]]; then
+      echo "  database.mode 必须是 rebuildable 或 retained"; rc=1
+    fi
+  fi
   echo "  external.mode_env: ${EXTERNAL_MODE_ENV:-<none>}${EXTERNAL_MODE_ENV:+ (当前 ${EXTERNAL_MODE:-mock})}"
   if [[ -z "$SVC_NAMES" ]]; then echo "  services: 空，start 无事可做"; rc=1; fi
   local svc
@@ -711,9 +742,12 @@ cmd_init() {
     echo "# 由 lt init 生成；受限 YAML 子集，详见 local-test skill"
     emit "project: " "$(jget project)"
     emit "middleware: " "$(jget middleware)"
-    if [[ -n "$(jget database.prepare)$(jget database.drop)" ]]; then
+    if [[ -n "$(jget database.mode)$(jget database.prepare)$(jget database.seed)$(jget database.verify)$(jget database.drop)" ]]; then
       echo "database:"
+      emit "  mode: " "$(jget database.mode)"
       emit "  prepare: " "$(jget database.prepare)"
+      emit "  seed: " "$(jget database.seed)"
+      emit "  verify: " "$(jget database.verify)"
       emit "  drop: " "$(jget database.drop)"
     fi
     if [[ -n "$(jget external.mode_env)" ]]; then
@@ -751,7 +785,7 @@ main() {
   esac
 
   if [[ "$cmd" == "doctor" && ! -f "$CONFIG_FILE" ]]; then
-    PROJECT_NAME="$(basename "$REPO_ROOT")"; COMPOSE_FILE=""; DB_PREPARE_CMD=""; DB_DROP_CMD=""
+    PROJECT_NAME="$(basename "$REPO_ROOT")"; COMPOSE_FILE=""; DB_MODE=""; DB_PREPARE_CMD=""; DB_SEED_CMD=""; DB_VERIFY_CMD=""; DB_DROP_CMD=""
     EXTERNAL_MODE_ENV=""; PREVIEW_URL_TPL=""; GATEWAY_CONF=""; SVC_NAMES=""; CFG=""
     PORT_OFFSET=0
     cmd_doctor; return $?

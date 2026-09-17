@@ -10,6 +10,8 @@ LT="$(cd "$(dirname "$0")/.." && pwd)/bin/lt"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/lt-smoke.XXXXXX")"
 export LOCAL_TEST_REGISTRY_DIR="$TMP/registry"
 DROPLOG="$TMP/drop.log"
+SEEDLOG="$TMP/seed.log"
+VERIFYLOG="$TMP/verify.log"
 PASS=0; FAIL=0
 
 ok()   { PASS=$((PASS + 1)); echo "PASS: $*"; }
@@ -46,7 +48,10 @@ git config user.name smoke
 cat >.local-test.yml <<YML
 project: ltsmoke
 database:
+  mode: rebuildable
   prepare: echo prepared:\$LOCAL_TEST_NAMESPACE >> $TMP/prepare.log
+  seed: echo seeded:\$LOCAL_TEST_NAMESPACE >> $SEEDLOG
+  verify: echo verified:\$LOCAL_TEST_NAMESPACE >> $VERIFYLOG
   drop: echo dropped:\$LOCAL_TEST_NAMESPACE >> $DROPLOG
 external:
   mode_env: SMOKE_MODE
@@ -74,6 +79,8 @@ MAIN_PORT="$(lt_in "$TMP/main" status | awk -F= '/^LT_PORT_WEB=/{print $2}')"
 check "main 端口为基准端口" "$MAIN_PORT" "47710"
 check "main HTTP" "$(http_code "$MAIN_PORT")" "200"
 check "main namespace 为空" "$(lt_in "$TMP/main" status | awk -F= '/^LT_NAMESPACE=/{print $2}')" ""
+check "main 执行 seed" "$(cat "$SEEDLOG")" "seeded:"
+check "main 执行重建验证" "$(cat "$VERIFYLOG")" "verified:"
 
 echo
 echo "=== 3. worktree 并行 start ==="
@@ -115,6 +122,7 @@ lt_in "$TMP/main" stop; check "main stop 退出码" "$?" "0"
 sleep 1
 if curl -s -o /dev/null -m 2 "http://127.0.0.1:$MAIN_PORT/"; then bad "main 端口仍可访问"; else ok "main 端口已释放"; fi
 check "alpha 不受影响" "$(http_code "$ALPHA_PORT")" "200"
+if grep -qx 'dropped:' "$DROPLOG"; then ok "stop 回收 main 可重建数据库"; else bad "stop 未回收 main 数据库"; fi
 
 echo
 echo "=== 8. 删除 worktree 后 gc ==="
@@ -139,7 +147,13 @@ echo x >f.txt && git add -A && git commit -qm init
 cat >"$TMP/scan.json" <<'JSON'
 {
   "project": "fresh-app",
-  "database": { "prepare": "make db-prepare", "drop": "make db-drop" },
+  "database": {
+    "mode": "rebuildable",
+    "prepare": "make db-prepare",
+    "seed": "make db-seed",
+    "verify": "make db-verify",
+    "drop": "make db-drop"
+  },
   "external": { "mode_env": "PARTNER_API_MODE" },
   "services": {
     "api": { "port": 8080, "cmd": "node server.js --port $LOCAL_TEST_PORT_API" },
