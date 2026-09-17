@@ -1,7 +1,7 @@
 # 大型任务规划与编排：核心设计
 
-[`large-task-planning`](../common-skills/large-task-planning/SKILL.md) 把大型目标编译成可恢复的计划；
-[`large-task-orchestrator`](../common-skills/large-task-orchestrator/SKILL.md) 通过 BB 线程持续执行，
+`$large-task-planning` 把大型目标编译成可恢复的计划；
+`$large-task-orchestrator` 通过 BB 线程持续执行，
 直到完成交付或遇到真实阻塞。两者共享本页的不变量，字段和命令留在各自 Skill。
 
 系统的两个目标：让模型长时间自主工作；用成本分层省钱。确定性 driver 是唯一控制面，负责可机械判定的

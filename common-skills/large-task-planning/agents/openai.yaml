@@ -4,4 +4,4 @@ interface:
   default_prompt: "Use $large-task-planning to compile this engineering goal into reader-friendly SPEC/STATUS views and a durable JSON execution plan."
 
 policy:
-  allow_implicit_invocation: false
+  allow_implicit_invocation: true

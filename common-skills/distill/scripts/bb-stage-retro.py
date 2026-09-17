@@ -9,7 +9,8 @@
 参数：所有阶段复盘都必须给出带时区的 `--since` 和精确 `--threads`；当前只支持
 `--scope repo-harness`。可重复的 `--continuation 原会话=续接会话` 把中断链折叠到
 最终会话。`--until` 默认脚本启动时的 UTC 时间。`--project`、`--environment` 和
-`--dispatch-config` 仅在默认 BB 上下文不适用时覆盖。
+`--dispatch-config` 仅在默认 BB 上下文不适用时覆盖。`plan` 和 `apply` 还必须由调用方
+通过 `--dispatch` 传入已加载 `$bb-model-routing` 的 `scripts/bb-dispatch` 入口。
 
 输出：成功时 stdout 输出 JSON；错误写 stderr。退出码 0=成功，1=BB 或流程状态错误，
 2=参数错误。脚本不创建本地账本、不会保存 prompt、输出、日志、截图或密钥。
@@ -21,9 +22,9 @@
 示例：
   python3 bb-stage-retro.py discover --since 2026-09-09T15:00:00+08:00
   python3 bb-stage-retro.py plan --scope repo-harness --since 2026-09-09T15:00:00+08:00 \
-    --threads thr_a,thr_b --continuation thr_a=thr_b
+    --threads thr_a,thr_b --continuation thr_a=thr_b --dispatch /resolved/bb-dispatch
   python3 bb-stage-retro.py apply --scope repo-harness --since 2026-09-09T15:00:00+08:00 \
-    --threads thr_a,thr_b --continuation thr_a=thr_b
+    --threads thr_a,thr_b --continuation thr_a=thr_b --dispatch /resolved/bb-dispatch
 """
 
 from __future__ import annotations
@@ -35,12 +36,9 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Iterable
 
 
-SKILL_DIR = Path(__file__).resolve().parent.parent
-DISPATCH_SCRIPT = SKILL_DIR.parent / "bb-model-routing" / "scripts" / "bb-dispatch"
 THREAD_ID_RE = re.compile(r"^thr_[A-Za-z0-9]+$")
 SCOPE = "repo-harness"
 BUSY_STATUSES = {"pending", "starting", "active", "stopping"}
@@ -277,7 +275,7 @@ def aggregation_task(plan: ReviewPlan) -> str:
 
 def dispatch_argv(plan: ReviewPlan, args: argparse.Namespace, dry_run: bool) -> list[str]:
     command = [
-        str(DISPATCH_SCRIPT),
+        args.dispatch,
         "--difficulty",
         "complex",
         "--kind",
@@ -404,6 +402,7 @@ def add_review_arguments(parser: argparse.ArgumentParser) -> None:
         help="可重复；中断会话由最终续接会话覆盖。",
     )
     parser.add_argument("--environment", help="聚合会话使用的现有 BB 环境；默认当前环境。")
+    parser.add_argument("--dispatch", required=True, help="由已加载 $bb-model-routing 提供的 bb-dispatch 路径。")
     parser.add_argument("--dispatch-config", help="可选 bb-dispatch 用户配置路径。")
 
 
@@ -414,8 +413,8 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="输出：成功时 stdout 为 JSON；退出码 0=成功，1=流程或 BB 错误，2=参数错误。\n"
         "示例：\n"
         "  bb-stage-retro.py discover --since 2026-09-09T15:00:00+08:00\n"
-        "  bb-stage-retro.py plan --scope repo-harness --since 2026-09-09T15:00:00+08:00 --threads thr_a,thr_b\n"
-        "  bb-stage-retro.py apply --scope repo-harness --since 2026-09-09T15:00:00+08:00 --threads thr_a,thr_b\n",
+        "  bb-stage-retro.py plan --scope repo-harness --since 2026-09-09T15:00:00+08:00 --threads thr_a,thr_b --dispatch /resolved/bb-dispatch\n"
+        "  bb-stage-retro.py apply --scope repo-harness --since 2026-09-09T15:00:00+08:00 --threads thr_a,thr_b --dispatch /resolved/bb-dispatch\n",
     )
     commands = parser.add_subparsers(dest="command", required=True)
     discover = commands.add_parser("discover", help="只读列出时间窗内的候选会话。")

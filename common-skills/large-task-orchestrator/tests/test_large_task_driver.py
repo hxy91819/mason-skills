@@ -326,7 +326,8 @@ class DriverTest(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, str(DRIVER), command, "--plan", str(plan or self.plan),
              "--stories-dir", str(stories or self.stories),
-             "--repository", str(self.repo), "--dispatch", str(self.bin / "bb-dispatch"), "--poll-seconds", "1", *extra],
+             "--repository", str(self.repo), "--planning-script", str(PLANNING),
+             "--dispatch", str(self.bin / "bb-dispatch"), "--poll-seconds", "1", *extra],
             cwd=self.repo, env=env, capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, expected, result.stderr + result.stdout)
         return result

@@ -61,7 +61,7 @@ bb-dispatch --difficulty complex --kind oracle --task '<已调查证据、待裁
 `large-task-orchestrator` 的确定性 driver 通过 `bb-dispatch` 派 Worker、Validator 与异常时的 Judge：Worker 按
 能力档映射为 `--difficulty`，Validator 固定 `--difficulty simple --kind test`，Judge 固定 `--difficulty complex --kind judge`。
 driver 只传任务文本、难度、类型与已有环境，路由仍由本配置决定；状态机、wait/output/tell 兼容性见其
-[`references/bb-dispatch-loop.md`](../large-task-orchestrator/references/bb-dispatch-loop.md)。driver 是脚本状态机，
+所属 `$large-task-orchestrator` 的 `references/bb-dispatch-loop.md`；需要该契约时由宿主加载目标 Skill，不按 sibling 路径读取。driver 是脚本状态机，
 用 `bb thread wait` 阻塞等待并自带 stall 处理，与会话内父 agent 的通知路径相互独立。
 
 `defaults.test` 决定 Validator 路由，`defaults.judge` 单独决定 Judge 路由，`defaults.oracle` 决定专家咨询路由，Worker 使用难度路由或

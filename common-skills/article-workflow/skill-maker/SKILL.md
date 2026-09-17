@@ -37,13 +37,13 @@ Needs to read or leverage:
 - The article optimization workflow overview
 - Phase goals, supplementary requirements, and correction feedback raised by the user in the current session
 - Deliverables actually created or modified in the current session
-- If sibling skills already exist, read adjacent skills for style reference, e.g.:
-  - `../brief/SKILL.md`
+- Existing workflow Skill names or files that the user wants used as style references; load named Skills through the host instead of assuming adjacent directories.
 
 If the current session context is insufficient, confirm with the user:
 
 - Which Phase to crystallize
 - The new skill's name
+- The target scope and target skills root
 - What the input files are
 - What the output files are
 - Which decisions, if they exist, must be collected via dialog
@@ -55,8 +55,8 @@ If the current session context is insufficient, confirm with the user:
 Create or update:
 
 ```text
-../<phase-name>/SKILL.md
-../<phase-name>/agents/openai.yaml
+<target-skills-root>/article-workflow-<phase-name>/SKILL.md
+<target-skills-root>/article-workflow-<phase-name>/agents/openai.yaml
 ```
 
 The new skill must include:
@@ -152,7 +152,7 @@ Example question types:
 
 ### Step 5: Write the Skill
 
-Create `../<phase-name>/SKILL.md`.
+Create `<target-skills-root>/article-workflow-<phase-name>/SKILL.md`. The target root comes from the selected project/user/workspace scope or an explicit source checkout; do not derive it from this Skill's parent directory.
 
 Naming rules:
 

@@ -4,4 +4,4 @@ interface:
   default_prompt: "Use $local-test when setting up or running local multi-service testing environments for functional verification before deployment."
 
 policy:
-  allow_implicit_invocation: false
+  allow_implicit_invocation: true

@@ -15,7 +15,7 @@ Mac → Caddy :443 → 共享 Cookie 会话校验 → 项目前端 / API / WebSo
 
 已有 Nginx 可作为 Caddy 认证后的本机上游；也可由 Caddy 直接代理前后端。只有一个服务拥有对外 443，不能让 Caddy 和 Nginx 抢占端口，也不能保留绕过认证的旧对外端口。业务服务监听 loopback，容器端口不发布或仅绑定宿主 loopback。
 
-这是对[静态 HTML 预览配方](../../../docs/authenticated-html-preview.md)的动态应用适配：使用显式 OAuth2 认证子请求，只将会话校验交给认证服务，业务 Authorization 保留。静态 HTML 的过期清理器不管理项目服务。
+这是对[静态 HTML 预览配方](authenticated-html-preview.md)的动态应用适配：使用显式 OAuth2 认证子请求，只将会话校验交给认证服务，业务 Authorization 保留。静态 HTML 的过期清理器不管理项目服务。
 
 ## 2. 一次性基础设施
 
@@ -151,6 +151,6 @@ sudo -u preview-auth /opt/html-preview/caddy validate --config /etc/html-preview
 - 旧入口、后端和认证端口均无法从公司网络绕过网关；未知子域被拒绝。
 - 可停止的测试环境停一个不影响其他环境，不为重复测试中断用户预览。
 
-证书续签由 Mac 使用原 CA 重新签发，服务器替换叶证书与私钥，校验后按真实网关加载方式更新；客户端不需重新信任同一 CA。参考：[Caddy reverse_proxy](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy)、[OAuth2 Proxy 集成](https://oauth2-proxy.github.io/oauth2-proxy/configuration/integration/)、[静态 HTML 配方](../../../docs/authenticated-html-preview.md)。
+证书续签由 Mac 使用原 CA 重新签发，服务器替换叶证书与私钥，校验后按真实网关加载方式更新；客户端不需重新信任同一 CA。参考：[Caddy reverse_proxy](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy)、[OAuth2 Proxy 集成](https://oauth2-proxy.github.io/oauth2-proxy/configuration/integration/)、[静态 HTML 配方](authenticated-html-preview.md)。
 
 本文配置已用上述固定版本、临时 TLS 信任和 loopback 高端口验证：未认证拒绝与页面跳转、表单登录、跨子域 Cookie 复用、Bearer/方法/请求体保留、WSS 帧收发和认证停机拒绝均通过。测试使用临时回显上游，不代表实际项目、Mac 浏览器、systemd、真实网络隔离及证书续签已经验收；部署后仍按本节逐项检查。

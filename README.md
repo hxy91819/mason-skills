@@ -139,10 +139,10 @@ python3 common-skills/skill-manifest-sync/scripts/sync_skill_symlinks.py --mode 
 | [article-polish](common-skills/article-polish/) | Article polishing with quick / normal / refined modes. Derivative work based on [baoyu-translate](https://github.com/JimLiu/baoyu-skills/tree/main/skills/baoyu-translate). |
 | [article-workflow](common-skills/article-workflow/) | A phased article optimization workflow with 13 skills — from brief generation through final publication. See [workflow README](common-skills/article-workflow/README.md) for phase order and usage. |
 | [distill](common-skills/distill/) | Reviews one session or a bounded periodic cross-session window for evidence-backed harness and project-knowledge improvements, explicitly auditing repository Skills and AGENTS.md instructions for design and usability problems. |
-| [large-task-planning](common-skills/large-task-planning/) | Compiles a large engineering goal into reader-friendly SPEC/STATUS views and a JSON execution plan. Explicit invocation only. |
+| [large-task-planning](common-skills/large-task-planning/) | Compiles a large engineering goal into reader-friendly SPEC/STATUS views and a JSON execution plan; also supplies its contract and CLI to active orchestration flows. |
 | [large-task-orchestrator](common-skills/large-task-orchestrator/) | 用带 pid 锁的后台确定性 driver 经 BB（`bb-model-routing`）派发 Worker / Validator，并仅在异常时派 Judge 执行计划；按计划隔离状态，支持并行。仅显式调用。 |
 | [mermaid-lint](common-skills/mermaid-lint/) | Validates and fixes mermaid diagrams in markdown. Renders every block against the real mermaid renderer and reports all failures in one pass. Original skill design. |
-| [readiness-report](common-skills/readiness-report/) | Read-only Agent-Readiness audit of the current Git repository with a 1–5 level score and a local JSON report. Adapted from Factory Droid's built-in `/readiness-report` with remote reporting removed. Explicit invocation only. |
+| [readiness-report](common-skills/readiness-report/) | Read-only Agent-Readiness audit with a local JSON report; also supplies evaluation contracts to an active `readiness-fix` flow. |
 | [readiness-fix](common-skills/readiness-fix/) | Fixes failing signals from the latest local readiness report; asks whether to generate a report first when none exists. Adapted from Factory Droid's built-in `/readiness-fix` with remote report access removed. Explicit invocation only. |
 | [open-source-contribution](common-skills/open-source-contribution/) | Open-source contribution hygiene: identity verification, privacy scanning, Git history cleanup, installer hardening, autoreview, and safe push/PR validation. |
 | [open-source-fork-maintenance](common-skills/open-source-fork-maintenance/) | Maintains a non-maintainer public fork through a project-local `local/aggregate` integration branch. Explicit invocation only. |
@@ -220,7 +220,7 @@ questions instead of mirroring internal Story fields.
 `(仓库, 计划)` 隔离 pid、状态和日志；它经 `bb-model-routing` 派 fresh Worker 和廉价 Validator，在 Worker
 异常、验证失败、越界或报告不可解析时才派一次性的 strong Judge。计划文件、Git checkpoint、driver jsonl 和
 BB 线程记录让会话可替换、长时执行可恢复。两项 Skill 共享
-[核心设计](docs/large-task-system-design.md)，v2 令牌登录示例在
+[核心设计](common-skills/large-task-planning/references/large-task-system-design.md)，v2 令牌登录示例在
 [`docs/largeplan-example/`](docs/largeplan-example/)。
 
 ### mermaid-lint
@@ -333,7 +333,7 @@ tracer-bullet, and observable-test-seam ideas from
 [Matt Pocock's skills](https://github.com/mattpocock/skills) (MIT, Copyright Matt Pocock)
 without vendoring or requiring that package at runtime. Story closeout is completion
 validation by an independent validator thread, not two-axis code review. See the
-[pinned upstream provenance](docs/large-task-system-design.md#上游借鉴与版本回溯) for the exact
+[pinned upstream provenance](common-skills/large-task-planning/references/large-task-system-design.md#上游借鉴与版本回溯) for the exact
 source commit and design mapping.
 
 ### [story-direction-review](common-skills/story-direction-review/)

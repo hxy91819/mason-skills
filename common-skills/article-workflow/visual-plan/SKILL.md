@@ -48,7 +48,7 @@ Default outputs:
 Optional follow-up outputs (only written when the user explicitly requests preparing formal prompts):
 
 - `.article-workflow/04.6-visual-plan/prompts/*.md`
-- `.article-workflow/04.6-visual-plan/prompt-summary.md` (after referencing the `article-illustrator` prompt specification, summarize prompt settings, files, captions, and insertion suggestions back into this phase)
+- `.article-workflow/04.6-visual-plan/prompt-summary.md` (summarize prompt settings, files, captions, and insertion suggestions back into this phase)
 
 If the user provides an article directory, first look for `.article-workflow/` under that directory.
 
@@ -61,7 +61,7 @@ If the user provides an article directory, first look for `.article-workflow/` u
 - **Fewer images are better than more.** A technical opinion article typically only needs 1–3 key images: an opening factual anchor, a core mechanism explanation, and necessary on-site material or a cover. Do not turn the article into slides.
 - **Every recommended image must state the reader question it addresses.** For each recommended image, clearly specify: after which paragraph to place it, what understanding problem it solves, image type, priority, whether it is required, suggested caption, and usage boundaries.
 - **Do not hardcode the current article's specific visual conclusions as general rules.** For example, "bill screenshot" or "clownfish image" belong only to this article; general skills should only specify how to find and evaluate such image sources.
-- **The AI image generation portion is guided by this skill to read the `article-illustrator` prompt specification; it must not copy its full content.** When preparing formal prompt files or handling reference images, read the Type x Style x Palette, prompt file, and reference rules from `../article-illustrator/SKILL.md`; do not call its image generation backend in this phase. `article-workflow-visual-plan` is responsible for collecting prompt results, organizing them, and summarizing them into `.article-workflow/04.6-visual-plan/`.
+- **This phase owns the prompt-planning contract.** When preparing formal prompt files or handling reference images, use the Type x Style x Palette structure, confirmation rules, and output rules below. Do not call an image generation backend in this phase. `article-workflow-visual-plan` is responsible for collecting prompt results, organizing them, and summarizing them into `.article-workflow/04.6-visual-plan/`.
 - **When encountering ambiguities that would affect progress or output quality, proactively use the structured questioning tool available at runtime to ask the user for confirmation; if prior materials and the user's current request are already clear, do not force questions for formality's sake.**
 - **After writing outputs, must launch a sub-agent for review; the sub-agent only provides review opinions, and the main agent decides whether to adopt them.**
 
@@ -191,9 +191,8 @@ Must first state usage boundaries:
 AI image generation prompt methodology:
 
 - If only writing briefs: this skill can directly organize them using the Type x Style x Palette structure.
-- If preparing formal prompt files or handling reference images: must read and follow the prompt-related rules in `../article-illustrator/SKILL.md`, treating it as the prompt construction sub-process for Phase 4.6.
-- Do not copy the full rules from `article-illustrator`; only reference it as the authoritative process for prompt construction, to avoid diverging into two sets of rules.
-- This phase does not select an image backend, does not call image generation tools, and does not generate images. The parts of `article-illustrator` about calling backends are skipped in this phase.
+- If preparing formal prompt files or handling reference images, follow this phase's Type x Style x Palette and confirmation rules.
+- This phase does not select an image backend, call image generation tools, or generate images.
 - Prompt output must not be left scattered; after writing prompts, must write back / summarize into this phase's outputs, at minimum updating `asset-manifest.md`, `visual-plan.md`, `ai-image-briefs.md`, and `prompt-summary.md`.
 
 Recommended structure:
@@ -233,7 +232,7 @@ Recommended structure:
 ## Prompt File Template
 ```
 
-Recommend using the `article-illustrator` three-dimensional classification:
+Use this three-dimensional classification:
 
 - **Type**: `infographic`, `scene`, `flowchart`, `comparison`, `framework`, `timeline`
 - **Style**: e.g., `blueprint`, `vector-illustration`, `sketch-notes`, `ink-notes`, `editorial`
@@ -244,17 +243,17 @@ If subsequently generating formal prompt files:
 - One independent prompt file per image, recommended to be placed in `.article-workflow/04.6-visual-plan/prompts/`
 - Do not write non-existent files in the `references` frontmatter
 - Prompts must contain real terminology, numbers, or key sentences from the article, but must not forge evidence screenshots
-- Before writing prompts, follow the `article-illustrator` confirmation strategy; after confirmation, only write prompts, do not proceed to generate images
+- Before writing prompts, follow the confirmation strategy below; after confirmation, only write prompts, do not proceed to generate images
 
-### Step 5.5: Reference `article-illustrator` to Generate Prompts and Collect Results as Needed
+### Step 5.5: Generate Prompt Files and Collect Results as Needed
 
-Only enter this step when the user explicitly requests "prepare formal prompts / generate prompt files / use article-illustrator to organize image prompts." If the user requests "generate images," first remind them that this phase defaults to only producing prompts; whether to proceed with actual image generation should be confirmed as a separate follow-up task.
+Only enter this step when the user explicitly requests "prepare formal prompts / generate prompt files / organize image prompts." If the user requests "generate images," first remind them that this phase defaults to only producing prompts; whether to proceed with actual image generation should be confirmed as a separate follow-up task.
 
 Prompt sub-process rules:
 
-1. First read `../article-illustrator/SKILL.md`, treating it as the authoritative process for prompt construction and Type x Style x Palette.
-2. Convert P1/P2 explanatory image candidates from `visual-plan.md` into Type x Style x Palette inputs for `article-illustrator`.
-3. Respect the `article-illustrator` confirmation strategy: unless the user explicitly says "no confirmation needed / write prompts with defaults," first let the user confirm density, style, palette, and whether a cover prompt is needed.
+1. Convert P1/P2 explanatory image candidates from `visual-plan.md` into Type x Style x Palette prompt inputs.
+2. Unless the user explicitly says "no confirmation needed / write prompts with defaults," first let the user confirm density, style, palette, and whether a cover prompt is needed.
+3. Keep each prompt tied to one planned asset, its reader question, caption, insertion point, and evidence boundary.
 4. Fix prompt file output location to `.article-workflow/04.6-visual-plan/prompts/`, avoiding scattering into the main text directory or external temporary directories.
 5. Do not call any image backend, do not write `images/` outputs, do not generate evidence screenshot substitutes; bills, tweets, GitHub pages, and review outputs can only use real screenshots or links.
 
@@ -298,7 +297,7 @@ Recommended structure for `prompt-summary.md`:
 
 ### Step 6: Launch Sub-Agent for Review
 
-After writing outputs, the main agent must launch a read-only sub-agent for goal alignment review. If `article-illustrator` was referenced to generate prompts, the review must also check whether prompt results have been collected back into this phase's outputs.
+After writing outputs, the main agent must launch a read-only sub-agent for goal alignment review. If formal prompts were generated, the review must also check whether prompt results have been collected back into this phase's outputs.
 
 The sub-agent only provides review opinions, focusing on:
 
@@ -308,8 +307,8 @@ The sub-agent only provides review opinions, focusing on:
 - Whether any image sources already annotated in prior `evidence-pool`, `fact-check`, or `open-questions` have been missed.
 - Whether each recommended image specifies placement, reader question, type, priority, whether required, caption, and usage boundaries.
 - Whether `ai-image-briefs.md` clearly states that AI images cannot be disguised as evidence.
-- Whether the AI image generation prompt portion correctly references the `article-illustrator` prompt rules rather than copying excessive external skill content or bypassing its confirmation / prompt file rules.
-- If `article-illustrator` was referenced for prompt generation: whether outlines / prompts have been written back to `asset-manifest.md`, `visual-plan.md`, `ai-image-briefs.md`, and `prompt-summary.md`.
+- Whether the AI image prompt portion follows this phase's confirmation and prompt-file rules.
+- If formal prompts were generated: whether outlines / prompts have been written back to `asset-manifest.md`, `visual-plan.md`, `ai-image-briefs.md`, and `prompt-summary.md`.
 - Whether an image backend was called in Phase 4.6 or the agent was asked to directly generate images.
 - Whether the user was forced to confirm low-risk details, or whether key confirmations affecting public use, image type, or AI image boundaries were missed.
 - Whether article-specific image sources have been hard-coded as general rules.
@@ -331,8 +330,8 @@ After completion, check:
 - Whether `visual-plan.md` proposes illustration positions in article order, and specifies the reader question and priority for each image.
 - Whether `ai-image-briefs.md` only writes briefs and does not generate images by default.
 - Whether AI images are clearly labeled as explanatory illustrations or mood images, not substitutes for evidence screenshots.
-- Whether reading the `article-illustrator` prompt rules is required when formal prompts are needed.
-- If `article-illustrator` was referenced, whether `prompt-summary.md` was generated or updated, and whether the final state of prompts was written back to the three core outputs of this phase.
+- Whether this phase's prompt rules were applied when formal prompts were needed.
+- If formal prompts were generated, whether `prompt-summary.md` was generated or updated, and whether the final state of prompts was written back to the three core outputs of this phase.
 - Whether no images were generated and no image generation backend was called.
 - Whether a sub-agent review was completed, and the main agent judged adoption.
 - If the environment provides Markdown lint or editor diagnostics, check recently edited files; if no relevant diagnostics exist, do not force-run code tests.

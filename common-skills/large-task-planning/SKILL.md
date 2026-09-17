@@ -1,14 +1,11 @@
 ---
 name: large-task-planning
-description: 把超出单次上下文的大型工程目标编译为人读 SPEC/STATUS 与 Agent JSON 执行计划。
-disable-model-invocation: true
-triggers:
-  - user
+description: 用户明确要求规划超出单次上下文的大型工程目标时，或已启动的 large-task-orchestrator、story-direction-review 需要计划契约或 epic_story 入口时使用。普通任务规划不触发。
 ---
 
 # Large Task Planning
 
-这是流程类 Skill，仅在用户显式调用 `$large-task-planning` 时运行。
+这是流程类 Skill。用户显式调用 `$large-task-planning` 时创建或修改计划；由 `large-task-orchestrator`、`story-direction-review` 加载时，只提供既有计划契约和本 Skill 的脚本入口，不自行启动新的规划流程。
 
 为两种受众生成一个计划系统：人通过 `SPEC.md` 理解目标和取舍，通过 `STATUS.md` 判断是否顺利、是否
 需要介入；Agent 通过结构化 JSON 领取、执行和恢复。JSON 是唯一事实源，两份 Markdown 都由脚本按
@@ -16,7 +13,7 @@ triggers:
 
 创建或检查计划前读[格式契约](references/plan-format.md)。发现 v1 的 `epics/ + stories/ +
 agent/*.json + 项目进展.md` 时，再读[迁移说明](references/migrate-v1.md)。维护与 orchestrator 共享的
-职责、完成语义或回溯 Matt 上游借鉴时，读[联合核心设计](../../docs/large-task-system-design.md)。
+职责、完成语义或回溯 Matt 上游借鉴时，读[联合核心设计](references/large-task-system-design.md)。
 
 ## 产物与受众
 

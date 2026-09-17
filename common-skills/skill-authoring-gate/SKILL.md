@@ -1,6 +1,6 @@
 ---
 name: skill-authoring-gate
-description: 创建、迁移、重命名或修改 Skill 的 SKILL.md、agents/openai.yaml 或影响行为的 references/scripts 时使用。
+description: 创建、迁移、重命名、修改或审查 Skill 的 SKILL.md、agents/openai.yaml 及影响行为的 references/scripts 时使用。
 ---
 
 # Skill 编写门禁
@@ -9,8 +9,8 @@ description: 创建、迁移、重命名或修改 Skill 的 SKILL.md、agents/op
 
 ## 编辑前
 
-1. 读取 `~/.agents/skills/writing-for-agents/SKILL.md`；涉及调用策略或 router 时再读同目录 `SKILL-MECHANICS.md`。
-2. 读取系统 `~/.agents/skills/.system/skill-creator/SKILL.md`，按用户偏好和本门禁选择调用方式，其余结构指导仍适用。
+1. 加载 `$writing-for-agents`；涉及调用策略或 router 时按该 Skill 的指引读取 `SKILL-MECHANICS.md`。
+2. 加载 `$skill-creator`，按用户偏好和本门禁选择调用方式，其余结构指导仍适用。
 3. 读取目标 Skill、已有 metadata 及调用清单，检查真实使用请求、调用方和自动发现的必要性。窄修改只检查相关路径。
 4. description 用简短能力说明加精确触发条件；排除容易混淆的相邻任务。参数、长能力清单和执行步骤放正文，未改变匹配范围时保留原描述。
 
@@ -45,9 +45,15 @@ Skill 依赖另一个 Skill 的行为或脚本时，通过宿主的 Skill 名称
 
 不使用 `../<skill>/...`、`${AGENTS_HOME}/skills/<skill>/...` 或 `~/.agents/skills/<skill>/...` 直接跨 Skill 执行文件：前者假设源码目录相邻，后两者把安装 scope 写死。宿主无法加载依赖 Skill 时报告依赖缺失，不搜索项目源码猜测位置。
 
-若跨 Skill 依赖必须绕过模型调用并直接执行命令，依赖方只能使用目标 Skill 明确定义、由安装流程放入 `PATH` 的稳定命令入口；同时验证该安装契约，不能把某个 scope 的内部文件路径当作命令入口。
+确定性子进程不能自行请求宿主加载 Skill。其调用方应先按名称加载目标 Skill，再把宿主解析出的脚本入口作为显式参数传入；另一种可接受方式是使用目标 Skill 明确定义、由安装流程放入 `PATH` 的稳定命令入口并验证该安装契约。子进程不能自行拼接某个 scope 的内部文件路径，也不能从源码 sibling 猜位置。
 
 本 Skill 自己的 `scripts/`、`references/` 和 `assets/` 仍使用 Skill 内相对路径；仓库内仅供编写维护的文档链接也可保持相对路径。需要推荐安装到 user scope 时才登记 `config/skill-symlinks.yaml`，project-scope 依赖不据此强制提升到全局。
+
+## 审查现有 Skills
+
+用户要求审查一个或一组 Skills 时，盘点每个 `SKILL.md` 及其运行时会到达的 references/scripts。搜索跨 Skill 的 `../<skill>/...`、固定 project/user scope 路径、脚本中的父目录 sibling 推导，以及 `common-skills/<name>/...` 等依赖源码 checkout 布局的运行命令。后者即使调用的是本 Skill 自己的脚本，也应改为从已加载 Skill 根目录定位；仅供仓库维护者运行的测试命令不算运行时依赖。
+
+逐项判断它是可移植的本 Skill 内部资源、仅供维护的仓库链接/命令，还是不可移植的运行时路径（跨 Skill 路径或写死源码布局的本 Skill 命令）。只报告第三类；跨 Skill 项还要检查目标 Skill 是否存在、是否能由当前调用策略加载，以及确定性子进程是否改用有安装契约的 PATH 命令或由调用方显式传入入口。报告包含调用方、依赖方、文件行号、失败 scope 和最小修复方向。用户要求修复时，修完后重复同一搜索并运行受影响 Skill 的测试。
 
 ## 实际操作授权
 
