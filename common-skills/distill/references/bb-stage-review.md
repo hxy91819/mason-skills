@@ -15,6 +15,7 @@ $distill review --bb --scope repo-harness --since "2026-09-09T15:00:00+08:00"
 先用脚本发现，再由复盘负责人选择精确会话；`bb thread list` 的结果是候选列表，不是完整证据边界。不要把日期筛选出的所有会话自动当作 material，也不要让脚本根据标题猜测任务语义。
 下列 `scripts/` 路径均相对本 Skill 目录；从项目工作目录调用时，先由已加载的
 `SKILL.md` 定位该目录，再使用对应的绝对路径。
+同时加载 `$bb-model-routing`，由宿主返回的 Skill 根目录定位 `scripts/bb-dispatch`；不要按两个 Skill 的相对位置查找。
 
 ```bash
 python3 scripts/bb-stage-retro.py discover \
@@ -24,6 +25,7 @@ python3 scripts/bb-stage-retro.py plan \
   --scope repo-harness \
   --since 2026-09-09T15:00:00+08:00 \
   --threads thr_a,thr_b,thr_c \
+  --dispatch <bb-model-routing-skill>/scripts/bb-dispatch \
   --continuation thr_interrupted=thr_successor
 ```
 
@@ -34,6 +36,7 @@ python3 scripts/bb-stage-retro.py apply \
   --scope repo-harness \
   --since 2026-09-09T15:00:00+08:00 \
   --threads thr_a,thr_b,thr_c \
+  --dispatch <bb-model-routing-skill>/scripts/bb-dispatch \
   --continuation thr_interrupted=thr_successor
 ```
 

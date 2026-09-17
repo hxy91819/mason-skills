@@ -1,6 +1,6 @@
 # HTML 预览：一次性部署与自动清理
 
-本技能只发布副本，不自动安装或改写服务器入口。首次部署先读[账号密码 HTML 预览配方](../../../docs/authenticated-html-preview.md)，复用 Caddy、OAuth2 Proxy、账号文件和登录模板。内网 `.test` 使用 [Mac 开发 CA](../../local-test/references/macos-preview-setup.md)，不套用公网 ACME；动态项目与静态站点并存方式参考 [Caddy 统一入口](../../local-test/references/server-preview-setup.md)。
+本技能只发布副本，不自动安装或改写服务器入口。首次部署加载 `$local-test`，按它拥有的 `authenticated-html-preview` 配方复用 Caddy、OAuth2 Proxy、账号文件和登录模板；内网 `.test` 还使用它的 `macos-preview-setup`，动态项目与静态站点并存时使用 `server-preview-setup`。不按两个 Skill 或仓库文档的相对目录查找，也不对内网 `.test` 套用公网 ACME。
 
 ## 本机配置
 

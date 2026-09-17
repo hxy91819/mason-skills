@@ -19,7 +19,7 @@ class DispatchTests(unittest.TestCase):
         self.config = Path(self.temp.name) / 'config.yaml'
         self.config.write_text('''version: 2
 permission_mode: accept-edits
-defaults: {simple: primary, medium: primary, complex: specialist, debug: specialist, test: primary, judge: specialist}
+defaults: {simple: primary, medium: primary, complex: specialist, debug: specialist, test: primary, judge: specialist, oracle: oracle}
 agents:
   primary:
     provider: primary
@@ -34,6 +34,10 @@ agents:
       medium: {model: deep-model, reasoning: medium}
       complex: {model: deep-model, reasoning: medium}
       judge: {model: deep-model, reasoning: max}
+  oracle:
+    provider: primary
+    routes:
+      oracle: {model: oracle-model, reasoning: xhigh}
 environments:
   env_other:
     agents:
@@ -55,7 +59,7 @@ environments:
             return self.providers
         if args[:2] == ('provider', 'models'):
             models = {
-                'primary': ['fast-model', 'medium-model', 'validator-model'],
+                'primary': ['fast-model', 'medium-model', 'validator-model', 'oracle-model'],
                 'specialist': ['deep-model'],
                 'remote-provider': ['remote-model'],
             }[args[2]]
@@ -91,6 +95,14 @@ environments:
         self.assertEqual(result['selection']['kind'], 'test')
         self.assertEqual(result['result']['thread']['status'], 'queued')
         self.assertEqual(sum(c[:2] == ('thread', 'spawn') for c in self.calls), 1)
+
+    def test_kind_oracle_uses_dedicated_route(self):
+        result = m.dispatch(self.args('--difficulty', 'complex', '--kind', 'oracle', '--dry-run'), self.fake)
+        self.assertEqual(result['selection']['agent'], 'oracle')
+        self.assertEqual(result['selection']['model'], 'oracle-model')
+        self.assertEqual(result['selection']['reasoning'], 'xhigh')
+        self.assertEqual(result['selection']['kind'], 'oracle')
+        self.assertFalse(any(c[:2] == ('thread', 'spawn') for c in self.calls))
 
     def test_environment_alias_override(self):
         result = m.dispatch(self.args('--environment', 'env_other', '--kind', 'debug', '--dry-run'), self.fake)

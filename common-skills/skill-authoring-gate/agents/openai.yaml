@@ -1,7 +1,7 @@
 interface:
   display_name: "Skill Authoring Gate"
-  short_description: "按上下文判断调用需求，新技能默认手动，仅为必要的能力或下游开放自动发现"
-  default_prompt: "Use $skill-authoring-gate before creating or modifying any skill."
+  short_description: "约束 Skill 调用与依赖，并审查跨 scope 的运行时耦合"
+  default_prompt: "Use $skill-authoring-gate before creating, modifying, or reviewing skills."
 
 policy:
   allow_implicit_invocation: true

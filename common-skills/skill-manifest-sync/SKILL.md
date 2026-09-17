@@ -17,12 +17,10 @@ triggers:
 ## Skill Path（set once）
 
 ```bash
-export AUTOREVIEW_SYNC="$PWD/common-skills/skill-manifest-sync/scripts/sync_skill_symlinks.py"
-# 全局安装时：
-export AUTOREVIEW_SYNC="$HOME/.agents/skills/skill-manifest-sync/scripts/sync_skill_symlinks.py"
+export AUTOREVIEW_SYNC="<skill-manifest-sync-skill>/scripts/sync_skill_symlinks.py"
 ```
 
-`$AGENTS_HOME` 环境变量可以整体替换 user-scope 根目录（默认 `~/.agents`）。
+由宿主加载 `$skill-manifest-sync` 后解析 `<skill-manifest-sync-skill>`；不要从 project/user scope 或源码 checkout 猜本 Skill 的安装位置。`$AGENTS_HOME` 环境变量仍可整体替换此脚本所管理的 user-scope 根目录（默认 `~/.agents`）。
 
 ## 用法
 

@@ -1,14 +1,11 @@
 ---
 name: readiness-report
-description: 对当前 Git 仓库做只读的 Agent-Readiness 静态审计并输出本地评分报告。仅在用户显式调用 $readiness-report 时运行。
-disable-model-invocation: true
-triggers:
-  - user
+description: 用户明确要求 Agent-Readiness 审计时，或已启动的 readiness-fix 需要生成报告或读取评估契约时使用。普通代码审查和一般仓库检查不触发。
 ---
 
 # Readiness Report
 
-这是流程类 Skill，默认仅在用户显式调用 `$readiness-report` 时运行。移植自 Factory Droid 内置
+这是流程类 Skill。用户显式调用 `$readiness-report` 时执行完整审计；由 `$readiness-fix` 加载时，按其请求提供评估契约，只有用户选择生成报告后才执行完整审计。移植自 Factory Droid 内置
 `/readiness-report`；与原版的唯一差异是删除了云端上报：报告只落本地，不调用任何远端 API。
 
 正文为原版提示词原文（模板变量已实例化），评估语义以本文为准。

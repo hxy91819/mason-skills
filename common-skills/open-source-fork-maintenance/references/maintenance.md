@@ -29,7 +29,7 @@ git -C <feature-worktree> status --short
 git -C <feature-worktree> rebase --no-autostash <integration-ref>
 ```
 
-Resolve product conflicts there, rerun the relevant verification, and finish `$autoreview` closeout there before treating the rewritten branch as verified. Rebase rewrites history, so get separate approval before `git push --force-with-lease` to a published fork branch. A rewritten source history requires a complete aggregate rebuild; its previous package record cannot be treated as an incremental range.
+Resolve product conflicts there, rerun the relevant verification, and finish `$autoreview` closeout there before treating the rewritten branch as verified. A rewritten source history requires a complete aggregate rebuild; its previous package record cannot be treated as an incremental range.
 
 ## Incremental packaging
 
@@ -39,12 +39,12 @@ If a cherry-pick conflicts, abort it and repair the source worktree. Do not make
 
 ## Publish completed snapshots
 
-After the aggregate verification and registry updates succeed, push every completed source branch and `local/aggregate` to the configured personal-fork remote with ordinary, non-forced pushes. First verify that each remote ref is absent or an ancestor of its local ref; a divergent published ref requires a user decision rather than a force-push. Verify the remote SHA after pushing.
+After the aggregate verification and registry updates succeed, push every completed source branch and `local/aggregate` to the configured personal-fork remote. Use an ordinary push when the remote ref is absent or an ancestor of the local ref. For a deliberately rebased or rebuilt ref, inspect the remote SHA immediately before publication and use `--force-with-lease=<ref>:<observed-sha>`; the skill invocation is standing authorization for this personal-fork maintenance push, so do not request separate approval. Never force-push the upstream remote. Verify every remote SHA after pushing.
 
 The published aggregate is a reproducible source snapshot for another environment. It does not replace that environment's dependency installation or build, and it must never be used as an upstream pull-request branch.
 
 ## Complete rebuild
 
-Use a temporary integration worktree based on the chosen integration ref, cherry-pick the confirmed source branches with `-x`, and verify the result. Before replacing the root `local/aggregate`, show the user the candidate SHA, the aggregate SHA being replaced, the source branches, and verification results. Obtain a second explicit confirmation for that replacement. Create a recoverable local backup ref; never silently use a destructive reset.
+Use a temporary integration worktree based on the chosen integration ref, cherry-pick the confirmed source branches with `-x`, and verify the result. Record the candidate SHA, the aggregate SHA being replaced, the source branches, and verification results, then create a recoverable local backup ref and replace the root `local/aggregate` without another approval prompt. The only remaining confirmation is the project deployment workflow's final replacement of a running local BB service. Never silently use a destructive reset.
 
 After a successful rebuild, update every package record, the human overview in `AGENTS.md`, and `aggregate.lastIntegratedUpstreamCommit`. Do not update the upstream baseline after incremental packaging performed without a rebase.

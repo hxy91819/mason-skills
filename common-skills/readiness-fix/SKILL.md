@@ -14,6 +14,8 @@ triggers:
 
 正文为原版提示词原文（三个分支模板已实例化），评估与修复语义以本文为准。
 
+开始时加载 `$readiness-report`，由它提供 `signals.md` 中的评估契约和按需生成报告的流程；不读取 sibling Skill 路径。
+
 **Local report source:** the latest run in
 `${XDG_CACHE_HOME:-~/.cache}/readiness-report/<repo-slug>/history.json` plus its
 `reports/<run-id>.json`. Use [`scripts/pick_failing.py`](scripts/pick_failing.py) to list
@@ -80,8 +82,8 @@ The user asked to fix: "`<signals named by the user, e.g. 'lint_config' or 'the 
    - If a requested signal doesn't match any known criterion, note that and skip it.
 2. For each matched failing signal, fix it in sequence.
 
-The repair standard for each signal is its evaluation contract in
-[../readiness-report/signals.md](../readiness-report/signals.md): the fix is done when
+The repair standard for each signal is the evaluation contract supplied by the loaded
+`$readiness-report`: the fix is done when
 re-evaluating that criterion by its own rules would pass. Fix one signal at a time; after
 each fix, report what changed and the verification evidence (command and exit code when
 the criterion has one). The Fix Instructions and Quality Standards blocks above are
@@ -126,7 +128,7 @@ Options:
 
 **If the user chooses to generate a report first:**
 
-Follow the readiness report generation instructions in [../readiness-report/SKILL.md](../readiness-report/SKILL.md) to evaluate the repository and store the report locally. Then:
+Run the loaded `$readiness-report` to evaluate the repository and store the report locally. Then:
 
 - If the user originally requested specific signals: semantically match the user's requested signals to the failing signals and fix each matched failing signal.
 - Otherwise: present the failing signals to the user via the AskUser tool for selection, and fix the selected ones.
@@ -137,7 +139,7 @@ Follow the readiness report generation instructions in [../readiness-report/SKIL
 - Otherwise:
   - **Step 2:** Ask the user which category to fix using the AskUser tool:
     "Which category of signals would you like to fix?"
-    Options: the category names from [../readiness-report/signals.md](../readiness-report/signals.md).
+    Options: the category names supplied by the loaded `$readiness-report`.
   - **Step 3:** Present the signals from the chosen category in a single AskUser call with one question. Each option is exactly one signal. The user picks one signal to fix. Do NOT say "select all that apply" or "select one or more" -- the user picks a single signal. IMPORTANT: The AskUser tool has a hard limit of 10 options per question. If the category has more than 10 signals, only include the most impactful/common ones (up to 10). Use the catalog below as reference: the signals grouped by category in signals.md.
   - After the user selects a signal, explore the repository and fix it.
 
@@ -161,7 +163,7 @@ If every signal in the latest report passes, output exactly:
 - 原版每个分支内嵌 Report Summary（Repository/Level/Score）与逐条 Failing Signals
   清单（来自云端报告）；本地版以 `pick_failing.py` 输出替代，正文 "the failing
   signals listed above" 指该输出。
-- 原版"无报告"分支内嵌的完整 report 生成指令（云端版），本地替换为引用
-  `../readiness-report/SKILL.md` 的本地存储流程。
+- 原版"无报告"分支内嵌的完整 report 生成指令（云端版），本地替换为调用
+  `$readiness-report` 的本地存储流程。
 - 原版 Fix Instructions / Completion / Quality Standards 块原样保留（见上方），
   未做删改。

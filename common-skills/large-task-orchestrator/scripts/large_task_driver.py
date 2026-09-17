@@ -17,7 +17,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import shlex
 import signal
 import subprocess
@@ -30,8 +29,6 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Sequence
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
-DEFAULT_PLANNING_SCRIPT = SKILL_DIR.parent / "large-task-planning" / "scripts" / "epic_story.py"
-DEFAULT_DISPATCH_SCRIPT = SKILL_DIR.parent / "bb-model-routing" / "scripts" / "bb-dispatch"
 DEFAULT_REPORT_SCRIPT = SKILL_DIR / "scripts" / "large_task_report.py"
 STATE_ROOT_RELATIVE = Path(".local/large-task-orchestrator")
 STATE_FILENAME = "state.json"
@@ -267,15 +264,8 @@ class Driver:
     # ----------------------------------------------------------------- 基础设施
 
     @staticmethod
-    def _resolve_dispatch(value: str | None) -> list[str]:
-        if value:
-            return [value]
-        found = shutil.which("bb-dispatch")
-        if found:
-            return [found]
-        if DEFAULT_DISPATCH_SCRIPT.exists():
-            return [sys.executable, str(DEFAULT_DISPATCH_SCRIPT)]
-        raise DriverError("找不到 bb-dispatch；用 --dispatch 指定路径。")
+    def _resolve_dispatch(value: str) -> list[str]:
+        return [value]
 
     def _load_state(self) -> dict[str, Any]:
         data: dict[str, Any] = {}
@@ -1484,9 +1474,9 @@ def build_parser() -> argparse.ArgumentParser:
         target.add_argument("--plan", required=True, help="<topic>/agent/plan.json")
         target.add_argument("--stories-dir", required=True, help="同一 agent/ 下的 stories/")
         target.add_argument("--repository", default=".", help="Git 仓库根目录；默认当前目录")
-        target.add_argument("--planning-script", default=str(DEFAULT_PLANNING_SCRIPT), help="epic_story.py 路径")
+        target.add_argument("--planning-script", required=True, help="由已加载 $large-task-planning 提供的 epic_story.py 路径")
         target.add_argument("--report-script", default=str(DEFAULT_REPORT_SCRIPT), help="Worker 结构化报告脚本路径")
-        target.add_argument("--dispatch", help="bb-dispatch 路径；默认 PATH 或 sibling bb-model-routing")
+        target.add_argument("--dispatch", required=True, help="由已加载 $bb-model-routing 提供的 bb-dispatch 路径")
         target.add_argument("--environment", help="传给 bb-dispatch 的 BB 环境 ID")
         target.add_argument("--context", default="", help="附加给每个线程的仓库说明（基线、命令等）")
         target.add_argument("--default-difficulty", choices=DIFFICULTIES, default="medium", help="首轮 Worker 难度")

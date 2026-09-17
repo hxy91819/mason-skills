@@ -138,8 +138,10 @@ Generated HTML must satisfy:
 After assembly, before Playwright:
 
 ```bash
-python3 common-skills/tech-doc-html/scripts/security/check_mermaid_insecure_config.py path/to/output.html
+python3 <tech-doc-html-skill>/scripts/security/check_mermaid_insecure_config.py path/to/output.html
 ```
+
+Resolve `<tech-doc-html-skill>` from this loaded Skill; do not assume the source repository's `common-skills/` layout.
 
 Exit code must be `0`. Rule details in `references/mermaid_security.md` (same as light-harness `.pre-commit-config.yaml` → `check-mermaid-insecure-config`).
 

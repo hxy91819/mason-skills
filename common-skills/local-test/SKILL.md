@@ -1,14 +1,11 @@
 ---
 name: local-test
-description: Use only when actually starting, reusing, checking, or stopping a local multi-service integration or project-preview environment, or configuring its `lt` CLI. Do not use for ordinary code edits, unit tests, static HTML publishing, code review, or remote-only deployment.
-disable-model-invocation: true
-triggers:
-  - user
+description: Use when explicitly managing a local multi-service integration or project-preview environment, or when an active dev-html-preview setup needs the shared preview CA/gateway contract. Do not use for ordinary code edits, unit tests, routine static HTML publishing, code review, or remote-only deployment.
 ---
 
 # Local Test 环境规范与治理
 
-流程类 skill；仅在用户明确调用 `$local-test` 时采用。机制全在 [bin/lt](bin/lt)（技术栈无关 CLI），项目只需一份 `.local-test.yml`；本文只留 CLI 替不了你的判断。
+流程类 skill；用户明确调用 `$local-test` 时管理本地测试环境。由 `$dev-html-preview` 加载时只提供共享预览 CA/网关契约，不启动、复用或停止项目服务。机制全在 [bin/lt](bin/lt)（技术栈无关 CLI），项目只需一份 `.local-test.yml`；本文只留 CLI 替不了你的判断。
 
 ## 门禁适用范围
 

@@ -108,36 +108,15 @@ On release, beta, stable, hotfix, signing, notarization, appcast, package-publis
 
 ## Skill Path (set once)
 
-Set the skill script paths once, then use `"$AUTOREVIEW"` and `"$AUTOREVIEW_HARNESS"` in the examples below.
-
-Choose one:
-
-```bash
-# Project-local skill in the current repo for Codex and other agents:
-export AUTOREVIEW=".agents/skills/autoreview/scripts/autoreview"
-export AUTOREVIEW_HARNESS=".agents/skills/autoreview/scripts/test-review-harness"
-```
+Resolve this loaded Skill's root through the host, then set the script paths once. Do not
+guess whether the Skill came from project scope, user scope, or a source checkout.
 
 ```bash
-# Claude Code project-local skill in the current repo:
-export AUTOREVIEW=".claude/skills/autoreview/scripts/autoreview"
-export AUTOREVIEW_HARNESS=".claude/skills/autoreview/scripts/test-review-harness"
+export AUTOREVIEW="<autoreview-skill>/scripts/autoreview"
+export AUTOREVIEW_HARNESS="<autoreview-skill>/scripts/test-review-harness"
 ```
 
-```bash
-# Source checkout of openclaw/agent-skills:
-export AUTOREVIEW="skills/autoreview/scripts/autoreview"
-export AUTOREVIEW_HARNESS="skills/autoreview/scripts/test-review-harness"
-```
-
-```bash
-# Global skill:
-export AGENTS_HOME="${AGENTS_HOME:-$HOME/.agents}"
-export AUTOREVIEW="$AGENTS_HOME/skills/autoreview/scripts/autoreview"
-export AUTOREVIEW_HARNESS="$AGENTS_HOME/skills/autoreview/scripts/test-review-harness"
-```
-
-When using Claude Code, set `AGENTS_HOME="$HOME/.claude"` for global skills.
+Use `"$AUTOREVIEW"` and `"$AUTOREVIEW_HARNESS"` in the examples below.
 
 ## Optional Credential Preflight
 
@@ -145,36 +124,17 @@ Credential scanning is not an implicit autoreview gate. Run it explicitly when t
 change is about to be committed, pushed, or sent to an external reviewer:
 
 ```bash
-common-skills/autoreview/scripts/trufflehog-preflight --mode local
-common-skills/autoreview/scripts/trufflehog-preflight --mode branch --base origin/main
-common-skills/autoreview/scripts/trufflehog-preflight --mode commit --commit HEAD
+<autoreview-skill>/scripts/trufflehog-preflight --mode local
+<autoreview-skill>/scripts/trufflehog-preflight --mode branch --base origin/main
+<autoreview-skill>/scripts/trufflehog-preflight --mode commit --commit HEAD
 ```
 
-On native Windows, choose the matching pair:
+On native Windows, use the same host-resolved Skill root:
 
 ```powershell
-# Project-local skill in the current repo for Codex and other agents:
-$AUTOREVIEW = ".agents\skills\autoreview\scripts\autoreview"
-$AUTOREVIEW_HARNESS = ".agents\skills\autoreview\scripts\test-review-harness.ps1"
-```
-
-```powershell
-# Claude Code project-local skill in the current repo:
-$AUTOREVIEW = ".claude\skills\autoreview\scripts\autoreview"
-$AUTOREVIEW_HARNESS = ".claude\skills\autoreview\scripts\test-review-harness.ps1"
-```
-
-```powershell
-# Source checkout of openclaw/agent-skills:
-$AUTOREVIEW = "skills\autoreview\scripts\autoreview"
-$AUTOREVIEW_HARNESS = "skills\autoreview\scripts\test-review-harness.ps1"
-```
-
-```powershell
-# Global skill:
-$AgentsHome = if ($env:AGENTS_HOME) { $env:AGENTS_HOME } else { Join-Path $HOME ".agents" }
-$AUTOREVIEW = Join-Path $AgentsHome "skills\autoreview\scripts\autoreview"
-$AUTOREVIEW_HARNESS = Join-Path $AgentsHome "skills\autoreview\scripts\test-review-harness.ps1"
+$AutoreviewSkill = "<autoreview-skill>"
+$AUTOREVIEW = Join-Path $AutoreviewSkill "scripts\autoreview"
+$AUTOREVIEW_HARNESS = Join-Path $AutoreviewSkill "scripts\test-review-harness.ps1"
 ```
 
 ## Pick Target

@@ -15,8 +15,9 @@ Validator 只逐条核对 Acceptance，不走本 Skill。默认只读；只确�
 
 ## 建立独立视角
 
-优先由未实现该 Story 的 Validator 执行。先运行 sibling `large-task-planning/scripts/epic_story.py brief`
-取得稳定边界、目标 Story、相关黄金案例与直接前置 Handoff，再读 `status --json` 了解后续结果与依赖；
+优先由未实现该 Story 的 Validator 执行。先加载 `$large-task-planning`，再从宿主返回的 Skill 根目录运行
+`scripts/epic_story.py brief`，取得稳定边界、目标 Story、相关黄金案例与直接前置 Handoff；然后运行
+`status --json` 了解后续结果与依赖；
 有疑点时查看 `SPEC.md`、原始证据和代码。不要把 `STATUS.md` 当成 Agent 状态源。
 
 区分四类事实：稳定 Goal 与用户边界、Story 原意、实际交付与证据、新发现的实现假设。

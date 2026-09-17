@@ -1,6 +1,6 @@
 ---
 name: skill-authoring-gate
-description: 创建、迁移、重命名或修改 Skill 的 SKILL.md、agents/openai.yaml 或影响行为的 references/scripts 时使用。
+description: 创建、迁移、重命名、修改或审查 Skill 的 SKILL.md、agents/openai.yaml 及影响行为的 references/scripts 时使用。
 ---
 
 # Skill 编写门禁
@@ -9,8 +9,8 @@ description: 创建、迁移、重命名或修改 Skill 的 SKILL.md、agents/op
 
 ## 编辑前
 
-1. 读取 `~/.agents/skills/writing-for-agents/SKILL.md`；涉及调用策略或 router 时再读同目录 `SKILL-MECHANICS.md`。
-2. 读取系统 `~/.agents/skills/.system/skill-creator/SKILL.md`，按用户偏好和本门禁选择调用方式，其余结构指导仍适用。
+1. 加载 `$writing-for-agents`；涉及调用策略或 router 时按该 Skill 的指引读取 `SKILL-MECHANICS.md`。
+2. 加载 `$skill-creator`，按用户偏好和本门禁选择调用方式，其余结构指导仍适用。
 3. 读取目标 Skill、已有 metadata 及调用清单，检查真实使用请求、调用方和自动发现的必要性。窄修改只检查相关路径。
 4. description 用简短能力说明加精确触发条件；排除容易混淆的相邻任务。参数、长能力清单和执行步骤放正文，未改变匹配范围时保留原描述。
 
@@ -39,6 +39,30 @@ description: 创建、迁移、重命名或修改 Skill 的 SKILL.md、agents/op
 
 保留无关 UI/依赖字段，同步仓库调用清单。手动入口写明调用方式；自动入口仍可手动调用。手动流程启动后可使用所需能力，续办同一流程不要求用户每步重新输入命令；显式引用其他流程资料也不授权扩大任务。
 
+## 授权收敛必须由用户提出
+
+任何收紧 Skill 执行授权的改动都必须来自用户对该约束的明确要求，不能由 Agent 在“优化”“安全加固”“最佳实践”或一般审查中自行增加。包括新增或扩大：必须等待用户审批的阶段、执行前确认、只读门禁、人工停点、逐步确认、禁止自动继续，以及把原本已授权的动作改成再次询问。
+
+尤其是“做安全加固”这类宽泛请求，只授权修复已识别风险所需的技术控制，例如输入校验、权限范围缩小、密钥保护或失败处理；它不授权改变人与 Agent 的决策边界。若 Agent 认为新门禁确有必要，先单独说明拟增加的门禁、对应风险、对自动执行的影响和不加门禁的替代方案，等待用户明确同意后再写入 Skill，不能先加再在交付说明中告知。
+
+审查 Skill diff 时，把这类新增要求单独列出，并指出对应的用户原话或既有权威政策。找不到明确依据时视为补偿性授权，不写入 Skill；若已在 diff 中则删除。保留未要求调整的既有授权边界；外部系统或宿主本来强制的审批规则可以如实记录，但不得包装成用户偏好或借机扩大。
+
+## 跨 Skill 运行时依赖
+
+Skill 依赖另一个 Skill 的行为或脚本时，通过宿主的 Skill 名称加载目标 Skill；由宿主在 project scope、user scope 或其他已安装来源中解析，不自行拼接安装路径。目标 Skill 加载后，再由它从自己的 Skill 根目录运行内部资源。
+
+不使用 `../<skill>/...`、`${AGENTS_HOME}/skills/<skill>/...` 或 `~/.agents/skills/<skill>/...` 直接跨 Skill 执行文件：前者假设源码目录相邻，后两者把安装 scope 写死。宿主无法加载依赖 Skill 时报告依赖缺失，不搜索项目源码猜测位置。
+
+确定性子进程不能自行请求宿主加载 Skill。其调用方应先按名称加载目标 Skill，再把宿主解析出的脚本入口作为显式参数传入；另一种可接受方式是使用目标 Skill 明确定义、由安装流程放入 `PATH` 的稳定命令入口并验证该安装契约。子进程不能自行拼接某个 scope 的内部文件路径，也不能从源码 sibling 猜位置。
+
+本 Skill 自己的 `scripts/`、`references/` 和 `assets/` 仍使用 Skill 内相对路径；仓库内仅供编写维护的文档链接也可保持相对路径。需要推荐安装到 user scope 时才登记 `config/skill-symlinks.yaml`，project-scope 依赖不据此强制提升到全局。
+
+## 审查现有 Skills
+
+用户要求审查一个或一组 Skills 时，盘点每个 `SKILL.md` 及其运行时会到达的 references/scripts。搜索跨 Skill 的 `../<skill>/...`、固定 project/user scope 路径、脚本中的父目录 sibling 推导，以及 `common-skills/<name>/...` 等依赖源码 checkout 布局的运行命令。后者即使调用的是本 Skill 自己的脚本，也应改为从已加载 Skill 根目录定位；仅供仓库维护者运行的测试命令不算运行时依赖。
+
+逐项判断它是可移植的本 Skill 内部资源、仅供维护的仓库链接/命令，还是不可移植的运行时路径（跨 Skill 路径或写死源码布局的本 Skill 命令）。只报告第三类；跨 Skill 项还要检查目标 Skill 是否存在、是否能由当前调用策略加载，以及确定性子进程是否改用有安装契约的 PATH 命令或由调用方显式传入入口。另检查 diff 是否新增授权收敛，并核对其明确用户依据。报告包含调用方、依赖方、文件行号、失败 scope 和最小修复方向。用户要求修复时，修完后重复同一搜索并运行受影响 Skill 的测试。
+
 ## 实际操作授权
 
 发现策略只控制如何进入技能，不能代替目标、访问权限或写入授权。
@@ -51,6 +75,8 @@ description: 创建、迁移、重命名或修改 Skill 的 SKILL.md、agents/op
 ## 验收与依据
 
 - 走查正例、相邻反例、续办和下游衔接，检查正文/引用是否残留与最终策略冲突的要求。
+- 对每个新增的审批、确认、只读或人工停点要求，核对明确的用户授权或既有强制政策；“安全加固”等泛化请求不能作为依据，没有其他依据则不得交付。
+- 检查跨 Skill 依赖是否由宿主按 Skill 名称解析；直接命令是否有独立于安装 scope 的稳定入口。不接受写死源码相邻关系或 project/user scope 的运行时文件路径。
 - 运行适用 validator、YAML 解析和 `git diff --check`，核对策略清单、frontmatter 与宿主 metadata。结构检查不能证明模型的触发准确率，不写只匹配固定文案的测试。
 - 报告最终策略、理由、配置位置、执行边界及未验证部分。
 

@@ -72,7 +72,12 @@ class PromptTests(unittest.TestCase):
         self.assertIn("covered_by", prompt)
 
     def test_aggregator_is_dispatched_with_approval_gated_permission(self) -> None:
-        argv = retro.dispatch_argv(self.plan, SimpleNamespace(dispatch_config=None), dry_run=True)
+        argv = retro.dispatch_argv(
+            self.plan,
+            SimpleNamespace(dispatch="/resolved/bb-dispatch", dispatch_config=None),
+            dry_run=True,
+        )
+        self.assertEqual(argv[0], "/resolved/bb-dispatch")
         position = argv.index("--permission-mode")
         self.assertEqual(argv[position + 1], "accept-edits")
 

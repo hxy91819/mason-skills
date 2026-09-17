@@ -13,8 +13,9 @@ triggers:
 `bb-dispatch` 创建的 BB 线程。Worker 和 Validator 按轮次独立；每张 Story 的 Judge 使用一个独立会话，
 后续裁决在同一会话续聊。
 
-开始前阅读相邻的 `large-task-planning` 计划格式、[`bb-model-routing`](../bb-model-routing/SKILL.md)
-和[联合设计](../../docs/large-task-system-design.md)。计划 JSON 与 Git 是权威状态；每个 `(仓库, 计划)` 的
+开始前加载 `$large-task-planning` 与 `$bb-model-routing`。使用宿主返回的两个 Skill 根目录分别定位
+`scripts/epic_story.py` 和 `scripts/bb-dispatch`，不要假设它们与本 Skill 相邻。需要理解整体职责时，按
+`$large-task-planning` 的指引读取它拥有的联合设计。计划 JSON 与 Git 是权威状态；每个 `(仓库, 计划)` 的
 `.local/large-task-orchestrator/<topic-slug>/` 保存可回看的运行事实。
 
 ## 生命周期用法
@@ -24,7 +25,9 @@ triggers:
 
 ```bash
 python3 <orchestrator-skill>/scripts/large_task_driver.py status \
-  --plan <topic>/agent/plan.json --stories-dir <topic>/agent/stories
+  --plan <topic>/agent/plan.json --stories-dir <topic>/agent/stories \
+  --planning-script <large-task-planning-skill>/scripts/epic_story.py \
+  --dispatch <bb-model-routing-skill>/scripts/bb-dispatch
 ```
 
 2. 若 `status` 显示 driver 仍在运行，把 completed/total、每张 in-progress Story 的阶段、线程 ID 和难度翻译给
@@ -40,6 +43,8 @@ python3 <orchestrator-skill>/scripts/large_task_driver.py start \
   --plan <topic>/agent/plan.json \
   --stories-dir <topic>/agent/stories \
   --repository <repo-root> \
+  --planning-script <large-task-planning-skill>/scripts/epic_story.py \
+  --dispatch <bb-model-routing-skill>/scripts/bb-dispatch \
   --environment <bb-environment-id>
 ```
 
@@ -70,7 +75,7 @@ ready Story 时退出并把最小原因写到 stderr。
 
 ## 能力档
 
-Story 的首轮 `difficulty` 与 `kind` 由 [`large-task-planning`](../large-task-planning/SKILL.md) 定义；driver
+Story 的首轮 `difficulty` 与 `kind` 由已加载的 `$large-task-planning` 定义；driver
 只消费它们并在 Judge 升档后覆盖实际难度。Validator 固定 `simple --kind test`，Judge 固定
 `complex --kind judge`，通过 `bb-model-routing` 的 `defaults.judge` 与 complex Worker 分别配置。
 

@@ -9,6 +9,8 @@ defaults:
   test: primary
   # 编排异常裁决使用独立 Judge 路由。
   judge: primary
+  # 专家咨询默认使用 Codex Astra XHigh，可按环境覆盖。
+  oracle: oracle
 agents:
   primary:
     provider: <provider-id>
@@ -29,6 +31,12 @@ agents:
       # default 仅在没有匹配角色或难度项时使用。
       default:
         model: <fallback-model-id>
+  oracle:
+    provider: codex
+    routes:
+      oracle:
+        model: gpt-6-astra
+        reasoning: xhigh
 environments: {}
 # 环境 ID 来自 bb；同名别名整体替换，不继承顶层 routes。
 # environments:

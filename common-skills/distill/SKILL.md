@@ -45,10 +45,11 @@ threads with their continuations, request each session's `$distill`, and dispatc
 read-only aggregator. The adapter never bypasses this Skill's evidence rules or Phase 3
 approval gate.
 
-Use `scripts/bb-stage-retro.py discover` to produce a candidate thread list and
-`scripts/bb-stage-retro.py plan` before its explicit `apply` command. The script only
-coordinates BB records and prompts. It neither decides what is durable nor writes a
-repository artifact. Its exact interface and failure handling live in the BB reference.
+Use `scripts/bb-stage-retro.py discover` to produce a candidate thread list. Before `plan`
+or the explicit `apply` command, load `$bb-model-routing` and pass the resolved
+`scripts/bb-dispatch` entry through `--dispatch`. The script only coordinates BB records
+and prompts. It neither decides what is durable nor writes a repository artifact. Its
+exact interface and failure handling live in the BB reference.
 
 ## Phase 1: Replay
 

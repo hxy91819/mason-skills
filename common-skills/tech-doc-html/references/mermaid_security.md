@@ -63,8 +63,10 @@ Full gate order: **security config → syntax pre-check → Playwright browser r
 Run the skill's check script on generated `.html` (and related files in the same directory):
 
 ```bash
-python3 common-skills/tech-doc-html/scripts/security/check_mermaid_insecure_config.py path/to/output.html
+python3 <tech-doc-html-skill>/scripts/security/check_mermaid_insecure_config.py path/to/output.html
 ```
+
+Resolve `<tech-doc-html-skill>` from the loaded `$tech-doc-html` Skill rather than assuming a repository checkout layout.
 
 Or from monorepo root with light-harness script:
 
@@ -79,7 +81,7 @@ Exit code `0` required; on `1`, fix each `[RULE_CODE]` in output.
 After security gate, validate diagram syntax with `mermaid.parse()`:
 
 ```bash
-node common-skills/tech-doc-html/scripts/security/check_mermaid_syntax.mjs <project-root> path/to/output.html
+node <tech-doc-html-skill>/scripts/security/check_mermaid_syntax.mjs <project-root> path/to/output.html
 ```
 
 `<project-root>` is the directory containing `node_modules/mermaid` and `node_modules/jsdom`.
@@ -100,7 +102,7 @@ Exit code `0` means all `<pre class="mermaid">` blocks parse; on `1`, output inc
 After syntax pre-check, the skill's runtime gate loads the HTML in headless Chromium and asserts zero `pageerror` / `console.error`:
 
 ```bash
-node common-skills/tech-doc-html/scripts/qa/check_runtime.mjs <project-root> path/to/output.html
+node <tech-doc-html-skill>/scripts/qa/check_runtime.mjs <project-root> path/to/output.html
 ```
 
 `<project-root>` is a directory with `node_modules/playwright` installed. The gate also waits for every `<pre class="mermaid">` to reach `data-processed=true`, so it catches "diagram parses but renders broken" cases the syntax pre-check cannot.
