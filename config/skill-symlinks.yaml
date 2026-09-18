@@ -134,8 +134,7 @@ skills:
 - name: wizard
   source: mattpocock-skills
   note: 生成引导人工完成操作的 bash 向导
-- name: worktree-cleanup
-  note: 审计并清理干净 worktree
+# worktree-cleanup 已迁移至私有仓 hxy91819/mole-linux（.claude/skills/worktree-cleanup）
 - name: writing-for-agents
   source: mattpocock-skills
   note: 为 agent 写文档(skill/AGENTS.md)的写作参考
