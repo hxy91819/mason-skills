@@ -52,7 +52,13 @@ The registry schema is version 2. `aggregate.lastIntegratedUpstreamCommit` chang
 }
 ```
 
-Use `null` for `lastPackaged` only while a registered branch has not yet been aggregated. `stableTagPattern` may be `null`. Set it to a regular-expression string when the upstream's stable-release tag namespace is known; the latest matching tag reachable from `upstreamRef` then becomes the default rebase and rebuild target, and a rebuild records that tag's commit as `lastIntegratedUpstreamCommit`.
+Use `null` for `lastPackaged` only while a registered branch has not yet been aggregated. Configure `stableTagPattern` whenever the upstream publishes release tags — fork packaging anchors the most mature tag channel the upstream ships, never trunk tip. Inspect the namespace first:
+
+```bash
+git tag --merged <upstream-ref> --sort=-version:refname | head
+```
+
+Set a regular expression that selects that channel and excludes less mature ones — for an upstream whose tags are all prereleases, a pattern matching only the rc line (for example `^dsh-v\d+\.\d+\.\d+(-rc\.\d+)?$`) anchors release candidates over alphas. Use `null` only when the upstream publishes no release tags at all. The latest matching tag reachable from `upstreamRef` then becomes the default rebase and rebuild target, and a rebuild records that tag's commit as `lastIntegratedUpstreamCommit`.
 
 ## Verify setup
 
