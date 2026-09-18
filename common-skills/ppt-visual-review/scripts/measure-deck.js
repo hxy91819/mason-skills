@@ -11,13 +11,24 @@
  * 剩余留白（slack）反过来必须对布局盒量：容器内容盒底边减去最后一个子块的视觉底边，
  * 这样只有被撑开或绝对定位的容器才会报留白，随内容长高的容器天然为 0。
  *
+ * 除几何外，另收常见 HTML PPT 陷阱的原始线索（判定在 buildFlags，全部是看图线索）：
+ *   connector  文本箭头与相邻文字带中心的偏差（布局盒居中≠视觉对齐，注释行撑高行时箭头下沉）
+ *   overflow   裁切容器内内容溢出（页根溢出 = 演示出现滚动条或被静默裁切）
+ *   image      图片加载失败、渲染比偏离原始比（拉伸变形）、位图过度放大（投影发虚）
+ *   occlusion  文本叶子中心点命中其他元素（疑似被覆盖，看图裁决）
+ *   contrast   纯色背景可解析时的 WCAG 对比度；渐变/半透明背景交给看图
+ *   font       自定义字体未加载（回退字体改变字宽与观感）
+ *
+ * 剩余留白（slack）反过来必须对布局盒量：容器内容盒底边减去最后一个子块的视觉底边，
+ * 这样只有被撑开或绝对定位的容器才会报留白，随内容长高的容器天然为 0。
+ *
  * 用法：
  *   node measure-deck.js --file <html> [--out <目录>] [--label before]
  *        [--slide-sel .slide] [--tol 2] [--slack 24] [--shot] [--gate]
  *   浏览器模块用 NODE_PATH 或 PLAYWRIGHT_MODULE 指向装了 playwright 的 node_modules。
  *
  * 产物：
- *   <out>/<label>.json            每页几何 + flags（判定线索，不是结论）
+ *   <out>/<label>.json            每页几何 + 原始线索 + flags（判定线索，不是结论）
  *   <out>/<label>-<页id>.png      每页真实渲染截图（--shot）
  *   <out>/<label>-<页id>-ruler.png 同页叠加间隔标尺与留白网格（--shot）
  *
@@ -60,10 +71,13 @@ Options:
   --near <px>         间隔档位邻近阈值，默认 6
   --min-gap <px>      档位统计下限，默认 8
   --min-span <ratio>  测量容器宽度下限占比，默认 0.3
+  --connector-tol <px> 连接符（→/←等文本箭头）与相邻文字中心容差，默认 8
   --shot              逐页生成 plain 与 ruler PNG
   --gate              有 flag 时退出 4；不能据此声明 clean
   -h, --help          显示帮助
 Outputs: <out>/<label>.json，--shot 时生成逐页 PNG；stdout 摘要。
+flags 覆盖：节奏/对称/档位/留白/跨页一致；连接符对齐、截断溢出、图片质量、
+遮挡、对比度、字体加载。全部是看图线索，不是验收结论。
 Exit: 0 成功；1 脚本错误；2 参数错误；3 未命中页；4 几何线索未清零。
 Examples:
   node measure-deck.js --file deck.html --label before --shot
@@ -74,7 +88,7 @@ Examples:
   const o = {
     out: '/tmp/ppt-visual-review', label: 'before', slideSel: '.slide',
     ignoreSel: '.sr-only', tol: 2, slack: 24, near: 6, minGap: 8, minSpan: 0.3,
-    viewport: '1600x900', shot: false, gate: false,
+    connectorTol: 6, viewport: '1600x900', shot: false, gate: false,
   };
   const a = process.argv.slice(2);
   for (let i = 0; i < a.length; i++) {
@@ -82,13 +96,13 @@ Examples:
     if (k === 'shot' || k === 'gate') { o[k] = true; continue; }
     const v = a[++i];
     if (!['file', 'url', 'out', 'label', 'slide-sel', 'ignore-sel', 'viewport', 'tol', 'slack', 'near',
-      'minSpan', 'min-span', 'min-gap'].includes(k) || v === undefined || v.startsWith('--')) {
+      'minSpan', 'min-span', 'min-gap', 'connectorTol', 'connector-tol'].includes(k) || v === undefined || v.startsWith('--')) {
       fail(`未知参数或缺少值：--${k}；使用 --help 查看用法`);
     }
     if (k === 'slide-sel') o.slideSel = v;
     else if (k === 'ignore-sel') o.ignoreSel = v;
-    else if (['tol', 'slack', 'near', 'minSpan', 'min-span', 'min-gap'].includes(k)) {
-      o[{ 'min-span': 'minSpan', 'min-gap': 'minGap' }[k] || k] = Number(v);
+    else if (['tol', 'slack', 'near', 'minSpan', 'min-span', 'min-gap', 'connectorTol', 'connector-tol'].includes(k)) {
+      o[{ 'min-span': 'minSpan', 'min-gap': 'minGap', 'connector-tol': 'connectorTol' }[k] || k] = Number(v);
     }
     else o[k] = v;
   }
@@ -236,6 +250,124 @@ const MEASURE = ({ slideSel, idx, ignoreSel, minSpan, overlapTol }) => {
   };
   walk(slide);
 
+  /* ---- 常见 HTML PPT 陷阱的原始线索（判定在 buildFlags）---- */
+
+  // 连接符对齐：grid/flex 容器里的纯文本箭头子项，与相邻文字块首行带中心比对。
+  // s2 型问题：注释行撑高 grid 行，align-items:center 把单行箭头居中到整行，而文字贴顶。
+  const ARROW = /^[→←↑↓↔↕⇒⇐⇔➜➔➤»«›‹]{1,2}$/;
+  const connectors = [];
+  const scanConnectors = (el) => {
+    const kids = [...el.children].filter(visible);
+    const disp = getComputedStyle(el).display;
+    if (/(grid|flex)/.test(disp) && kids.length >= 2) {
+      const arrows = kids.filter((k) => ARROW.test(k.textContent.trim()));
+      if (arrows.length) {
+        for (const a of arrows) {
+          const idx = kids.indexOf(a);
+          const nb = [kids[idx - 1], kids[idx + 1]].find(
+            (k) => k && k !== a && [...k.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim()));
+          if (!nb) continue;
+          const cs = getComputedStyle(nb);
+          // computed line-height 已是 px 或 normal，不能当无单位系数再乘字号。
+          const lhVal = parseFloat(cs.lineHeight);
+          const firstLine = Number.isFinite(lhVal) ? lhVal : num(cs.fontSize) * 1.2;
+          const textCenter = contentBox(nb).top + firstLine / 2;   // 文字贴顶布局的首行带中心
+          const ar = vbox(a);
+          const arrowCenter = (ar.top + ar.bottom) / 2;
+          connectors.push({
+            container: pathOf(el), sel: pathOf(a), near: pathOf(nb),
+            delta: R(arrowCenter - textCenter), firstLine: R(firstLine),
+            arrowCenter: R(arrowCenter), textCenter: R(textCenter),
+            x0: ar.left, x1: ar.right,
+            y0: R(Math.min(arrowCenter, textCenter) - 6), y1: R(Math.max(arrowCenter, textCenter) + 6),
+          });
+        }
+      }
+    }
+    for (const k of kids) scanConnectors(k);
+  };
+  scanConnectors(slide);
+
+  // 截断与溢出：裁切容器（hidden/clip/auto/scroll）里内容超出可视区；
+  // 页根溢出意味着演示时会出现滚动条，overflow:hidden 则静默裁切，都算线索。
+  const overflows = [];
+  for (const el of [slide, ...slide.querySelectorAll('*')].filter(visible)) {
+    const cs = getComputedStyle(el);
+    const clipped = (axis) => !/visible/.test(axis === 'x' ? cs.overflowX : cs.overflowY);
+    if (el.scrollWidth > el.clientWidth + 2 && clipped('x') && el.textContent.trim()) {
+      overflows.push({ axis: 'x', sel: pathOf(el), client: el.clientWidth, scroll: el.scrollWidth, isSlide: el === slide });
+    }
+    if (el.scrollHeight > el.clientHeight + 2 && clipped('y') && el.textContent.trim()) {
+      overflows.push({ axis: 'y', sel: pathOf(el), client: el.clientHeight, scroll: el.scrollHeight, isSlide: el === slide });
+    }
+  }
+
+  // 图片质量：加载失败、渲染宽高比偏离原始比（拉伸变形）、位图过度放大（投影发虚）。
+  const images = [...slide.querySelectorAll('img')].filter(visible).map((im) => {
+    const r = im.getBoundingClientRect();
+    return {
+      sel: pathOf(im), src: (im.currentSrc || im.src || '').split('/').pop(),
+      broken: im.complete && im.naturalWidth === 0,
+      natW: im.naturalWidth, natH: im.naturalHeight,
+      renderW: R(r.width / scale), renderH: R(r.height / scale),
+      box: vbox(im),
+    };
+  });
+
+  // 遮挡：文本叶子中心点命中的是别的元素 → 疑似被覆盖；透明热区和隐身控件不算（不挡视线）。
+  const occlusions = [];
+  const faint = (el) => {
+    for (let n = el; n && n !== document.body; n = n.parentElement) {
+      if (num(getComputedStyle(n).opacity) < 0.05) return true;
+    }
+    return false;
+  };
+  const textLeaves = [...slide.querySelectorAll('*')].filter(visible)
+    .filter((el) => [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim()));
+  for (const el of textLeaves.slice(0, 80)) {
+    const r = el.getBoundingClientRect();
+    const stack = document.elementsFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    if (!stack.length) continue;
+    const top = stack[0];
+    if (top === el || top.contains(el) || el.contains(top)) continue;
+    if (!slide.contains(top)) continue;   // slide 外的全局控件（导航/备注按钮）浮在页面上是 chrome 常态
+    if (faint(top) || !painted(top)) continue;   // 透明热区/隐层不挡视线
+    occlusions.push({ sel: pathOf(el), coveredBy: pathOf(top), text: el.textContent.trim().slice(0, 24), box: vbox(el) });
+  }
+
+  // 对比度：文本叶子的 color 与纯色有效背景的 WCAG 对比度；渐变/半透明背景算不出就跳过。
+  const parseColor = (c) => {
+    const m = (c || '').match(/rgba?\(([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,\s/]+([\d.]+))?\)/);
+    return m ? [+m[1], +m[2], +m[3], m[4] === undefined ? 1 : +m[4]] : null;
+  };
+  const lum = ([r, g, b]) => {
+    const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+    return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+  };
+  const contrasts = [];
+  for (const el of textLeaves) {
+    const cs = getComputedStyle(el);
+    const fg = parseColor(cs.color);
+    if (!fg || fg[3] === 0) continue;
+    let bg = null;
+    for (let node = el; node && node !== document.documentElement; node = node.parentElement) {
+      const s = getComputedStyle(node);
+      if (s.backgroundImage !== 'none') { bg = null; break; }
+      const c = parseColor(s.backgroundColor);
+      if (c && c[3] >= 1) { bg = c; break; }
+      if (c && c[3] > 0) { bg = null; break; }   // 半透明背景需与下层合成，交给看图
+    }
+    if (!bg) continue;
+    const mixed = fg[3] < 1 ? fg.slice(0, 3).map((v, i) => v * fg[3] + bg[i] * (1 - fg[3])) : fg.slice(0, 3);
+    const ratio = (Math.max(lum(mixed), lum(bg)) + 0.05) / (Math.min(lum(mixed), lum(bg)) + 0.05);
+    const size = num(cs.fontSize), weight = parseInt(cs.fontWeight, 10) || 400;
+    contrasts.push({
+      sel: pathOf(el), ratio: Math.round(ratio * 100) / 100,
+      need: size >= 24 || (size >= 18.66 && weight >= 700) ? 3 : 4.5,
+      fontSize: size, text: el.textContent.trim().slice(0, 24), box: vbox(el),
+    });
+  }
+
   const all = [...slide.querySelectorAll('*')].filter(visible).map(vbox);
   const frame = all.length ? {
     left: R(Math.min(...all.map((b) => b.left))),
@@ -244,7 +376,10 @@ const MEASURE = ({ slideSel, idx, ignoreSel, minSpan, overlapTol }) => {
     bottom: R(H - Math.max(...all.map((b) => b.bottom))),
   } : null;
 
-  return { id: slide.id || `slide-${idx + 1}`, index: idx, width: W, height: H, scale: R(scale), frame, stacks, rows };
+  return {
+    id: slide.id || `slide-${idx + 1}`, index: idx, width: W, height: H, scale: R(scale), frame,
+    stacks, rows, connectors, overflows, images, occlusions, contrasts,
+  };
 };
 
 /* ---------------- 标尺叠加 ---------------- */
@@ -290,10 +425,19 @@ const median = (xs) => {
 const norm = (sel) => sel.replace(/^#[^>]*>?/, '') || 'slide-root';
 const r1 = (v) => Math.round(v * 10) / 10;
 
-function buildFlags(pages, o) {
+function buildFlags(pages, o, fontInfo) {
   const flags = [];
   let n = 0;
   const push = (f) => { flags.push({ id: `V${++n}`, ...f }); };
+
+  // 字体加载：回退字体会改变字宽与观感，截图里看到的就是投影效果，先给线索。
+  if (fontInfo && fontInfo.unloaded && fontInfo.unloaded.length) {
+    push({
+      kind: 'font', page: pages.map((p) => p.id).join(','), sel: 'document.fonts', spread: 0,
+      detail: `自定义字体未加载：${fontInfo.unloaded.join('，')}；页面可能以回退字体渲染，看图裁决`,
+      values: [], draws: [],
+    });
+  }
 
   // 同一区块内的节奏：一组兄弟块之间的间隔不该有肉眼可见的极差。
   // 只看真正当分隔用的间隔（≥12px）；行内文字的行距差异不是版式问题。
@@ -436,7 +580,113 @@ function buildFlags(pages, o) {
     });
   }
 
-  return { flags, histogram: counts.map((c) => ({ gap: c.v, count: c.n })) };
+  // 连接符对齐：文本箭头与相邻文字块首行带中心的偏差。
+  // 布局盒完全居中也可能错位（注释行撑高行），所以比对的是文字带，不是盒子对齐。
+  // 判据相对首行高：|delta| > max(容差， 首行高的两成)——大字号允许多几像素，小字号更严。
+  for (const p of pages) {
+    const byContainer = new Map();
+    for (const c of p.connectors || []) {
+      if (Math.abs(c.delta) <= Math.max(o.connectorTol, (c.firstLine || 24) * 0.2)) continue;
+      const key = c.container + '|' + c.delta;
+      if (!byContainer.has(key)) byContainer.set(key, { c, list: [] });
+      byContainer.get(key).list.push(c);
+    }
+    for (const { c, list } of byContainer.values()) {
+      push({
+        kind: 'connector', page: p.id, sel: c.sel, spread: r1(Math.abs(c.delta)),
+        detail: `连接符中心距相邻文字带中心偏 ${r1(Math.abs(c.delta))}px（${c.delta > 0 ? '低' : '高'}于文字带，首行高 ${c.firstLine}px，共 ${list.length} 处，${c.container}）`,
+        values: list.map((x) => x.delta),
+        draws: list.flatMap((x) => [
+          { type: 'line', x0: x.x0, x1: x.x1, y0: x.arrowCenter - 1, y1: x.arrowCenter + 1, label: `箭头中心 ${x.arrowCenter}` },
+          { type: 'line', x0: x.x0, x1: x.x1, y0: x.textCenter - 1, y1: x.textCenter + 1, label: `文字带中心 ${x.textCenter}` },
+        ]),
+      });
+    }
+  }
+
+  // 截断与溢出：裁切容器里的内容超出可视区，演示时读者看到的是残缺或滚动条。
+  for (const p of pages) {
+    for (const ov of p.overflows || []) {
+      push({
+        kind: 'overflow', page: p.id, sel: ov.sel, spread: ov.scroll - ov.client,
+        detail: `${ov.isSlide ? '页面' : ov.sel} 内容${ov.axis === 'x' ? '横向' : '纵向'}溢出：可视 ${ov.client}px / 实际 ${ov.scroll}px（${ov.isSlide && ov.axis === 'y' ? '演示会出现滚动条或被静默裁切' : '内容被裁切/截断'}），看图确认`,
+        values: [ov.client, ov.scroll],
+        draws: ov.isSlide ? [] : [],
+      });
+    }
+  }
+
+  // 图片质量：加载失败是断证；比例偏差是拉伸变形；位图放大发虚在投影上更明显。
+  for (const p of pages) {
+    for (const im of p.images || []) {
+      if (im.broken) {
+        push({
+          kind: 'image', page: p.id, sel: im.sel, spread: 0,
+          detail: `图片加载失败：${im.src}（断证，直接阻断级线索）`, values: [], draws: [],
+        });
+        continue;
+      }
+      if (!im.natW || !im.natH) continue;
+      const natRatio = im.natW / im.natH, renRatio = im.renderW / im.renderH;
+      if (Math.abs(renRatio - natRatio) / natRatio > 0.02) {
+        push({
+          kind: 'image', page: p.id, sel: im.sel, spread: r1(Math.abs(renRatio - natRatio) * 100),
+          detail: `图片渲染比 ${renRatio.toFixed(2)} 偏离原始比 ${natRatio.toFixed(2)}（拉伸变形），看图确认`,
+          values: [im.natW, im.natH, im.renderW, im.renderH],
+          draws: [{ type: 'box', x0: im.box.left, x1: im.box.right, y0: im.box.top, y1: im.box.bottom, label: '变形' }],
+        });
+      }
+      if (im.renderW > im.natW * 1.5 && im.renderW > 120) {
+        push({
+          kind: 'image', page: p.id, sel: im.sel, spread: r1(im.renderW / im.natW),
+          detail: `位图放大 ${Math.round((im.renderW / im.natW) * 10) / 10}×（原始 ${im.natW}px → 渲染 ${im.renderW}px），投影可能发虚，看图裁决`,
+          values: [im.natW, im.renderW],
+          draws: [{ type: 'box', x0: im.box.left, x1: im.box.right, y0: im.box.top, y1: im.box.bottom, label: `放大 ${Math.round(im.renderW / im.natW * 10) / 10}x` }],
+        });
+      }
+    }
+  }
+
+  // 遮挡：文本中心点命中的是别的元素，看图确认是设计叠层还是事故遮盖。
+  for (const p of pages) {
+    for (const oc of p.occlusions || []) {
+      push({
+        kind: 'occlusion', page: p.id, sel: oc.sel, spread: 0,
+        detail: `文本「${oc.text}」疑似被 ${oc.coveredBy} 覆盖，看图确认是否影响阅读`,
+        values: [],
+        draws: [{ type: 'box', x0: oc.box.left, x1: oc.box.right, y0: oc.box.top, y1: oc.box.bottom, label: '疑似遮挡' }],
+      });
+    }
+  }
+
+  // 对比度：纯色背景可解析时按 WCAG 判；渐变/半透明背景算不出，只能看图。
+  for (const p of pages) {
+    for (const ct of p.contrasts || []) {
+      if (ct.ratio >= ct.need) continue;
+      push({
+        kind: 'contrast', page: p.id, sel: ct.sel, spread: r1(ct.need - ct.ratio),
+        detail: `文本「${ct.text}」对比度 ${ct.ratio}:1，低于${ct.need >= 4.5 ? '正文 4.5' : '大字 3'}:1（${ct.fontSize}px），看图裁决`,
+        values: [ct.ratio, ct.need],
+        draws: [{ type: 'box', x0: ct.box.left, x1: ct.box.right, y0: ct.box.top, y1: ct.box.bottom, label: `对比 ${ct.ratio}` }],
+      });
+    }
+  }
+
+  // 同页同文案的同类线索（如一排相同箭头各自低对比）合并为一条，减噪不丢证据。
+  const merged = new Map();
+  for (const f of flags) {
+    const key = `${f.kind}|${f.page}|${f.detail}`;
+    if (merged.has(key)) {
+      const m = merged.get(key);
+      m.draws = [...(m.draws || []), ...(f.draws || [])];
+      m.values = [...(m.values || []), ...(f.values || [])];
+      continue;
+    }
+    merged.set(key, f);
+  }
+  const deduped = [...merged.values()].map((f, i) => ({ ...f, id: `V${i + 1}` }));
+
+  return { flags: deduped, histogram: counts.map((c) => ({ gap: c.v, count: c.n })) };
 }
 
 /* ---------------- 主流程 ---------------- */
@@ -500,7 +750,15 @@ function buildFlags(pages, o) {
     pages.push({ ...m, activatedBy: how });
   }
 
-  const { flags, histogram } = buildFlags(pages, o);
+  const fontInfo = await page.evaluate(async () => {
+    await document.fonts.ready;
+    const unloaded = [...document.fonts]
+      .filter((f) => f.status !== 'loaded')
+      .map((f) => `${f.family}(${f.status})`);
+    return { status: document.fonts.status, unloaded };
+  });
+
+  const { flags, histogram } = buildFlags(pages, o, fontInfo);
 
   const shots = {};
   if (o.shot) {
@@ -526,8 +784,8 @@ function buildFlags(pages, o) {
 
   const result = {
     target, label: o.label, generated: new Date().toISOString(),
-    thresholds: { tol: o.tol, slack: o.slack, near: o.near, minGap: o.minGap, minSpan: o.minSpan },
-    pageCount: count, pages, histogram, flags, shots,
+    thresholds: { tol: o.tol, slack: o.slack, near: o.near, minGap: o.minGap, minSpan: o.minSpan, connectorTol: o.connectorTol },
+    pageCount: count, pages, histogram, flags, shots, fonts: fontInfo,
   };
   const json = path.join(o.out, `${o.label}.json`);
   fs.writeFileSync(json, JSON.stringify(result, null, 1));

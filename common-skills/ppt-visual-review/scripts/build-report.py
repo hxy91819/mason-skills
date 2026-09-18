@@ -94,6 +94,12 @@ KIND = {
     "correspondence": "图文对应",
     "comparison": "比较对象",
     "interaction": "交互",
+    "connector": "连接符对齐",
+    "overflow": "截断溢出",
+    "image": "图片质量",
+    "occlusion": "遮挡",
+    "contrast": "对比度",
+    "font": "字体",
 }
 
 
@@ -158,11 +164,12 @@ def box_pct(finding, img_path, fid, problems):
     except (TypeError, ValueError):
         problems.append(f"finding {fid}: boxPct 必须是 [l,t,w,h] 数字，红框已省略")
         return None
-    if width <= 0 or height <= 0:
-        problems.append(f"finding {fid}: 红框宽高必须大于 0，红框已省略")
-        return None
+    # 先钳制到画布内，再检查尺寸：超界框钳制后可能变成零尺寸，同样视为无效。
     left, top = max(0.0, min(left, 100.0)), max(0.0, min(top, 100.0))
     width, height = min(width, 100.0 - left), min(height, 100.0 - top)
+    if width <= 0 or height <= 0:
+        problems.append(f"finding {fid}: 红框必须在截图内且宽高大于 0，红框已省略")
+        return None
     return left, top, width, height
 
 

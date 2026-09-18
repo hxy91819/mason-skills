@@ -7,7 +7,8 @@ alwaysApply: true
 1. Write tests that verify observable behavior, not implementation details.
 
 # 沟通
-2. Keep responses concise, direct, and non-repetitive.
+1. Keep responses concise, direct, and non-repetitive.
+2. 优先使用简体中文与用户沟通
 
 # 上下文工程: Skills，AGENTS.md 和 docs
 
