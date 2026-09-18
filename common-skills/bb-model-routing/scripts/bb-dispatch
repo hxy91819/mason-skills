@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """按用户配置校验 BB 路由并创建一个线程；不拆任务、不重试创建、不预先修改环境。
 
+defaults.<路由> 可为有序别名列表：列表是同档 fallback 链，脚本只在 spawn 前
+按序校验候选（provider 可用性、权限、模型目录），首个通过者派发；spawn 发出后
+任何失败都中止，由调用方确认后用 --fallback-from 续派。
+
 参数见 --help。stdout 为 JSON；stderr 为错误；退出码 0 成功、2 失败。
 依赖 Python 3.10+、PyYAML 和 PATH 上的 bb。
 """
@@ -69,6 +73,27 @@ def thread_title(title, task):
     return "[Agent] " + text
 
 
+def candidate_chain(args, defaults, route):
+    if args.agent is not None:
+        if args.fallback_from is not None:
+            raise DispatchError("--agent 与 --fallback-from 不能同时使用。")
+        return [string(args.agent, "--agent")]
+    value = defaults.get(route)
+    if isinstance(value, str):
+        chain = [value]
+    elif isinstance(value, list) and value:
+        chain = value
+    else:
+        raise DispatchError(f"defaults.{route} 必须是非空别名或有序别名列表。")
+    chain = [string(item, f"defaults.{route} 项") for item in chain]
+    if args.fallback_from is None:
+        return chain
+    start = string(args.fallback_from, "--fallback-from")
+    if start not in chain:
+        raise DispatchError(f"--fallback-from {start!r} 不在 defaults.{route} 链 {chain} 中。")
+    return chain[chain.index(start):]
+
+
 def model_and_reasoning(agent, alias, route, difficulty):
     if "model" in agent or "reasoning" in agent:
         raise DispatchError(f"agents.{alias} 的 model/reasoning 必须放在 routes.<路由> 下。")
@@ -125,27 +150,44 @@ def dispatch(args, call=bb):
     defaults = {**mapping(config.get("defaults", {}), "defaults"), **mapping(override.get("defaults", {}), "environment defaults")}
     agents = {**mapping(config.get("agents", {}), "agents"), **mapping(override.get("agents", {}), "environment agents")}
     route = args.kind if args.kind in ROLE_ROUTES else args.difficulty
-    alias = string(args.agent or defaults.get(route), f"defaults.{route}")
-    agent = mapping(agents.get(alias), f"agents.{alias}")
-    provider = string(agent.get("provider"), "provider")
-    model, reasoning = model_and_reasoning(agent, alias, route, args.difficulty)
-    reasoning = args.reasoning if args.reasoning is not None else reasoning
-    if reasoning is not None:
-        reasoning = string(reasoning, "reasoning")
     permission = args.permission_mode or override.get("permission_mode", config.get("permission_mode", "accept-edits"))
     if permission not in ("accept-edits", "auto", "full"):
         raise DispatchError("permission_mode 必须是 accept-edits、auto 或 full。")
+    chain = candidate_chain(args, defaults, route)
     providers = call("provider", "list", "--environment", validation_environment)
-    selected = unique(providers, "id", provider, "provider")
-    if selected.get("available") is not True:
-        raise DispatchError(f"provider {provider} 在校验环境不可用。")
-    if permission not in selected.get("capabilities", {}).get("permissionModes", []):
-        raise DispatchError(f"{provider} 不支持权限 {permission}；请选用兼容工具，或在任务已授权后显式指定权限。")
-    models = call("provider", "models", provider, "--environment", validation_environment)
-    selected_model = unique(models, "id", model, "模型")
-    levels = [entry.get("reasoningEffort") for entry in (selected_model.get("supportedReasoningEfforts") or [])]
-    if reasoning is not None and reasoning not in levels:
-        raise DispatchError(f"模型 {model} 不支持 reasoning={reasoning}；可用值：{levels}。")
+    # 同档 fallback：每个候选按本次路由项解析自己的 routes，首个通过校验者派发。
+    attempts = []
+    catalogs = {}
+    choice = None
+    for index, alias in enumerate(chain):
+        try:
+            agent = mapping(agents.get(alias), f"agents.{alias}")
+            provider = string(agent.get("provider"), f"agents.{alias}.provider")
+            model, reasoning = model_and_reasoning(agent, alias, route, args.difficulty)
+            reasoning = args.reasoning if args.reasoning is not None else reasoning
+            if reasoning is not None:
+                reasoning = string(reasoning, "reasoning")
+            selected = unique(providers, "id", provider, "provider")
+            if selected.get("available") is not True:
+                raise DispatchError(f"provider {provider} 在校验环境不可用。")
+            if permission not in selected.get("capabilities", {}).get("permissionModes", []):
+                raise DispatchError(f"{provider} 不支持权限 {permission}；请选用兼容工具，或在任务已授权后显式指定权限。")
+            if provider not in catalogs:
+                catalogs[provider] = call("provider", "models", provider, "--environment", validation_environment)
+            selected_model = unique(catalogs[provider], "id", model, "模型")
+            levels = [entry.get("reasoningEffort") for entry in (selected_model.get("supportedReasoningEfforts") or [])]
+            if reasoning is not None and reasoning not in levels:
+                raise DispatchError(f"模型 {model} 不支持 reasoning={reasoning}；可用值：{levels}。")
+        except DispatchError as exc:
+            attempts.append({"agent": alias, "error": str(exc)})
+            continue
+        choice = (index, alias, provider, model, reasoning)
+        break
+    if choice is None:
+        detail = "；".join(f"{item['agent']}: {item['error']}" for item in attempts)
+        raise DispatchError(f"defaults.{route} 候选链 {chain} 均不可用：{detail}")
+    index, alias, provider, model, reasoning = choice
+    fallbacks = chain[index + 1:]
     task = args.task
     if args.kind == "oracle":
         task = (
@@ -175,10 +217,18 @@ def dispatch(args, call=bb):
     plan = dict(project=project, environment=environment, validation_environment=validation_environment,
                 agent=alias, provider=provider,
                 model=model, reasoning=reasoning, permission_mode=permission,
-                difficulty=args.difficulty, kind=args.kind, title=title)
+                difficulty=args.difficulty, kind=args.kind, title=title,
+                candidates=chain, fallbacks=fallbacks, attempts=attempts)
     if args.dry_run:
         return {"dry_run": True, "selection": plan, "argv": ["bb", *command, "--json"]}
-    result = call(*command)
+    try:
+        result = call(*command)
+    except DispatchError as exc:
+        if fallbacks:
+            raise DispatchError(
+                f"{exc} 同档候选 {fallbacks} 未尝试；确认线程未创建后可用 --fallback-from {fallbacks[0]} 续派。"
+            ) from exc
+        raise
     # 返回完整创建回执，包括排队状态；不把创建成功宣称为任务完成。
     return {"dry_run": False, "selection": plan, "result": result}
 
@@ -190,7 +240,8 @@ def parser():
     p.add_argument("--difficulty", required=True, choices=["simple", "medium", "complex"], help="任务难度")
     p.add_argument("--task", required=True, help="任务目标、范围和验收要求")
     p.add_argument("--kind", choices=["general", "debug", "test", "judge", "oracle"], default="general", help="排障选 debug，测试验证选 test，编排异常裁决选 judge，专家咨询选 oracle")
-    p.add_argument("--agent", help="配置中的工具别名，覆盖默认路由")
+    p.add_argument("--agent", help="配置中的工具别名，覆盖默认路由；固定单候选，不进 fallback 链")
+    p.add_argument("--fallback-from", metavar="别名", help="从 defaults.<路由> 链中该别名起续派；用于前次派发失败且确认未创建后的同档改派")
     p.add_argument("--reasoning", help="覆盖推理级别，仍校验模型目录")
     p.add_argument("--project", help="项目 ID；ID 模式默认环境所属项目，路径模式默认当前项目")
     p.add_argument("--environment", help="现有环境 ID 或本机工作区目录；默认当前 BB 环境")

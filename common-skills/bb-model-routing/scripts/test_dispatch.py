@@ -331,6 +331,101 @@ environments:
             m.dispatch(self.args(), failing)
         self.assertEqual(sum(c[:2] == ('thread', 'spawn') for c in self.calls), 1)
 
+    def chain_config(self, chain):
+        config = m.yaml.safe_load(self.config.read_text())
+        config['defaults']['simple'] = chain
+        self.config.write_text(m.yaml.safe_dump(config))
+
+    def test_defaults_list_falls_back_when_provider_unavailable(self):
+        self.chain_config(['primary', 'specialist'])
+        self.providers[0]['available'] = False
+        result = m.dispatch(self.args('--dry-run'), self.fake)
+        self.assertEqual(result['selection']['agent'], 'specialist')
+        self.assertEqual(result['selection']['provider'], 'specialist')
+        self.assertEqual((result['selection']['model'], result['selection']['reasoning']), ('deep-model', 'low'))
+        self.assertEqual(result['selection']['candidates'], ['primary', 'specialist'])
+        self.assertEqual(result['selection']['fallbacks'], [])
+        self.assertEqual([a['agent'] for a in result['selection']['attempts']], ['primary'])
+
+    def test_healthy_primary_keeps_fallbacks_untried(self):
+        self.chain_config(['primary', 'specialist'])
+        result = m.dispatch(self.args('--dry-run'), self.fake)
+        self.assertEqual(result['selection']['agent'], 'primary')
+        self.assertEqual(result['selection']['fallbacks'], ['specialist'])
+        self.assertEqual(result['selection']['attempts'], [])
+        self.assertFalse(any(c[:2] == ('provider', 'models', 'specialist') for c in self.calls))
+
+    def test_candidate_without_matching_route_counts_as_failed(self):
+        self.chain_config(['primary', 'oracle', 'specialist'])
+        original = self.fake
+
+        def sparse(*a):
+            if a[:2] == ('provider', 'models') and a[2] == 'primary':
+                return [entry for entry in original(*a) if entry['id'] != 'fast-model']
+            return original(*a)
+
+        result = m.dispatch(self.args('--dry-run'), sparse)
+        self.assertEqual(result['selection']['agent'], 'specialist')
+        self.assertEqual([a['agent'] for a in result['selection']['attempts']], ['primary', 'oracle'])
+
+    def test_all_candidates_failed_reports_each_and_never_spawns(self):
+        self.chain_config(['primary', 'specialist'])
+        for provider in self.providers:
+            provider['available'] = False
+        with self.assertRaisesRegex(m.DispatchError, 'primary.*specialist'):
+            m.dispatch(self.args(), self.fake)
+        self.assertFalse(any(c[:2] == ('thread', 'spawn') for c in self.calls))
+
+    def test_invalid_chain_values_rejected_before_calling_bb(self):
+        config = m.yaml.safe_load(self.config.read_text())
+        for value in ([], 5, ['primary', '']):
+            with self.subTest(value=value):
+                config['defaults']['simple'] = value
+                self.config.write_text(m.yaml.safe_dump(config))
+                with self.assertRaises(m.DispatchError):
+                    m.dispatch(self.args(), self.fake)
+        self.assertFalse(any(c[:2] == ('provider', 'list') for c in self.calls))
+
+    def test_agent_is_pinned_and_never_falls_back(self):
+        self.chain_config(['primary', 'specialist'])
+        self.providers[0]['available'] = False
+        with self.assertRaises(m.DispatchError):
+            m.dispatch(self.args('--agent', 'primary'), self.fake)
+        self.assertFalse(any(c[:2] == ('thread', 'spawn') for c in self.calls))
+
+    def test_fallback_from_resumes_chain_at_alias(self):
+        self.chain_config(['primary', 'specialist'])
+        result = m.dispatch(self.args('--fallback-from', 'specialist', '--dry-run'), self.fake)
+        self.assertEqual(result['selection']['provider'], 'specialist')
+        self.assertEqual(result['selection']['candidates'], ['specialist'])
+        with self.assertRaises(m.DispatchError):
+            m.dispatch(self.args('--fallback-from', 'missing'), self.fake)
+        with self.assertRaises(m.DispatchError):
+            m.dispatch(self.args('--agent', 'primary', '--fallback-from', 'specialist'), self.fake)
+        self.assertFalse(any(c[:2] == ('thread', 'spawn') for c in self.calls))
+
+    def test_spawn_failure_is_not_retried_but_names_next_candidate(self):
+        self.chain_config(['primary', 'specialist'])
+        original = self.fake
+
+        def flaky(*a):
+            if a[:2] == ('thread', 'spawn'):
+                self.calls.append(a)
+                raise m.DispatchError('quota exhausted')
+            return original(*a)
+
+        with self.assertRaisesRegex(m.DispatchError, '--fallback-from specialist'):
+            m.dispatch(self.args(), flaky)
+        self.assertEqual(sum(c[:2] == ('thread', 'spawn') for c in self.calls), 1)
+
+    def test_environment_defaults_override_accepts_chain(self):
+        config = m.yaml.safe_load(self.config.read_text())
+        config['environments']['env_other']['defaults'] = {'debug': ['missing', 'specialist']}
+        self.config.write_text(m.yaml.safe_dump(config))
+        result = m.dispatch(self.args('--environment', 'env_other', '--kind', 'debug', '--dry-run'), self.fake)
+        self.assertEqual(result['selection']['agent'], 'specialist')
+        self.assertEqual(result['selection']['provider'], 'remote-provider')
+
 
 if __name__ == '__main__':
     unittest.main()

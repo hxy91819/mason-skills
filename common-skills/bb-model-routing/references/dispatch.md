@@ -33,21 +33,23 @@ bb-dispatch --difficulty medium --agent primary --task '执行已授权的任务
 
 默认权限为 `accept-edits`。用户可在顶层或环境配置中设置已授权的 `permission_mode`；权限不兼容时报告错误，不自动升级。
 
-配置 `version: 2`。`defaults` 将 simple/medium/complex/debug/test/judge/oracle 映射到 provider 别名；每个 `agents.<别名>` 只写一次 `provider`，并在 `routes.<路由>` 中为每个难度或角色写 `model` 与可选的 `reasoning`。同一 provider 因而可按难度选择不同模型，且无需为模型组合创建别名。显式 reasoning 仍须通过模型目录校验；省略或设为 null 时使用 provider 默认值。
+配置 `version: 2`。`defaults` 将 simple/medium/complex/debug/test/judge/oracle 映射到 provider 别名或有序别名列表；列表即同档 fallback 链，脚本按序校验并派发首个可用候选。每个 `agents.<别名>` 只写一次 `provider`，并在 `routes.<路由>` 中为每个难度或角色写 `model` 与可选的 `reasoning`；链上每个候选按本次路由项在自己的 routes 中解析（角色 > 难度 > default），fallback 只换 provider 不换档位。同一 provider 因而可按难度选择不同模型，且无需为模型组合创建别名。显式 reasoning 仍须通过模型目录校验；省略或设为 null 时使用 provider 默认值。
 
 路由解析顺序为 `debug`、`test`、`judge`、`oracle` 等角色项，其次是 `simple`、`medium`、`complex` 难度项，最后才是可选 `default` 项。例如专家咨询固定传 `complex --kind oracle`，所以优先选 `routes.oracle`；若配置只有 `routes.complex`，才选它。没有任何匹配项会报错，不会猜测模型。所有 `defaults` 键都是显式配置，角色路由不会自动沿用 complex 的默认别名。
 
 优先级：命令行覆盖 > 环境配置 > 顶层配置。`--kind debug|test|judge|oracle` 先决定 defaults 和 routes 的角色项，`--agent` 覆盖 defaults；它仍使用本次的 kind 和 difficulty 选择该 agent 的 routes。`environments.<精确环境 ID>` 可覆盖 defaults、agents、permission_mode；同名 agent 整体替换，必须写出 provider 和 routes。目录路径模式尚无环境 ID，不应用 `environments.<id>` 覆盖，只使用顶层配置。脚本不从任务文本猜测类型；调用 Agent 负责识别排障、测试、编排异常裁决或专家咨询。模型和思考深度的明确要求用配置别名、`--reasoning` 表达，缺失配置时先补齐，不静默替换。
 
+`--agent` 固定单候选，不进 fallback 链。`--fallback-from <别名>` 把本次候选截取为 defaults 链中从该别名起的后缀，用于前次派发失败且确认线程未创建后的同档续派；与 `--agent` 互斥，别名不在链中时报错。
+
 默认从 `bb status` 解析环境，项目使用该环境的所属项目。`--environment` 接受现有环境 ID 或本机已存在的目录路径：ID 模式下 `--project` 与环境所属项目必须匹配；路径模式下目录会解析为绝对路径并原样交给 BB 创建 project-checkout 附着环境，项目取 `--project` 或当前 `bb status`，两者都没有时须显式提供 `--project`。同项目时关联当前父线程，跨环境也保留关联；跨项目不关联。
 
-每次调用会校验 provider 是否存在且可用、权限是否兼容、模型及 reasoning 是否在目录中。ID 模式使用目标环境校验；路径模式不调用 `bb environment show`，而使用当前 `bb status` 的环境作为同 host 代理，没有当前环境时须在 BB 线程里运行或先准备可代理环境。返回 JSON 的 `selection.validation_environment` 记录实际校验环境，ID 模式下等于目标环境。`--dry-run` 同样执行只读校验并输出参数数组，不创建线程。实际派发返回 JSON 的 `selection` 和 BB 原始 `result`，只调用一次 spawn；超时或响应异常时先查线程，避免重复创建。目录不做持久缓存，防止安装、账号或环境变化后继续使用过期配置。
+每次调用会校验 provider 是否存在且可用、权限是否兼容、模型及 reasoning 是否在目录中。ID 模式使用目标环境校验；路径模式不调用 `bb environment show`，而使用当前 `bb status` 的环境作为同 host 代理，没有当前环境时须在 BB 线程里运行或先准备可代理环境。返回 JSON 的 `selection.validation_environment` 记录实际校验环境，ID 模式下等于目标环境。`--dry-run` 同样执行只读校验并输出参数数组，不创建线程。实际派发返回 JSON 的 `selection` 和 BB 原始 `result`，每次调用最多发出一次 spawn（fallback 只发生在 spawn 前的校验阶段）；超时或响应异常时先查线程，避免重复创建。`selection.attempts` 记录链上失败候选及原因，`selection.fallbacks` 记录未尝试的同档别名。目录不做持久缓存，防止安装、账号或环境变化后继续使用过期配置。
 
 验证：`python3 -m unittest discover -s scripts -p 'test_*.py'`（从技能目录运行）。
 
 ## 路由不可用
 
-脚本不自动 fallback。provider 不可用、模型被移除或额度耗尽时，报告原路由和错误；用户选定替代别名后重新校验。创建结果未知时先查询原线程，避免重复派发。继续已有线程前，确认原回合结束并核对已完成工作，按该 provider 支持的续接方式操作；不要以重新创建整个任务冒充续接。
+链式 fallback 只覆盖派发前校验：provider 不存在或不可用、权限不兼容、模型或 reasoning 不在目录时，记录该候选错误并试下一个；全部失败时汇总各候选错误。spawn 一旦发出即不重试：失败或结果不明时先 `bb thread list`/`bb thread show` 确认是否已创建，确认未创建后用 `--fallback-from <链中别名>` 从该候选续派，难度、kind 与任务文本保持不变。线程运行期失败（额度耗尽、provider 中断、会话错误）由调用方按同一方式改派 `selection.fallbacks` 中的下一候选；确定性调用方（如编排 driver）可持久化该字段实现自己的重派。继续已有线程前，确认原回合结束并核对已完成工作，按该 provider 支持的续接方式操作；不要以重新创建整个任务冒充续接。
 
 ## 会话标题
 
