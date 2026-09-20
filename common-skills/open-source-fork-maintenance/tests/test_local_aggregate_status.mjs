@@ -281,6 +281,124 @@ fi
   );
   assert.notEqual(invalid.status, 0);
   assert.match(invalid.stderr, /stableTagPattern must be a valid regular expression/);
+
+  git(["switch", "-qC", "feature/tiered", stableCommit]);
+  writeFileSync(join(repository, "TIERED.md"), "v1\n");
+  git(["add", "TIERED.md"]);
+  git(["commit", "-qm", "tiered v1"]);
+  const tieredV1 = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repository, encoding: "utf8" }).trim();
+  git(["branch", "integration/provider", tieredV1]);
+  const tieredManifest = {
+    version: 4,
+    aggregate: {
+      branch: "local/aggregate",
+      upstreamRef: "main",
+      upstreamRepository: "example/upstream",
+      lastIntegratedUpstreamCommit: stableCommit,
+      stableTagPattern: "^desktop-v\\d+\\.\\d+\\.\\d+$",
+    },
+    features: [{
+      id: "tiered",
+      branch: "feature/tiered",
+      lastPackaged: null,
+      specIssue: null,
+      upstreamFeedback: [],
+      relatedIssues: [],
+      disposition: "internal",
+      reason: "Test fixture.",
+      source: {
+        baseCommit: stableCommit,
+        versionCommit: tieredV1,
+        commits: [{ commit: tieredV1, logicalPatch: "tiered-v1" }],
+      },
+      dependsOn: [],
+      integration: { domain: "provider" },
+    }],
+    domains: [{
+      id: "provider",
+      branch: "integration/provider",
+      baseline: { ref: "desktop-v1.0.0", commit: stableCommit },
+      members: ["tiered"],
+      adaptations: [],
+      integrated: {
+        commit: tieredV1,
+        sourceLogicalPatches: ["tiered-v1"],
+        patches: [{
+          commit: tieredV1,
+          sourceCommit: tieredV1,
+          logicalPatch: "tiered-v1",
+          features: ["tiered"],
+        }],
+      },
+    }],
+    trains: [{ id: "train-v1", manifest: "train-v1.json" }],
+  };
+  writeFileSync(join(repository, "tiered-manifest.json"), JSON.stringify(tieredManifest));
+  writeFileSync(join(repository, "train-v1.json"), "{}");
+  const tieredCurrent = JSON.parse(execFileSync(
+    "node",
+    [script, "--repo", repository, "--manifest", "tiered-manifest.json", "--json"],
+    { encoding: "utf8", env: environment },
+  ));
+  assert.equal(tieredCurrent.features[0].selection.state, "packaged");
+  assert.equal(tieredCurrent.domains[0].baselinePresent, true);
+  assert.equal(tieredCurrent.domains[0].patchCommitsPresent, true);
+  assert.equal(tieredCurrent.domains[0].sourceMappingCurrent, true);
+  assert.equal(tieredCurrent.trains[0].id, "train-v1");
+
+  tieredManifest.domains[0].adaptations = [{
+    commit: tieredV1,
+    sourceCommit: tieredV1,
+    logicalPatch: "tiered-adaptation-v1",
+    features: ["tiered"],
+  }];
+  writeFileSync(join(repository, "tiered-manifest.json"), JSON.stringify(tieredManifest));
+  const adaptationStale = JSON.parse(execFileSync(
+    "node",
+    [script, "--repo", repository, "--manifest", "tiered-manifest.json", "--json"],
+    { encoding: "utf8", env: environment },
+  ));
+  assert.equal(adaptationStale.domains[0].sourceMappingCurrent, false);
+  tieredManifest.domains[0].adaptations = [];
+
+  writeFileSync(join(repository, "TIERED.md"), "v2\n");
+  git(["add", "TIERED.md"]);
+  git(["commit", "-qm", "tiered v2"]);
+  const tieredAdvanced = JSON.parse(execFileSync(
+    "node",
+    [script, "--repo", repository, "--manifest", "tiered-manifest.json", "--json"],
+    { encoding: "utf8", env: environment },
+  ));
+  assert.equal(tieredAdvanced.features[0].selection.state, "advanced");
+
+  tieredManifest.features[0].source.versionCommit = execFileSync(
+    "git",
+    ["rev-parse", "feature/tiered"],
+    { cwd: repository, encoding: "utf8" },
+  ).trim();
+  tieredManifest.features[0].source.commits = [{
+    commit: tieredManifest.features[0].source.versionCommit,
+    logicalPatch: "tiered-v2",
+  }];
+  writeFileSync(join(repository, "tiered-manifest.json"), JSON.stringify(tieredManifest));
+  const tieredStale = JSON.parse(execFileSync(
+    "node",
+    [script, "--repo", repository, "--manifest", "tiered-manifest.json", "--json"],
+    { encoding: "utf8", env: environment },
+  ));
+  assert.equal(tieredStale.domains[0].sourceMappingCurrent, false);
+
+  git(["switch", "-qC", "replacement", stableCommit]);
+  writeFileSync(join(repository, "TIERED.md"), "replacement\n");
+  git(["add", "TIERED.md"]);
+  git(["commit", "-qm", "replacement history"]);
+  git(["branch", "-f", "feature/tiered", "replacement"]);
+  const tieredRewritten = JSON.parse(execFileSync(
+    "node",
+    [script, "--repo", repository, "--manifest", "tiered-manifest.json", "--json"],
+    { encoding: "utf8", env: environment },
+  ));
+  assert.equal(tieredRewritten.features[0].selection.state, "rewritten");
 } finally {
   rmSync(repository, { force: true, recursive: true });
 }

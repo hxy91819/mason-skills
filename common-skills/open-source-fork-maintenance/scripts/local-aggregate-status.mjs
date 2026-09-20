@@ -381,19 +381,72 @@ function validFeedback(feature, aggregate) {
       feature.upstreamFeedback.length > 0);
 }
 
+function validPatch(patch) {
+  return patch &&
+    typeof patch === "object" &&
+    nonEmptyString(patch.commit) &&
+    nonEmptyString(patch.logicalPatch);
+}
+
+function validVersion4Feature(feature, featureIds) {
+  if (!nonEmptyString(feature.id) || featureIds.has(feature.id)) {
+    return false;
+  }
+  featureIds.add(feature.id);
+  if (!Object.hasOwn(feature, "source")) {
+    return true;
+  }
+  return feature.source &&
+    nonEmptyString(feature.source.baseCommit) &&
+    nonEmptyString(feature.source.versionCommit) &&
+    Array.isArray(feature.source.commits) &&
+    feature.source.commits.length > 0 &&
+    feature.source.commits.every(validPatch) &&
+    Array.isArray(feature.dependsOn) &&
+    feature.dependsOn.every(nonEmptyString) &&
+    feature.integration &&
+    (feature.integration.domain === null || nonEmptyString(feature.integration.domain));
+}
+
+function validDomain(domain, domainIds) {
+  if (!domain || !nonEmptyString(domain.id) || domainIds.has(domain.id)) {
+    return false;
+  }
+  domainIds.add(domain.id);
+  return nonEmptyString(domain.branch) &&
+    domain.baseline &&
+    nonEmptyString(domain.baseline.ref) &&
+    nonEmptyString(domain.baseline.commit) &&
+    Array.isArray(domain.members) &&
+    domain.members.length > 0 &&
+    domain.members.every(nonEmptyString) &&
+    (domain.integrated === null || (
+      domain.integrated &&
+      nonEmptyString(domain.integrated.commit) &&
+      Array.isArray(domain.integrated.patches) &&
+      domain.integrated.patches.every((patch) =>
+        validPatch(patch) &&
+        nonEmptyString(patch.sourceCommit) &&
+        Array.isArray(patch.features) &&
+        patch.features.length > 0 &&
+        patch.features.every(nonEmptyString),
+      )
+    ));
+}
+
 function assertManifest(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("local aggregate manifest must be an object");
   }
-  if (![2, 3].includes(value.version)) {
-    throw new Error("local aggregate manifest version must be 2 or 3");
+  if (![2, 3, 4].includes(value.version)) {
+    throw new Error("local aggregate manifest version must be 2, 3, or 4");
   }
   if (
     !value.aggregate ||
     typeof value.aggregate !== "object" ||
     !nonEmptyString(value.aggregate.branch) ||
     !nonEmptyString(value.aggregate.upstreamRef) ||
-    (value.version === 3 && !nonEmptyString(value.aggregate.upstreamRepository)) ||
+    (value.version >= 3 && !nonEmptyString(value.aggregate.upstreamRepository)) ||
     !nonEmptyString(value.aggregate.lastIntegratedUpstreamCommit) ||
     (value.aggregate.stableTagPattern !== null && !nonEmptyString(value.aggregate.stableTagPattern))
   ) {
@@ -410,6 +463,7 @@ function assertManifest(value) {
     }
   }
   const branches = new Set();
+  const featureIds = new Set();
   for (const feature of value.features) {
     const lastPackagedValid =
       feature?.lastPackaged === null ||
@@ -417,7 +471,7 @@ function assertManifest(value) {
         typeof feature.lastPackaged === "object" &&
         nonEmptyString(feature.lastPackaged.sourceCommit) &&
         nonEmptyString(feature.lastPackaged.aggregateCommit));
-    const feedbackValid = feature && (value.version === 3
+    const feedbackValid = feature && (value.version >= 3
       ? validFeedback(feature, value.aggregate)
       : Array.isArray(feature.upstreamIssues) &&
         feature.upstreamIssues.length > 0 &&
@@ -428,11 +482,50 @@ function assertManifest(value) {
       !nonEmptyString(feature.branch) ||
       !lastPackagedValid ||
       !feedbackValid ||
+      (value.version === 4 && !validVersion4Feature(feature, featureIds)) ||
       branches.has(feature.branch)
     ) {
       throw new Error(`local aggregate manifest feature is invalid: ${feature?.branch ?? "unknown"}`);
     }
     branches.add(feature.branch);
+  }
+  if (value.version === 4) {
+    if (!Array.isArray(value.domains) || !Array.isArray(value.trains)) {
+      throw new Error("version 4 manifest domains and trains must be arrays");
+    }
+    const domainIds = new Set();
+    for (const domain of value.domains) {
+      if (!validDomain(domain, domainIds)) {
+        throw new Error(`local aggregate manifest domain is invalid: ${domain?.id ?? "unknown"}`);
+      }
+      for (const member of domain.members) {
+        if (!featureIds.has(member)) {
+          throw new Error(`domain ${domain.id} references unknown feature: ${member}`);
+        }
+      }
+    }
+    for (const feature of value.features) {
+      if (feature.source) {
+        for (const dependency of feature.dependsOn) {
+          if (!featureIds.has(dependency)) {
+            throw new Error(`feature ${feature.id} references unknown dependency: ${dependency}`);
+          }
+        }
+        if (feature.integration.domain && !domainIds.has(feature.integration.domain)) {
+          throw new Error(`feature ${feature.id} references unknown domain: ${feature.integration.domain}`);
+        }
+      }
+    }
+    const trainIds = new Set();
+    for (const train of value.trains) {
+      if (!train || !nonEmptyString(train.id) || !nonEmptyString(train.manifest)) {
+        throw new Error("local aggregate manifest train is invalid");
+      }
+      if (trainIds.has(train.id)) {
+        throw new Error(`local aggregate manifest has duplicate train id: ${train.id}`);
+      }
+      trainIds.add(train.id);
+    }
   }
 }
 
@@ -444,10 +537,17 @@ const worktrees = worktreesByBranch();
 const registeredBranches = new Set(manifest.features.map((feature) => feature.branch));
 const featureStatuses = manifest.features.map((feature) => ({
   ...feature,
+  ...(manifest.version === 4 && feature.source ? { patchSource: feature.source } : {}),
   worktree: worktrees.get(feature.branch) ?? null,
   source: feature.lastPackaged
     ? inspectRevision(feature.lastPackaged.sourceCommit, feature.branch)
     : inspectUnpackagedBranch(feature.branch, manifest.aggregate.upstreamRef),
+  ...(manifest.version === 4 && feature.source
+    ? {
+        selection: inspectRevision(feature.source.versionCommit, feature.branch),
+        selectedCommitsPresent: feature.source.commits.every((patch) => commitExists(patch.commit)),
+      }
+    : {}),
   aggregateCommitPresent: feature.lastPackaged ? commitExists(feature.lastPackaged.aggregateCommit) : null,
   aggregateMappingValid: aggregateMappingValid(feature.lastPackaged),
   ...(manifest.version === 2
@@ -458,6 +558,75 @@ const featureStatuses = manifest.features.map((feature) => ({
         relatedIssues: feature.relatedIssues.map(inspectIssue),
       }),
 }));
+const featuresById = new Map(manifest.features.map((feature) => [feature.id, feature]));
+
+function domainSourceMappingCurrent(domain) {
+  if (!domain.integrated) {
+    return null;
+  }
+  const selected = new Map();
+  const visited = new Set();
+  function visit(id) {
+    if (visited.has(id)) {
+      return;
+    }
+    visited.add(id);
+    const feature = featuresById.get(id);
+    if (!feature?.source) {
+      return;
+    }
+    for (const dependency of feature.dependsOn) {
+      visit(dependency);
+    }
+    for (const patch of feature.source.commits) {
+      selected.set(patch.logicalPatch, patch.commit);
+    }
+  }
+  for (const member of domain.members) {
+    visit(member);
+  }
+  const recorded = new Set(domain.integrated.sourceLogicalPatches ?? []);
+  if (recorded.size !== selected.size || [...selected.keys()].some((logicalPatch) => !recorded.has(logicalPatch))) {
+    return false;
+  }
+  const mappings = new Map(
+    domain.integrated.patches
+      .filter((patch) => recorded.has(patch.logicalPatch))
+      .map((patch) => [patch.logicalPatch, patch.sourceCommit]),
+  );
+  const sourceMappingsCurrent = mappings.size === selected.size
+    && [...selected].every(([logicalPatch, sourceCommit]) => mappings.get(logicalPatch) === sourceCommit);
+  const adaptations = new Map((domain.adaptations ?? []).map((patch) => [patch.logicalPatch, patch]));
+  const adaptationMappings = new Map(
+    domain.integrated.patches
+      .filter((patch) => !recorded.has(patch.logicalPatch))
+      .map((patch) => [patch.logicalPatch, patch]),
+  );
+  const adaptationsCurrent = adaptationMappings.size === adaptations.size
+    && [...adaptations].every(([logicalPatch, adaptation]) => {
+      const mapping = adaptationMappings.get(logicalPatch);
+      return mapping
+        && mapping.sourceCommit === (adaptation.sourceCommit ?? adaptation.commit)
+        && new Set(mapping.features).size === new Set(adaptation.features).size
+        && adaptation.features.every((id) => mapping.features.includes(id));
+    });
+  return sourceMappingsCurrent && adaptationsCurrent;
+}
+
+const domainStatuses = manifest.version === 4
+  ? manifest.domains.map((domain) => ({
+      ...domain,
+      worktree: worktrees.get(domain.branch) ?? null,
+      source: domain.integrated
+        ? inspectRevision(domain.integrated.commit, domain.branch)
+        : inspectUnpackagedBranch(domain.branch, domain.baseline.ref),
+      baselinePresent: revision(domain.baseline.ref) === domain.baseline.commit,
+      patchCommitsPresent: domain.integrated
+        ? domain.integrated.patches.every((patch) => commitExists(patch.commit))
+        : null,
+      sourceMappingCurrent: domainSourceMappingCurrent(domain),
+    }))
+  : [];
 const upstream = inspectRevision(
   manifest.aggregate.lastIntegratedUpstreamCommit,
   manifest.aggregate.upstreamRef,
@@ -477,7 +646,7 @@ const report = {
     expectedBranch: manifest.aggregate.branch,
     currentBranch,
     upstreamRef: manifest.aggregate.upstreamRef,
-    ...(manifest.version === 3 ? { upstreamRepository: manifest.aggregate.upstreamRepository } : {}),
+    ...(manifest.version >= 3 ? { upstreamRepository: manifest.aggregate.upstreamRepository } : {}),
     lastIntegratedUpstreamCommit: manifest.aggregate.lastIntegratedUpstreamCommit,
     upstream,
     stableRelease,
@@ -485,6 +654,8 @@ const report = {
   },
   workingTree,
   features: featureStatuses,
+  domains: domainStatuses,
+  trains: manifest.version === 4 ? manifest.trains : [],
   unregisteredBranches: unregisteredBranches.map((branch) => ({
     branch,
     worktree: worktrees.get(branch) ?? null,
@@ -557,7 +728,10 @@ if (outputJson) {
     for (const commit of feature.source.commits) {
       console.log(`  - \`${commit.commit.slice(0, 9)}\` ${commit.subject}`);
     }
-    if (manifest.version === 3) {
+    if (manifest.version === 4 && feature.selection) {
+      console.log(`  - Selected patch version: ${labels.source[feature.selection.state]}; commits ${feature.selectedCommitsPresent ? "present" : "missing"}`);
+    }
+    if (manifest.version >= 3) {
       console.log(`  - Feedback: ${feature.disposition} — ${feature.reason}`);
     }
     const issueGroups = manifest.version === 2
@@ -574,6 +748,28 @@ if (outputJson) {
           console.log(`    - Related PR \`${pullRequest.repository}#${pullRequest.number}\`: ${pullRequest.state}`);
         }
       }
+    }
+  }
+  if (manifest.version === 4) {
+    console.log("\n## Domain integrations\n");
+    if (domainStatuses.length === 0) {
+      console.log("None.");
+    }
+    for (const domain of domainStatuses) {
+      console.log(`- \`${domain.id}\` on \`${domain.branch}\`: ${labels.source[domain.source.state]}`);
+      console.log(`  - Baseline: \`${domain.baseline.ref}\` at \`${domain.baseline.commit.slice(0, 9)}\` — ${domain.baselinePresent ? "locked" : "ref moved or unavailable"}`);
+      console.log(`  - Members: ${domain.members.map((member) => `\`${member}\``).join(", ")}`);
+      if (domain.integrated) {
+        console.log(`  - Source mappings: ${domain.integrated.patches.length}; commits ${domain.patchCommitsPresent ? "present" : "missing"}`);
+        console.log(`  - Mapping selection: ${domain.sourceMappingCurrent ? "current" : "STALE — rebuild this domain before freezing a train"}`);
+      }
+    }
+    console.log("\n## Frozen trains\n");
+    if (manifest.trains.length === 0) {
+      console.log("None.");
+    }
+    for (const train of manifest.trains) {
+      console.log(`- \`${train.id}\`: \`${train.manifest}\``);
     }
   }
   console.log("\n## Unregistered feature/fix branches\n");

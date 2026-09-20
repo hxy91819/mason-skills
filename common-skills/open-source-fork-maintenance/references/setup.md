@@ -29,14 +29,15 @@ After authorization, preserve unrelated worktree changes and perform these steps
    ```
 
    For example, a project that discovers skills from `.bb/skills` passes `--skills-dir .bb/skills`. The helper only creates an absent link or accepts an identical one. It never replaces a file, directory, or different link.
-3. Create `config/local-aggregate-features.json` from [../assets/local-aggregate-features.json](../assets/local-aggregate-features.json). Replace both upstream placeholders with the selected ref and its resolved commit. If the project has an existing machine-readable configuration convention, locate the registry there and update the project-specific `AGENTS.md` block to name that path.
+3. Create `config/local-aggregate-features.json` from [../assets/local-aggregate-features.json](../assets/local-aggregate-features.json). Replace both upstream placeholders with the selected ref and its resolved commit. Use version 4 when the project needs domain integration; version 3 remains valid for direct-only maintenance. If the project has an existing machine-readable configuration convention, locate the registry there and update the project-specific `AGENTS.md` block to name that path.
 4. Add the marked content from [../assets/AGENTS.local-aggregate.md](../assets/AGENTS.local-aggregate.md) to the root `AGENTS.md`. Update an existing `open-source-fork-maintenance` marked block in place; never duplicate it. Add a short table that mirrors the registry when the first feature is packaged.
 5. Find every local `feature/*` and `fix/*` branch and worktree. Register committed implementations with their actual feedback status; verification still determines when they can be aggregated. They are default aggregation candidates, not opt-in candidates. A missing upstream report is recorded as `needs-feedback`, and local maintenance as `internal`; neither needs a placeholder issue. Filing an issue on the upstream repository follows the authorization boundary in SKILL.md.
 
-The registry schema is version 3. Set `aggregate.upstreamRepository` to the upstream GitHub `owner/repo`, separately from its Git tracking ref. `aggregate.lastIntegratedUpstreamCommit` changes only after a complete aggregate rebuild based on a new upstream commit. Each feature has this shape:
+The version 4 registry extends version 3 without changing its feedback fields. Set `aggregate.upstreamRepository` to the upstream GitHub `owner/repo`, separately from its Git tracking ref. `aggregate.lastIntegratedUpstreamCommit` changes only after a complete aggregate rebuild based on a new upstream commit. Every feature gets a stable `id`. Domain-managed features also declare the exact owned patch selection:
 
 ```json
 {
+  "id": "example",
   "branch": "feature/example",
   "lastPackaged": {
     "sourceCommit": "<source SHA>",
@@ -52,9 +53,46 @@ The registry schema is version 3. Set `aggregate.upstreamRepository` to the upst
   ],
   "relatedIssues": [],
   "disposition": "reported",
-  "reason": "The upstream report describes the current implementation."
+  "reason": "The upstream report describes the current implementation.",
+  "source": {
+    "baseCommit": "<source baseline SHA>",
+    "versionCommit": "<selected source version SHA>",
+    "commits": [
+      { "commit": "<owned commit SHA>", "logicalPatch": "example-core-v1" }
+    ]
+  },
+  "dependsOn": [],
+  "integration": { "domain": "provider" }
 }
 ```
+
+The `commits` array, not branch ancestry, defines feature ownership. `logicalPatch` remains stable across a rewrite or replacement so shared dependencies deduplicate by identity. A new source commit advances `versionCommit` and the selection; a rewritten source requires recalculating the complete selection.
+
+Domains lock a baseline, members, integrated tip, source mappings, and explicit compatibility adaptations. `sourceLogicalPatches` distinguishes mappings of first-tier patches from adaptations so a later rebuild can replace stale source mappings without dropping domain-owned compatibility. Each mapped patch names all affected feature IDs; an adaptation may name several. A domain adaptation that changes product behavior requires a corresponding first-tier feature.
+
+```json
+{
+  "id": "provider",
+  "branch": "integration/provider-desktop-v1.2.3",
+  "baseline": { "ref": "desktop-v1.2.3", "commit": "<full SHA>" },
+  "members": ["example"],
+  "adaptations": [],
+  "integrated": {
+    "commit": "<domain tip SHA>",
+    "sourceLogicalPatches": ["example-core-v1"],
+    "patches": [
+      {
+        "commit": "<domain commit SHA>",
+        "sourceCommit": "<first-tier commit SHA>",
+        "logicalPatch": "example-core-v1",
+        "features": ["example"]
+      }
+    ]
+  }
+}
+```
+
+`trains` points to committed train manifests. A train locks one baseline, exact dependency-closed `features`, a `dependencies` map, per-feature `featureSources` and `featurePatches` maps, domain selections, direct feature IDs, and an ordered `patches` array containing one canonical mapped commit, source commit, logical patch ID, and merged feature owners per logical patch. Composition verifies dependency closure, first-tier provenance, and each feature's complete logical-patch selection from the train itself, never from a later feature record, and rejects duplicate logical IDs. Legacy version 4 entries remain visible to status reporting but cannot enter a new train until their explicit source selection has been frozen. Keep package credentials separate because they bind the resulting source SHA and artifact digests after the source commit exists.
 
 `specIssue` is the local specification issue, or `null` when there is none. `upstreamFeedback` contains only actual reports or feedback comments in `aggregate.upstreamRepository`; a matching upstream issue that has not received this change's feedback belongs in `relatedIssues`. All three use the same issue reference shape, including `feedbackUrl` for the exact issue or comment URL. `relatedIssues` also holds historical context and parent feature specifications for maintenance repairs.
 
