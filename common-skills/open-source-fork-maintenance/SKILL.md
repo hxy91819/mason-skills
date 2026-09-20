@@ -20,11 +20,13 @@ The project owns its branch registry, its feedback records, its verification com
 - every product change lives on its own `feature/*` or `fix/*` branch and worktree;
 - a source branch is verified after relevant project checks pass in its worktree and `$autoreview` closeout there reports no accepted/actionable findings;
 - the aggregate receives verified source commits with `git cherry-pick -x`;
-- a committed project manifest records each source commit, aggregate commit, and upstream feedback issue.
+- a committed project manifest records source and aggregate commits, local specifications, actual upstream feedback, related context, and the reason for retaining each change.
 
 The personal fork is the handoff channel: after verified packaging, push each completed source branch and `local/aggregate` to that fork. Rebased maintenance branches may use `--force-with-lease`; invoking this skill provides standing authorization for that personal-fork history rewrite, so do not request separate approval. Those published aggregate commits are reusable source snapshots for another environment, never upstream contribution branches.
 
 Registered issues on the personal fork are local specification records, not the feedback loop itself. The open-source feedback loop happens on the upstream repository: a registered change that is meaningful to upstream users should eventually be filed as an upstream issue there. Deployment-only repairs and changes the owner classifies as personal preference stay fork-local. Filing an issue on the upstream repository always requires the user's explicit confirmation first — present the proposed issue content and wait for the decision; record a fork-only disposition in the project's feedback record.
+
+Use the version 3 registry described in [references/setup.md](references/setup.md) when correcting feedback records. A branch may have no issue yet: record `needs-feedback` or `internal` with its reason instead of filling an upstream slot with a fork specification or a loosely related issue. Existing version 2 registries remain readable, but their issue references are unclassified until audited.
 
 Read [references/setup.md](references/setup.md) before initializing a repository. Initialization creates branches, project files, and a project-local skill link, so perform it only after the user explicitly authorizes setup.
 

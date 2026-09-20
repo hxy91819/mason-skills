@@ -9,7 +9,7 @@ git fetch --prune --tags <upstream-remote>
 node <linked-skill>/scripts/local-aggregate-status.mjs --repo .
 ```
 
-Read the full registered issue, replies after the recorded feedback, and any linked pull request before recommending action. A closed issue or merged pull request is only an adoption candidate. Compare the upstream result with the local branch's observable behavior, data and synchronization semantics, boundary cases, and verification coverage before suggesting that a branch be retired.
+Read the registered specification, actual upstream feedback, related context, and their relevant replies and pull requests before recommending action. Only `upstreamFeedback` means this change has been reported upstream. A closed issue or merged pull request is an adoption candidate: compare observable behavior, data and synchronization semantics, boundary cases, and verification coverage. Record an intentional upstream policy difference as `upstream-divergence`; keep outdated feedback as `needs-update`. Check whether an adopted fix is present in the selected stable tag as well as on trunk before recommending retirement.
 
 Present four independent facts to the user: source-branch deltas, newly discovered feature/fix branches, upstream deltas or release tags, and feedback/adoption signals. Name the recommended integration ref from the status report. Recommend one of these paths and wait for the user's decision:
 

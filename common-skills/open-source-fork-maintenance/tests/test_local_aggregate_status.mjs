@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -126,6 +126,90 @@ fi
     { encoding: "utf8", env: environment },
   );
   assert.match(textReport, /Aggregate mapping: INVALID — aggregate commit does not retain the source SHA/);
+  assert.match(textReport, /Unclassified legacy issue `example\/upstream#1`/);
+  assert.equal(registeredReport.warnings.length, 1);
+  const legacyManifest = JSON.parse(readFileSync(join(repository, "registered-manifest.json"), "utf8"));
+  legacyManifest.features[0].upstreamIssues[0].feedbackUrl += "/";
+  writeFileSync(join(repository, "legacy-manifest.json"), JSON.stringify(legacyManifest));
+  const legacy = spawnSync(
+    "node",
+    [script, "--repo", repository, "--manifest", "legacy-manifest.json", "--json"],
+    { encoding: "utf8", env: environment },
+  );
+  assert.equal(legacy.status, 0, legacy.stderr);
+  assert.equal(JSON.parse(legacy.stdout).warnings.length, 1);
+
+  const reference = (repository) => ({
+    repository,
+    number: 1,
+    feedbackUrl: `https://github.com/${repository}/issues/1`,
+  });
+  const classifiedManifest = {
+    version: 3,
+    aggregate: {
+      branch: "local/aggregate",
+      upstreamRef: "main",
+      upstreamRepository: "example/upstream",
+      lastIntegratedUpstreamCommit: baseline,
+      stableTagPattern: null,
+    },
+    features: [{
+      branch: "feature/example",
+      lastPackaged: null,
+      specIssue: reference("example/fork"),
+      upstreamFeedback: [],
+      relatedIssues: [reference("example/upstream")],
+      disposition: "needs-feedback",
+      reason: "The fork specification has related upstream work but no submitted feedback.",
+    }],
+  };
+  function runClassified(manifest, json = true) {
+    writeFileSync(join(repository, "classified-manifest.json"), JSON.stringify(manifest));
+    return spawnSync(
+      "node",
+      [script, "--repo", repository, "--manifest", "classified-manifest.json", ...(json ? ["--json"] : [])],
+      { encoding: "utf8", env: environment },
+    );
+  }
+  const classified = runClassified(classifiedManifest);
+  assert.equal(classified.status, 0, classified.stderr);
+  const classifiedReport = JSON.parse(classified.stdout);
+  assert.equal(classifiedReport.features[0].specIssue.repository, "example/fork");
+  assert.deepEqual(classifiedReport.features[0].upstreamFeedback, []);
+  assert.equal(classifiedReport.features[0].relatedIssues[0].repository, "example/upstream");
+  assert.equal(classifiedReport.features[0].disposition, "needs-feedback");
+  const classifiedText = runClassified(classifiedManifest, false);
+  assert.equal(classifiedText.status, 0, classifiedText.stderr);
+  assert.match(classifiedText.stdout, /Specification `example\/fork#1`/);
+  assert.match(classifiedText.stdout, /Related context `example\/upstream#1`/);
+  assert.doesNotMatch(classifiedText.stdout, /Upstream feedback `/);
+
+  const reportedManifest = structuredClone(classifiedManifest);
+  reportedManifest.features[0].upstreamFeedback = [reference("example/upstream")];
+  reportedManifest.features[0].relatedIssues = [];
+  reportedManifest.features[0].disposition = "reported";
+  const reportedText = runClassified(reportedManifest, false);
+  assert.equal(reportedText.status, 0, reportedText.stderr);
+  assert.match(reportedText.stdout, /Upstream feedback `example\/upstream#1`/);
+
+  const internalManifest = structuredClone(classifiedManifest);
+  internalManifest.features[0].specIssue = null;
+  internalManifest.features[0].relatedIssues = [];
+  internalManifest.features[0].disposition = "internal";
+  internalManifest.features[0].reason = "Repairs local migration history; no upstream issue is required.";
+  const internal = runClassified(internalManifest);
+  assert.equal(internal.status, 0, internal.stderr);
+  assert.equal(JSON.parse(internal.stdout).features[0].specIssue, null);
+
+  const wrongRepository = structuredClone(reportedManifest);
+  wrongRepository.features[0].upstreamFeedback = [reference("example/fork")];
+  assert.notEqual(runClassified(wrongRepository).status, 0);
+  const wrongUrl = structuredClone(reportedManifest);
+  wrongUrl.features[0].upstreamFeedback[0].feedbackUrl = "https://github.com/example/fork/issues/1";
+  assert.notEqual(runClassified(wrongUrl).status, 0);
+  const missingFeedback = structuredClone(reportedManifest);
+  missingFeedback.features[0].upstreamFeedback = [];
+  assert.notEqual(runClassified(missingFeedback).status, 0);
 
   git(["switch", "-q", "main"]);
   writeFileSync(join(repository, "STABLE.md"), "stable\n");

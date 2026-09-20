@@ -276,7 +276,7 @@ function inspectPullRequest(reference) {
   }
 }
 
-function inspectUpstreamIssue(reference) {
+function inspectIssue(reference) {
   const result = gh([
     "issue",
     "view",
@@ -333,18 +333,67 @@ function nonEmptyString(value) {
   return typeof value === "string" && value.length > 0;
 }
 
+function validIssueReferenceShape(issue) {
+  return issue &&
+    typeof issue === "object" &&
+    nonEmptyString(issue.repository) &&
+    Number.isInteger(issue.number) &&
+    issue.number > 0 &&
+    nonEmptyString(issue.feedbackUrl);
+}
+
+function validIssueReference(issue) {
+  if (!validIssueReferenceShape(issue)) {
+    return false;
+  }
+  try {
+    const url = new URL(issue.feedbackUrl);
+    return url.protocol === "https:" &&
+      url.host === "github.com" &&
+      url.pathname === `/${issue.repository}/issues/${issue.number}` &&
+      (!url.hash || /^#issuecomment-\d+$/u.test(url.hash));
+  } catch {
+    return false;
+  }
+}
+
+const feedbackDispositions = new Set([
+  "reported",
+  "needs-update",
+  "needs-feedback",
+  "fork-only",
+  "internal",
+  "upstream-divergence",
+]);
+
+function validFeedback(feature, aggregate) {
+  return (feature.specIssue === null || validIssueReference(feature.specIssue)) &&
+    Array.isArray(feature.upstreamFeedback) &&
+    feature.upstreamFeedback.every((issue) =>
+      validIssueReference(issue) && issue.repository === aggregate.upstreamRepository,
+    ) &&
+    Array.isArray(feature.relatedIssues) &&
+    feature.relatedIssues.every(validIssueReference) &&
+    feedbackDispositions.has(feature.disposition) &&
+    nonEmptyString(feature.reason) &&
+    !Object.hasOwn(feature, "upstreamIssues") &&
+    (!["reported", "needs-update", "upstream-divergence"].includes(feature.disposition) ||
+      feature.upstreamFeedback.length > 0);
+}
+
 function assertManifest(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("local aggregate manifest must be an object");
   }
-  if (value.version !== 2) {
-    throw new Error("local aggregate manifest version must be 2");
+  if (![2, 3].includes(value.version)) {
+    throw new Error("local aggregate manifest version must be 2 or 3");
   }
   if (
     !value.aggregate ||
     typeof value.aggregate !== "object" ||
     !nonEmptyString(value.aggregate.branch) ||
     !nonEmptyString(value.aggregate.upstreamRef) ||
+    (value.version === 3 && !nonEmptyString(value.aggregate.upstreamRepository)) ||
     !nonEmptyString(value.aggregate.lastIntegratedUpstreamCommit) ||
     (value.aggregate.stableTagPattern !== null && !nonEmptyString(value.aggregate.stableTagPattern))
   ) {
@@ -368,27 +417,20 @@ function assertManifest(value) {
         typeof feature.lastPackaged === "object" &&
         nonEmptyString(feature.lastPackaged.sourceCommit) &&
         nonEmptyString(feature.lastPackaged.aggregateCommit));
-    const upstreamIssuesValid =
-      Array.isArray(feature?.upstreamIssues) &&
-      feature.upstreamIssues.length > 0 &&
-      feature.upstreamIssues.every(
-        (issue) =>
-          issue &&
-          typeof issue === "object" &&
-          nonEmptyString(issue.repository) &&
-          Number.isInteger(issue.number) &&
-          issue.number > 0 &&
-          nonEmptyString(issue.feedbackUrl),
-      );
+    const feedbackValid = feature && (value.version === 3
+      ? validFeedback(feature, value.aggregate)
+      : Array.isArray(feature.upstreamIssues) &&
+        feature.upstreamIssues.length > 0 &&
+        feature.upstreamIssues.every(validIssueReferenceShape));
     if (
       !feature ||
       typeof feature !== "object" ||
       !nonEmptyString(feature.branch) ||
       !lastPackagedValid ||
-      !upstreamIssuesValid ||
+      !feedbackValid ||
       branches.has(feature.branch)
     ) {
-      throw new Error("local aggregate manifest feature is invalid");
+      throw new Error(`local aggregate manifest feature is invalid: ${feature?.branch ?? "unknown"}`);
     }
     branches.add(feature.branch);
   }
@@ -408,7 +450,13 @@ const featureStatuses = manifest.features.map((feature) => ({
     : inspectUnpackagedBranch(feature.branch, manifest.aggregate.upstreamRef),
   aggregateCommitPresent: feature.lastPackaged ? commitExists(feature.lastPackaged.aggregateCommit) : null,
   aggregateMappingValid: aggregateMappingValid(feature.lastPackaged),
-  upstreamIssues: feature.upstreamIssues.map(inspectUpstreamIssue),
+  ...(manifest.version === 2
+    ? { upstreamIssues: feature.upstreamIssues.map(inspectIssue) }
+    : {
+        specIssue: feature.specIssue === null ? null : inspectIssue(feature.specIssue),
+        upstreamFeedback: feature.upstreamFeedback.map(inspectIssue),
+        relatedIssues: feature.relatedIssues.map(inspectIssue),
+      }),
 }));
 const upstream = inspectRevision(
   manifest.aggregate.lastIntegratedUpstreamCommit,
@@ -421,10 +469,15 @@ const discoveredBranches = localFeatureBranches();
 const unregisteredBranches = discoveredBranches.filter((branch) => !registeredBranches.has(branch));
 const report = {
   manifestPath: relative(repositoryRoot, manifestPath) || ".",
+  manifestVersion: manifest.version,
+  warnings: manifest.version === 2
+    ? ["Version 2 issue references are unclassified; migrate to version 3 to distinguish specifications, upstream feedback, and related context."]
+    : [],
   aggregate: {
     expectedBranch: manifest.aggregate.branch,
     currentBranch,
     upstreamRef: manifest.aggregate.upstreamRef,
+    ...(manifest.version === 3 ? { upstreamRepository: manifest.aggregate.upstreamRepository } : {}),
     lastIntegratedUpstreamCommit: manifest.aggregate.lastIntegratedUpstreamCommit,
     upstream,
     stableRelease,
@@ -464,6 +517,9 @@ if (outputJson) {
   };
   console.log("# Local aggregate status\n");
   console.log(`- Registry: \`${report.manifestPath}\``);
+  for (const warning of report.warnings) {
+    console.log(`- ${warning}`);
+  }
   console.log(`- Current branch: \`${currentBranch || "detached HEAD"}\` (expected \`${manifest.aggregate.branch}\`)`);
   console.log(`- Upstream: \`${manifest.aggregate.upstreamRef}\``);
   console.log(`- Upstream baseline: \`${manifest.aggregate.lastIntegratedUpstreamCommit.slice(0, 9)}\` — ${labels.upstream[upstream.state]}`);
@@ -501,10 +557,22 @@ if (outputJson) {
     for (const commit of feature.source.commits) {
       console.log(`  - \`${commit.commit.slice(0, 9)}\` ${commit.subject}`);
     }
-    for (const issue of feature.upstreamIssues) {
-      console.log(`  - Upstream \`${issue.repository}#${issue.number}\`: ${issue.state}; ${issue.newerReplies.length} newer reply/replies`);
-      for (const pullRequest of issue.relatedPullRequests) {
-        console.log(`    - Related PR \`${pullRequest.repository}#${pullRequest.number}\`: ${pullRequest.state}`);
+    if (manifest.version === 3) {
+      console.log(`  - Feedback: ${feature.disposition} — ${feature.reason}`);
+    }
+    const issueGroups = manifest.version === 2
+      ? [["Unclassified legacy issue", feature.upstreamIssues]]
+      : [
+          ["Specification", feature.specIssue ? [feature.specIssue] : []],
+          ["Upstream feedback", feature.upstreamFeedback],
+          ["Related context", feature.relatedIssues],
+        ];
+    for (const [label, issues] of issueGroups) {
+      for (const issue of issues) {
+        console.log(`  - ${label} \`${issue.repository}#${issue.number}\`: ${issue.state}; ${issue.newerReplies.length} newer reply/replies`);
+        for (const pullRequest of issue.relatedPullRequests) {
+          console.log(`    - Related PR \`${pullRequest.repository}#${pullRequest.number}\`: ${pullRequest.state}`);
+        }
       }
     }
   }
