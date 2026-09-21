@@ -9,58 +9,81 @@ git fetch --prune --tags <upstream-remote>
 node <linked-skill>/scripts/local-aggregate-status.mjs --repo .
 ```
 
-Read the registered specification, actual upstream feedback, related context, and their relevant replies and pull requests before recommending action. Only `upstreamFeedback` means this change has been reported upstream. A closed issue or merged pull request is an adoption candidate: compare observable behavior, data and synchronization semantics, boundary cases, and verification coverage. Record an intentional upstream policy difference as `upstream-divergence`; keep outdated feedback as `needs-update`. Check whether an adopted fix is present in the selected stable tag as well as on trunk before recommending retirement.
+Read the registered specification, actual upstream feedback, related context, and their relevant replies and pull requests before recommending action. Only `upstreamFeedback` means this change has been reported upstream. A closed issue or merged pull request is an adoption candidate: compare observable behavior, data and synchronization semantics, boundary cases, and verification coverage. Record an intentional upstream policy difference as `upstream-divergence`; keep outdated feedback as `needs-update`. Retire only behavior supplied by the selected stable tag, preserving the historical record and any unadopted remainder.
 
-Present five independent facts to the user: first-tier patch-version deltas, domain integration deltas, newly discovered feature/fix branches, upstream release movement, and feedback/adoption signals. Name the recommended integration ref from the status report. Recommend one of these paths and wait for the user's decision:
+Report five independent facts: first-tier patch-version deltas, domain integration deltas, newly discovered feature/fix branches, upstream release movement, and feedback/adoption signals. Name the recommended integration ref. Continue the path already authorized by the user; if only an assessment was requested, present these maintenance choices before modifying refs:
 
 - no change on the recommended integration ref: incremental packaging of verified source deltas;
-- a newer matching stable tag than the recorded baseline: for version 4 domain-managed features, keep dormant first-tier refs fixed, rebuild affected domain worktrees on that tag from selected mappings and owned adaptations, verify them, then freeze a train; for version 3 and version 4 direct-only features, retain the existing source-rebase and direct aggregate-rebuild path;
+- a newer matching stable tag than the recorded baseline: keep dormant first-tier refs fixed, rebuild affected domains from their selected mappings/adaptations, and replay direct patches on that tag; refresh an active source only when its work needs it; verify, then freeze a train;
 - unreleased trunk after the latest matching tag: report it as debt; keep the recommended target on the tag unless the user explicitly chooses the upstream tip;
-- no stable tag configured, and the upstream ref has moved: rebase affected source worktrees onto that ref, verify them, then rebuild the aggregate;
+- no release tags available, and the upstream ref has moved: use its exact selected SHA as the domain/direct rebuild baseline;
 - user explicitly declines rebase: incremental packaging against the current aggregate baseline, retaining and reporting upstream debt;
-- upstream implementation fully covers a local branch: validate the upstream behavior before retiring that branch from both the aggregate and registry.
+- upstream implementation fully covers a local branch: validate it on the selected release before retiring the selection; retain provenance and the retirement reason.
+
+Keep v3 direct-only repositories on their existing maintenance path while preparing [migration.md](migration.md); the composer requires v4 selections.
 
 ## Update first-tier patches
 
-Continue active feature work from the current effective domain implementation, then refresh only that feature's explicit patch selection. An advanced source whose recorded version is still an ancestor is an incremental candidate. A rewritten source is a replacement: recalculate its selected commits and mappings instead of treating its ancestry as an incremental range.
+Continue active feature work in its own worktree from a suitable current baseline or effective domain implementation, then refresh only that feature's explicit patch selection. Starting from a domain does not make all domain ancestry part of the feature. An advanced source whose recorded version is still an ancestor is an incremental candidate. A rewritten source is a replacement: recalculate its selected commits and mappings instead of treating its ancestry as an incremental range. Previously frozen trains continue to reference their old selections.
 
 ## Rebase domain worktrees
 
-Rebase only in the corresponding domain worktree, onto the train's locked integration ref:
+Prepare each domain on the next train's locked integration ref. For a domain whose ancestry consists of the recorded old baseline and owned patch sequence, rebase in its own worktree:
 
 ```bash
 git -C <domain-worktree> status --short
-git -C <domain-worktree> rebase --no-autostash <integration-ref>
+git -C <domain-worktree> rebase --no-autostash --onto <new-baseline-sha> <old-baseline-sha>
 ```
 
-Apply only each member's registered commits in dependency order. Record source-to-domain mappings for rewritten, split, or combined commits. Every adaptation names its reason and affected feature IDs. Product behavior changes return to a first-tier source; version compatibility remains in the domain. Resolve conflicts and verify in the domain worktree. First-tier refs move only when their feature itself changes.
+Otherwise rebuild from explicit selections in a clean domain worktree rather than replaying unrelated ancestry. These are alternative upgrade paths: do not rebase the domain and then apply the same source commits again. Record source-to-domain mappings for rewritten, split, or combined commits. Every adaptation names its reason and affected feature IDs. Product behavior changes return to a first-tier source; version compatibility remains in the domain. Resolve conflicts and verify there. First-tier refs move only when their feature itself changes.
 
-Use `scripts/local-aggregate-compose.mjs --kind domain` to construct the registered domain ref transactionally. Remove its persistent worktree before composition and add it back at the returned tip; the composer refuses to move a checked-out ref. It uses an atomic compare-and-update from the observed tip, so a concurrent update fails instead of being overwritten, and updates the ref only after every selected commit applies. Record the returned mappings in the registry after review. The status report marks a domain stale when its source mappings no longer match the current dependency-closed first-tier selections.
+For reconstruction, the composer can construct the registered domain ref transactionally:
+
+```bash
+node <loaded-skill>/scripts/local-aggregate-compose.mjs --repo . \
+  --kind domain --target <domain-id> --output-ref refs/heads/<registered-domain-branch>
+```
+
+It refuses a checked-out output ref. Preserve active or dirty worktrees; use a new registered domain branch for the new train, or retire an inactive clean domain worktree before composition and add it back at the returned tip. It atomically compares the observed tip and only updates after every selected commit applies. Record returned mappings after review, including `integrated.sourceLogicalPatches` and explicit `adaptations`. A source-mapping match alone does not establish compatibility on a new baseline; run the relevant checks there.
 
 ## Incremental packaging
 
-Direct-only incremental packaging requires a clean root checkout on `local/aggregate` and a recorded source version that remains an ancestor of the source branch. Package only explicitly selected verified deltas. If `$autoreview` closeout has not completed in the source worktree, finish it there before cherry-picking. Cherry-pick commits in dependency order with `-x`; branch ancestry is not the patch selection.
+On the existing baseline, select only verified source deltas. For v4, freeze a new train/candidate even if all features are direct; leave the old train immutable. The legacy v3 incremental path requires a clean root `local/aggregate` and a recorded source version that remains an ancestor of the source branch. Finish relevant source checks and `$autoreview` closeout before applying selected commits in dependency order with `-x`; branch ancestry is not the patch selection.
 
-If a cherry-pick conflicts, abort it and repair the source worktree. Do not make a product-only fix on the aggregate branch.
+If integration conflicts, abort the failed composition and repair the owning source, shared dependency, or domain adapter. Do not leave an unowned product fix on the aggregate.
 
 ## Extract a contribution
 
-Use `scripts/local-aggregate-compose.mjs --kind contribution` with the target feature ID. The result contains its explicit dependencies and domain adaptations associated with that feature, not the complete domain. Verify its product behavior and inspect its changed paths against the target specification. This creates a local exercise or contribution branch; upstream issue, comment, and PR publication retain their existing explicit authorization boundaries.
+Extract the target feature with its explicit dependencies and associated domain adaptations:
+
+```bash
+node <loaded-skill>/scripts/local-aggregate-compose.mjs --repo . \
+  --kind contribution --target <feature-id> --output-ref refs/heads/contribution/<unique-name>
+```
+
+Inspect its changed paths and verify product behavior against the target specification. Split an adaptation that unnecessarily bundles unrelated changes before claiming a focused contribution. The helper selects the domain/current aggregate baseline; adapt the extracted result to the intended upstream contribution target when needed. This creates a local exercise or contribution branch; upstream issue, comment, and PR publication retain their existing explicit authorization boundaries.
 
 ## Freeze and package a train
 
-Commit a train manifest that locks the stable tag and SHA, exact dependency-closed feature IDs, frozen dependency and per-feature logical-patch maps, domain IDs and optional member subsets, direct feature IDs, one canonical entry per logical patch, verification record, and expected maintenance inputs. Use `scripts/local-aggregate-compose.mjs --kind train` to construct an immutable candidate ref. The composer refuses dirty or untracked registry and train inputs, reads both from `HEAD`, commits those exact files into the candidate, and returns the manifest commit plus train SHA-256. It validates complete feature selections rather than consulting a later registry revision. A shared dependency appears once with its frozen canonical mapped commit and merged feature ownership; duplicate logical IDs are rejected rather than silently choosing between domain rewrites. Output refs are created with an atomic absent-ref check and are never replaced.
+Commit a train manifest using [registry.md](registry.md): locked baseline, dependency-closed selections, domain/direct mappings, canonical patch order, verification inputs, and required maintenance patches. Compose a new immutable candidate:
 
-Run the project's real resource-isolated package workflow from that exact candidate. After it succeeds, write a package credential outside the source commit that records candidate SHA, train-manifest digest, immutable ref, Node and package-manager versions, OS/architecture/ABI, build command and configuration, host protocol version, known database compatibility, artifact paths and digests, verification result, publication state, and deployment state. A dry run or test does not set packaged status.
+```bash
+node <loaded-skill>/scripts/local-aggregate-compose.mjs --repo . \
+  --kind train --target <train-id> --output-ref refs/tags/fork-candidate/<unique-name>
+```
+
+The composer refuses dirty/untracked registry and train inputs, reads both from `HEAD`, carries those exact files into the candidate, and returns the manifest commit plus train SHA-256. It validates frozen source/logical-patch selections and dependency closure, without consulting later feature records. It does not generate a train, copy every maintenance file from HEAD, execute validation commands, or prove compatibility. Review full-tree reconstruction and run the project checks. A shared dependency has one canonical mapped commit with merged owners; output refs are create-only. New inputs or corrections produce a new candidate name.
+
+Run the project's actual package/distribution workflow from that exact candidate, using its resource isolation when required. After success, write a receipt outside the source commit recording candidate SHA/tree, train digest, immutable input refs, skill/toolchain revisions, build commands/configuration, applicable platform information, artifact locations/digests, verification results, publication state, and deployment state. Add runtime ABI, schema/ledger compatibility, or wire protocol versions only when relevant. Keep credentials and private machine configuration out of public evidence. A dry run or unit test does not set packaged status; a source-only project reports its actual source verification/distribution stage.
 
 ## Publish completed snapshots
 
-After domain, candidate, package, and registry verification succeed, push completed source branches, domain branches, contribution exercises requested for preservation, immutable train refs, and the candidate or aggregate ref to the configured personal-fork remote. Use an ordinary push when the remote ref is absent or an ancestor of the local ref. For a deliberately rebased or rebuilt moving ref, inspect the remote SHA immediately before publication and use `--force-with-lease=<ref>:<observed-sha>`; the skill invocation is standing authorization for this personal-fork maintenance push, so do not request separate approval. Immutable refs are create-only. Never force-push the upstream remote. Verify every remote SHA after pushing.
+Publish completed source/domain work once verified; a later aggregate package need not hold those source refs hostage. At the requested candidate/package stage, push its manifest, retained contribution exercises, immutable input refs, and candidate/aggregate ref to the personal fork. Use an ordinary push for absent refs or fast-forwards. For a deliberately rewritten moving ref, inspect its remote SHA and use `--force-with-lease=<ref>:<observed-sha>` without another approval prompt. Immutable refs are create-only. Never force-push upstream. Verify remote SHAs, peeling annotated tags to compare their commit targets.
 
-The published aggregate is a reproducible source snapshot for another environment. It does not replace that environment's dependency installation or build, and it must never be used as an upstream pull-request branch.
+Publish immutable refs that keep every selected original source and canonical mapped commit reachable, together with the registry/train input commit and candidate. A SHA in JSON or a cherry-pick trailer does not preserve its Git object. Another environment must be able to fetch those refs, install the recorded tool revision and project dependencies, and reconstruct the same tracked tree; commit IDs can differ when composition timestamps differ. Artifact reproducibility depends on the project's build controls. The aggregate is never an upstream PR branch.
 
 ## Complete rebuild
 
-Use the frozen train to construct a temporary integration worktree from its locked baseline. Verify the result, record its source and package credentials, then create a recoverable local backup ref and replace the root `local/aggregate` without another approval prompt when that replacement is in scope. The only remaining confirmation is the project deployment workflow's final replacement of a running local service. Never silently use a destructive reset.
+After the selected source/package stage passes, recheck root branch/status/worktrees, preserve a recoverable old aggregate ref, and replace root `local/aggregate` when in scope. Preserve concurrent edits and user files; never silently use a destructive reset. Service replacement follows the project's existing deployment policy and authorization.
 
-After a successful rebuild, update every package record, the human overview in `AGENTS.md`, and `aggregate.lastIntegratedUpstreamCommit`. Do not update the upstream baseline after incremental packaging performed without a rebase.
+Finalize selection-bearing metadata before freezing. The new registry records its actual integrated baseline; the old active aggregate remains the record of its old baseline until replacement. On an unchanged baseline, retain that SHA. Keep historical `lastPackaged` evidence intact in the frozen source; record the new build's results in its post-build receipt. Do not modify the tested source merely to insert its own final SHA or a new artifact digest. Link the overview to these records. Any later source correction requires a new candidate and the affected verification.

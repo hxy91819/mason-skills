@@ -130,7 +130,7 @@ python3 common-skills/skill-manifest-sync/scripts/sync_skill_symlinks.py --mode 
 
 | Group | Skill | Tags | Use |
 |-------|-------|------|-----|
-| Open-source | `open-source-fork-maintenance` | `fork-maintenance`, `non-maintainer`, `local-aggregate`, `project-symlink` | Link into the skills directory of a public fork that is locally maintained by a non-maintainer. |
+| Open-source | `open-source-fork-maintenance` | `fork-maintenance`, `non-maintainer`, `local-aggregate`, `project-symlink` | Initialize or gradually migrate a public fork; keep feature sources independent and add domains when needed. |
 
 | Skill | Description |
 |-------|-------------|
@@ -145,7 +145,7 @@ python3 common-skills/skill-manifest-sync/scripts/sync_skill_symlinks.py --mode 
 | [readiness-report](common-skills/readiness-report/) | Read-only Agent-Readiness audit with a local JSON report; also supplies evaluation contracts to an active `readiness-fix` flow. |
 | [readiness-fix](common-skills/readiness-fix/) | Fixes failing signals from the latest local readiness report; asks whether to generate a report first when none exists. Adapted from Factory Droid's built-in `/readiness-fix` with remote report access removed. Explicit invocation only. |
 | [open-source-contribution](common-skills/open-source-contribution/) | Open-source contribution hygiene: identity verification, privacy scanning, Git history cleanup, installer hardening, autoreview, and safe push/PR validation. |
-| [open-source-fork-maintenance](common-skills/open-source-fork-maintenance/) | Maintains a non-maintainer public fork through a project-local `local/aggregate` integration branch. Explicit invocation only. |
+| [open-source-fork-maintenance](common-skills/open-source-fork-maintenance/) | Shared fork maintenance: new-project setup, gradual migration, optional domains, and reproducible source trains. Explicit invocation only; linked per project. |
 | [secure-release](common-skills/secure-release/) | Integrates fail-closed release pipelines using a versioned CI kit; npm is the first implemented adapter. |
 | [submitting-github-issues-with-images](common-skills/submitting-github-issues-with-images/) | Uploads local screenshots, videos, or diagnostic attachments as GitHub Release Assets, embeds them in issues, PR bodies, or comments, and verifies the published result by reading it back online. Explicit invocation only, with a stated exception for authorized caller workflows. |
 | [story-direction-review](common-skills/story-direction-review/) | Reviews a completed Story for direction drift, invalidated assumptions, coverage gaps, and necessary plan changes. Explicit invocation only. |

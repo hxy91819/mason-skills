@@ -1,128 +1,59 @@
-# Initialize a non-maintainer fork
+# Initialize a new fork
 
-## Preflight
-
-Inspect the repository before proposing writes:
-
-```bash
-git remote -v
-git status --short
-git branch --show-current
-git worktree list
-gh repo view --json nameWithOwner,visibility,viewerPermission,isFork,parent 2>/dev/null || true
-```
-
-Identify the upstream tracking ref without assuming a remote name. Confirm that the user lacks upstream merge authority. If the repository is not a public fork or the operator is an upstream maintainer, stop and use that project's ordinary workflow.
-
-Explain the proposed layout and obtain explicit authorization before creating `local/aggregate`, changing the root checkout, creating a project skill link, or editing `AGENTS.md`.
+Use this path when there is no existing fork product history to preserve. Otherwise start with [migration.md](migration.md). Reuse setup authorization already provided by the user's request, as described in [SKILL.md](../SKILL.md).
 
 ## Establish the project facts
 
-After authorization, preserve unrelated worktree changes and perform these steps.
+Inspect the checkout before writing:
 
-1. Create or reuse `local/aggregate` from the selected upstream ref. If the root checkout already contains work, use another clean worktree for the branch operation and only move the root checkout after its state is safe. Do not use `stash` or autostash.
-2. Link this skill into the project's canonical skill directory. `.agents/skills` is the default; a project with a documented custom skill directory may use that directory instead.
+```bash
+git remote -v
+git branch --show-current
+git status --short
+git worktree list
+gh repo view --json nameWithOwner,visibility,viewerPermission,isFork,parent
+```
+
+Identify the upstream repository and tracking ref, the personal-fork publication remote, and the operator's role. Remote names are not roles: `origin` may be upstream or the fork. Confirm the public/non-maintainer scope in SKILL.md. Preserve unrelated work; do not use stash or autostash.
+
+Choose the baseline before creating integration branches. Fetch the upstream and inspect its tag namespace and release channel:
+
+```bash
+git fetch --prune --tags <upstream-remote>
+git tag --merged <upstream-ref> --sort=-version:refname
+```
+
+Configure `aggregate.stableTagPattern` to match the mature channel used by the project, excluding unrelated packages and less mature prereleases. For ordinary stable tags an example is `^v\d+\.\d+\.\d+$` (escape backslashes in JSON). If the upstream ships only prereleases, select its most mature channel, such as rc over alpha. Use `null` only when there are no release tags. Resolve the selected tag to its full commit SHA. `upstreamRef` remains the tracking branch used to discover releases; `lastIntegratedUpstreamCommit` records the baseline actually integrated.
+
+Record the project's dependency install, relevant tests, build/distribution commands, supported platforms, and existing deployment policy in its own guidance. Reuse its native tools; do not copy another project's Node version, resource runner, service manager, migration runner, or deployment approval policy.
+
+## Create the minimum layout
+
+1. Create `local/aggregate` from the chosen baseline, or inspect and reuse an existing identical branch. Never reset a pre-existing aggregate as initialization. Move the root checkout only when its work is preserved and that move is covered by setup authorization. Use a clean worktree while preparing changes.
+2. Link the loaded skill into the project's discovery directory. `.agents/skills` is the default; use a documented project-specific directory when applicable:
 
    ```bash
-   python3 <linked-skill>/scripts/link_project_skill.py \
+   python3 <loaded-skill>/scripts/link_project_skill.py \
      --repo "$PWD" --skills-dir .agents/skills --apply
    ```
 
-   For example, a project that discovers skills from `.bb/skills` passes `--skills-dir .bb/skills`. The helper only creates an absent link or accepts an identical one. It never replaces a file, directory, or different link.
-3. Create `config/local-aggregate-features.json` from [../assets/local-aggregate-features.json](../assets/local-aggregate-features.json). Replace both upstream placeholders with the selected ref and its resolved commit. Use version 4 when the project needs domain integration; version 3 remains valid for direct-only maintenance. If the project has an existing machine-readable configuration convention, locate the registry there and update the project-specific `AGENTS.md` block to name that path.
-4. Add the marked content from [../assets/AGENTS.local-aggregate.md](../assets/AGENTS.local-aggregate.md) to the root `AGENTS.md`. Update an existing `open-source-fork-maintenance` marked block in place; never duplicate it. Add a short table that mirrors the registry when the first feature is packaged.
-5. Find every local `feature/*` and `fix/*` branch and worktree. Register committed implementations with their actual feedback status; verification still determines when they can be aggregated. They are default aggregation candidates, not opt-in candidates. A missing upstream report is recorded as `needs-feedback`, and local maintenance as `internal`; neither needs a placeholder issue. Filing an issue on the upstream repository follows the authorization boundary in SKILL.md.
+   The helper creates an absent link or accepts an identical one; it does not replace a different file/link. Record the shared skill revision used by a release and how another machine installs it. A local relative symlink alone is not a portable copy of the tool.
+3. Copy [the registry template](../assets/local-aggregate-features.json). Use v4 from the start, with empty `features`, `domains`, and `trains`. Fill the actual upstream repository, tracking ref, release pattern, and baseline SHA. An empty new fork needs neither placeholder features nor an empty train; the composer expects a nonempty patch selection.
+4. Install [the marked AGENTS block](../assets/AGENTS.local-aggregate.md), substituting actual registry and skill locations. Update an existing marked block in place. Link to the registry instead of copying a table of moving SHAs. If the project already has another configuration convention, keep it and pass `--manifest <registry-path>` to the helpers.
+5. Commit the project's maintenance files as an owned maintenance selection before constructing its first train. The composer automatically carries only the committed registry and selected train; AGENTS, runbooks, helper wrappers, and other required tracked assets need explicit selected patches too.
 
-The version 4 registry extends version 3 without changing its feedback fields. Set `aggregate.upstreamRepository` to the upstream GitHub `owner/repo`, separately from its Git tracking ref. `aggregate.lastIntegratedUpstreamCommit` changes only after a complete aggregate rebuild based on a new upstream commit. Every feature gets a stable `id`. Domain-managed features also declare the exact owned patch selection:
+## First feature, then first domain
 
-```json
-{
-  "id": "example",
-  "branch": "feature/example",
-  "lastPackaged": {
-    "sourceCommit": "<source SHA>",
-    "aggregateCommit": "<aggregate cherry-pick SHA>"
-  },
-  "specIssue": null,
-  "upstreamFeedback": [
-    {
-      "repository": "upstream-owner/upstream-repo",
-      "number": 123,
-      "feedbackUrl": "https://github.com/upstream-owner/upstream-repo/issues/123#issuecomment-1"
-    }
-  ],
-  "relatedIssues": [],
-  "disposition": "reported",
-  "reason": "The upstream report describes the current implementation.",
-  "source": {
-    "baseCommit": "<source baseline SHA>",
-    "versionCommit": "<selected source version SHA>",
-    "commits": [
-      { "commit": "<owned commit SHA>", "logicalPatch": "example-core-v1" }
-    ]
-  },
-  "dependsOn": [],
-  "integration": { "domain": "provider" }
-}
-```
+Start each feature/fix in its own source worktree. Record its stable feature ID, exact owned commits, dependencies, feedback role, and `integration: { "domain": null }` using [registry.md](registry.md). Run relevant checks and source review. A direct-only fork already follows the standard.
 
-The `commits` array, not branch ancestry, defines feature ownership. `logicalPatch` remains stable across a rewrite or replacement so shared dependencies deduplicate by identity. A new source commit advances `versionCommit` and the selection; a rewritten source requires recalculating the complete selection.
+Add a domain when several features repeatedly require coordinated upstream adaptation. Choose members by their shared contracts and upgrade conflicts, not by the number of branches. Register its baseline, members, source mappings, and adaptations; start its worktree from the chosen release. There is no requirement to invent database, UI, or provider domains for every project.
 
-Domains lock a baseline, members, integrated tip, source mappings, and explicit compatibility adaptations. `sourceLogicalPatches` distinguishes mappings of first-tier patches from adaptations so a later rebuild can replace stale source mappings without dropping domain-owned compatibility. Each mapped patch names all affected feature IDs; an adaptation may name several. A domain adaptation that changes product behavior requires a corresponding first-tier feature.
-
-```json
-{
-  "id": "provider",
-  "branch": "integration/provider-desktop-v1.2.3",
-  "baseline": { "ref": "desktop-v1.2.3", "commit": "<full SHA>" },
-  "members": ["example"],
-  "adaptations": [],
-  "integrated": {
-    "commit": "<domain tip SHA>",
-    "sourceLogicalPatches": ["example-core-v1"],
-    "patches": [
-      {
-        "commit": "<domain commit SHA>",
-        "sourceCommit": "<first-tier commit SHA>",
-        "logicalPatch": "example-core-v1",
-        "features": ["example"]
-      }
-    ]
-  }
-}
-```
-
-`trains` points to committed train manifests. A train locks one baseline, exact dependency-closed `features`, a `dependencies` map, per-feature `featureSources` and `featurePatches` maps, domain selections, direct feature IDs, and an ordered `patches` array containing one canonical mapped commit, source commit, logical patch ID, and merged feature owners per logical patch. Composition verifies dependency closure, first-tier provenance, and each feature's complete logical-patch selection from the train itself, never from a later feature record, and rejects duplicate logical IDs. Legacy version 4 entries remain visible to status reporting but cannot enter a new train until their explicit source selection has been frozen. Keep package credentials separate because they bind the resulting source SHA and artifact digests after the source commit exists.
-
-`specIssue` is the local specification issue, or `null` when there is none. `upstreamFeedback` contains only actual reports or feedback comments in `aggregate.upstreamRepository`; a matching upstream issue that has not received this change's feedback belongs in `relatedIssues`. All three use the same issue reference shape, including `feedbackUrl` for the exact issue or comment URL. `relatedIssues` also holds historical context and parent feature specifications for maintenance repairs.
-
-Choose a disposition from the evidence, and put the explanation in `reason`:
-
-| Disposition | Meaning |
-| --- | --- |
-| `reported` | Actual upstream feedback describes the current change. |
-| `needs-update` | Recorded upstream feedback describes an older implementation. |
-| `needs-feedback` | No actual upstream feedback is recorded yet. |
-| `fork-only` | The owner intentionally retains the change locally. |
-| `internal` | Fork maintenance or deployment repair, without an upstream product claim. |
-| `upstream-divergence` | Upstream handled the original report; the fork retains different behavior. |
-
-When migrating version 2, classify every old `upstreamIssues` entry by its actual role rather than copying the array to `upstreamFeedback`. Preserve all package SHAs and the recorded baseline. The helper reads version 2 with an unclassified-reference warning so other forks can migrate independently.
-
-Use `null` for `lastPackaged` only while a registered branch has not yet been aggregated. Configure `stableTagPattern` whenever the upstream publishes release tags — fork packaging anchors the most mature tag channel the upstream ships, never trunk tip. Inspect the namespace first:
-
-```bash
-git tag --merged <upstream-ref> --sort=-version:refname | head
-```
-
-Set a regular expression that selects that channel and excludes less mature ones — for an upstream whose tags are all prereleases, a pattern matching only the rc line (for example `^dsh-v\d+\.\d+\.\d+(-rc\.\d+)?$`) anchors release candidates over alphas. Use `null` only when the upstream publishes no release tags at all. The latest matching tag reachable from `upstreamRef` then becomes the default rebase and rebuild target, and a rebuild records that tag's commit as `lastIntegratedUpstreamCommit`.
+Freeze the first nonempty train and follow [maintenance.md](maintenance.md) for composition, verification, packaging, and publication. Keep deployment separate according to the project's existing workflow.
 
 ## Verify setup
 
-From the project root, fetch the selected upstream and run:
-
 ```bash
-node <linked-skill>/scripts/local-aggregate-status.mjs --repo .
+node <loaded-skill>/scripts/local-aggregate-status.mjs --repo .
 ```
 
-The output must identify the expected aggregate branch, the selected upstream, the registry path, all registered features, and any unregistered local feature/fix branch. Report any repository-specific service or deployment rule separately; this skill does not infer or install one.
+Confirm the reported aggregate, upstream, registry, release target, and source inventory. Investigate discovered local feature/fix branches before calling the project empty. Setup is complete when these facts and project instructions are committed and consistent; it does not claim a build, publication, or deployment that has not occurred.
