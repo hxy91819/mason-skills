@@ -116,18 +116,16 @@ def candidate_chain(args, defaults, route):
     return chain[chain.index(start):], mode
 
 
-def model_and_reasoning(agent, alias, route, difficulty):
+def model_and_reasoning(agent, alias, route):
     if "model" in agent or "reasoning" in agent:
         raise DispatchError(f"agents.{alias} 的 model/reasoning 必须放在 routes.<路由> 下。")
     routes = mapping(agent.get("routes"), f"agents.{alias}.routes")
     unknown = [repr(key) for key in routes if key not in ROUTE_KEYS]
     if unknown:
         raise DispatchError(f"agents.{alias}.routes 只支持 {sorted(ROUTE_KEYS)}；未知项：{', '.join(unknown)}。")
-    profile_name = next((key for key in (route, difficulty, "default") if key in routes), None)
+    profile_name = next((key for key in (route, "default") if key in routes), None)
     if profile_name is None:
-        raise DispatchError(
-            f"agents.{alias}.routes 缺少 {route!r}、{difficulty!r} 或 'default'；请为该路由配置模型。"
-        )
+        raise DispatchError(f"agents.{alias}.routes 缺少 {route!r} 或 'default'；该候选不参与本次路由。")
     profile = mapping(routes[profile_name], f"agents.{alias}.routes.{profile_name}")
     model = string(profile.get("model"), f"agents.{alias}.routes.{profile_name}.model")
     reasoning = profile.get("reasoning")
@@ -185,7 +183,7 @@ def dispatch(args, call=bb):
         try:
             agent = mapping(agents.get(alias), f"agents.{alias}")
             provider = string(agent.get("provider"), f"agents.{alias}.provider")
-            model, reasoning = model_and_reasoning(agent, alias, route, args.difficulty)
+            model, reasoning = model_and_reasoning(agent, alias, route)
             reasoning = args.reasoning if args.reasoning is not None else reasoning
             if reasoning is not None:
                 reasoning = string(reasoning, "reasoning")

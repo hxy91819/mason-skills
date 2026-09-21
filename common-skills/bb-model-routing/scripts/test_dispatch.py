@@ -34,6 +34,7 @@ agents:
       simple: {model: deep-model, reasoning: low}
       medium: {model: deep-model, reasoning: medium}
       complex: {model: deep-model, reasoning: medium}
+      debug: {model: deep-model, reasoning: low}
       judge: {model: deep-model, reasoning: max}
   oracle:
     provider: primary
@@ -191,6 +192,9 @@ environments:
         self.assertNotIn('--parent-thread', result['argv'])
 
     def test_explicit_alias_overrides_debug(self):
+        config = m.yaml.safe_load(self.config.read_text())
+        config['agents']['primary']['routes']['debug'] = {'model': 'fast-model', 'reasoning': 'low'}
+        self.config.write_text(m.yaml.safe_dump(config))
         result = m.dispatch(self.args('--kind', 'debug', '--agent', 'primary', '--dry-run'), self.fake)
         self.assertEqual(result['selection']['agent'], 'primary')
 
@@ -206,7 +210,7 @@ environments:
             command = judge['argv'] if dry_run else self.calls[-1]
             self.assertEqual(command[command.index('--prompt') + 1], self.args().task)
 
-    def test_routes_use_role_then_difficulty_then_default(self):
+    def test_routes_use_exact_route_then_default(self):
         primary = m.yaml.safe_load(self.config.read_text())['agents']['primary']['routes']
         primary['default'] = {'model': 'fast-model', 'reasoning': 'low'}
         config = m.yaml.safe_load(self.config.read_text())
@@ -215,9 +219,20 @@ environments:
         medium = m.dispatch(self.args('--difficulty', 'medium', '--dry-run'), self.fake)
         self.assertEqual((medium['selection']['model'], medium['selection']['reasoning']), ('medium-model', 'high'))
         debug = m.dispatch(self.args('--kind', 'debug', '--agent', 'primary', '--dry-run'), self.fake)
-        self.assertEqual((debug['selection']['model'], debug['selection']['reasoning']), ('fast-model', 'max'))
+        self.assertEqual((debug['selection']['model'], debug['selection']['reasoning']), ('fast-model', 'low'))
         fallback = m.dispatch(self.args('--difficulty', 'complex', '--agent', 'primary', '--dry-run'), self.fake)
         self.assertEqual((fallback['selection']['model'], fallback['selection']['reasoning']), ('fast-model', 'low'))
+
+    def test_role_route_does_not_fall_back_to_task_difficulty(self):
+        config = m.yaml.safe_load(self.config.read_text())
+        config['defaults']['debug'] = ['specialist', 'primary']
+        config['agents']['specialist']['routes'].pop('debug')
+        config['agents']['primary']['routes']['debug'] = {'model': 'fast-model', 'reasoning': 'low'}
+        self.config.write_text(m.yaml.safe_dump(config))
+        result = m.dispatch(self.args('--difficulty', 'medium', '--kind', 'debug', '--dry-run'), self.fake)
+        self.assertEqual(result['selection']['agent'], 'primary')
+        self.assertEqual(result['selection']['attempts'][0]['agent'], 'specialist')
+        self.assertIn("'debug'", result['selection']['attempts'][0]['error'])
 
     def test_judge_environment_and_explicit_alias_take_precedence(self):
         config = m.yaml.safe_load(self.config.read_text())

@@ -30,11 +30,11 @@ agents:
       complex:
         model: <complex-model-id>
         reasoning: <complex-reasoning-level>
-      # debug、test、judge 是角色项，优先于同一次派发的 difficulty。
+      # debug、test、judge 是独立角色项，不借用同一次派发的 difficulty。
       test:
         model: <validator-model-id>
         reasoning: <validator-reasoning-level>
-      # default 仅在没有匹配角色或难度项时使用。
+      # default 显式允许该 agent 接受所有未单独配置的路由项。
       default:
         model: <fallback-model-id>
   oracle:

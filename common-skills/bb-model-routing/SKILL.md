@@ -38,7 +38,7 @@ bb-dispatch --difficulty complex --kind oracle --task '<已调查证据、待裁
 
 所有 provider、模型、推理级别和默认路由均来自用户配置；脚本在创建前完成相应目录校验。父 agent 只负责选择任务难度、类型和配置别名，不能把路由选择或二次校验职责下放给子 agent。首次使用先按参考文档查询目标环境，再填写配置。缺少配置时完成配置准备，校验通过后再派发。
 
-`defaults.<路由>` 默认使用 fallback：单个别名固定选择，有序别名链按序校验并派发首个可用候选。需要分摊独立任务时可配置 `mode: load-balance` 和 `candidates`；脚本按路由与完整任务文本做稳定散列来排列候选，不维护共享计数，同一任务可复现选择与 fallback 顺序。每个候选在自己的 `routes` 中按本次路由项解析（simple 切换后仍只取下一候选的 simple/default）。`--agent` 是固定单候选。候选全部不可用时汇总各候选错误报告；spawn 发出后不重试，确认线程未创建后用 `--fallback-from <候选别名>` 续派。具体格式和负载均衡续派约束见[配置与派发](references/dispatch.md)。
+`defaults.<路由>` 默认使用 fallback：单个别名固定选择，有序别名链按序校验并派发首个可用候选。需要分摊独立任务时可配置 `mode: load-balance` 和 `candidates`；脚本按路由与完整任务文本做稳定散列来排列候选，不维护共享计数，同一任务可复现选择与 fallback 顺序。每个候选只按本次路由项或显式 `default` 解析自己的 `routes`；缺少两者时跳过该候选，角色路由不会借用同次任务的难度配置。`--agent` 是固定单候选。候选全部不可用时汇总各候选错误报告；spawn 发出后不重试，确认线程未创建后用 `--fallback-from <候选别名>` 续派。具体格式和负载均衡续派约束见[配置与派发](references/dispatch.md)。
 
 每次派发本来就是独立 BB 会话，负载均衡不会拆分会话上下文。不要额外规避前缀缓存；但不同 provider 或模型之间也不假定共享缓存。
 

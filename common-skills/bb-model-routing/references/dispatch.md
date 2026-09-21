@@ -42,11 +42,11 @@ defaults:
     candidates: [primary, backup]
 ```
 
-`load-balance` 以路由项和完整任务文本做稳定散列，为每个任务排列候选，再按该顺序选择首个可用项；它不维护计数器，不同任务会分散，同一任务的选择和 fallback 顺序保持稳定。两种模式均在首选项校验失败时继续同档候选。每个 `agents.<别名>` 只写一次 `provider`，并在 `routes.<路由>` 中为每个难度或角色写 `model` 与可选的 `reasoning`；每个候选按本次路由项在自己的 routes 中解析（角色 > 难度 > default），切换候选只换 provider 不换档位。同一 provider 因而可按难度选择不同模型，且无需为模型组合创建别名。显式 reasoning 仍须通过模型目录校验；省略或设为 null 时使用 provider 默认值。
+`load-balance` 以路由项和完整任务文本做稳定散列，为每个任务排列候选，再按该顺序选择首个可用项；它不维护计数器，不同任务会分散，同一任务的选择和 fallback 顺序保持稳定。两种模式均在首选项校验失败时继续同档候选。每个 `agents.<别名>` 只写一次 `provider`，并在 `routes.<路由>` 中为每个难度或角色写 `model` 与可选的 `reasoning`；每个候选只按本次路由项或显式 `default` 在自己的 routes 中解析；两者都没有时跳过该候选，切换候选不改变路由项。同一 provider 因而可按难度选择不同模型，且无需为模型组合创建别名。显式 reasoning 仍须通过模型目录校验；省略或设为 null 时使用 provider 默认值。
 
 每次派发都会创建独立 BB 会话，负载均衡不会拆分或迁移同一会话的上下文。provider 的前缀缓存是否跨独立会话命中由 provider、账号和模型决定；候选落到不同 provider 或模型时不假定它们共享缓存。
 
-路由解析顺序为 `debug`、`test`、`judge`、`oracle` 等角色项，其次是 `simple`、`medium`、`complex` 难度项，最后才是可选 `default` 项。例如专家咨询固定传 `complex --kind oracle`，所以优先选 `routes.oracle`；若配置只有 `routes.complex`，才选它。没有任何匹配项会报错，不会猜测模型。所有 `defaults` 键都是显式配置，角色路由不会自动沿用 complex 的默认别名。
+路由项由 kind 或 difficulty 唯一决定：`debug`、`test`、`judge`、`oracle` 使用同名角色项，普通任务使用 `simple`、`medium`、`complex` 难度项；候选仅在存在该项或显式 `default` 时参与。例如专家咨询固定传 `complex --kind oracle`，只读取 `routes.oracle` 或 `routes.default`，不会借用 `routes.complex`。没有任何匹配项会报错，不会猜测模型。所有 `defaults` 键都是显式配置，角色路由不会自动沿用 complex 的默认别名。
 
 优先级：命令行覆盖 > 环境配置 > 顶层配置。`--kind debug|test|judge|oracle` 先决定 defaults 和 routes 的角色项，`--agent` 覆盖 defaults；它仍使用本次的 kind 和 difficulty 选择该 agent 的 routes。`environments.<精确环境 ID>` 可覆盖 defaults、agents、permission_mode；同名 agent 整体替换，必须写出 provider 和 routes。目录路径模式尚无环境 ID，不应用 `environments.<id>` 覆盖，只使用顶层配置。脚本不从任务文本猜测类型；调用 Agent 负责识别排障、测试、编排异常裁决或专家咨询。模型和思考深度的明确要求用配置别名、`--reasoning` 表达，缺失配置时先补齐，不静默替换。
 
