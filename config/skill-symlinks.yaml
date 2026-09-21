@@ -6,6 +6,7 @@
 # - 其他电脑 clone 本仓库后同步本机：--mode check 预览，--mode apply 执行
 # 外部项目位置按序解析：$SKILL_SOURCE_<NAME>_DIR > $SKILL_SOURCES_DIR/<项目名> > 本仓库
 # 同级目录 <项目名>；清单只写项目名，不写机器绝对路径。
+# worktree-cleanup 已迁移至私有仓 hxy91819/mole-linux（.claude/skills/worktree-cleanup）
 version: 1
 sources:
 - name: mattpocock-skills
@@ -71,6 +72,8 @@ skills:
   note: Mermaid 图表的校验与修复
 - name: open-source-contribution
   note: 开源贡献与发布卫生规范
+- name: open-source-fork-maintenance
+  note: 维护非 maintainer 的公开 fork：local/aggregate 集成与上游反馈闭环
 - name: ppt-visual-review
   note: PPT 式 HTML 逐页视觉验收
 - name: preflight
@@ -134,7 +137,6 @@ skills:
 - name: wizard
   source: mattpocock-skills
   note: 生成引导人工完成操作的 bash 向导
-# worktree-cleanup 已迁移至私有仓 hxy91819/mole-linux（.claude/skills/worktree-cleanup）
 - name: writing-for-agents
   source: mattpocock-skills
   note: 为 agent 写文档(skill/AGENTS.md)的写作参考
