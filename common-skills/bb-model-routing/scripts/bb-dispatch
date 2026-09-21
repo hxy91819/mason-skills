@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """按用户配置校验 BB 路由并创建一个线程；不拆任务、不重试创建、不预先修改环境。
 
-defaults.<路由> 可为有序别名列表：列表是同档 fallback 链，脚本只在 spawn 前
-按序校验候选（provider 可用性、权限、模型目录），首个通过者派发；spawn 发出后
-任何失败都中止，由调用方确认后用 --fallback-from 续派。
+defaults.<路由> 可为有序 fallback 链，也可配置 load-balance 候选。脚本只在
+spawn 前校验候选（provider 可用性、权限、模型目录），首个通过者派发；spawn
+发出后任何失败都中止，由调用方确认后用 --fallback-from 续派。
 
 参数见 --help。stdout 为 JSON；stderr 为错误；退出码 0 成功、2 失败。
 依赖 Python 3.10+、PyYAML 和 PATH 上的 bb。
 """
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -77,21 +78,42 @@ def candidate_chain(args, defaults, route):
     if args.agent is not None:
         if args.fallback_from is not None:
             raise DispatchError("--agent 与 --fallback-from 不能同时使用。")
-        return [string(args.agent, "--agent")]
+        return [string(args.agent, "--agent")], "pinned"
     value = defaults.get(route)
     if isinstance(value, str):
-        chain = [value]
+        chain, mode = [value], "fallback"
     elif isinstance(value, list) and value:
-        chain = value
+        chain, mode = value, "fallback"
+    elif isinstance(value, dict):
+        unknown = set(value) - {"mode", "candidates"}
+        if unknown:
+            raise DispatchError(f"defaults.{route} 路由配置存在未知项：{sorted(unknown)}。")
+        mode = string(value.get("mode"), f"defaults.{route}.mode")
+        if mode not in ("fallback", "load-balance"):
+            raise DispatchError(f"defaults.{route}.mode 必须是 fallback 或 load-balance。")
+        chain = value.get("candidates")
+        if not isinstance(chain, list) or not chain:
+            raise DispatchError(f"defaults.{route}.candidates 必须是非空别名列表。")
     else:
-        raise DispatchError(f"defaults.{route} 必须是非空别名或有序别名列表。")
-    chain = [string(item, f"defaults.{route} 项") for item in chain]
+        raise DispatchError(f"defaults.{route} 必须是非空别名、有序别名列表或路由配置。")
+    chain = [string(item, f"defaults.{route} 候选项") for item in chain]
+    if len(set(chain)) != len(chain):
+        raise DispatchError(f"defaults.{route} 候选别名不能重复。")
+    if mode == "load-balance":
+        # Rendezvous hashing makes independent tasks spread across candidates without mutable state.
+        # The same task keeps a stable fallback order, so --fallback-from can resume it safely.
+        key = f"{route}\0{args.task}".encode()
+        chain = sorted(
+            chain,
+            key=lambda alias: hashlib.sha256(key + b"\0" + alias.encode()).digest(),
+            reverse=True,
+        )
     if args.fallback_from is None:
-        return chain
+        return chain, mode
     start = string(args.fallback_from, "--fallback-from")
     if start not in chain:
-        raise DispatchError(f"--fallback-from {start!r} 不在 defaults.{route} 链 {chain} 中。")
-    return chain[chain.index(start):]
+        raise DispatchError(f"--fallback-from {start!r} 不在 defaults.{route} 候选 {chain} 中。")
+    return chain[chain.index(start):], mode
 
 
 def model_and_reasoning(agent, alias, route, difficulty):
@@ -153,7 +175,7 @@ def dispatch(args, call=bb):
     permission = args.permission_mode or override.get("permission_mode", config.get("permission_mode", "accept-edits"))
     if permission not in ("accept-edits", "auto", "full"):
         raise DispatchError("permission_mode 必须是 accept-edits、auto 或 full。")
-    chain = candidate_chain(args, defaults, route)
+    chain, routing_mode = candidate_chain(args, defaults, route)
     providers = call("provider", "list", "--environment", validation_environment)
     # 同档 fallback：每个候选按本次路由项解析自己的 routes，首个通过校验者派发。
     attempts = []
@@ -220,7 +242,7 @@ def dispatch(args, call=bb):
                 agent=alias, provider=provider,
                 model=model, reasoning=reasoning, permission_mode=permission,
                 difficulty=args.difficulty, kind=args.kind, title=title,
-                candidates=chain, fallbacks=fallbacks, attempts=attempts)
+                routing_mode=routing_mode, candidates=chain, fallbacks=fallbacks, attempts=attempts)
     if args.dry_run:
         return {"dry_run": True, "selection": plan, "argv": ["bb", *command, "--json"]}
     try:

@@ -33,13 +33,24 @@ bb-dispatch --difficulty medium --agent primary --task '执行已授权的任务
 
 默认权限为 `accept-edits`。用户可在顶层或环境配置中设置已授权的 `permission_mode`；权限不兼容时报告错误，不自动升级。
 
-配置 `version: 2`。`defaults` 将 simple/medium/complex/debug/test/judge/oracle 映射到 provider 别名或有序别名列表；列表即同档 fallback 链，脚本按序校验并派发首个可用候选。每个 `agents.<别名>` 只写一次 `provider`，并在 `routes.<路由>` 中为每个难度或角色写 `model` 与可选的 `reasoning`；链上每个候选按本次路由项在自己的 routes 中解析（角色 > 难度 > default），fallback 只换 provider 不换档位。同一 provider 因而可按难度选择不同模型，且无需为模型组合创建别名。显式 reasoning 仍须通过模型目录校验；省略或设为 null 时使用 provider 默认值。
+配置 `version: 2`。`defaults` 将 simple/medium/complex/debug/test/judge/oracle 映射到路由。字符串或有序别名列表使用 `fallback`：脚本按配置顺序校验并派发首个可用候选。需要在候选间分摊独立任务时使用显式配置：
+
+```yaml
+defaults:
+  simple:
+    mode: load-balance
+    candidates: [primary, backup]
+```
+
+`load-balance` 以路由项和完整任务文本做稳定散列，为每个任务排列候选，再按该顺序选择首个可用项；它不维护计数器，不同任务会分散，同一任务的选择和 fallback 顺序保持稳定。两种模式均在首选项校验失败时继续同档候选。每个 `agents.<别名>` 只写一次 `provider`，并在 `routes.<路由>` 中为每个难度或角色写 `model` 与可选的 `reasoning`；每个候选按本次路由项在自己的 routes 中解析（角色 > 难度 > default），切换候选只换 provider 不换档位。同一 provider 因而可按难度选择不同模型，且无需为模型组合创建别名。显式 reasoning 仍须通过模型目录校验；省略或设为 null 时使用 provider 默认值。
+
+每次派发都会创建独立 BB 会话，负载均衡不会拆分或迁移同一会话的上下文。provider 的前缀缓存是否跨独立会话命中由 provider、账号和模型决定；候选落到不同 provider 或模型时不假定它们共享缓存。
 
 路由解析顺序为 `debug`、`test`、`judge`、`oracle` 等角色项，其次是 `simple`、`medium`、`complex` 难度项，最后才是可选 `default` 项。例如专家咨询固定传 `complex --kind oracle`，所以优先选 `routes.oracle`；若配置只有 `routes.complex`，才选它。没有任何匹配项会报错，不会猜测模型。所有 `defaults` 键都是显式配置，角色路由不会自动沿用 complex 的默认别名。
 
 优先级：命令行覆盖 > 环境配置 > 顶层配置。`--kind debug|test|judge|oracle` 先决定 defaults 和 routes 的角色项，`--agent` 覆盖 defaults；它仍使用本次的 kind 和 difficulty 选择该 agent 的 routes。`environments.<精确环境 ID>` 可覆盖 defaults、agents、permission_mode；同名 agent 整体替换，必须写出 provider 和 routes。目录路径模式尚无环境 ID，不应用 `environments.<id>` 覆盖，只使用顶层配置。脚本不从任务文本猜测类型；调用 Agent 负责识别排障、测试、编排异常裁决或专家咨询。模型和思考深度的明确要求用配置别名、`--reasoning` 表达，缺失配置时先补齐，不静默替换。
 
-`--agent` 固定单候选，不进 fallback 链。`--fallback-from <别名>` 把本次候选截取为 defaults 链中从该别名起的后缀，用于前次派发失败且确认线程未创建后的同档续派；与 `--agent` 互斥，别名不在链中时报错。
+`--agent` 固定单候选，不进 fallback 链。`--fallback-from <别名>` 把本次候选截取为从该别名起的后缀，用于前次派发失败且确认线程未创建后的同档续派；与 `--agent` 互斥，别名不在候选中时报错。`load-balance` 续派须保持原 route 和完整 `--task` 文本，才能复现返回的 `selection.fallbacks` 顺序；任务文本需要补充进展时，改用 `--agent <selection.fallbacks 中的下一别名>` 固定下一候选。
 
 默认从 `bb status` 解析环境，项目使用该环境的所属项目。`--environment` 接受现有环境 ID 或本机已存在的目录路径：ID 模式下 `--project` 与环境所属项目必须匹配；路径模式下目录会解析为绝对路径并原样交给 BB 创建 project-checkout 附着环境，项目取 `--project` 或当前 `bb status`，两者都没有时须显式提供 `--project`。同项目时关联当前父线程，跨环境也保留关联；跨项目不关联。
 
@@ -49,7 +60,7 @@ bb-dispatch --difficulty medium --agent primary --task '执行已授权的任务
 
 ## 路由不可用
 
-链式 fallback 只覆盖派发前校验：provider 不存在或不可用、权限不兼容、模型或 reasoning 不在目录时，记录该候选错误并试下一个；全部失败时汇总各候选错误。spawn 一旦发出即不重试：失败或结果不明时先 `bb thread list`/`bb thread show` 确认是否已创建，确认未创建后用 `--fallback-from <链中别名>` 从该候选续派，难度、kind 与任务文本保持不变。线程运行期失败（额度耗尽、provider 中断、会话错误）由调用方按同一方式改派 `selection.fallbacks` 中的下一候选；确定性调用方（如编排 driver）可持久化该字段实现自己的重派。继续已有线程前，确认原回合结束并核对已完成工作，按该 provider 支持的续接方式操作；不要以重新创建整个任务冒充续接。
+候选切换只覆盖派发前校验：provider 不存在或不可用、权限不兼容、模型或 reasoning 不在目录时，记录该候选错误并试下一个；全部失败时汇总各候选错误。spawn 一旦发出即不重试：失败或结果不明时先 `bb thread list`/`bb thread show` 确认是否已创建，确认未创建后用 `--fallback-from <候选别名>` 从该候选续派，难度、kind 与任务文本保持不变。线程运行期失败（额度耗尽、provider 中断、会话错误）由调用方按同一方式改派 `selection.fallbacks` 中的下一候选；确定性调用方（如编排 driver）可持久化该字段实现自己的重派。继续已有线程前，确认原回合结束并核对已完成工作，按该 provider 支持的续接方式操作；不要以重新创建整个任务冒充续接。
 
 ## 会话标题
 

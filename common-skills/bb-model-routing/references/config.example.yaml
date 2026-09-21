@@ -1,8 +1,12 @@
 version: 2
 permission_mode: accept-edits
 # defaults 只选择 provider 别名；模型与推理级别在 agents.<别名>.routes 中定义。
-# 值可为有序别名列表作同档 fallback 链，如 simple: [primary, backup]；
-# 每个候选按本次路由项解析自己的 routes，fallback 只换 provider 不换档位。
+# 值可为有序别名列表作同档 fallback 链，如 simple: [primary, backup]。
+# 需要负载均衡时使用：
+# simple:
+#   mode: load-balance
+#   candidates: [primary, backup]
+# 每个候选按本次路由项解析自己的 routes，切换候选只换 provider 不换档位。
 defaults:
   simple: primary
   medium: primary

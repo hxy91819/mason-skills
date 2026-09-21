@@ -340,6 +340,9 @@ environments:
         config['defaults']['simple'] = chain
         self.config.write_text(m.yaml.safe_dump(config))
 
+    def load_balance_config(self):
+        self.chain_config({'mode': 'load-balance', 'candidates': ['primary', 'specialist']})
+
     def test_defaults_list_falls_back_when_provider_unavailable(self):
         self.chain_config(['primary', 'specialist'])
         self.providers[0]['available'] = False
@@ -355,9 +358,31 @@ environments:
         self.chain_config(['primary', 'specialist'])
         result = m.dispatch(self.args('--dry-run'), self.fake)
         self.assertEqual(result['selection']['agent'], 'primary')
+        self.assertEqual(result['selection']['routing_mode'], 'fallback')
         self.assertEqual(result['selection']['fallbacks'], ['specialist'])
         self.assertEqual(result['selection']['attempts'], [])
         self.assertFalse(any(c[:2] == ('provider', 'models', 'specialist') for c in self.calls))
+
+    def test_load_balance_is_stable_per_task_and_spreads_independent_tasks(self):
+        self.load_balance_config()
+        selections = {}
+        for index in range(32):
+            task = f'independent task {index}'
+            first = m.dispatch(self.args('--task', task, '--dry-run'), self.fake)['selection']
+            second = m.dispatch(self.args('--task', task, '--dry-run'), self.fake)['selection']
+            self.assertEqual((first['agent'], first['candidates']), (second['agent'], second['candidates']))
+            self.assertEqual(first['routing_mode'], 'load-balance')
+            selections[task] = first['agent']
+        self.assertEqual(set(selections.values()), {'primary', 'specialist'})
+
+    def test_load_balance_skips_unavailable_preferred_candidate(self):
+        self.load_balance_config()
+        args = self.args('--task', 'stable unavailable candidate', '--dry-run')
+        preferred = m.dispatch(args, self.fake)['selection']['agent']
+        next(provider for provider in self.providers if provider['id'] == preferred)['available'] = False
+        result = m.dispatch(args, self.fake)['selection']
+        self.assertNotEqual(result['agent'], preferred)
+        self.assertEqual(result['attempts'][0]['agent'], preferred)
 
     def test_candidate_without_matching_route_counts_as_failed(self):
         self.chain_config(['primary', 'oracle', 'specialist'])
@@ -382,7 +407,9 @@ environments:
 
     def test_invalid_chain_values_rejected_before_calling_bb(self):
         config = m.yaml.safe_load(self.config.read_text())
-        for value in ([], 5, ['primary', '']):
+        for value in ([], 5, ['primary', ''], ['primary', 'primary'],
+                      {'mode': 'round-robin', 'candidates': ['primary']},
+                      {'mode': 'load-balance', 'candidates': []}):
             with self.subTest(value=value):
                 config['defaults']['simple'] = value
                 self.config.write_text(m.yaml.safe_dump(config))
