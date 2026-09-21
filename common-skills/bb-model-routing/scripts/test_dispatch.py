@@ -20,26 +20,19 @@ class DispatchTests(unittest.TestCase):
         self.config = Path(self.temp.name) / 'config.yaml'
         self.config.write_text('''version: 2
 permission_mode: accept-edits
-defaults: {simple: primary, medium: primary, complex: specialist, debug: specialist, test: primary, judge: specialist, oracle: oracle}
+defaults: {simple: primary, medium: primary, complex: specialist}
 agents:
   primary:
     provider: primary
     routes:
       simple: {model: fast-model, reasoning: max}
       medium: {model: medium-model, reasoning: high}
-      test: {model: validator-model, reasoning: high}
   specialist:
     provider: specialist
     routes:
       simple: {model: deep-model, reasoning: low}
       medium: {model: deep-model, reasoning: medium}
       complex: {model: deep-model, reasoning: medium}
-      debug: {model: deep-model, reasoning: low}
-      judge: {model: deep-model, reasoning: max}
-  oracle:
-    provider: primary
-    routes:
-      oracle: {model: oracle-model, reasoning: xhigh}
 environments:
   env_other:
     agents:
@@ -61,7 +54,7 @@ environments:
             return self.providers
         if args[:2] == ('provider', 'models'):
             models = {
-                'primary': ['fast-model', 'medium-model', 'validator-model', 'oracle-model'],
+                'primary': ['fast-model', 'medium-model'],
                 'specialist': ['deep-model'],
                 'remote-provider': ['remote-model'],
             }[args[2]]
@@ -82,58 +75,12 @@ environments:
         self.assertIn('parent', result['argv'])
         self.assertFalse(any(c[:2] == ('thread', 'spawn') for c in self.calls))
 
-    def test_simple_debug_uses_specialist_low_and_spawns_once(self):
-        result = m.dispatch(self.args('--kind', 'debug'), self.fake)
-        self.assertEqual(result['selection']['provider'], 'specialist')
-        self.assertEqual(result['selection']['reasoning'], 'low')
-        self.assertEqual(result['result']['thread']['status'], 'queued')
-        self.assertEqual(sum(c[:2] == ('thread', 'spawn') for c in self.calls), 1)
-
-    def test_kind_test_uses_test_default_and_spawns_once(self):
-        result = m.dispatch(self.args('--kind', 'test'), self.fake)
-        self.assertEqual(result['selection']['agent'], 'primary')
-        self.assertEqual(result['selection']['model'], 'validator-model')
-        self.assertEqual(result['selection']['reasoning'], 'high')
-        self.assertEqual(result['selection']['kind'], 'test')
-        self.assertEqual(result['result']['thread']['status'], 'queued')
-        self.assertEqual(sum(c[:2] == ('thread', 'spawn') for c in self.calls), 1)
-
-    def test_kind_oracle_uses_dedicated_route(self):
-        result = m.dispatch(self.args('--difficulty', 'complex', '--kind', 'oracle', '--dry-run'), self.fake)
-        self.assertEqual(result['selection']['agent'], 'oracle')
-        self.assertEqual(result['selection']['model'], 'oracle-model')
-        self.assertEqual(result['selection']['reasoning'], 'xhigh')
-        self.assertEqual(result['selection']['kind'], 'oracle')
-        self.assertFalse(any(c[:2] == ('thread', 'spawn') for c in self.calls))
-
-    def test_oracle_prompt_boundary_reaches_spawn_and_preview_only_for_oracle(self):
-        task = '用户原话：$ask-oracle 检查重试。\n证据：attempt=2；保留 "原文"。'
-        prompts = []
-        for kind in ('oracle', 'general', 'debug', 'test', 'judge'):
-            for dry_run in (True, False):
-                with self.subTest(kind=kind, dry_run=dry_run):
-                    extra = ['--dry-run'] if dry_run else []
-                    result = m.dispatch(self.args('--difficulty', 'complex', '--kind', kind,
-                                                  '--task', task, *extra), self.fake)
-                    command = result['argv'] if dry_run else self.calls[-1]
-                    prompt = command[command.index('--prompt') + 1]
-                    if kind == 'oracle':
-                        boundary, separator, body = prompt.partition('--- 咨询任务 ---\n')
-                        self.assertTrue(separator)
-                        self.assertTrue(boundary.strip())
-                        self.assertIn('可自主使用当前权限提供的命令与工具', boundary)
-                        self.assertIn('职责仅限分析和咨询', boundary)
-                        self.assertIn('不要修改工作区或实施方案', boundary)
-                        self.assertNotIn('保持只读', boundary)
-                        self.assertEqual(body, task)
-                        prompts.append(prompt)
-                    else:
-                        self.assertEqual(prompt, task)
-                    self.assertEqual(result['selection']['title'], m.thread_title(None, task))
-        self.assertEqual(prompts[0], prompts[1])
+    def test_kind_option_is_removed(self):
+        with self.assertRaises(SystemExit):
+            self.args('--kind', 'debug')
 
     def test_environment_alias_override(self):
-        result = m.dispatch(self.args('--environment', 'env_other', '--kind', 'debug', '--dry-run'), self.fake)
+        result = m.dispatch(self.args('--environment', 'env_other', '--difficulty', 'complex', '--dry-run'), self.fake)
         self.assertEqual(result['selection']['provider'], 'remote-provider')
         self.assertEqual(result['selection']['model'], 'remote-model')
         self.assertEqual(result['selection']['validation_environment'], 'env_other')
@@ -142,7 +89,7 @@ environments:
     def test_workspace_path_uses_proxy_validation_without_environment_show(self):
         workspace = Path(self.temp.name) / 'env_other'
         workspace.mkdir()
-        result = m.dispatch(self.args('--environment', str(workspace), '--kind', 'debug', '--dry-run'), self.fake)
+        result = m.dispatch(self.args('--environment', str(workspace), '--difficulty', 'complex', '--dry-run'), self.fake)
         self.assertEqual(result['selection']['environment'], str(workspace.resolve()))
         self.assertEqual(result['selection']['validation_environment'], 'env')
         self.assertEqual(result['selection']['provider'], 'specialist')
@@ -191,24 +138,12 @@ environments:
         result = m.dispatch(self.args('--project', 'other', '--environment', str(workspace), '--dry-run'), self.fake)
         self.assertNotIn('--parent-thread', result['argv'])
 
-    def test_explicit_alias_overrides_debug(self):
+    def test_explicit_alias_overrides_default_candidate(self):
         config = m.yaml.safe_load(self.config.read_text())
-        config['agents']['primary']['routes']['debug'] = {'model': 'fast-model', 'reasoning': 'low'}
+        config['agents']['primary']['routes']['complex'] = {'model': 'fast-model', 'reasoning': 'low'}
         self.config.write_text(m.yaml.safe_dump(config))
-        result = m.dispatch(self.args('--kind', 'debug', '--agent', 'primary', '--dry-run'), self.fake)
+        result = m.dispatch(self.args('--difficulty', 'complex', '--agent', 'primary', '--dry-run'), self.fake)
         self.assertEqual(result['selection']['agent'], 'primary')
-
-    def test_judge_uses_independent_reasoning_from_complex_worker(self):
-        for dry_run in (False, True):
-            extra = ['--dry-run'] if dry_run else []
-            worker = m.dispatch(self.args('--difficulty', 'complex', *extra), self.fake)
-            judge = m.dispatch(self.args('--difficulty', 'complex', '--kind', 'judge', *extra), self.fake)
-            self.assertEqual(worker['selection']['model'], judge['selection']['model'])
-            self.assertEqual(worker['selection']['reasoning'], 'medium')
-            self.assertEqual(judge['selection']['reasoning'], 'max')
-            self.assertEqual(judge['selection']['kind'], 'judge')
-            command = judge['argv'] if dry_run else self.calls[-1]
-            self.assertEqual(command[command.index('--prompt') + 1], self.args().task)
 
     def test_routes_use_exact_route_then_default(self):
         primary = m.yaml.safe_load(self.config.read_text())['agents']['primary']['routes']
@@ -218,43 +153,8 @@ environments:
         self.config.write_text(m.yaml.safe_dump(config))
         medium = m.dispatch(self.args('--difficulty', 'medium', '--dry-run'), self.fake)
         self.assertEqual((medium['selection']['model'], medium['selection']['reasoning']), ('medium-model', 'high'))
-        debug = m.dispatch(self.args('--kind', 'debug', '--agent', 'primary', '--dry-run'), self.fake)
-        self.assertEqual((debug['selection']['model'], debug['selection']['reasoning']), ('fast-model', 'low'))
         fallback = m.dispatch(self.args('--difficulty', 'complex', '--agent', 'primary', '--dry-run'), self.fake)
         self.assertEqual((fallback['selection']['model'], fallback['selection']['reasoning']), ('fast-model', 'low'))
-
-    def test_role_route_does_not_fall_back_to_task_difficulty(self):
-        config = m.yaml.safe_load(self.config.read_text())
-        config['defaults']['debug'] = ['specialist', 'primary']
-        config['agents']['specialist']['routes'].pop('debug')
-        config['agents']['primary']['routes']['debug'] = {'model': 'fast-model', 'reasoning': 'low'}
-        self.config.write_text(m.yaml.safe_dump(config))
-        result = m.dispatch(self.args('--difficulty', 'medium', '--kind', 'debug', '--dry-run'), self.fake)
-        self.assertEqual(result['selection']['agent'], 'primary')
-        self.assertEqual(result['selection']['attempts'][0]['agent'], 'specialist')
-        self.assertIn("'debug'", result['selection']['attempts'][0]['error'])
-
-    def test_judge_environment_and_explicit_alias_take_precedence(self):
-        config = m.yaml.safe_load(self.config.read_text())
-        config['defaults']['judge'] = 'specialist'
-        config['agents']['primary']['routes']['default'] = {'model': 'fast-model', 'reasoning': 'max'}
-        config['environments']['env_other']['defaults'] = {'judge': 'primary'}
-        self.config.write_text(m.yaml.safe_dump(config))
-        result = m.dispatch(self.args('--kind', 'judge', '--environment', 'env_other', '--dry-run'), self.fake)
-        self.assertEqual(result['selection']['agent'], 'primary')
-        result = m.dispatch(self.args('--kind', 'judge', '--environment', 'env_other',
-                                      '--agent', 'specialist', '--dry-run'), self.fake)
-        self.assertEqual(result['selection']['provider'], 'remote-provider')
-
-    def test_invalid_explicit_judge_route_does_not_fall_back_or_spawn(self):
-        config = m.yaml.safe_load(self.config.read_text())
-        for alias in (None, '', 'missing'):
-            with self.subTest(alias=alias):
-                config['defaults']['judge'] = alias
-                self.config.write_text(m.yaml.safe_dump(config))
-                with self.assertRaises(m.DispatchError):
-                    m.dispatch(self.args('--difficulty', 'complex', '--kind', 'judge'), self.fake)
-        self.assertFalse(any(c[:2] == ('thread', 'spawn') for c in self.calls))
 
     def test_unknown_provider_rejected_before_model_query(self):
         self.providers = []
@@ -358,6 +258,10 @@ environments:
     def load_balance_config(self):
         self.chain_config({'mode': 'load-balance', 'candidates': ['primary', 'specialist']})
 
+    def weighted_load_balance_config(self):
+        self.chain_config({'mode': 'weighted-load-balance',
+                           'candidates': {'primary': 2, 'specialist': 1}})
+
     def test_defaults_list_falls_back_when_provider_unavailable(self):
         self.chain_config(['primary', 'specialist'])
         self.providers[0]['available'] = False
@@ -399,8 +303,23 @@ environments:
         self.assertNotEqual(result['agent'], preferred)
         self.assertEqual(result['attempts'][0]['agent'], preferred)
 
+    def test_weighted_load_balance_is_stable_and_follows_relative_weights(self):
+        self.weighted_load_balance_config()
+        counts = {'primary': 0, 'specialist': 0}
+        for index in range(900):
+            args = self.args('--task', f'weighted task {index}', '--dry-run')
+            first = m.dispatch(args, self.fake)['selection']
+            second = m.dispatch(args, self.fake)['selection']
+            self.assertEqual(first['candidates'], second['candidates'])
+            self.assertEqual(first['candidate_weights'], second['candidate_weights'])
+            self.assertEqual(first['routing_mode'], 'weighted-load-balance')
+            counts[first['agent']] += 1
+        ratio = counts['primary'] / counts['specialist']
+        self.assertGreater(ratio, 1.7)
+        self.assertLess(ratio, 2.3)
+
     def test_candidate_without_matching_route_counts_as_failed(self):
-        self.chain_config(['primary', 'oracle', 'specialist'])
+        self.chain_config(['primary', 'missing', 'specialist'])
         original = self.fake
 
         def sparse(*a):
@@ -410,7 +329,7 @@ environments:
 
         result = m.dispatch(self.args('--dry-run'), sparse)
         self.assertEqual(result['selection']['agent'], 'specialist')
-        self.assertEqual([a['agent'] for a in result['selection']['attempts']], ['primary', 'oracle'])
+        self.assertEqual([a['agent'] for a in result['selection']['attempts']], ['primary', 'missing'])
 
     def test_all_candidates_failed_reports_each_and_never_spawns(self):
         self.chain_config(['primary', 'specialist'])
@@ -424,7 +343,11 @@ environments:
         config = m.yaml.safe_load(self.config.read_text())
         for value in ([], 5, ['primary', ''], ['primary', 'primary'],
                       {'mode': 'round-robin', 'candidates': ['primary']},
-                      {'mode': 'load-balance', 'candidates': []}):
+                      {'mode': 'load-balance', 'candidates': []},
+                      {'mode': 'weighted-load-balance', 'candidates': []},
+                      {'mode': 'weighted-load-balance', 'candidates': {'primary': 0}},
+                      {'mode': 'weighted-load-balance', 'candidates': {'primary': True}},
+                      {'mode': 'weighted-load-balance', 'candidates': {'primary': '.nan'}}):
             with self.subTest(value=value):
                 config['defaults']['simple'] = value
                 self.config.write_text(m.yaml.safe_dump(config))
@@ -466,9 +389,9 @@ environments:
 
     def test_environment_defaults_override_accepts_chain(self):
         config = m.yaml.safe_load(self.config.read_text())
-        config['environments']['env_other']['defaults'] = {'debug': ['missing', 'specialist']}
+        config['environments']['env_other']['defaults'] = {'complex': ['missing', 'specialist']}
         self.config.write_text(m.yaml.safe_dump(config))
-        result = m.dispatch(self.args('--environment', 'env_other', '--kind', 'debug', '--dry-run'), self.fake)
+        result = m.dispatch(self.args('--environment', 'env_other', '--difficulty', 'complex', '--dry-run'), self.fake)
         self.assertEqual(result['selection']['agent'], 'specialist')
         self.assertEqual(result['selection']['provider'], 'remote-provider')
 

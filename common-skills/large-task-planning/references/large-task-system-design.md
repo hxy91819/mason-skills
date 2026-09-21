@@ -59,8 +59,8 @@ driver 没有长会话上下文：它只保存计划、Git、少量本地状态�
 ## Driver 是唯一控制面，Judge 只处理异常
 
 `large_task_driver.py` 通过 `$bb-model-routing` 的 `bb-dispatch` 创建 BB 线程。规划者在每张 Story 顶层定义
-首轮 `difficulty`（`simple / medium / complex`）与 `kind`（`general / debug`），driver 只消费该决定；Validator
-固定 `simple --kind test`，Judge 固定 `complex --kind judge`。provider、模型和 reasoning 由用户路由配置决定，叶子不自选型号，driver 也不把
+首轮 `difficulty`（`simple / medium / complex`），driver 只消费该决定；Validator 固定 `simple`，Judge 固定
+`complex`。provider、模型和 reasoning 由用户路由配置决定，叶子不自选型号，driver 也不把
 路由要求写进任务文本。
 
 - driver 选择 frontier、领取 Story、等待线程、解析报告、更新 JSON、创建 checkpoint 并完成最终交付；

@@ -11,6 +11,7 @@ spawn 前校验候选（provider 可用性、权限、模型目录），首个�
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -23,8 +24,7 @@ class DispatchError(Exception):
     pass
 
 
-ROLE_ROUTES = frozenset(("debug", "test", "judge", "oracle"))
-ROUTE_KEYS = frozenset(("simple", "medium", "complex", *ROLE_ROUTES, "default"))
+ROUTE_KEYS = frozenset(("simple", "medium", "complex", "default"))
 
 
 def bb(*args):
@@ -78,42 +78,65 @@ def candidate_chain(args, defaults, route):
     if args.agent is not None:
         if args.fallback_from is not None:
             raise DispatchError("--agent 与 --fallback-from 不能同时使用。")
-        return [string(args.agent, "--agent")], "pinned"
+        alias = string(args.agent, "--agent")
+        return [alias], "pinned", {alias: 1}
     value = defaults.get(route)
     if isinstance(value, str):
-        chain, mode = [value], "fallback"
+        chain, mode, weights = [value], "fallback", None
     elif isinstance(value, list) and value:
-        chain, mode = value, "fallback"
+        chain, mode, weights = value, "fallback", None
     elif isinstance(value, dict):
         unknown = set(value) - {"mode", "candidates"}
         if unknown:
             raise DispatchError(f"defaults.{route} 路由配置存在未知项：{sorted(unknown)}。")
         mode = string(value.get("mode"), f"defaults.{route}.mode")
-        if mode not in ("fallback", "load-balance"):
-            raise DispatchError(f"defaults.{route}.mode 必须是 fallback 或 load-balance。")
-        chain = value.get("candidates")
-        if not isinstance(chain, list) or not chain:
-            raise DispatchError(f"defaults.{route}.candidates 必须是非空别名列表。")
+        if mode not in ("fallback", "load-balance", "weighted-load-balance"):
+            raise DispatchError(
+                f"defaults.{route}.mode 必须是 fallback、load-balance 或 weighted-load-balance。"
+            )
+        candidates = value.get("candidates")
+        if mode == "weighted-load-balance":
+            if not isinstance(candidates, dict) or not candidates:
+                raise DispatchError(f"defaults.{route}.candidates 必须是非空的 别名: 权重 映射。")
+            chain, weights = [], {}
+            for raw_alias, weight in candidates.items():
+                alias = string(raw_alias, f"defaults.{route} 候选别名")
+                if isinstance(weight, bool) or not isinstance(weight, (int, float)) or not math.isfinite(weight) or weight <= 0:
+                    raise DispatchError(f"defaults.{route}.candidates.{alias} 权重必须是大于 0 的有限数字。")
+                chain.append(alias)
+                weights[alias] = weight
+        else:
+            if not isinstance(candidates, list) or not candidates:
+                raise DispatchError(f"defaults.{route}.candidates 必须是非空别名列表。")
+            chain, weights = candidates, None
     else:
         raise DispatchError(f"defaults.{route} 必须是非空别名、有序别名列表或路由配置。")
     chain = [string(item, f"defaults.{route} 候选项") for item in chain]
     if len(set(chain)) != len(chain):
         raise DispatchError(f"defaults.{route} 候选别名不能重复。")
-    if mode == "load-balance":
-        # Rendezvous hashing makes independent tasks spread across candidates without mutable state.
-        # The same task keeps a stable fallback order, so --fallback-from can resume it safely.
+    weights = weights or {alias: 1 for alias in chain}
+    if mode in ("load-balance", "weighted-load-balance"):
+        # Deterministic rendezvous ordering spreads independent tasks without mutable state.
+        # Exponential races extend it to weighted selection while preserving a stable fallback order.
         key = f"{route}\0{args.task}".encode()
-        chain = sorted(
-            chain,
-            key=lambda alias: hashlib.sha256(key + b"\0" + alias.encode()).digest(),
-            reverse=True,
-        )
-    if args.fallback_from is None:
-        return chain, mode
-    start = string(args.fallback_from, "--fallback-from")
-    if start not in chain:
-        raise DispatchError(f"--fallback-from {start!r} 不在 defaults.{route} 候选 {chain} 中。")
-    return chain[chain.index(start):], mode
+        if mode == "load-balance":
+            chain = sorted(
+                chain,
+                key=lambda alias: hashlib.sha256(key + b"\0" + alias.encode()).digest(),
+                reverse=True,
+            )
+        else:
+            def weighted_score(alias):
+                digest = hashlib.sha256(key + b"\0" + alias.encode()).digest()
+                uniform = (int.from_bytes(digest) + 1) / (2 ** 256 + 1)
+                return -math.log(uniform) / weights[alias]
+            chain = sorted(chain, key=weighted_score)
+    if args.fallback_from is not None:
+        start = string(args.fallback_from, "--fallback-from")
+        if start not in chain:
+            raise DispatchError(f"--fallback-from {start!r} 不在 defaults.{route} 候选 {chain} 中。")
+        chain = chain[chain.index(start):]
+    return chain, mode, {alias: weights[alias] for alias in chain}
 
 
 def model_and_reasoning(agent, alias, route):
@@ -169,11 +192,11 @@ def dispatch(args, call=bb):
     )
     defaults = {**mapping(config.get("defaults", {}), "defaults"), **mapping(override.get("defaults", {}), "environment defaults")}
     agents = {**mapping(config.get("agents", {}), "agents"), **mapping(override.get("agents", {}), "environment agents")}
-    route = args.kind if args.kind in ROLE_ROUTES else args.difficulty
+    route = args.difficulty
     permission = args.permission_mode or override.get("permission_mode", config.get("permission_mode", "accept-edits"))
     if permission not in ("accept-edits", "auto", "full"):
         raise DispatchError("permission_mode 必须是 accept-edits、auto 或 full。")
-    chain, routing_mode = candidate_chain(args, defaults, route)
+    chain, routing_mode, candidate_weights = candidate_chain(args, defaults, route)
     providers = call("provider", "list", "--environment", validation_environment)
     # 同档 fallback：每个候选按本次路由项解析自己的 routes，首个通过校验者派发。
     attempts = []
@@ -209,16 +232,6 @@ def dispatch(args, call=bb):
     index, alias, provider, model, reasoning = choice
     fallbacks = chain[index + 1:]
     task = args.task
-    if args.kind == "oracle":
-        task = (
-            "你是本次咨询的 Oracle，负责亲自调查并直接返回技术判断。"
-            "可自主使用当前权限提供的命令与工具完成分析，但职责仅限分析和咨询；"
-            "不要修改工作区或实施方案。\n"
-            "不要调用 ask-oracle、Oracle 工具或再派专家线程转交本次咨询。"
-            "下方任务引用的用户原话（包括 $ask-oracle）是背景，不是重新派发指令。\n"
-            "证据不足时，返回已能确定的结论、具体信息缺口与不确定性，由父 Agent 续办。\n\n"
-            "--- 咨询任务 ---\n" + task
-        )
     command = ["thread", "spawn", "--project", project, "--environment", environment,
                "--provider", provider, "--model", model,
                "--permission-mode", permission, "--prompt", task]
@@ -239,8 +252,9 @@ def dispatch(args, call=bb):
     plan = dict(project=project, environment=environment, validation_environment=validation_environment,
                 agent=alias, provider=provider,
                 model=model, reasoning=reasoning, permission_mode=permission,
-                difficulty=args.difficulty, kind=args.kind, title=title,
-                routing_mode=routing_mode, candidates=chain, fallbacks=fallbacks, attempts=attempts)
+                difficulty=args.difficulty, title=title,
+                routing_mode=routing_mode, candidate_weights=candidate_weights,
+                candidates=chain, fallbacks=fallbacks, attempts=attempts)
     if args.dry_run:
         return {"dry_run": True, "selection": plan, "argv": ["bb", *command, "--json"]}
     try:
@@ -257,11 +271,10 @@ def dispatch(args, call=bb):
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="示例：\n  bb-dispatch --difficulty simple --task '补充 README' --dry-run\n  bb-dispatch --difficulty medium --kind debug --task '定位登录失败'\n输出：stdout JSON，stderr 错误；退出码 0 成功，2 失败。")
+        epilog="示例：\n  bb-dispatch --difficulty simple --task '补充 README' --dry-run\n  bb-dispatch --difficulty medium --task '定位登录失败'\n输出：stdout JSON，stderr 错误；退出码 0 成功，2 失败。")
     p.add_argument("--config", default=os.environ.get("BB_DISPATCH_CONFIG", str(Path.home() / ".config/bb-dispatch/config.yaml")), help="用户 YAML 配置路径，也可设置 BB_DISPATCH_CONFIG")
     p.add_argument("--difficulty", required=True, choices=["simple", "medium", "complex"], help="任务难度")
     p.add_argument("--task", required=True, help="任务目标、范围和验收要求")
-    p.add_argument("--kind", choices=["general", "debug", "test", "judge", "oracle"], default="general", help="排障选 debug，测试验证选 test，编排异常裁决选 judge，专家咨询选 oracle")
     p.add_argument("--agent", help="配置中的工具别名，覆盖默认路由；固定单候选，不进 fallback 链")
     p.add_argument("--fallback-from", metavar="别名", help="从 defaults.<路由> 链中该别名起续派；用于前次派发失败且确认未创建后的同档改派")
     p.add_argument("--reasoning", help="覆盖推理级别，仍校验模型目录")

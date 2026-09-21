@@ -2,21 +2,16 @@ version: 2
 permission_mode: accept-edits
 # defaults 只选择 provider 别名；模型与推理级别在 agents.<别名>.routes 中定义。
 # 值可为有序别名列表作同档 fallback 链，如 simple: [primary, backup]。
-# 需要负载均衡时使用：
+# 等权负载均衡：{mode: load-balance, candidates: [primary, backup]}
+# 加权负载均衡：
 # simple:
-#   mode: load-balance
-#   candidates: [primary, backup]
+#   mode: weighted-load-balance
+#   candidates: {primary: 2, backup: 1}
 # 每个候选按本次路由项解析自己的 routes，切换候选只换 provider 不换档位。
 defaults:
   simple: primary
   medium: primary
   complex: primary
-  debug: primary
-  test: primary
-  # 编排异常裁决使用独立 Judge 路由。
-  judge: primary
-  # 专家咨询默认使用 Codex Astra XHigh，可按环境覆盖。
-  oracle: oracle
 agents:
   primary:
     provider: <provider-id>
@@ -30,24 +25,14 @@ agents:
       complex:
         model: <complex-model-id>
         reasoning: <complex-reasoning-level>
-      # debug、test、judge 是独立角色项，不借用同一次派发的 difficulty。
-      test:
-        model: <validator-model-id>
-        reasoning: <validator-reasoning-level>
       # default 显式允许该 agent 接受所有未单独配置的路由项。
       default:
         model: <fallback-model-id>
-  oracle:
-    provider: codex
-    routes:
-      oracle:
-        model: gpt-6-astra
-        reasoning: xhigh
 environments: {}
 # 环境 ID 来自 bb；同名别名整体替换，不继承顶层 routes。
 # environments:
 #   <environment-id>:
-#     defaults: {complex: specialist, debug: specialist}
+#     defaults: {complex: specialist}
 #     agents:
 #       specialist:
 #         provider: <provider-id>

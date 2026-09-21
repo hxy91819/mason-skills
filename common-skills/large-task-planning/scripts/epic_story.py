@@ -84,9 +84,8 @@ STORY_FIELDS = (
     "updated",
     "handoff",
 )
-OPTIONAL_STORY_FIELDS = ("difficulty", "kind")
+OPTIONAL_STORY_FIELDS = ("difficulty",)
 STORY_DIFFICULTIES = ("simple", "medium", "complex")
-STORY_KINDS = ("general", "debug")
 ACCEPTANCE_FIELDS = ("id", "criterion", "passed")
 CONTEXT_FIELDS = (
     "test_seams",
@@ -243,11 +242,6 @@ def _ordered(data: dict[str, Any], order: Sequence[str]) -> dict[str, Any]:
 
 def _is_story_data(data: dict[str, Any]) -> bool:
     return str(data.get("id", "")).startswith("STORY-")
-
-
-def story_kind(data: dict[str, Any]) -> str:
-    kind = data.get("kind")
-    return str(kind) if kind in STORY_KINDS else "general"
 
 
 def canonicalize(data: dict[str, Any]) -> dict[str, Any]:
@@ -449,8 +443,8 @@ def validate_story_data(path: Path, data: dict[str, Any]) -> list[str]:
     _nonempty_string(data["outcome"], f"{label}.outcome", errors)
     if "difficulty" in data and data["difficulty"] not in STORY_DIFFICULTIES:
         errors.append(f"{label}.difficulty: 必须是 simple、medium 或 complex")
-    if "kind" in data and data["kind"] not in (*STORY_KINDS, STORY_KIND):
-        errors.append(f"{label}.kind: 必须是 general 或 debug")
+    if data["kind"] != STORY_KIND:
+        errors.append(f"{label}.kind: 必须是 {STORY_KIND}")
     if not isinstance(data["intent_version"], int) or isinstance(data["intent_version"], bool) or data["intent_version"] < 1:
         errors.append(f"{label}.intent_version: 必须是正整数")
     status = str(data["status"])
@@ -724,7 +718,6 @@ def status_payload(plan: Plan, stories: Sequence[Story]) -> dict[str, Any]:
                 "title": story.title,
                 "status": story.status,
                 "difficulty": story.data.get("difficulty", "medium"),
-                "kind": story_kind(story.data),
                 "owner": story.data["owner"],
                 "blocked_by": list(story.blocked_by),
                 "covers": list(story.covers),
@@ -1019,7 +1012,6 @@ def command_brief(args: argparse.Namespace) -> int:
         "story": {
             **story.data,
             "difficulty": story.data.get("difficulty", "medium"),
-            "kind": story_kind(story.data),
         },
         "dependency_handoffs": dependencies,
     }
@@ -1314,7 +1306,7 @@ def command_migrate_v1(args: argparse.Namespace) -> int:
         inputs = str(card.get("authoritative_inputs", "")).strip()
         scope = _legacy_section(body, "scope")
         story_data = {
-            "kind": "general",
+            "kind": STORY_KIND,
             "schema_version": SCHEMA_VERSION,
             "id": story_id,
             "plan": plan_id,

@@ -67,7 +67,7 @@ fresh、便宜的 Worker context 完成。粒度判据是 economy 或 standard �
 才能完成的 Story 先拆，而不是留给 orchestrator 升档。优先把 Acceptance 写成可由脚本或测试直接判定
 的形式，这类 Story 在执行时可以跳过独立 Validator。依赖字段 `blocked_by` 只表达真正阻止开工的边。
 
-给每张 Story 在顶层定下 `difficulty` 与 `kind`，由规划者而不是脚本判断首轮路由：
+给每张 Story 在顶层定下 `difficulty`，由规划者而不是脚本判断首轮路由：
 
 | 能力档 | `difficulty` | 使用条件 |
 | --- | --- | --- |
@@ -75,7 +75,7 @@ fresh、便宜的 Worker context 完成。粒度判据是 economy 或 standard �
 | standard | `medium` | 常规跨文件实现，公开 seam 和验收明确 |
 | strong | `complex` | 已证明的能力不足、跨模块不确定性或复杂整合 |
 
-`kind` 默认为 `general`；仅排障 Story 设为 `debug`。缺省的 `difficulty` 视为 `medium`，但新计划应显式写入。
+缺省的 `difficulty` 视为 `medium`，但新计划应显式写入。
 `complex` 是继续拆分 Story 的信号，`check` 会告警。不要在 Story 写模型名或别名，实际路由由
 `bb-model-routing` 配置决定。
 

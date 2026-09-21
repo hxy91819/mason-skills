@@ -14,18 +14,17 @@ bb provider list --environment <environment-id> --json
 bb provider models <provider-id> --environment <environment-id> --json
 ```
 
-从可用 provider 中选择符合用户要求的模型，检查 `permissionModes` 和模型的 `supportedReasoningEfforts`；多个候选缺乏选择依据时询问用户。目录能证明可用性，不能证明价格和任务质量。将选择写入任意别名，例如 `primary`，然后配置各难度、debug、test、judge 和 oracle 的默认别名。模板把 oracle 配为 Codex Astra XHigh；目标环境没有该 provider 或模型时须显式改配，不自动替换。
+从可用 provider 中选择符合用户要求的模型，检查 `permissionModes` 和模型的 `supportedReasoningEfforts`；多个候选缺乏选择依据时询问用户。目录能证明可用性，不能证明价格和任务质量。将选择写入任意别名，例如 `primary`，然后配置各难度的默认别名。
 
-配置格式为 `version: 2`。迁移时把扁平的 `agents.<别名>.model/reasoning` 移到 `agents.<别名>.routes.<路由>`；同一 provider 的不同模型、难度和角色保留在这个别名下。脚本不接受旧格式。配置服务多个环境时使用 `environments` 覆盖。脚本只读取配置，不安装 provider 或覆盖配置。新配置先运行 `--dry-run` 验证，再派发。模型目录不会自动生成用户的模型偏好。
+配置格式为 `version: 2`。迁移时把扁平的 `agents.<别名>.model/reasoning` 移到 `agents.<别名>.routes.<难度>`；同一 provider 的不同模型和难度保留在这个别名下。脚本不接受旧格式。配置服务多个环境时使用 `environments` 覆盖。脚本只读取配置，不安装 provider 或覆盖配置。新配置先运行 `--dry-run` 验证，再派发。模型目录不会自动生成用户的模型偏好。
 
 ## 派发与配置规则
 
 ```bash
 bb-dispatch --difficulty simple --task '补充 README 示例' --dry-run
-bb-dispatch --difficulty medium --kind debug --task '定位登录失败，给出复现和修复'
-bb-dispatch --difficulty medium --kind test --task '验证用户登录与权限判定测试用例' --dry-run
-bb-dispatch --difficulty complex --kind judge --task '根据 Worker 失败证据裁决下一步动作' --dry-run
-bb-dispatch --difficulty complex --kind oracle --task '审查证据并裁决指定的技术问题' --dry-run
+bb-dispatch --difficulty medium --task '定位登录失败，给出复现和修复'
+bb-dispatch --difficulty simple --task '验证用户登录与权限判定测试用例' --dry-run
+bb-dispatch --difficulty complex --task '审查证据并裁决指定的技术问题' --dry-run
 bb-dispatch --difficulty medium --agent primary --task '执行已授权的任务' --dry-run
 ```
 
@@ -33,7 +32,7 @@ bb-dispatch --difficulty medium --agent primary --task '执行已授权的任务
 
 默认权限为 `accept-edits`。用户可在顶层或环境配置中设置已授权的 `permission_mode`；权限不兼容时报告错误，不自动升级。
 
-配置 `version: 2`。`defaults` 将 simple/medium/complex/debug/test/judge/oracle 映射到路由。字符串或有序别名列表使用 `fallback`：脚本按配置顺序校验并派发首个可用候选。需要在候选间分摊独立任务时使用显式配置：
+配置 `version: 2`。`defaults` 将 simple/medium/complex 映射到路由。字符串或有序别名列表使用 `fallback`：脚本按配置顺序校验并派发首个可用候选。需要在候选间分摊独立任务时使用显式配置：
 
 ```yaml
 defaults:
@@ -42,15 +41,26 @@ defaults:
     candidates: [primary, backup]
 ```
 
-`load-balance` 以路由项和完整任务文本做稳定散列，为每个任务排列候选，再按该顺序选择首个可用项；它不维护计数器，不同任务会分散，同一任务的选择和 fallback 顺序保持稳定。两种模式均在首选项校验失败时继续同档候选。每个 `agents.<别名>` 只写一次 `provider`，并在 `routes.<路由>` 中为每个难度或角色写 `model` 与可选的 `reasoning`；每个候选只按本次路由项或显式 `default` 在自己的 routes 中解析；两者都没有时跳过该候选，切换候选不改变路由项。同一 provider 因而可按难度选择不同模型，且无需为模型组合创建别名。显式 reasoning 仍须通过模型目录校验；省略或设为 null 时使用 provider 默认值。
+`load-balance` 以路由项和完整任务文本做稳定散列，为每个任务排列等权候选。按额度比例分摊时使用权重映射：
+
+```yaml
+defaults:
+  complex:
+    mode: weighted-load-balance
+    candidates:
+      weekly-quota: 2
+      monthly-quota: 1
+```
+
+`weighted-load-balance` 的长期选择概率与正权重成比例；权重只表达相对比例，不代表并发上限。两种负载模式都不维护计数器，不同任务会分散，同一任务的选择和 fallback 顺序保持稳定。所有模式均在首选项校验失败时继续同档候选。每个 `agents.<别名>` 只写一次 `provider`，并在 `routes.<难度>` 或 `routes.default` 中写 `model` 与可选的 `reasoning`；缺少两者时跳过该候选，切换候选不改变难度。同一 provider 因而可按难度选择不同模型，且无需为模型组合创建别名。显式 reasoning 仍须通过模型目录校验；省略或设为 null 时使用 provider 默认值。
 
 每次派发都会创建独立 BB 会话，负载均衡不会拆分或迁移同一会话的上下文。provider 的前缀缓存是否跨独立会话命中由 provider、账号和模型决定；候选落到不同 provider 或模型时不假定它们共享缓存。
 
-路由项由 kind 或 difficulty 唯一决定：`debug`、`test`、`judge`、`oracle` 使用同名角色项，普通任务使用 `simple`、`medium`、`complex` 难度项；候选仅在存在该项或显式 `default` 时参与。例如专家咨询固定传 `complex --kind oracle`，只读取 `routes.oracle` 或 `routes.default`，不会借用 `routes.complex`。没有任何匹配项会报错，不会猜测模型。所有 `defaults` 键都是显式配置，角色路由不会自动沿用 complex 的默认别名。
+路由项只由 `--difficulty simple|medium|complex` 决定；候选仅在存在该难度或显式 `default` 时参与。排障按实际难度选择，测试验证使用 simple，异常裁决和专家咨询使用 complex。没有任何匹配项会报错，不会猜测模型。
 
-优先级：命令行覆盖 > 环境配置 > 顶层配置。`--kind debug|test|judge|oracle` 先决定 defaults 和 routes 的角色项，`--agent` 覆盖 defaults；它仍使用本次的 kind 和 difficulty 选择该 agent 的 routes。`environments.<精确环境 ID>` 可覆盖 defaults、agents、permission_mode；同名 agent 整体替换，必须写出 provider 和 routes。目录路径模式尚无环境 ID，不应用 `environments.<id>` 覆盖，只使用顶层配置。脚本不从任务文本猜测类型；调用 Agent 负责识别排障、测试、编排异常裁决或专家咨询。模型和思考深度的明确要求用配置别名、`--reasoning` 表达，缺失配置时先补齐，不静默替换。
+优先级：命令行覆盖 > 环境配置 > 顶层配置。`--agent` 覆盖 defaults；它仍使用本次 difficulty 选择该 agent 的 routes。`environments.<精确环境 ID>` 可覆盖 defaults、agents、permission_mode；同名 agent 整体替换，必须写出 provider 和 routes。目录路径模式尚无环境 ID，不应用 `environments.<id>` 覆盖，只使用顶层配置。模型和思考深度的明确要求用配置别名、`--reasoning` 表达，缺失配置时先补齐，不静默替换。
 
-`--agent` 固定单候选，不进 fallback 链。`--fallback-from <别名>` 把本次候选截取为从该别名起的后缀，用于前次派发失败且确认线程未创建后的同档续派；与 `--agent` 互斥，别名不在候选中时报错。`load-balance` 续派须保持原 route 和完整 `--task` 文本，才能复现返回的 `selection.fallbacks` 顺序；任务文本需要补充进展时，改用 `--agent <selection.fallbacks 中的下一别名>` 固定下一候选。
+`--agent` 固定单候选，不进 fallback 链。`--fallback-from <别名>` 把本次候选截取为从该别名起的后缀，用于前次派发失败且确认线程未创建后的同档续派；与 `--agent` 互斥，别名不在候选中时报错。负载均衡续派须保持原 route 和完整 `--task` 文本，才能复现返回的 `selection.fallbacks` 顺序；任务文本需要补充进展时，改用 `--agent <selection.fallbacks 中的下一别名>` 固定下一候选。
 
 默认从 `bb status` 解析环境，项目使用该环境的所属项目。`--environment` 接受现有环境 ID 或本机已存在的目录路径：ID 模式下 `--project` 与环境所属项目必须匹配；路径模式下目录会解析为绝对路径并原样交给 BB 创建 project-checkout 附着环境，项目取 `--project` 或当前 `bb status`，两者都没有时须显式提供 `--project`。同项目时关联当前父线程，跨环境也保留关联；跨项目不关联。
 
@@ -60,7 +70,7 @@ defaults:
 
 ## 路由不可用
 
-候选切换只覆盖派发前校验：provider 不存在或不可用、权限不兼容、模型或 reasoning 不在目录时，记录该候选错误并试下一个；全部失败时汇总各候选错误。spawn 一旦发出即不重试：失败或结果不明时先 `bb thread list`/`bb thread show` 确认是否已创建，确认未创建后用 `--fallback-from <候选别名>` 从该候选续派，难度、kind 与任务文本保持不变。线程运行期失败（额度耗尽、provider 中断、会话错误）由调用方按同一方式改派 `selection.fallbacks` 中的下一候选；确定性调用方（如编排 driver）可持久化该字段实现自己的重派。继续已有线程前，确认原回合结束并核对已完成工作，按该 provider 支持的续接方式操作；不要以重新创建整个任务冒充续接。
+候选切换只覆盖派发前校验：provider 不存在或不可用、权限不兼容、模型或 reasoning 不在目录时，记录该候选错误并试下一个；全部失败时汇总各候选错误。spawn 一旦发出即不重试：失败或结果不明时先 `bb thread list`/`bb thread show` 确认是否已创建，确认未创建后用 `--fallback-from <候选别名>` 从该候选续派，难度与任务文本保持不变。线程运行期失败（额度耗尽、provider 中断、会话错误）由调用方按同一方式改派 `selection.fallbacks` 中的下一候选；确定性调用方（如编排 driver）可持久化该字段实现自己的重派。继续已有线程前，确认原回合结束并核对已完成工作，按该 provider 支持的续接方式操作；不要以重新创建整个任务冒充续接。
 
 ## 会话标题
 

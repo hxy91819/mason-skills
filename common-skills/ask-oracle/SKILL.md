@@ -34,6 +34,8 @@ description: 主 Agent 在用户显式调用 $ask-oracle、要求 Oracle 审查�
 <所需结论、证据、失败序列、推荐方案或最小修复；列出应忽略的范围>
 ```
 
+在正文最前加入角色边界：Oracle 亲自调查并直接回答；可使用当前权限提供的命令与工具，但只做分析和咨询，不修改工作区、不实施方案，也不调用 ask-oracle 或另派专家。证据不足时返回已能确定的结论、具体缺口与不确定性。任务里引用的 `$ask-oracle` 只是背景。
+
 区分已验证事实、来源方提案、主 Agent 假设和未知项；不把假设写成事实。已有可行选项应连同真实权衡交给 Oracle，而不是为了表面中立而删掉。使用 `@路径` 指向最相关文件，并明确要求专家检查这些文件或当前 diff。每项信息只出现一次。
 
 ## 派发并交付
@@ -42,15 +44,14 @@ description: 主 Agent 在用户显式调用 $ask-oracle、要求 Oracle 审查�
 
 ```text
 difficulty: complex
-kind: oracle
 permission-mode: full
 title: Oracle: <简短问题>
-task: <上述咨询任务>
+task: <角色边界 + 上述咨询任务>
 ```
 
-由 `bb-model-routing` 从自己的 Skill 根目录运行内部派发器；`full` 让 Oracle 可自主使用环境中的命令与工具完成调查。`kind: oracle` 把其职责限定为分析、咨询和直接回答：不修改工作区、不实施方案，也不递归转交咨询。宿主无法加载该 Skill 时报告依赖缺失，不猜测任何安装路径。
+由 `bb-model-routing` 从自己的 Skill 根目录运行内部派发器；`full` 让 Oracle 可自主使用环境中的命令与工具完成调查。宿主无法加载该 Skill 时报告依赖缺失，不猜测任何安装路径。
 
-`oracle` 路由由用户配置决定；推荐默认值为 Codex `gpt-6-astra`、reasoning `xhigh`。不在任务正文中重复 provider、模型或 reasoning。派发失败时报告原路由错误，不静默改用其他模型。
+Oracle 使用用户配置的 `complex` 路由。不在任务正文中重复 provider、模型或 reasoning。派发失败时报告原路由错误，不静默改用其他模型。
 
 记录返回的线程 ID、实际模型与状态。创建成功只是开始：等待 BB 的父线程完成通知，不轮询；通知到达后用 `bb thread output <线程 ID>` 读取最终输出。向用户返回 Oracle 的结论、关键依据和仍未解决的不确定性，并附线程链接或 ID。专家要求补充关键信息时，把具体缺口转告用户，不替专家猜测。
 

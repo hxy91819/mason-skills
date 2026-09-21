@@ -75,9 +75,9 @@ ready Story 时退出并把最小原因写到 stderr。
 
 ## 能力档
 
-Story 的首轮 `difficulty` 与 `kind` 由已加载的 `$large-task-planning` 定义；driver
-只消费它们并在 Judge 升档后覆盖实际难度。Validator 固定 `simple --kind test`，Judge 固定
-`complex --kind judge`，通过 `bb-model-routing` 的 `defaults.judge` 与 complex Worker 分别配置。
+Story 的首轮 `difficulty` 由已加载的 `$large-task-planning` 定义；driver
+只消费它并在 Judge 升档后覆盖实际难度。Validator 固定 `simple`，Judge 固定 `complex`，都通过
+`bb-model-routing` 的难度路由配置。
 
 ## 报告契约
 
@@ -131,7 +131,6 @@ Judge 报告再绑定 judge round，动作仍限制在固定集合：
 ## 常用参数与退出码
 
 - `--default-difficulty simple|medium|complex`：Story 缺少 `difficulty` 时的首轮档位；Story 的值优先，Judge 升档结果再优先。
-- `--kind general|debug`：Story 缺少 `kind` 时的 Worker 派发类型；Story 的值优先。
 - `--validator always|standard-up`：默认每张 Story 都验；显式 `standard-up` 才跳过 simple Story。
 - `--max-patch-rounds`、`--max-attempts`、`--max-judge-rounds`：恢复与裁决轮次上限，耗尽后停给用户。
 - `--stall-minutes`（默认 90）：单个 busy 线程超过此时长会被停止；Worker 走一次 retry 后再交 Judge，Validator 改派。

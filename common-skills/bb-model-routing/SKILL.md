@@ -18,27 +18,25 @@ Agent 自行决定使用 subagent，或用户只要求“用 subagent 检查一�
 - `simple`：局部改动，步骤与验收清楚。
 - `medium`：范围明确，涉及少量模块或需要比较方案。
 - `complex`：跨模块设计、根因难定位或较多不确定性。
-- 排查问题、找 bug 额外传 `--kind debug`，即使任务简单也保留该类型。
-- 专门做测试验证、单测编写或执行验证额外传 `--kind test`。
-- 专家技术咨询固定传 `--difficulty complex --kind oracle`。
+- 排查问题、找 bug 仍只按工作难度选择 `simple`、`medium` 或 `complex`。
+- 专门做测试验证、单测编写或执行验证使用 `simple`。
+- 专家技术咨询与异常裁决使用 `complex`。
 
 ```bash
-bb-dispatch --difficulty medium --kind debug --task '<任务目标、范围与验收要求>'
-bb-dispatch --difficulty medium --kind test --task '<测试目标、范围与验收要求>'
-bb-dispatch --difficulty complex --kind oracle --task '<已调查证据、待裁决问题与预期输出>'
+bb-dispatch --difficulty medium --task '<排查目标、范围与验收要求>'
+bb-dispatch --difficulty simple --task '<测试目标、范围与验收要求>'
+bb-dispatch --difficulty complex --task '<已调查证据、待裁决问题与预期输出>'
 ```
 
 `--task` 只写任务目标、范围、输入和验收要求。provider、模型、推理级别和可用性检查是派发元数据：由 `bb-dispatch` 根据配置和目录决定，不写入子线程 prompt，也不要求子 agent 在开始前重新查询或确认。用户明确指定 provider 或模型时，将该要求映射到配置别名或配置调整，仍不把路由要求带入 `--task`。
-
-`--kind oracle` 会由脚本要求专家亲自调查和回答；它可使用当前权限提供的命令与工具，但职责限定为分析和咨询，不修改工作区、不实施方案，也不递归转交咨询。证据不足时返回父 Agent。其他类型原样传递任务。`--dry-run` 可检查实际发送的完整 prompt。
 
 用户指定工具别名或已有对应工具上下文时用 `--agent <配置别名>`，别名由用户配置定义，不推断本机已安装哪些工具。只有用户明确指定推理级别时才传 `--reasoning`；其余由脚本读取配置。配置未指定时省略该参数，使用 provider 默认值。命令未安装时直接执行本技能的 `scripts/bb-dispatch`。需要预览用 `--dry-run`，脚本已完成的环境与模型校验无需重复查询。
 
 ## 派发边界
 
-所有 provider、模型、推理级别和默认路由均来自用户配置；脚本在创建前完成相应目录校验。父 agent 只负责选择任务难度、类型和配置别名，不能把路由选择或二次校验职责下放给子 agent。首次使用先按参考文档查询目标环境，再填写配置。缺少配置时完成配置准备，校验通过后再派发。
+所有 provider、模型、推理级别和默认路由均来自用户配置；脚本在创建前完成相应目录校验。父 agent 只负责选择任务难度和配置别名，不能把路由选择或二次校验职责下放给子 agent。首次使用先按参考文档查询目标环境，再填写配置。缺少配置时完成配置准备，校验通过后再派发。
 
-`defaults.<路由>` 默认使用 fallback：单个别名固定选择，有序别名链按序校验并派发首个可用候选。需要分摊独立任务时可配置 `mode: load-balance` 和 `candidates`；脚本按路由与完整任务文本做稳定散列来排列候选，不维护共享计数，同一任务可复现选择与 fallback 顺序。每个候选只按本次路由项或显式 `default` 解析自己的 `routes`；缺少两者时跳过该候选，角色路由不会借用同次任务的难度配置。`--agent` 是固定单候选。候选全部不可用时汇总各候选错误报告；spawn 发出后不重试，确认线程未创建后用 `--fallback-from <候选别名>` 续派。具体格式和负载均衡续派约束见[配置与派发](references/dispatch.md)。
+`defaults.<难度>` 默认使用 fallback：单个别名固定选择，有序别名链按序校验并派发首个可用候选。需要分摊独立任务时配置 `mode: load-balance`；需要按额度比例分摊时配置 `mode: weighted-load-balance`，并把 `candidates` 写成“别名: 正权重”映射。脚本按难度与完整任务文本做稳定散列来排列候选，不维护共享计数，同一任务可复现选择与 fallback 顺序。每个候选只按本次难度或显式 `default` 解析自己的 `routes`；缺少两者时跳过该候选。`--agent` 是固定单候选。候选全部不可用时汇总各候选错误报告；spawn 发出后不重试，确认线程未创建后用 `--fallback-from <候选别名>` 续派。具体格式和负载均衡续派约束见[配置与派发](references/dispatch.md)。
 
 每次派发本来就是独立 BB 会话，负载均衡不会拆分会话上下文。不要额外规避前缀缓存；但不同 provider 或模型之间也不假定共享缓存。
 
@@ -52,7 +50,7 @@ bb-dispatch --difficulty complex --kind oracle --task '<已调查证据、待裁
 
 等待由 BB 的通知驱动，不靠轮询。子线程回合完成、失败或被中断时，BB 会向父线程投递系统通知（父线程忙时先排队，空闲时作为新回合送达，内容含子线程最终输出摘要）；子线程卡在待处理交互时另有求助通知。脚本在父子同项目时自动关联父线程，通知沿这条关联回到父线程。派发后结束当前回合或转做其他工作，收到通知再读取结果、决定下一步；`bb thread wait` 循环、反复 `show` 或 sleep 后重查都属于多余的轮询，只在创建结果未知等需要立即确认时查询一次。
 
-子线程因 provider 不可用、额度耗尽或会话错误而失败或中断时，按 `selection.fallbacks` 记录的未尝试链用 `--fallback-from <下一别名>` 改派：沿用原 difficulty、kind 与任务文本；失败线程已有部分产出时在任务中说明进展与位置。这区别于任务被拒、正常完成或待处理交互——那些不是路由失败，不改派。链耗尽后如实报告，不循环改派。
+子线程因 provider 不可用、额度耗尽或会话错误而失败或中断时，按 `selection.fallbacks` 记录的未尝试链用 `--fallback-from <下一别名>` 改派：沿用原 difficulty 与任务文本；失败线程已有部分产出时在任务中说明进展与位置。这区别于任务被拒、正常完成或待处理交互——那些不是路由失败，不改派。链耗尽后如实报告，不循环改派。
 
 并行前按任务性质分流：
 
@@ -64,15 +62,13 @@ bb-dispatch --difficulty complex --kind oracle --task '<已调查证据、待裁
 ## 作为编排后端
 
 `large-task-orchestrator` 的确定性 driver 通过 `bb-dispatch` 派 Worker、Validator 与异常时的 Judge：Worker 按
-能力档映射为 `--difficulty`，Validator 固定 `--difficulty simple --kind test`，Judge 固定 `--difficulty complex --kind judge`。
-driver 只传任务文本、难度、类型与已有环境，路由仍由本配置决定；状态机、wait/output/tell 兼容性见其
+能力档映射为 `--difficulty`，Validator 固定 `--difficulty simple`，Judge 固定 `--difficulty complex`。
+driver 只传任务文本、难度与已有环境，路由仍由本配置决定；状态机、wait/output/tell 兼容性见其
 所属 `$large-task-orchestrator` 的 `references/bb-dispatch-loop.md`；需要该契约时由宿主加载目标 Skill，不按 sibling 路径读取。driver 是脚本状态机，
 用 `bb thread wait` 阻塞等待并自带 stall 处理，与会话内父 agent 的通知路径相互独立。
 
-`defaults.test` 决定 Validator 路由，`defaults.judge` 单独决定 Judge 路由，`defaults.oracle` 决定专家咨询路由，Worker 使用难度路由或
-`debug` 路由。`agents.<别名>.routes` 按角色、难度和 `default` 项配置模型与 reasoning，选择规则见
-[配置与派发](references/dispatch.md)。
+三类线程都只使用 `simple`、`medium`、`complex` 难度路由。`agents.<别名>.routes` 按难度和 `default` 项配置模型与 reasoning，选择规则见[配置与派发](references/dispatch.md)。
 
 ## 可观测性
 
-使用 `--dry-run` 只读检查当前选择、`routing_mode`、目标环境、启动参数与剩余 fallback 候选；派发返回实际选择、`attempts` 候选失败记录、`fallbacks` 未尝试候选与原始创建回执。当前没有持久运行历史、裁决回写或跨运行聚合，无法统计长期成功率；`load-balance` 是无状态散列分流，也不提供长期利用率统计。故障定位依赖返回错误和 BB 线程记录（`bb thread show <线程ID>` 回看）。
+使用 `--dry-run` 只读检查当前选择、`routing_mode`、目标环境、启动参数与剩余 fallback 候选；派发返回实际选择、`attempts` 候选失败记录、`fallbacks` 未尝试候选与原始创建回执。当前没有持久运行历史、裁决回写或跨运行聚合，无法统计长期成功率；两种 load-balance 模式都是无状态散列分流，也不提供长期利用率统计。故障定位依赖返回错误和 BB 线程记录（`bb thread show <线程ID>` 回看）。

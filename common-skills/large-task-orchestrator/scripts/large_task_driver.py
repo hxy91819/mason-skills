@@ -438,7 +438,6 @@ class Driver:
 
     def validate_dispatch(self) -> None:
         command = [*self.dispatch, "--difficulty", self.args.default_difficulty,
-                   "--kind", "debug" if self.args.kind == "debug" else "general",
                    "--task", "校验 large-task driver 路由；不创建线程。", "--dry-run"]
         if self.args.environment:
             command += ["--environment", self.args.environment]
@@ -601,9 +600,9 @@ class Driver:
 
     # ----------------------------------------------------------------- BB 线程
 
-    def dispatch_thread(self, *, difficulty: str, kind: str, title: str, task: str, role: str = "") -> str:
+    def dispatch_thread(self, *, difficulty: str, title: str, task: str, role: str = "") -> str:
         self.ensure_thread_capacity(role)
-        command = [*self.dispatch, "--difficulty", difficulty, "--kind", kind, "--title", title, "--task", task]
+        command = [*self.dispatch, "--difficulty", difficulty, "--title", title, "--task", task]
         if self.args.environment:
             command += ["--environment", self.args.environment]
         payload = run_json(command, cwd=self.repository)
@@ -614,7 +613,7 @@ class Driver:
         self.record_thread_total(role)
         self.note_thread_event(thread_id)
         selection = payload.get("selection", {})
-        self.log("thread.spawned", thread=thread_id, difficulty=difficulty, kind=kind,
+        self.log("thread.spawned", thread=thread_id, difficulty=difficulty,
                  provider=selection.get("provider"), model=selection.get("model"), title=title)
         return thread_id
 
@@ -1016,7 +1015,6 @@ Validator 报告：{validator}
         self.clear_worker_report(story_id, attempt)
         thread_id = self.dispatch_thread(
             difficulty=state.difficulty,
-            kind=str(story.get("kind")) if story.get("kind") in ("general", "debug") else self.args.kind,
             title=f"{story_id} worker",
             task=self.worker_task(story_id, story, brief, attempt=attempt, resume_note=resume_note),
             role="worker",
@@ -1044,7 +1042,7 @@ Validator 报告：{validator}
         state.validator_report_requests = 0
         self.clear_validator_report(story_id, state.attempts, state.validator_rounds)
         thread_id = self.dispatch_thread(
-            difficulty="simple", kind="test", title=f"{story_id} validator",
+            difficulty="simple", title=f"{story_id} validator",
             task=self.validator_task(story_id, story, state))
         state.validator_thread = thread_id
         state.phase = "validating"
@@ -1164,7 +1162,7 @@ Validator 报告：{validator}
                     self.log("judge.reused", story=story_id, thread=thread_id, round=judge_round)
             if not thread_id:
                 thread_id = self.dispatch_thread(
-                    difficulty="complex", kind="judge", title=f"{story_id} judge",
+                    difficulty="complex", title=f"{story_id} judge",
                     task=self.judge_task(story_id, story, state, situation, continuation=False), role="judge",
                 )
                 state.judge_thread = thread_id
@@ -1182,7 +1180,7 @@ Validator 报告：{validator}
             if outcome in ("error", "stalled"):
                 self.log("judge.replaced", story=story_id, thread=thread_id, round=judge_round)
                 thread_id = self.dispatch_thread(
-                    difficulty="complex", kind="judge", title=f"{story_id} judge",
+                    difficulty="complex", title=f"{story_id} judge",
                     task=self.judge_task(story_id, story, state, situation, continuation=False), role="judge",
                 )
                 state.judge_thread = thread_id
@@ -1480,7 +1478,6 @@ def build_parser() -> argparse.ArgumentParser:
         target.add_argument("--environment", help="传给 bb-dispatch 的 BB 环境 ID")
         target.add_argument("--context", default="", help="附加给每个线程的仓库说明（基线、命令等）")
         target.add_argument("--default-difficulty", choices=DIFFICULTIES, default="medium", help="首轮 Worker 难度")
-        target.add_argument("--kind", choices=["general", "debug"], default="general", help="Worker 的 bb-dispatch --kind")
         target.add_argument("--validator", choices=["always", "standard-up"], default="always",
                             help="always（默认）：每张 Story 都派 Validator；standard-up：simple 档跳过")
         target.add_argument("--max-patch-rounds", type=int, default=2, help="Validator FAIL 后发回同一 Worker 的最大轮数")
@@ -1528,7 +1525,7 @@ def background_command(args: argparse.Namespace) -> list[str]:
                "--plan", str(args.plan), "--stories-dir", str(args.stories_dir),
                "--repository", str(args.repository), "--planning-script", str(args.planning_script),
                "--report-script", str(args.report_script),
-               "--default-difficulty", args.default_difficulty, "--kind", args.kind,
+               "--default-difficulty", args.default_difficulty,
                "--validator", args.validator, "--max-patch-rounds", str(args.max_patch_rounds),
                "--max-attempts", str(args.max_attempts), "--max-judge-rounds", str(args.max_judge_rounds),
                "--stall-minutes", str(args.stall_minutes), "--no-progress-hours", str(args.no_progress_hours),

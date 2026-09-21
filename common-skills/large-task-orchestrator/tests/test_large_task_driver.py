@@ -99,7 +99,7 @@ args = sys.argv[1:]
 def get(flag):
     return args[args.index(flag) + 1] if flag in args else None
 if "--dry-run" in args:
-    print(json.dumps({"dry_run": True, "selection": {"difficulty": get("--difficulty"), "kind": get("--kind")}}))
+    print(json.dumps({"dry_run": True, "selection": {"difficulty": get("--difficulty")}}))
     sys.exit(0)
 title = get("--title"); role = title.split()[-1]; story = title.split()[0]
 key = f"{story}:{role}"
@@ -109,12 +109,12 @@ queue = scripts[index] if index < len(scripts) else [{"output": "Result: failed\
 world["spawned"][key] = index + 1
 thread_id = f"thr_{role}_{story.lower().replace('-', '')}_{index + 1}"
 world["threads"][thread_id] = {"status": "active", "output": "", "queue": list(queue), "task": get("--task"),
-                               "difficulty": get("--difficulty"), "kind": get("--kind"),
+                               "difficulty": get("--difficulty"),
                                "interactions": list(world.get("interactions", {}).get(key, []))}
-world.setdefault("dispatches", []).append({"thread": thread_id, "difficulty": get("--difficulty"), "kind": get("--kind"), "title": title})
+world.setdefault("dispatches", []).append({"thread": thread_id, "difficulty": get("--difficulty"), "title": title})
 world_handle.seek(0); json.dump(world, world_handle, ensure_ascii=False, indent=1)
 world_handle.truncate(); world_handle.flush()
-print(json.dumps({"dry_run": False, "selection": {"provider": "p", "model": "m", "difficulty": get("--difficulty"), "kind": get("--kind")},
+print(json.dumps({"dry_run": False, "selection": {"provider": "p", "model": "m", "difficulty": get("--difficulty")},
                   "result": {"id": thread_id, "status": "queued"}}))
 '''
 
@@ -410,7 +410,6 @@ class DriverTest(unittest.TestCase):
         dispatches = self.read_world()["dispatches"]
         self.assertEqual([d["title"] for d in dispatches],
                          ["STORY-01 worker", "STORY-01 validator", "STORY-02 worker", "STORY-02 validator"])
-        self.assertEqual(dispatches[1]["kind"], "test")
         self.assertEqual(dispatches[1]["difficulty"], "simple")
         self.assertFalse(any(call[:2] == ["thread", "output"] for call in self.read_world()["calls"]))
         worker_task = self.read_world()["threads"]["thr_worker_story01_1"]["task"]
@@ -584,7 +583,7 @@ class DriverTest(unittest.TestCase):
         self.assertTrue((state_dir / "reports/STORY-01/attempt-1-judge-1.json").is_file())
         self.assertTrue((state_dir / "reports/STORY-01/attempt-1-judge-2.json").is_file())
         events = [json.loads(line) for line in (state_dir / "log.jsonl").read_text(encoding="utf-8").splitlines()]
-        self.assertEqual(sum(event["event"] == "thread.spawned" and event.get("kind") == "judge" for event in events), 1)
+        self.assertEqual(sum(event["event"] == "thread.spawned" and event.get("title") == "STORY-01 judge" for event in events), 1)
         self.assertEqual(sum(event["event"] == "judge.reused" for event in events), 1)
 
     def test_pending_judge_round_delivers_unsent_situation_after_restart(self) -> None:
@@ -655,13 +654,12 @@ class DriverTest(unittest.TestCase):
         self.assertNotIn("STORY-01:validator", self.read_world().get("spawned", {}))
         self.assertTrue(any("Validator skipped" in item for item in self.story("STORY-01")["handoff"]["verification"]))
 
-    def test_story_routing_overrides_default_difficulty_and_kind(self) -> None:
+    def test_story_difficulty_overrides_default(self) -> None:
         first = self.story("STORY-01")
         first["difficulty"] = "simple"
         self.write_json(self.stories / "STORY-01-first.json", first)
         second = self.story("STORY-02")
         second["difficulty"] = "complex"
-        second["kind"] = "debug"
         self.write_json(self.stories / "STORY-02-final.json", second)
         self.planning("render")
         self.set_world({
@@ -672,8 +670,8 @@ class DriverTest(unittest.TestCase):
         self.run_driver("--default-difficulty", "medium", "--validator", "standard-up")
         workers = [item for item in self.read_world()["dispatches"] if item["title"].endswith("worker")]
         self.assertEqual(
-            [(item["title"], item["difficulty"], item["kind"]) for item in workers],
-            [("STORY-01 worker", "simple", "general"), ("STORY-02 worker", "complex", "debug")],
+            [(item["title"], item["difficulty"]) for item in workers],
+            [("STORY-01 worker", "simple"), ("STORY-02 worker", "complex")],
         )
         self.assertNotIn("STORY-01:validator", self.read_world().get("spawned", {}))
 
@@ -780,7 +778,6 @@ class DriverTest(unittest.TestCase):
         dispatches = self.read_world()["dispatches"]
         self.assertEqual(dispatches[-1]["title"], "STORY-01 judge")
         self.assertEqual(dispatches[-1]["difficulty"], "complex")
-        self.assertEqual(dispatches[-1]["kind"], "judge")
         judge_task = self.read_world()["threads"][dispatches[-1]["thread"]]["task"]
         self.assertIn("Worker 报告 blocked", judge_task)
 
@@ -795,9 +792,8 @@ class DriverTest(unittest.TestCase):
         self.assertEqual(self.story("STORY-01")["status"], "done")
         workers = [d for d in self.read_world()["dispatches"] if d["title"] == "STORY-01 worker"]
         self.assertEqual([d["difficulty"] for d in workers], ["medium", "complex"])
-        self.assertEqual([d["kind"] for d in workers], ["general", "general"])
         judge = next(d for d in self.read_world()["dispatches"] if d["title"] == "STORY-01 judge")
-        self.assertEqual((judge["difficulty"], judge["kind"]), ("complex", "judge"))
+        self.assertEqual(judge["difficulty"], "complex")
 
     def test_extensionless_root_file_reaches_validator(self) -> None:
         first = self.story("STORY-01")
