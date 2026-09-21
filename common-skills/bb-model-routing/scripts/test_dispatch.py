@@ -120,6 +120,10 @@ environments:
                         boundary, separator, body = prompt.partition('--- 咨询任务 ---\n')
                         self.assertTrue(separator)
                         self.assertTrue(boundary.strip())
+                        self.assertIn('可自主使用当前权限提供的命令与工具', boundary)
+                        self.assertIn('职责仅限分析和咨询', boundary)
+                        self.assertIn('不要修改工作区或实施方案', boundary)
+                        self.assertNotIn('保持只读', boundary)
                         self.assertEqual(body, task)
                         prompts.append(prompt)
                     else:

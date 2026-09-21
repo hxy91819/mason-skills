@@ -1,10 +1,13 @@
 {
-  "version": 2,
+  "version": 4,
   "aggregate": {
     "branch": "local/aggregate",
     "upstreamRef": "replace-with-upstream-ref",
+    "upstreamRepository": "replace-with-upstream-owner/repo",
     "lastIntegratedUpstreamCommit": "replace-with-upstream-commit",
     "stableTagPattern": null
   },
-  "features": []
+  "features": [],
+  "domains": [],
+  "trains": []
 }
