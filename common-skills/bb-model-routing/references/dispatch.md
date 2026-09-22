@@ -64,7 +64,7 @@ defaults:
 
 默认从 `bb status` 解析环境，项目使用该环境的所属项目。`--environment` 接受现有环境 ID 或本机已存在的目录路径：ID 模式下 `--project` 与环境所属项目必须匹配；路径模式下目录会解析为绝对路径并原样交给 BB 创建 project-checkout 附着环境，项目取 `--project` 或当前 `bb status`，两者都没有时须显式提供 `--project`。同项目时关联当前父线程，跨环境也保留关联；跨项目不关联。
 
-每次调用会校验 provider 是否存在且可用、权限是否兼容、模型及 reasoning 是否在目录中。ID 模式使用目标环境校验；路径模式不调用 `bb environment show`，而使用当前 `bb status` 的环境作为同 host 代理，没有当前环境时须在 BB 线程里运行或先准备可代理环境。返回 JSON 的 `selection.validation_environment` 记录实际校验环境，ID 模式下等于目标环境。`--dry-run` 同样执行只读校验并输出参数数组，不创建线程。实际派发返回 JSON 的 `selection` 和 BB 原始 `result`，每次调用最多发出一次 spawn（fallback 只发生在 spawn 前的校验阶段）；超时或响应异常时先查线程，避免重复创建。`selection.attempts` 记录链上失败候选及原因，`selection.fallbacks` 记录未尝试的同档别名。目录不做持久缓存，防止安装、账号或环境变化后继续使用过期配置。
+每次调用会校验 provider 是否存在且可用、权限是否兼容、模型及 reasoning 是否在目录中。查询模型目录时同时传入配置中的 selected model，使刚发布但尚未进入普通目录的模型仍能由 provider 验证。ID 模式使用目标环境校验；路径模式不调用 `bb environment show`，而使用当前 `bb status` 的环境作为同 host 代理，没有当前环境时须在 BB 线程里运行或先准备可代理环境。返回 JSON 的 `selection.validation_environment` 记录实际校验环境，ID 模式下等于目标环境。`--dry-run` 同样执行只读校验并输出参数数组，不创建线程。实际派发返回 JSON 的 `selection` 和 BB 原始 `result`，每次调用最多发出一次 spawn（fallback 只发生在 spawn 前的校验阶段）；超时或响应异常时先查线程，避免重复创建。`selection.attempts` 记录链上失败候选及原因，`selection.fallbacks` 记录未尝试的同档别名。目录不做持久缓存，防止安装、账号或环境变化后继续使用过期配置。
 
 验证：`python3 -m unittest discover -s scripts -p 'test_*.py'`（从技能目录运行）。
 

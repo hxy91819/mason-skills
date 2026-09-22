@@ -96,7 +96,17 @@ environments:
         self.assertIn(str(workspace.resolve()), result['argv'])
         self.assertFalse(any(c[:2] == ('environment', 'show') for c in self.calls))
         self.assertIn(('provider', 'list', '--environment', 'env'), self.calls)
-        self.assertIn(('provider', 'models', 'specialist', '--environment', 'env'), self.calls)
+        self.assertIn(
+            ('provider', 'models', 'specialist', '--environment', 'env', '--selected-model', 'deep-model'),
+            self.calls,
+        )
+
+    def test_model_catalog_includes_configured_selected_model(self):
+        m.dispatch(self.args('--dry-run'), self.fake)
+        self.assertIn(
+            ('provider', 'models', 'primary', '--environment', 'env', '--selected-model', 'fast-model'),
+            self.calls,
+        )
 
     def test_relative_workspace_path_is_resolved(self):
         workspace = Path(self.temp.name) / 'workspace'

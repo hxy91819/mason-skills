@@ -215,9 +215,14 @@ def dispatch(args, call=bb):
                 raise DispatchError(f"provider {provider} 在校验环境不可用。")
             if permission not in selected.get("capabilities", {}).get("permissionModes", []):
                 raise DispatchError(f"{provider} 不支持权限 {permission}；请选用兼容工具，或在任务已授权后显式指定权限。")
-            if provider not in catalogs:
-                catalogs[provider] = call("provider", "models", provider, "--environment", validation_environment)
-            selected_model = unique(catalogs[provider], "id", model, "模型")
+            catalog_key = (provider, model)
+            if catalog_key not in catalogs:
+                catalogs[catalog_key] = call(
+                    "provider", "models", provider,
+                    "--environment", validation_environment,
+                    "--selected-model", model,
+                )
+            selected_model = unique(catalogs[catalog_key], "id", model, "模型")
             levels = [entry.get("reasoningEffort") for entry in (selected_model.get("supportedReasoningEfforts") or [])]
             if reasoning is not None and reasoning not in levels:
                 raise DispatchError(f"模型 {model} 不支持 reasoning={reasoning}；可用值：{levels}。")
