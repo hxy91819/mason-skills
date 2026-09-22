@@ -1,6 +1,9 @@
 ---
 name: dev-html-preview
 description: Publish, renew, inspect, or delete a temporary static HTML browser preview only when the user explicitly invokes `$dev-html-preview`.
+disable-model-invocation: true
+triggers:
+  - user
 ---
 
 # HTML 预览发布
