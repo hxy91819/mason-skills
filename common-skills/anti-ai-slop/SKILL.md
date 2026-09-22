@@ -5,12 +5,19 @@ disable-model-invocation: true
 triggers:
   - user
 ---
-
 # Anti AI Slop
 
 未指定时先 `git status --short` 和 `git diff HEAD`（含暂存、未跟踪的文本）。工作区干净则 `git show HEAD`。用户点了文件或 commit，就只看那些。
 
 新建一个不继承当前对话的 subagent，只把用户意图、这份 diff、下面清单给它，让它指出该删什么。不要把作者解释或拟议修复给它。它不改文件。
+
+核对原文后只删它说对的。改完再派一轮，直到没有 slop。只改清单里的问题。
+
+改了什么，留下了哪条真约束。没有 slop 就说 clean。
+
+遵循以下原则
+
+# Keep things tidy
 
 删掉之后代码或文档照样执行得了，多半就是。先看懂这段在干什么，再优先删。
 
@@ -29,6 +36,9 @@ triggers:
 
 工具的 allow/block 清单、仍然有效的约束、行为测试，留着。改写用陈述句写要做什么。判不准就留。
 
-核对原文后只删它说对的。改完再派一轮，直到没有 slop。只改清单里的问题。
+# AI Smells
 
-改了什么，留下了哪条真约束。没有 slop 就说 clean。
+避免大量使用以下句式，要适当变换表达方式：
+
+- 不是...而是
+- xxx不等于xxx
