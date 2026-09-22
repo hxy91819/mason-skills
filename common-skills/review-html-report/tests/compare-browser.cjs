@@ -2,7 +2,7 @@
  * 用法：node compare-browser.cjs report.html /tmp/compare-shots
  *       node compare-browser.cjs --help
  * 覆盖：默认折叠状态、工具栏全部展开、对照滑块（键盘/点击/图内拖动）、并排、
- *       标尺图切换、resize、红框标注几何与标签。
+ *       resize、红框标注几何与标签。
  * 依赖 PLAYWRIGHT_MODULE 或 NODE_PATH；失败退出 1，不修改报告。
  */
 const fs = require('node:fs');
@@ -71,15 +71,6 @@ if (process.argv.includes('--help') || process.argv.includes('-h')) {
       }));
       await page.locator('.sbs').first().screenshot({ path: path.join(out, 'side.png') });
       await side.uncheck();
-      const page0 = page.locator('.fold.page').first();
-      if (await page0.count()) {
-        // 页卡内的标尺图开关在页卡内查找，避免命中其他卡的控件。
-        await page0.locator('.ruler').check();
-        result.rulersVisible = await page0.locator('.rulers').isVisible();
-        await page0.locator('.rulers').screenshot({ path: path.join(out, 'rulers.png') });
-        await page0.locator('.ruler').uncheck();
-      }
-      result.rulersHidden = !(await page.locator('.rulers').first().isVisible());
       await page.setViewportSize({ width: 840, height: 760 });
       await shot('hidden-resize');
       await slider.focus();

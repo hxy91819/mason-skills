@@ -15,37 +15,20 @@
 3. 自动：读同目录下 `<png 同名>.json` 的 `viewport.width`（capture-surface.js 的产物）。
 4. 兜底 1.0，并打印一行提示——高分屏下这会让红框偏移，此时补 1 或 2。
 
-用法：
-  annotate-shot.py --boxes boxes.json --out <目录> [--pad 120] [--max-width 900]
-                   [--overview <png> ...] [--inject <报告.html>]
-  annotate-shot.py --boxes boxes.json --out /tmp/marked
-  annotate-shot.py --boxes boxes.json --out /tmp/marked --inject /tmp/report.html
-
-产物：
-  <out>/<id>.png            标注后的局部图
-  <out>/overview-<名字>.png  等比缩小的全景图
-  <out>/embed.json          {id: "data:image/png;base64,..."} 供内嵌单文件报告
-  可选 --inject             就地把报告里的 `__EMBED_<id>__` 占位符替换成 data URI，
-                            全景图占位符为 `__EMBED_overview:<名字>__`；
-                            替换后校验无残留占位符，有缺失则报错退出。
-stdout 打印标注/注入数量；成功退出 0，缺图或无效输入退出 1，参数错误退出 2。
-缺少注入图片时保留原报告，不留下半注入产物。
+用法：annotate-shot.py --boxes boxes.json --out <目录> [--pad 120] [--max-width 900]
+输出 <out>/<id>.png 及 annotations.json（id 到标注图绝对路径的映射）。
+HTML 报告由 review-html-report 消费这些路径并内嵌；本脚本只生成真实标注证据。
+成功退出 0，缺图或无效输入退出 1，参数错误退出 2。
 """
 
 import argparse
-import base64
 import json
 import pathlib
-import re
 import sys
 
 from PIL import Image, ImageDraw
 
 MARK = (217, 45, 32)  # 与报告里「阻断」同色，视觉上和严重度对齐
-
-
-def data_uri(path: pathlib.Path) -> str:
-    return "data:image/png;base64," + base64.b64encode(path.read_bytes()).decode()
 
 
 def fit(img: Image.Image, max_width: int) -> Image.Image:
@@ -110,42 +93,12 @@ def annotate(box: dict, out_dir: pathlib.Path, pad: int, max_width: int) -> path
     return dst
 
 
-PLACEHOLDER = re.compile(r"__EMBED_(.+?)__")
-
-
-def inject(report: pathlib.Path, embed: dict[str, str]) -> int:
-    """把报告里的 `__EMBED_<id>__` 就地换成 data URI，并校验没有漏的。"""
-    html = report.read_text(encoding="utf-8")
-    wanted = set(PLACEHOLDER.findall(html))
-    missing = sorted(wanted - embed.keys())
-    if missing:
-        print(f"缺失图片: {', '.join(missing)}；报告未修改", file=sys.stderr)
-        return 1
-    for key in wanted & embed.keys():
-        html = html.replace(f"__EMBED_{key}__", embed[key])
-    report.write_text(html, encoding="utf-8")
-
-    left = PLACEHOLDER.findall(html)
-    print(f"注入 {report}：占位符 {len(wanted)} 个，已替换 {len(wanted) - len(missing)} 个，"
-          f"内嵌图片 {html.count('data:image/png;base64,')} 张，"
-          f"报告 {report.stat().st_size // 1024} KB")
-    unused = sorted(embed.keys() - wanted)
-    if unused:
-        print(f"  提示：produced 但报告未引用: {', '.join(unused)}")
-    if missing or left:
-        print(f"  缺失图片: {', '.join(missing) or '无'}；残留占位符: {', '.join(sorted(set(left))) or '无'}")
-        return 1
-    return 0
-
-
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--boxes", required=True, help="带截图路径与 CSS 坐标的 JSON 数组")
-    ap.add_argument("--out", required=True, help="标注 PNG 与 embed.json 输出目录")
+    ap.add_argument("--out", required=True, help="标注 PNG 与 annotations.json 输出目录")
     ap.add_argument("--pad", type=int, default=120, help="局部图上下文像素，默认 120")
     ap.add_argument("--max-width", type=int, default=900, help="输出图片最大宽度，默认 900")
-    ap.add_argument("--overview", action="append", default=[], help="全景图片路径，可重复")
-    ap.add_argument("--inject", help="报告 HTML 路径，就地替换 __EMBED_<id>__ 占位符")
     a = ap.parse_args()
     if a.pad < 0 or a.max_width < 1:
         ap.error("--pad 必须非负，--max-width 必须大于 0")
@@ -154,28 +107,15 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     boxes = json.loads(pathlib.Path(a.boxes).read_text(encoding="utf-8"))
 
-    embed: dict[str, str] = {}
+    annotations: dict[str, str] = {}
 
     for box in boxes:
         dst = annotate(box, out_dir, a.pad, a.max_width)
-        embed[box["id"]] = data_uri(dst)
+        annotations[box["id"]] = str(dst.resolve())
         print(f"{box['id']} -> {dst} ({dst.stat().st_size // 1024} KB)")
 
-    for ov in a.overview:
-        src = pathlib.Path(ov)
-        img = fit(Image.open(src).convert("RGB"), a.max_width)
-        dst = out_dir / f"overview-{src.stem}.png"
-        img.save(dst)
-        key = f"overview:{src.stem}"
-        embed[key] = data_uri(dst)
-        print(f"{key} -> {dst} ({dst.stat().st_size // 1024} KB)")
-
-    (out_dir / "embed.json").write_text(json.dumps(embed, indent=1), encoding="utf-8")
-    total = sum(len(v) for v in embed.values()) // 1024
-    print(f"embed.json 写入 {len(embed)} 张，内嵌后约 {total} KB")
-
-    if a.inject:
-        return inject(pathlib.Path(a.inject), embed)
+    (out_dir / "annotations.json").write_text(json.dumps(annotations, indent=1), encoding="utf-8")
+    print(f"annotations.json 写入 {len(annotations)} 个标注图路径")
 
     return 0
 

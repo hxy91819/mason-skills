@@ -1,7 +1,7 @@
 interface:
   display_name: "PPT Visual Review"
-  short_description: "逐页看图验收 PPT 的投影可读性、证据与交互；红框标注问题、前后对照滑块报告，支持只读审查和布局修复"
-  default_prompt: "Use $ppt-visual-review to visually review every slide and its interactions, fix layout issues within scope, and report actual evidence and remaining recommendations."
+  short_description: "委派审查与复验，主 Agent 直接修复视觉和内容问题，默认交付 HTML 前后对比报告"
+  default_prompt: "Use $ppt-visual-review to delegate visual review and revalidation, directly fix actionable findings, and automatically deliver an HTML report using $review-html-report."
 
 policy:
   allow_implicit_invocation: false

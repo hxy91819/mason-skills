@@ -1,71 +1,12 @@
 #!/usr/bin/env python3
-"""把一轮 PPT 版式验收渲染成单文件 HTML 报告：问题卡（红框标注 + 前后对照滑块）+ 逐页覆盖记录。
+"""统一审查报告渲染器：问题卡、文字建议对照、真实修复滑块和反馈复制。
 
-报告形态：
-  - 所有区块默认折叠（details），顶部提供「全部展开 / 全部收起」，方便逐块审查。
-  - 「问题与修复」是主结构：每个 finding 一张卡。卡上半部是红框标注截图
-    （box 圈出问题位置 + 短标签 label + 一句话说明 short），下半部是该问题的
-    改前/改后对照滑块图（一个图框内竖条切换，仅当两图都真实存在才渲染）。
-  - 「逐页覆盖记录」每页一卡：逐页观察、页级 before/after 对照（页级复验用）与标尺图。
-
-输入 `--data <json>`：
-
-    {
-      "target": "/abs/deck.html",
-      "mode": "review",                        // review | fix；默认 review
-      "status": "reviewed",                    // reviewed | fixed | clean | incomplete
-      "pageCount": 1,                          // 实际总页数，不是已截图数
-      "contract": {"页画布": "1920x1080", "页边距": "82px", "区块间隔": "28px"},
-      "commands": [{"cmd": "node measure-deck.js ...", "result": "采集 1 页 plain/ruler；视觉结论见逐页观察"}],
-      "pages": [
-        {"id": "p1", "title": "发布验收",
-         "before": "/tmp/x/before-p1.png",
-         "beforeRuler": "/tmp/x/before-p1-ruler.png",
-         "review": {"before": "1920x1080 演示视口：右上角验收表缩至 240px 宽，放行状态无法辨认；打开原图放大后可读。页眉版本标识和主标题均清晰。",
-                    "interaction": "本页为静态标题和验收表，没有可操作控件；交互检查不适用。"}}
-      ],
-      "findings": [
-        {"id": "V2", "severity": "blocking", "kind": "readability", "page": "p1",
-         "title": "关键验收表在投影尺度无法读出放行状态",
-         "short": "验收表缩至 240px，放行状态不可辨。",            // 一句话说明，缺省用 title
-         "label": "验收表 240px",                                   // 红框旁短标签，缺省用 id
-         "img": "/tmp/x/before-p1.png",                             // 红框坐标空间所指截图，缺省该页 before
-         "box": [918, 60, 300, 180],                                // 红框像素坐标 [x,y,w,h]；或 boxPct:[l,t,w,h]
-         "why": "验收表是判断能否发布的唯一证据，字段名与状态都不可辨；放大原图可读不能补足演示画面缺口。",
-         "before": "验收表显示宽度 240px；投影视口 1920x1080",
-         "fix": "建议扩大现有验收表的显示尺寸，利用主区空间呈现结果列；复验时在同一投影视口能直接辨认字段名和放行状态。本轮只读，尚未执行。",
-         "where": "deck.html:191 .acceptance-shot", "resolution": "open",
-         "beforeImg": "/tmp/x/before-p1.png", "afterImg": null}     // 该问题对照图；缺省回落页级 before/after
-      ],
-      "kept": [{"what": "页眉版本标识与主标题之间的留白", "why": "图上空带把版本信息与本页判断分组，避免将版本标识读成验收结论；两组文字在投影尺度均可辨，留白没有遮挡证据。"}],
-      "pending": ["尚待制作方确认的事项；非空时不能 clean/fixed"],
-      "limits": ["..."]
-    }
-
-target、pages（非空、唯一 id）及每页 before 必填；after 可省略，此时只展示现状。
-beforeRuler/afterRuler 可分别省略，绝不互相代替。resolution 为 open（默认）/fixed/kept；
-fixed 要有实际 fix，kept 要有 resolutionReason，待制作方执行的建议保持 open。
-mode=fix 或旧格式 status=fixed 表示本轮有修改，缺 after 的页明确标为未复验。
-缺 pageCount、逐页 review.before/interaction、修复后的 after/review.after，或存在 limits 时，
-状态降为 incomplete；有未处理 findings 时不能宣称 clean/fixed。默认只读，无发现且证据齐全
-才是 clean，否则为 reviewed。观察文字是审查者的证据记录，脚本无法证明 Agent 真的看过图。
-旧字段仍可读取；旧数据缺覆盖记录时报告会说明缺口，不追认旧审查为完整验收。
-
-finding 新字段（均可选，向后兼容）：box / boxPct（红框坐标，像素或百分比）、label（短标签）、
-short（一句话说明）、img（标注所用截图）、beforeImg/afterImg（该问题对照图，缺省回落页级）。
-红框坐标基于 img 指向截图的像素空间；box 无效（非数字、w/h<=0）时记入 limits 并省略红框，不猜坐标。
-对照滑块只在改前改后两张图都真实存在时渲染，缺 afterImg 只显示红框现状，不伪造改后图。
-
-图片按路径读取并内嵌成 data URI，同一文件只内嵌一次；
-装了 Pillow 时缩到 `--max-width` 并转 JPEG（单文件报告控制在几 MB），没装就原样内嵌 PNG。
-红框百分比换算优先读 PNG 头，其次 Pillow；两者都不可用时该 finding 降级为纯文字并在 limits 说明。
-引用的图片缺失或 Pillow 解码失败时退出 3，不覆盖已有报告；无 Pillow 时必须在浏览器核对解码。
-参数错误退出 2，成功退出 0。
---check 只读校验并打印 JSON 聚合（覆盖页数、未处理数、真实状态及缺口），不写报告。
-
-用法：
-  build-report.py --data findings.json --out /tmp/ppt-visual-review/report.html [--max-width 1600]
-  build-report.py --data findings.json --check
+输入契约及 PPT/spec-leak 映射见本 Skill references/report-data.md。
+用法：build-report.py --data findings.json --out report.html [--max-width 1600]
+      build-report.py --data findings.json --check
+--check 只校验并汇总数据与图片，不写 HTML；不能替代实际审查或视觉复验。
+图片以内嵌 data URI 输出；Pillow 可选（压缩图片），纯文本不依赖 Pillow/浏览器。
+返回码：成功 0，参数错误 2，输入或图片错误 3（保留已有报告）。
 """
 
 import argparse
@@ -83,24 +24,14 @@ SEV = {
     "optional": ("可选", "#2563eb"),
 }
 RES = {"open": "待处理", "fixed": "已修复", "kept": "保留"}
-KIND = {
-    "rhythm": "节奏",
-    "cross-page": "跨页一致",
-    "slack": "留白",
-    "symmetry": "对称",
-    "scale": "档位",
-    "readability": "投影可读性",
-    "evidence": "证据可见性",
-    "correspondence": "图文对应",
-    "comparison": "比较对象",
-    "interaction": "交互",
-    "connector": "连接符对齐",
-    "overflow": "截断溢出",
-    "image": "图片质量",
-    "occlusion": "遮挡",
-    "contrast": "对比度",
-    "font": "字体",
-}
+CATEGORIES = {"visual": "视觉与交互问题", "content": "内容与证据建议"}
+
+
+def finding_category(finding):
+    category = finding.get("category", "visual")
+    if category not in CATEGORIES:
+        raise ValueError(f"finding {finding.get('id')}: category 必须是 visual/content")
+    return category
 
 
 def data_uri(path: pathlib.Path, max_width: int) -> str:
@@ -137,6 +68,19 @@ def image_size(path: pathlib.Path):
             return img.size
     except Exception:
         return None
+
+
+def verify_image(path: pathlib.Path):
+    """未嵌入的本地截图也必须可读；校验无需压缩或生成 data URI。"""
+    try:
+        from PIL import Image
+    except ImportError:
+        size = image_size(path)
+        if not size or min(size) <= 0:
+            raise ValueError("无法读取图片尺寸；非 PNG 图片需要 Pillow")
+    else:
+        with Image.open(path) as image:
+            image.verify()
 
 
 def esc(v) -> str:
@@ -176,7 +120,6 @@ def box_pct(finding, img_path, fid, problems):
 # 对照滑块：图框内竖条切换改前/改后；直接拖图内竖条或下方滑杆都能移动分界。
 COMPARE = Template("""
   <div class="controls">
-    $rulerControl
     <label><input type="checkbox" class="side"> 并排</label>
     <span class="hint">拖动图内竖条或下方滑杆：左侧改前 / 右侧改后</span>
   </div>
@@ -193,11 +136,10 @@ COMPARE = Template("""
     <figure><img class="img-before" src="$before" alt="$pid 改前"><figcaption>改前</figcaption></figure>
     <figure><img class="img-after" src="$after" alt="$pid 改后"><figcaption>改后</figcaption></figure>
   </div>
-  $rulers
 """)
 
 FINDING_BLOCK = Template("""
-<details class="fold finding" data-sev="$sev">
+<details class="fold finding" data-sev="$sev" data-finding-id="$fid">
   <summary><span class="sev" style="background:$color">$sevLabel</span>
     <code class="fid">$fid</code> <span class="fpage mono">$fpage</span>
     <span class="ftitle">$title</span>
@@ -206,6 +148,7 @@ FINDING_BLOCK = Template("""
     $annotated
     $short
     $compare
+    $textCompare
     <details class="detail"><summary>完整分析与处理记录</summary>
       <p class="why">$why</p>
       $delta
@@ -213,16 +156,7 @@ FINDING_BLOCK = Template("""
       <p class="mono">$where</p>
       <p>处理状态：$resText$reason</p>
     </details>
-  </div>
-</details>
-""")
-
-PAGE_BLOCK = Template("""
-<details class="fold page" data-page="$pid">
-  <summary><span class="pid mono">$pid</span> $title <span class="pmeta">$meta</span></summary>
-  <div class="fbody">
-    $review
-    $content
+    $feedback
   </div>
 </details>
 """)
@@ -232,7 +166,7 @@ DOC = Template("""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PPT 版式视觉验收 · $targetName</title>
+<title>$reportTitle · $targetName</title>
 <style>
   :root { --bg:#f6f7f9; --card:#fff; --line:#e4e6eb; --text:#1a1d21; --muted:#6b7280; --ok:#059669; --red:#d92d20; }
   * { box-sizing: border-box; }
@@ -249,7 +183,7 @@ DOC = Template("""<!DOCTYPE html>
   dl.kv dd { margin:0; }
   code, .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px; }
   .sev { display:inline-block; min-width:38px; padding:2px 8px; border-radius:4px; color:#fff; font-size:12px; font-weight:700; text-align:center; }
-  .delta { white-space:nowrap; }
+  .delta { white-space:pre-wrap; overflow-wrap:anywhere; }
   .delta b { color:var(--ok); }
   /* 折叠块：默认收起；summary 是唯一展开入口。 */
   details.fold { background:var(--card); border:1px solid var(--line); border-radius:10px; margin-bottom:12px; }
@@ -271,7 +205,8 @@ DOC = Template("""<!DOCTYPE html>
                     font-size:13px; cursor:pointer; }
   .toolbar button:hover { background:#f2f4f7; }
   /* 红框标注：框住问题位置，短标签说明，不用大段文字。 */
-  .annotated { position:relative; margin:0 0 10px; line-height:0; border:1px solid var(--line); }
+  .annotation-image { position:relative; }
+  .annotated { margin:0 0 10px; line-height:0; border:1px solid var(--line); }
   .annotated img { width:100%; display:block; }
   .rbox { position:absolute; border:3px solid var(--red); border-radius:4px;
           box-shadow:0 0 0 1px rgba(255,255,255,.65); pointer-events:none; }
@@ -307,38 +242,46 @@ DOC = Template("""<!DOCTYPE html>
   .sbs figcaption { color:var(--muted); font-size:12px; padding-top:6px; }
   .is-side .compare { display:none; }
   .is-side .sbs { display:grid; }
-  .rulers { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px; }
-  .rulers[hidden] { display:none; }   /* display:grid 会盖掉 hidden，标尺图默认要收起 */
-  .rulers img { width:100%; display:block; border:1px solid var(--line); }
-  .current { margin:0; }
-  .current img { width:100%; display:block; }
-  .current figcaption, .annotated figcaption { color:var(--muted); font-size:12px; padding-top:6px; line-height:1.5; }
+  .annotated figcaption { color:var(--muted); font-size:12px; padding-top:6px; line-height:1.5; }
   .review { white-space:pre-wrap; color:var(--muted); font-size:13px; margin:0 0 10px; }
-  .pmeta { color:var(--muted); font-size:12.5px; flex:none; }
   .status.incomplete, .status.reviewed { background:#9a6700; }
   ul.plain { margin:0; padding-left:18px; }
   ul.plain li { margin-bottom:6px; }
+  .text-compare { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:12px; margin:12px 0; }
+  .text-compare pre, .draft { white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; }
+  .text-compare > div { padding:12px; border:1px solid var(--line); border-radius:8px; }
+  .text-compare > div:first-child { background:#fff8f7; }
+  .text-compare > div:last-child { background:#f4fbf7; }
+  .feedback { display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-top:12px; }
+  #feedback-export { width:100%; min-height:160px; }
+  .coverage { width:100%; border-collapse:collapse; }
+  .coverage th, .coverage td { border-bottom:1px solid var(--line); padding:8px; text-align:left; overflow-wrap:anywhere; }
+  @media (max-width:640px) {
+    body { padding:16px 10px; }
+    .text-compare { grid-template-columns:minmax(0,1fr); }
+    details.fold > summary, .toolbar { flex-wrap:wrap; }
+    dl.kv { grid-template-columns:1fr; gap:4px; }
+  }
 </style>
 </head>
 <body>
 <main>
-  <h1>PPT 版式视觉验收 · $targetName</h1>
-  <p class="sub"><span class="status $status">$statusText</span> &nbsp;$modeText &nbsp;·&nbsp; 被审文件 <code>$target</code> &nbsp;·&nbsp; 展示 $pageCount 页 &nbsp;·&nbsp; $generated</p>
+  <h1>$reportTitle · $targetName</h1>
+  <p class="sub"><span class="status $status">$statusText</span> &nbsp;$modeText &nbsp;·&nbsp; 被审文件 <code>$target</code> &nbsp;·&nbsp; 覆盖记录 $pageCount 项 &nbsp;·&nbsp; $generated</p>
 
   $summary
   <div class="toolbar">
     <button type="button" id="expand-all">全部展开</button>
     <button type="button" id="collapse-all">全部收起</button>
+    <button type="button" id="copy-all">复制全部反馈</button>
   </div>
   $contract
-  <h2>问题与修复</h2>
+  $coverage
   $findings
-  <h2>逐页覆盖记录</h2>
-  $pages
-  $kept
-  $pending
-  $commands
+  $draft
   $limits
+  <p id="feedback-status" role="status"></p>
+  <textarea id="feedback-export" aria-label="可复制反馈" hidden></textarea>
 </main>
 <script>
   const setSplit = (cmp, value) => {
@@ -379,10 +322,7 @@ DOC = Template("""<!DOCTYPE html>
   }
   for (const card of document.querySelectorAll('.fold')) {
     card.querySelector('.side')?.addEventListener('change', (e) => card.classList.toggle('is-side', e.target.checked));
-    card.querySelector('.ruler')?.addEventListener('change', (e) => {
-      const rulers = card.querySelector('.rulers');
-      if (rulers) rulers.hidden = !e.target.checked;
-    });
+
   }
   document.getElementById('expand-all')?.addEventListener('click', () => {
     document.querySelectorAll('details').forEach((d) => { d.open = true; });
@@ -390,6 +330,28 @@ DOC = Template("""<!DOCTYPE html>
   document.getElementById('collapse-all')?.addEventListener('click', () => {
     document.querySelectorAll('details').forEach((d) => { d.open = false; });
   });
+  // 反馈是本次报告的审阅意见，不改变审查/修复状态，也不发送给外部服务。
+  const feedbackText = (card) => '[' + card.dataset.findingId + ' ' +
+    card.querySelector('.feedback-state').selectedOptions[0].textContent + '] ' +
+    card.querySelector('.ftitle').textContent + '\\n' +
+    (card.querySelector('.short')?.textContent || '');
+  const copyFeedback = async (text) => {
+    const output = document.getElementById('feedback-export');
+    output.value = text;
+    output.hidden = false;
+    try {
+      await navigator.clipboard.writeText(text);
+      document.getElementById('feedback-status').textContent = '已复制反馈';
+    } catch {
+      output.focus(); output.select();
+      document.getElementById('feedback-status').textContent = '请复制下方已选中的反馈';
+    }
+  };
+  document.querySelectorAll('.finding').forEach(card => {
+    card.querySelector('.copy-feedback').addEventListener('click', () => copyFeedback(feedbackText(card)));
+  });
+  document.getElementById('copy-all').addEventListener('click', () =>
+    copyFeedback(Array.from(document.querySelectorAll('.finding'), feedbackText).join('\\n\\n')));
 </script>
 </body>
 </html>
@@ -415,17 +377,24 @@ def review_summary(data: dict) -> dict:
         limits.append(f"实际总页数未核对：pageCount={expected}，已提供 {len(pages)} 页")
     examined = 0
     for p in pages:
+        evidence_mode = p.get("evidenceMode", data.get("evidenceMode", "visual"))
+        if evidence_mode not in ("visual", "text"):
+            raise ValueError("evidenceMode 必须是 visual/text")
         review = p.get("review", {})
-        needed = ["before", "interaction"] + (["after"] if mode == "fix" else [])
+        needed = ["before"] + (["interaction"] if evidence_mode == "visual" else []) + (["after"] if mode == "fix" else [])
         missing = [key for key in needed if not isinstance(review.get(key), str) or not review[key].strip()]
-        if mode == "fix" and not p.get("after"):
+        if mode == "fix" and evidence_mode == "visual" and not p.get("after"):
             missing.append("after 截图")
         if missing:
-            limits.append(f"{p['id']} 未完成视觉复核：{', '.join(missing)}")
+            limits.append(f"{p['id']} 未完成复核：{', '.join(missing)}")
         else:
             examined += 1
     findings = data.get("findings", [])
+    finding_ids = [f.get("id") for f in findings if f.get("id") is not None]
+    if len(finding_ids) != len(set(finding_ids)):
+        raise ValueError("finding id 必须唯一")
     unresolved = 0
+    groups = {k: {"findings": 0, "fixed": 0, "unresolved": 0} for k in CATEGORIES}
     for f in findings:
         if f.get("severity") not in SEV:
             raise ValueError(f"finding {f.get('id')}: severity 必须是 blocking/should/optional")
@@ -435,6 +404,10 @@ def review_summary(data: dict) -> dict:
         resolved = ((resolution == "fixed" and mode == "fix" and bool(f.get("fix"))) or
                     (resolution == "kept" and bool(f.get("resolutionReason"))))
         unresolved += not resolved
+        group = groups[finding_category(f)]
+        group["findings"] += 1
+        group["fixed"] += resolution == "fixed" and resolved
+        group["unresolved"] += not resolved
     if limits or requested == "incomplete":
         status = "incomplete"
     elif unresolved or data.get("pending") or requested == "reviewed":
@@ -443,12 +416,16 @@ def review_summary(data: dict) -> dict:
         status = "fixed"
     else:
         status = "clean"
-    return {"mode": mode, "status": status, "pages": len(pages), "expectedPages": expected,
+    for category, group in groups.items():
+        group["status"] = ("incomplete" if limits or requested == "incomplete" else
+                           "reviewed" if group["unresolved"] else
+                           "fixed" if group["fixed"] else "clean")
+    return {"mode": mode, "status": status, "groups": groups, "pages": len(pages), "expectedPages": expected,
             "examinedPages": examined, "findings": len(findings), "unresolved": unresolved,
             "pending": len(data.get("pending", [])), "limits": limits}
 
 
-def build(data: dict, max_width: int) -> str:
+def build(data: dict, max_width: int) -> tuple[str, dict]:
     audit = review_summary(data)
     target = pathlib.Path(str(data.get("target", "")))
     missing = []
@@ -479,22 +456,13 @@ def build(data: dict, max_width: int) -> str:
                 return p
         return None
 
-    def rulers_of(pg, pid):
-        ruler_b = img(pg.get("beforeRuler"), f"{pid} beforeRuler")
-        ruler_a = img(pg.get("afterRuler"), f"{pid} afterRuler")
-        has_after = bool(pg.get("after"))
-        figures = "".join(
-            f'<figure><img src="{src}" alt="{pid} {label}"><figcaption>{label}</figcaption></figure>'
-            for src, label in [(ruler_b, "改前标尺" if has_after else "现状标尺"), (ruler_a, "改后标尺")]
-            if src)
-        if not figures:
-            return "", ""
-        return (f'<div class="rulers" hidden>{figures}</div>',
-                '<label><input type="checkbox" class="ruler"> 标尺图</label>')
-
     def annotated_figure(finding):
         """问题卡上半部：红框标注截图。无图时降级为空；坐标无效时省略红框并记入 limits，不猜坐标。"""
         fid = str(finding.get("id"))
+        if finding.get("annotatedImg"):
+            uri = img(finding["annotatedImg"], f"{fid} annotatedImg", required=True)
+            return (f'<figure class="annotated"><img src="{uri}" alt="{esc(fid)} 标注证据">'
+                    f'<figcaption>{esc(finding.get("where"))}</figcaption></figure>')
         img_path = finding.get("img")
         if not img_path:
             page = page_by_id(str(finding.get("page", "")).split(",")[0].strip())
@@ -520,19 +488,18 @@ def build(data: dict, max_width: int) -> str:
             box_html, caption, alt = "", "红框坐标无效，已省略红框（见覆盖范围限制）", f"{esc(fid)} 所在页截图"
         else:
             box_html, caption, alt = "", "未提供红框坐标，仅显示所在页截图", f"{esc(fid)} 所在页截图"
-        return (f'<figure class="annotated"><img src="{uri}" alt="{alt}">{box_html}'
+        return (f'<figure class="annotated"><div class="annotation-image"><img src="{uri}" alt="{alt}">{box_html}</div>'
                 f'<figcaption>{caption}</figcaption></figure>')
 
-    def compare_block(cid, before_uri, after_uri, ruler_html="", ruler_control=""):
-        body = COMPARE.substitute(pid=cid, before=before_uri, after=after_uri,
-                                  rulerControl=ruler_control, rulers=ruler_html)
+    def compare_block(cid, before_uri, after_uri):
+        body = COMPARE.substitute(pid=cid, before=before_uri, after=after_uri)
         return f'<div class="cmp">{body}</div>'
 
     # ---- 问题与修复（主结构）----
     findings = data.get("findings", [])
     findings_html = ""
     if findings:
-        cards = []
+        cards = {category: [] for category in CATEGORIES}
         ordered = [(sev, f) for sev in SEV for f in findings if f.get("severity") == sev]
         for sev, f in ordered:
             sev_label, color = SEV[sev]
@@ -540,81 +507,94 @@ def build(data: dict, max_width: int) -> str:
             esc_fid = esc(fid)
             resolution = f.get("resolution", "open")
             page = page_by_id(str(f.get("page", "")).split(",")[0].strip())
-            annotated = annotated_figure(f)
-            short = f.get("short") or ""
+            annotated = annotated_figure(f) if resolution == "fixed" or f.get("annotatedImg") else ""
+            short = f.get("changeSummary") or f.get("short") or ""
             short_html = (f'<p class="short"><span class="mk">问题：</span>{esc(short)}</p>'
                           if short and short != f.get("title") else "")
             # 对照图：finding 级 beforeImg/afterImg 优先，缺省回落页级；两图齐全才渲染。
             fb = f.get("beforeImg") or (page.get("before") if page else None)
             fa = f.get("afterImg") or (page.get("after") if page else None)
-            fb_uri = img(fb, f"{fid} beforeImg") if fb else ""
-            fa_uri = img(fa, f"{fid} afterImg") if fa else ""
+            fb_uri = img(fb, f"{fid} beforeImg") if fb and resolution == "fixed" else ""
+            fa_uri = img(fa, f"{fid} afterImg") if fa and resolution == "fixed" else ""
             compare = ""
-            if fb_uri and fa_uri:
+            if fb_uri and fa_uri and resolution == "fixed" and fb_uri != fa_uri:
                 compare = compare_block(esc_fid, fb_uri, fa_uri)
-            elif fa or f.get("afterImg"):
+            elif resolution == "fixed" and (page or {}).get("evidenceMode", data.get("evidenceMode", "visual")) == "visual" and not (fb_uri and fa_uri):
                 problems.append(f"finding {esc_fid}: 对照图需要改前改后两张真实截图，当前缺少其一，仅显示红框现状")
             delta = ""
             if f.get("before") or f.get("after"):
                 delta = (f"<p class='mono delta'>现状 → 复验结果：{esc(f.get('before'))} → "
                          f"<b>{esc(f.get('after'))}</b></p>")
+            text_compare = ""
+            if f.get("textComparison"):
+                text = f["textComparison"]
+                repaired_text = resolution == "fixed" and audit["mode"] == "fix"
+                if repaired_text and "after" not in text:
+                    raise ValueError(f"finding {fid}: 已修文字对照缺少真实 after")
+                label = "改后 · 已执行" if repaired_text else "建议 · 尚未执行"
+                value = text.get("after") if repaired_text else text.get("suggested")
+                text_compare = (
+                    '<div class="text-compare"><div><b>原文</b><pre>' + esc(text.get("before")) +
+                    '</pre></div><div><b>' + label + '</b><pre>' + esc(value) +
+                    '</pre></div></div>')
+            feedback = ('<div class="feedback"><label>审阅意见 <select class="feedback-state" '
+                        'aria-label="' + esc_fid + ' 审阅意见">'
+                        '<option value="pending">待定</option><option value="accept">采纳</option>'
+                        '<option value="discuss">讨论</option><option value="reject">驳回</option>'
+                        '</select></label><button type="button" class="copy-feedback">复制此项反馈</button></div>')
             reason = f"（{esc(f['resolutionReason'])}）" if f.get("resolutionReason") else ""
-            cards.append(FINDING_BLOCK.substitute(
+            cards[finding_category(f)].append(FINDING_BLOCK.substitute(
                 sev=esc(sev), color=color, sevLabel=sev_label,
                 fid=esc_fid, fpage=esc(f.get("page", "")), title=esc(f.get("title")),
                 res=esc(resolution), resLabel=RES[resolution],
-                annotated=annotated, short=short_html, compare=compare,
-                why=esc(f.get("why")), delta=delta, fix=esc(f.get("fix")),
+                annotated=annotated, short=short_html, compare=compare, textCompare=text_compare, feedback=feedback,
+                why=esc("\n".join(str(f[k]) for k in ("kind", "action", "why", "audienceReason") if f.get(k))), delta=delta, fix=esc(f.get("fix")),
                 where=esc(f.get("where")), resText=RES[resolution], reason=reason,
             ))
-        findings_html = "".join(cards)
     else:
-        findings_html = '<div class="card">本轮无 finding。</div>'
+        cards = {category: [] for category in CATEGORIES}
+    findings_html = "".join(
+        f'<section id="{category}-findings"><h2>{title}</h2>'
+        + ("".join(cards[category]) or '<p class="sub">本轮无此类记录。</p>') + '</section>'
+        for category, title in CATEGORIES.items())
 
-    # ---- 逐页覆盖记录 ----
-    pages_html = []
+    # 核对本地证据，不将逐页记录加入报告。
     for pg in data.get("pages", []):
-        pid = esc(pg.get("id", "?"))
-        before = img(pg.get("before"), f"{pid} before", required=True)
-        after = img(pg.get("after"), f"{pid} after")
-        review = '<p class="review">' + esc("\n".join(f"{k}: {v}" for k, v in pg.get("review", {}).items())) + '</p>'
-        ruler_html, ruler_control = rulers_of(pg, pid)
-        if after:
-            content = compare_block(pid, before, after, ruler_html, ruler_control)
-        else:
-            caption = "现状 · 未提供改后图" if audit["mode"] == "review" else "改前 · 未提供改后图，未复验"
-            content = (f'{ruler_control}<figure class="current"><img src="{before}" alt="{pid} 现状">'
-                       f'<figcaption>{caption}</figcaption></figure>{ruler_html}')
-        bits = []
-        if pg.get("after"):
-            bits.append("已提供改后图")
-        if pg.get("beforeRuler") or pg.get("afterRuler"):
-            bits.append("含标尺图")
-        pages_html.append(PAGE_BLOCK.substitute(
-            pid=pid, title=esc(pg.get("title") or pid),
-            meta=" · ".join(bits) if bits else "现状截图",
-            review=review, content=content,
-        ))
-
+        pid = str(pg["id"])
+        if pg.get("evidenceMode", data.get("evidenceMode", "visual")) == "text":
+            continue
+        for key in ("before", "after"):
+            path = pg.get(key)
+            if key == "before" or path:
+                if not path:
+                    missing.append(f"{pid} {key}: 未提供图片")
+                    continue
+                try:
+                    verify_image(pathlib.Path(path))
+                except (OSError, ValueError, SyntaxError) as error:
+                    missing.append(f"{pid} {key}: 图片读取失败 ({error})")
     if missing:
         raise ValueError("报告图片不完整：\n  " + "\n  ".join(missing))
     if problems:
         audit["limits"] = list(audit["limits"]) + [f"渲染降级：{p}" for p in problems]
+        audit["status"] = "incomplete"
+        for group in audit["groups"].values():
+            group["status"] = "incomplete"
 
     contract = ""
-    if data.get("contract"):
-        rows = "".join(f"<dt>{esc(k)}</dt><dd class='mono'>{esc(v)}</dd>" for k, v in data["contract"].items())
-        contract = (f"<details class='fold'><summary>版面契约</summary>"
+    context = {**data.get("context", {}), **data.get("contract", {})}
+    if context:
+        rows = "".join(f"<dt>{esc(k)}</dt><dd class='mono'>{esc(v)}</dd>" for k, v in context.items())
+        contract = (f"<details class='fold'><summary>审查背景</summary>"
                     f"<div class='fbody'><dl class='kv'>{rows}</dl></div></details>")
 
-    summary = ""
-    if findings:
-        counts = {k: sum(1 for f in findings if f.get("severity") == k) for k in SEV}
-        chips = " &nbsp; ".join(
-            f"<span class='sev' style='background:{SEV[k][1]}'>{SEV[k][0]}</span> {counts[k]} 条"
-            for k in SEV if counts[k]
-        )
-        summary = f"<div class='card'>{chips}</div>"
+    group_status = {"clean": "无待处理项", "fixed": "已修复并复验",
+                    "reviewed": "有待处理项", "incomplete": "检查覆盖不足"}
+    summary = "".join(
+        f"<div class='card group-summary' data-category='{category}'><b>{CATEGORIES[category]}</b> · "
+        f"{group_status[group['status']]} · {group['findings']} 项，"
+        f"已修复 {group['fixed']} 项，待处理 {group['unresolved']} 项</div>"
+        for category, group in audit["groups"].items())
 
     def listing(title, items, render):
         if not items:
@@ -623,25 +603,34 @@ def build(data: dict, max_width: int) -> str:
         return (f"<details class='fold'><summary>{title}（{len(items)}）</summary>"
                 f"<div class='fbody'><ul class='plain'>{lis}</ul></div></details>")
 
-    kept = listing("保留项", data.get("kept", []),
-                   lambda i: f"<b>{esc(i.get('what'))}</b> — {esc(i.get('why'))}")
-    pending = listing("待确认", data.get("pending", []), esc)
-    commands = listing("本轮验收命令", data.get("commands", []),
-                       lambda i: f"<code>{esc(i.get('cmd'))}</code><br>{esc(i.get('result'))}")
     limits = listing("覆盖范围限制", audit["limits"], esc)
 
+    coverage = ""
+    if data.get("showCoverage"):
+        rows = "".join('<tr><td>' + esc(p["id"]) + '</td><td>' + esc(p.get("title", p.get("where", ""))) +
+                       '</td><td>' + esc("\n".join(str(v) for v in p.get("review", {}).values())) + '</td></tr>'
+                       for p in data["pages"])
+        coverage = ('<details class="fold"><summary>证据与覆盖范围</summary><div class="fbody">'
+                    '<table class="coverage"><thead><tr><th>页面／文件</th><th>位置／用途</th><th>观察与检查结果</th>'
+                    '</tr></thead><tbody>' + rows + '</tbody></table></div></details>')
+    draft = ('<details class="fold"><summary>建议稿 · 尚未执行</summary><div class="fbody"><pre class="draft">'
+             + esc(data["suggestedCopy"]) + '</pre></div></details>') if data.get("suggestedCopy") else ""
+    if data.get("fixedCopy") is not None:
+        if audit["mode"] != "fix":
+            raise ValueError("fixedCopy 需要 mode=fix")
+        draft += ('<details class="fold"><summary>实际改后全文</summary><div class="fbody"><pre class="draft">'
+                  + esc(data["fixedCopy"]) + '</pre></div></details>')
     status_text = {"clean": "clean · 覆盖范围内无待修项", "fixed": "已修改 · 已复验",
-                   "reviewed": "有待修项 · 尚未全部处理", "incomplete": "未完成验收 · 覆盖不足"}
+                   "reviewed": "分项结论见下方", "incomplete": "未完成验收 · 覆盖不足"}
     return DOC.substitute(
-        targetName=esc(target.name or target),
+        reportTitle=esc(data.get("title", "审查报告")), targetName=esc(target.name or target),
         statusText=status_text[audit["status"]], status=audit["status"],
-        modeText="只读审查 · 本轮未修改被审文件" if audit["mode"] == "review" else "布局修复模式",
+        modeText="只读审查 · 本轮未修改被审文件" if audit["mode"] == "review" else "修复复验",
         target=esc(target), pageCount=len(data.get("pages", [])),
         generated=esc(data.get("generated", "")),
         summary=summary, contract=contract,
-        findings=findings_html, pages="".join(pages_html),
-        kept=kept, pending=pending, commands=commands, limits=limits,
-    )
+        findings=findings_html, limits=limits, coverage=coverage, draft=draft,
+    ), audit
 
 
 def main():
@@ -656,8 +645,7 @@ def main():
         ap.error("--max-width 必须大于 0；生成报告需要 --out")
     try:
         data = json.loads(pathlib.Path(a.data).read_text(encoding="utf-8"))
-        report = build(data, a.max_width)
-        summary = review_summary(data)
+        report, summary = build(data, a.max_width)
     except (OSError, ValueError, TypeError, AttributeError, KeyError) as error:
         print(f"FAIL {error}", file=sys.stderr)
         return 3

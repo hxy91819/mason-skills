@@ -1,4 +1,4 @@
-"""合成渲染面的清单与报告注入回归，不读取外部项目。
+"""合成渲染面的清单与截图标注回归，不读取外部项目。
 
 用法：python3 -m unittest discover -s common-skills/spec-leak-review/tests -v
       PLAYWRIGHT_MODULE=/path/to/playwright python3 -m unittest discover -s common-skills/spec-leak-review/tests -v
@@ -68,31 +68,17 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual(data['captureState'], 'incomplete')
         self.assertEqual(len(data['brokenImages']), 1)
 
-    def test_missing_embed_does_not_mutate_report(self):
-        report = self.root / 'report.html'
-        original = '<img src="__EMBED_F1__"><img src="__EMBED_F2__">'
-        report.write_text(original)
-        boxes = self.root / 'boxes.json'
-        boxes.write_text(json.dumps([{'id':'F1','png':str(self.root / 'bitmap.png'), 'x':10,'y':10,'w':200,'h':40}]))
-        result = subprocess.run([sys.executable, str(SCRIPTS / 'annotate-shot.py'), '--boxes', str(boxes),
-                                 '--out', str(self.root / 'marked'), '--inject', str(report)], capture_output=True, text=True)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(report.read_text(), original)
-
-    def test_annotation_scaling_and_successful_injection(self):
+    def test_scaled_annotation_paths(self):
         (self.root / 'bitmap.json').write_text(json.dumps({'viewport': {'width': 160}}))
-        report = self.root / 'report.html'
-        report.write_text('<img src="__EMBED_F1__"><img src="__EMBED_overview:bitmap__">')
         boxes = self.root / 'boxes.json'
         boxes.write_text(json.dumps([{'id':'F1', 'png':str(self.root / 'bitmap.png'),
                                       'x':5, 'y':10, 'w':80, 'h':20}]))
         result = subprocess.run([sys.executable, str(SCRIPTS / 'annotate-shot.py'), '--boxes', str(boxes),
-                                 '--out', str(self.root / 'marked'), '--pad', '0',
-                                 '--overview', str(self.root / 'bitmap.png'), '--inject', str(report)],
+                                 '--out', str(self.root / 'marked'), '--pad', '0'],
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertNotIn('__EMBED_', report.read_text())
-        self.assertEqual(report.read_text().count('data:image/png;base64,'), 2)
+        paths = json.loads((self.root / 'marked' / 'annotations.json').read_text())
+        self.assertEqual(paths['F1'], str(self.root / 'marked' / 'F1.png'))
         with Image.open(self.root / 'marked' / 'F1.png') as marked:
             self.assertEqual(marked.size, (160, 40))
             self.assertEqual(marked.getpixel((0, 0)), (217, 45, 32))

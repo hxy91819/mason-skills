@@ -1,0 +1,6 @@
+interface:
+  display_name: "Review HTML Report"
+  short_description: "统一审查 HTML 报告：问题卡、文字建议、修复滑块与反馈复制，供审查技能按需调用"
+  default_prompt: "Use $review-html-report to render existing review findings and evidence as a self-contained HTML report."
+policy:
+  allow_implicit_invocation: true
