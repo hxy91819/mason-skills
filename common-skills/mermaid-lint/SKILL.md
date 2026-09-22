@@ -1,6 +1,6 @@
 ---
 name: mermaid-lint
-description: Create, edit, validate, and fix Mermaid diagrams in Markdown with secure defaults. Use when the user explicitly asks to add or edit a Mermaid diagram, or to check Mermaid syntax, renderability, or safety across one file, several files, or a directory.
+description: Create, edit, validate, and fix Mermaid diagrams in Markdown with secure defaults, rendering every block with the real renderer.
 disable-model-invocation: true
 triggers:
   - user
@@ -9,6 +9,8 @@ triggers:
 # Mermaid Lint
 
 Author Mermaid safely, then validate every diagram with the real renderer. Locate and fix syntax, rendering, and unsafe-configuration defects.
+
+This skill is user-invoked: run it only when the user explicitly calls `/mermaid-lint` (or `$mermaid-lint`); it is not selected automatically during diagram authoring.
 
 **Input**: one or more markdown file paths, globs, or directories. If the user gives none, search the current directory for `.md` files and ask which ones to check.
 
@@ -224,10 +226,10 @@ Not needed in normal use; these exist for troubleshooting.
 ## Example invocations
 
 ```
-User: /mermaid-lint docs/architecture.md
-User: add a Mermaid architecture diagram to docs/architecture.md
-User: check whether the mermaid diagrams in this markdown have syntax problems
-User: review the Mermaid diagrams for unsafe configuration
-User: validate the mermaid diagrams across everything under docs/
-User: fix the mermaid errors in docs/design.md
+/mermaid-lint docs/architecture.md
+/mermaid-lint add a Mermaid architecture diagram to docs/architecture.md
+/mermaid-lint check whether the mermaid diagrams in this markdown have syntax problems
+/mermaid-lint review the Mermaid diagrams in docs/ for unsafe configuration
+/mermaid-lint validate the mermaid diagrams across everything under docs/
+/mermaid-lint fix the mermaid errors in docs/design.md
 ```
