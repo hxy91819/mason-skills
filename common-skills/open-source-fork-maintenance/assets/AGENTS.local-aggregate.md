@@ -1,7 +1,7 @@
 <!-- open-source-fork-maintenance:start -->
 ## Local aggregate fork maintenance
 
-This checkout is maintained as a non-maintainer fork. After setup/migration cutover, its root workspace stays on `local/aggregate` for integration and experience. Its release baseline is the selected tag and SHA in the frozen train; the upstream tracking ref discovers newer releases. Verify and package exact candidates in isolated worktrees. Publish completed snapshots to the personal fork; never use the aggregate for an upstream pull request.
+This checkout is maintained as a non-maintainer fork. After setup/migration cutover, its root workspace stays on `local/aggregate` for integration and experience. Its release baseline is the selected tag and SHA in the frozen train; the upstream tracking ref discovers newer releases. Verify exact candidates in isolated worktrees, promote the verified candidate to `local/aggregate`, then package that aggregate SHA. Publish completed snapshots to the personal fork; never use the aggregate for an upstream pull request.
 
 Every product change starts on an independent first-tier `feature/*` or `fix/*` source in its own worktree. Its registered ordered commits, not its complete ancestry, define the patch. Related patches may enter a second-tier domain worktree that owns stable-release adaptation; dormant first-tier refs remain fixed until their feature changes. Small forks can start and remain direct-only. Add domains for recurring shared compatibility work. Each adaptation records its reason, affected feature IDs, and source mapping. Product behavior changes return to a first-tier source. Contributions select the target feature, its dependencies, and relevant adaptations.
 
