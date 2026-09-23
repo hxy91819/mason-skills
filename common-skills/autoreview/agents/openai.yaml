@@ -1,6 +1,6 @@
 interface:
   display_name: "Auto Review"
-  short_description: "Run a structured pre-commit or ship review"
-  default_prompt: "Use $autoreview to review the requested local change or PR; first obtain an exact external review destination before sending code."
+  short_description: "Run a pre-commit or ship review through BB"
+  default_prompt: "Use $autoreview to review the requested local change or PR through bb-model-routing at medium difficulty."
 policy:
   allow_implicit_invocation: false
