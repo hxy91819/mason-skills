@@ -12,13 +12,13 @@ triggers:
 
 ## 派发审查
 
-先确定准确的审查目标：未提交改动、分支相对指定 base 的差异，或指定 commit；同时整理原始需求和验收条件。按已加载的 `$bb-model-routing` 契约调用其派发入口，固定使用 `medium` 难度：
+先确定准确的审查目标：未提交改动、分支相对指定 base 的差异，或指定 commit；同时整理原始需求和验收条件。读取[审查提示词](references/review-prompt.md)，把其中完整的审查标准、输出格式与本次具体范围一起写入 `--task`。按已加载的 `$bb-model-routing` 契约调用其派发入口，固定使用 `medium` 难度：
 
 ```bash
-bb-dispatch --difficulty medium --task '<仓库与准确的 Git 审查范围；原始需求和验收条件；只读审查；仅报告可操作的 P0/P1 缺陷，每项写明文件行号、影响和触发条件>'
+bb-dispatch --difficulty medium --task '<仓库、Git 审查范围、原始需求、验收条件，以及 references/review-prompt.md 的完整审查标准和输出格式>'
 ```
 
-将占位文本换成实际路径、ref 和需求。模型或推理级别不写入 `--task`；目标环境和失败续派按 `$bb-model-routing` 的规则处理。向用户报告线程 ID、实际选择和状态；通过 BB 完成通知接收结果。创建线程不等于审查完成。
+将占位文本换成实际路径、ref、需求和提示词内容；不要只把提示词文件路径交给 reviewer，因为派发环境可能无法读取该文件。模型或推理级别不写入 `--task`；目标环境和失败续派按 `$bb-model-routing` 的规则处理。向用户报告线程 ID、实际选择和状态；通过 BB 完成通知接收结果。创建线程不等于审查完成。
 
 ## 核实与收尾
 
