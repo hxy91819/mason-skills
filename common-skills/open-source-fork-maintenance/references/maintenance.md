@@ -37,6 +37,8 @@ git -C <domain-worktree> rebase --no-autostash --onto <new-baseline-sha> <old-ba
 
 Otherwise rebuild from explicit selections in a clean domain worktree rather than replaying unrelated ancestry. These are alternative upgrade paths: do not rebase the domain and then apply the same source commits again. Record source-to-domain mappings for rewritten, split, or combined commits. Every adaptation names its reason and affected feature IDs. Product behavior changes return to a first-tier source; version compatibility remains in the domain. Resolve conflicts and verify there. First-tier refs move only when their feature itself changes.
 
+Before freezing the train, assign every selected feature according to the project's domain policy. A feature mapped to a domain enters through that domain's adapted commits; replay first-tier commits directly only for explicitly selected direct features. If upstream moves a feature's UI or data contract, repair its owning domain mapping there before composing the aggregate.
+
 For reconstruction, the composer can construct the registered domain ref transactionally:
 
 ```bash
