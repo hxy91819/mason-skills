@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+用法：scripts/fork-aggregate [--base <tag>] [--promote]
+
+从 .fork/branches 的 base（或 --base）重新生成聚合：依次 merge 清单中的分支到
+.worktrees/aggregate-next 的 aggregate/next 分支。已解决过的冲突由 git rerere 自动复用。
+--promote  成功后把根目录 local/aggregate 移到新结果，并推送到 fork（带 lease）。
+清单读取自 fork-tooling 分支（本地优先，其次 fork/fork-tooling）。
+USAGE
+}
+
+base_override=""
+promote=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --base) base_override="${2:?--base 需要 tag}"; shift 2 ;;
+    --promote) promote=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+done
+
+root="$(git rev-parse --path-format=absolute --git-common-dir)"
+root="$(dirname "$root")"
+cd "$root"
+
+git fetch --quiet --prune fork
+
+if git rev-parse --verify --quiet refs/heads/fork-tooling >/dev/null; then
+  list_ref=refs/heads/fork-tooling
+else
+  list_ref=refs/remotes/fork/fork-tooling
+fi
+list="$(git show "$list_ref:.fork/branches" | sed -e 's/#.*//' -e '/^[[:space:]]*$/d')"
+
+base="${base_override:-$(awk '$1 == "base" { print $2 }' <<<"$list")}"
+git fetch --quiet origin "refs/tags/$base:refs/tags/$base" 2>/dev/null || true
+git rev-parse --verify --quiet "refs/tags/$base" >/dev/null || { echo "找不到 tag $base" >&2; exit 1; }
+mapfile -t branches < <(awk '$1 != "base" { print $1 }' <<<"$list")
+
+resolve_ref() {
+  local branch="$1" local_sha remote_sha
+  local_sha="$(git rev-parse --verify --quiet "refs/heads/$branch" || true)"
+  remote_sha="$(git rev-parse --verify --quiet "refs/remotes/fork/$branch" || true)"
+  if [ -n "$local_sha" ] && [ -n "$remote_sha" ] && [ "$local_sha" != "$remote_sha" ]; then
+    echo "警告：$branch 本地与 fork 不一致，使用本地（记得推送）" >&2
+  fi
+  if [ -n "$local_sha" ]; then echo "$local_sha"; elif [ -n "$remote_sha" ]; then echo "$remote_sha"; else
+    echo "找不到分支 $branch（本地或 fork）" >&2; return 1
+  fi
+}
+
+git config rerere.enabled true
+git config rerere.autoUpdate true
+
+wt="$root/.worktrees/aggregate-next"
+if [ -d "$wt" ]; then
+  git -C "$wt" merge --abort 2>/dev/null || true
+  if [ -n "$(git -C "$wt" status --porcelain)" ]; then
+    echo "$wt 有未提交改动，先处理后再运行" >&2
+    exit 1
+  fi
+  git -C "$wt" checkout --quiet -B aggregate/next "refs/tags/$base"
+else
+  git worktree add --quiet -B aggregate/next "$wt" "refs/tags/$base"
+fi
+
+for branch in "${branches[@]}"; do
+  ref="$(resolve_ref "$branch")"
+  if git -C "$wt" merge --quiet --no-ff --no-edit -m "Merge $branch" "$ref" >/dev/null 2>&1; then
+    echo "merged   $branch"
+    continue
+  fi
+  if [ -z "$(git -C "$wt" diff --name-only --diff-filter=U)" ]; then
+    git -C "$wt" commit --quiet --no-edit
+    echo "rerere   $branch"
+    continue
+  fi
+  echo "CONFLICT $branch"
+  git -C "$wt" diff --name-only --diff-filter=U | sed 's/^/  /'
+  if ! git merge-tree --write-tree "refs/tags/$base" "$ref" >/dev/null 2>&1; then
+    cat <<EOF
+该分支单独合入 $base 就冲突：在它自己的 worktree 里 rebase 到 $base 并修复、验证，
+push --force-with-lease 到 fork 后重新运行本脚本。不要在聚合里修。
+EOF
+  else
+    cat <<EOF
+这是 fork 分支之间的冲突：在 $wt 里只做两边合并（不加新行为），
+git add 后 git commit --no-edit，然后重新运行本脚本（rerere 会记住这次解决）。
+同一对分支反复出现非平凡冲突时，把后者叠到前者上。
+EOF
+  fi
+  exit 1
+done
+
+result="$(git -C "$wt" rev-parse HEAD)"
+echo "聚合完成：aggregate/next = $result（base $base，${#branches[@]} 个分支）"
+
+[ "$promote" = 1 ] || exit 0
+
+if [ "$(git -C "$root" branch --show-current)" != local/aggregate ]; then
+  echo "根目录不在 local/aggregate，停止" >&2
+  exit 1
+fi
+if [ -n "$(git -C "$root" status --porcelain --untracked-files=no)" ]; then
+  echo "根目录有未提交的已跟踪改动，停止" >&2
+  exit 1
+fi
+remote_before="$(git ls-remote fork refs/heads/local/aggregate | cut -f1)"
+git -C "$root" reset --quiet --keep "$result"
+git -C "$root" push --quiet --force-with-lease="refs/heads/local/aggregate:$remote_before" fork local/aggregate
+remote_after="$(git ls-remote fork refs/heads/local/aggregate | cut -f1)"
+[ "$remote_after" = "$result" ] || { echo "fork 上的 local/aggregate=$remote_after 与 $result 不一致" >&2; exit 1; }
+echo "已提升并推送 local/aggregate = $result"

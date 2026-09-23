@@ -66,9 +66,8 @@ common-skills/
 ├── open-source-fork-maintenance/
 │   ├── SKILL.md
 │   ├── agents/
-│   ├── assets/
-│   ├── references/
-│   └── scripts/
+│   ├── assets/                # fork-aggregate script and project templates
+│   └── tests/
 ├── story-direction-review/
 │   ├── SKILL.md
 │   └── agents/
@@ -130,7 +129,7 @@ python3 common-skills/skill-manifest-sync/scripts/sync_skill_symlinks.py --mode 
 
 | Group | Skill | Tags | Use |
 |-------|-------|------|-----|
-| Open-source | `open-source-fork-maintenance` | `fork-maintenance`, `non-maintainer`, `local-aggregate`, `project-symlink` | Initialize or gradually migrate a public fork; keep feature sources independent and add domains when needed. |
+| Open-source | `open-source-fork-maintenance` | `fork-maintenance`, `non-maintainer`, `local-aggregate` | Set up or migrate a public fork to independent branches on the upstream stable tag, aggregated by a rebuilt merge. |
 
 | Skill | Description |
 |-------|-------------|
@@ -145,7 +144,7 @@ python3 common-skills/skill-manifest-sync/scripts/sync_skill_symlinks.py --mode 
 | [readiness-report](common-skills/readiness-report/) | Read-only Agent-Readiness audit with a local JSON report; also supplies evaluation contracts to an active `readiness-fix` flow. |
 | [readiness-fix](common-skills/readiness-fix/) | Fixes failing signals from the latest local readiness report; asks whether to generate a report first when none exists. Adapted from Factory Droid's built-in `/readiness-fix` with remote report access removed. Explicit invocation only. |
 | [open-source-contribution](common-skills/open-source-contribution/) | Open-source contribution hygiene: identity verification, privacy scanning, Git history cleanup, installer hardening, autoreview, and safe push/PR validation. |
-| [open-source-fork-maintenance](common-skills/open-source-fork-maintenance/) | Shared fork maintenance: new-project setup, gradual migration, optional domains, and reproducible source trains. Explicit invocation only; linked per project. |
+| [open-source-fork-maintenance](common-skills/open-source-fork-maintenance/) | Shared fork maintenance: independent feature/fix branches on the stable tag, `.fork/branches`, and a rerere-backed merge aggregate. Explicit invocation only; projects keep their own copy of the rules and script. |
 | [ppt-visual-review](common-skills/ppt-visual-review/) | Delegates slide review and revalidation, fixes supported visual and content findings, and delivers an HTML report. Explicit invocation only; honors read-only requests. |
 | [review-html-report](common-skills/review-html-report/) | Renders existing review records as a self-contained HTML report with evidence, before/after comparisons, and copyable feedback. Shared output for PPT and spec-leak reviews; does not start a review. |
 | [secure-release](common-skills/secure-release/) | Integrates fail-closed release pipelines using a versioned CI kit; npm is the first implemented adapter. |

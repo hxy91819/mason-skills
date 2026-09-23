@@ -1,6 +1,6 @@
 ---
 name: open-source-fork-maintenance
-description: Initialize, migrate, and maintain public forks with feature sources, optional domains, and frozen integration trains.
+description: Set up or migrate a public fork to independent feature/fix branches on the upstream stable tag, aggregated by a rebuilt merge of those branches.
 disable-model-invocation: true
 triggers:
   - user
@@ -8,58 +8,51 @@ triggers:
 
 # Open-source fork maintenance
 
-Invoke explicitly as `$open-source-fork-maintenance` for a public upstream fork whose operator cannot merge changes upstream. Use the same maintenance model across projects: independent feature/fix sources, optional domain integration, and a frozen train for each aggregate release. Small forks can remain direct-only; creating a domain is a response to recurring shared compatibility work, not an initialization requirement.
+Invoke explicitly as `$open-source-fork-maintenance` for a public upstream fork whose owner cannot merge upstream. The model serves three goals and nothing else:
 
-## Boundary
+1. every change is an independent, focused `feature/*` or `fix/*` branch that can go upstream as-is;
+2. the owner can aggregate those branches locally and package the result;
+3. new upstream stable releases can be absorbed.
 
-Use this skill only after confirming that the repository is a public fork or upstream clone and that the operator is not an upstream maintainer. Upstream maintainers should use the project's normal contribution and release workflow instead.
+State lives in Git: the branches themselves plus one `.fork/branches` list. `local/aggregate` is a disposable product rebuilt from the stable tag by merging the listed branches; `git rerere` remembers conflict resolutions between runs. Domains, patch registries, frozen trains, SHA tables, candidate tags, and build receipts are out of scope: they cost more integration time than they save.
 
-The project owns its registry, upstream release channel, feedback records, verification/build commands, and deployment policy. The skill owns the repeatable maintenance model:
+After setup, the project owns its copy of the rules and script. Day-to-day work (new branches, aggregation, conflicts, upgrades, upstream feedback) follows the project's `docs/fork-maintenance.md`; this skill is for setup, migration, and changing the shared template.
 
-- after setup or migration cutover, the main checkout stays on `local/aggregate` for integration and experience;
-- every product change lives on its own first-tier `feature/*` or `fix/*` source and keeps an explicit ordered patch selection;
-- related first-tier sources may be combined in a second-tier domain branch that owns stable-release adaptation, while dormant source refs remain unchanged;
-- low-coupling patches may continue directly to the aggregate;
-- a source branch is verified after relevant project checks pass in its worktree and `$autoreview` closeout there reports no accepted/actionable findings;
-- a frozen train locks the stable tag and SHA, selected source patches, domain mappings, shared dependencies, direct patches, and verification inputs;
-- before packaging, the aggregate receives the verified locked train without importing old aggregate ancestry, including explicitly selected fork-maintenance files needed to reconstruct the complete tree;
-- a committed project manifest records source ownership and mapping alongside local specifications, actual upstream feedback, related context, and the reason for retaining each change.
+## Conventions
 
-The personal fork is the handoff channel. Publish verified source/domain work as it completes; publish a train's candidate and completed `local/aggregate` according to the selected delivery stage. Rebuilt moving refs may use explicit-lease `--force-with-lease`; this maintenance flow provides standing authorization for that personal-fork rewrite. Immutable refs are create-only. Published aggregate commits are reusable source snapshots for another environment, never upstream contribution branches.
+| Item | Value |
+| --- | --- |
+| Remotes | `origin` = upstream (read-only), `fork` = personal fork (all pushes) |
+| Base | a tag from the upstream release channel, recorded on the `base` line of `.fork/branches` |
+| Tooling branch | `fork-tooling`, based on the base tag; holds `.fork/branches`, `scripts/fork-aggregate`, `docs/fork-maintenance.md`, and the AGENTS section; merged like any other branch |
+| Aggregate | `scripts/fork-aggregate` builds `aggregate/next` in `.worktrees/aggregate-next`; `--promote` moves the root `local/aggregate` there and pushes it to `fork` with a lease |
+| Worktrees | `.worktrees/<name>`, excluded via `.git/info/exclude` or `.gitignore` |
 
-Registered issues on the personal fork are local specification records, not the feedback loop itself. The open-source feedback loop happens on the upstream repository: a registered change that is meaningful to upstream users should eventually be filed as an upstream issue there. Deployment-only repairs and changes the owner classifies as personal preference stay fork-local. Filing an issue on the upstream repository always requires the user's explicit confirmation first — present the proposed issue content and wait for the decision; record a fork-only disposition in the project's feedback record.
+Upstream issues, comments, and PRs always need the user's confirmation per item. Rewriting fork branches (rebase onto a new tag, rebuilt `local/aggregate`) uses `--force-with-lease` against the observed remote SHA without asking again; never push to `origin`.
 
-## Choose the workflow
+## Setup
 
-| Project state | Read next | Result |
-| --- | --- | --- |
-| New fork, no local product history to preserve | [New-project setup](references/setup.md) | Baseline, project rules, v4 registry; start direct-only. |
-| Existing fork, ad hoc aggregate, or v2/v3 registry | [Gradual migration](references/migration.md) | Preserve the current release, inventory patches, pilot a useful domain, and prove complete reconstruction. |
-| Initialized fork, feature work or upstream update | [Maintenance](references/maintenance.md) | Update owned patches/domains, freeze and verify the selected train. |
-| Editing a registry or train in any workflow | [Record contract](references/registry.md) | Exact source ownership, dependency closure, mappings, and historical evidence. |
+1. Confirm the remotes and pick the base: the newest tag of the upstream release channel (use upstream `main` only when the user asks or no release tags exist).
+2. Create `fork-tooling` from the base in its own worktree and add, adapting placeholders to the project:
+   - `assets/fork-aggregate` → `scripts/fork-aggregate` (executable);
+   - `assets/branches.example` → `.fork/branches`, listing `fork-tooling` first;
+   - `assets/fork-maintenance.md` → `docs/fork-maintenance.md`, filling in the project's verification and deployment commands;
+   - `assets/AGENTS.fork-maintenance.md` → appended to the project's always-loaded agent instructions (`AGENTS.md` or `CLAUDE.md`).
+3. Rebase each existing change onto the base as its own branch (see Migration for a fork with history), register it in the list, and push branches and `fork-tooling` to `fork`.
+4. Run `scripts/fork-aggregate`, verify with the project's checks, then `--promote`.
 
-Initialization changes branches, project files, and a project-local skill link. A request to initialize or migrate authorizes the described local work; a request only to assess a project does not. Continue an already selected setup, migration, upgrade, or packaging workflow without repeatedly asking for the same decision. A status report alone does not authorize a rebuild, deletion, or deployment.
+Done when every listed branch is on `fork`, the root checkout is `local/aggregate` at the promoted commit, and the remote `local/aggregate` SHA matches.
 
-Use v4 for new projects, including direct-only ones. Existing v3 direct maintenance can continue during migration; v2 remains readable with unclassified issue references. A missing upstream report is `needs-feedback`; local maintenance can be `internal`, with its reason. Neither needs a placeholder issue.
+## Migration from a registry/domain/train model
 
-The default upgrade target is the latest tag matching the project's release channel and reachable from its upstream tracking ref. Report subsequent trunk commits as unreleased debt; use trunk only when explicitly selected or the upstream publishes no release tags. Structural migration starts on the existing baseline, then upgrades separately. A frozen train decides which registered patches are retained, deferred, or retired for that release.
+1. Tag the current aggregate as `archive/<old-model-name>` and each fork branch tip you will rewrite as `archive/pre-simplify/<branch>`; push the tags to `fork`.
+2. Rebuild each feature branch on the new base from the most recent verified integration of that feature (the last train or domain commits already adapted to the base, if any; otherwise its source commits). Cherry-pick with `-x`, skip commits that become empty, and keep branches independent; stack a branch on another only when its patches do not apply without it, and note the stack in the list.
+3. Compare each rebuilt branch's own commits with its old tip by subject; branches cut from the old aggregate carry unrelated commits, so only their top commits matter.
+4. Drop features the user retires; they stay reachable through the archive tags.
+5. Carry only maintenance assets the project still uses (deploy/runtime scripts, ignore rules) into `fork-tooling`; delete registries, train manifests, domain branches, and candidate tags from the new tree.
+6. Aggregate, verify, compare the result with the old aggregate (differences should be exactly the retired features and maintenance files), push with leases, promote.
+7. Remove clean obsolete worktrees without `--force`; leave dirty or in-use ones and report them.
 
-## Domain ownership
+## Changing the shared template
 
-Group features that repeatedly share compatibility changes, contracts, or ordered data migrations. Directory names alone do not establish a domain. Give each feature and adaptation one owner; model shared prerequisites as explicit dependencies and keep the dependency graph acyclic. If two domains repeatedly require the same integration fixes, move the shared contract into an owned dependency or reconsider the boundary.
-
-First-tier sources preserve contribution-sized intent. Domains absorb upstream-version adaptation. Active feature development may still need a refreshed source baseline; dormant sources do not rebase on every upstream release. Contribution extraction selects one feature, its dependencies, and relevant adaptations. It can require a final target-upstream adjustment and review; two tiers reduce repeated integration work, not eliminate it.
-
-## Project-specific verification
-
-Use the project's commands and supported environments. Node is needed by the bundled status/compose helpers, not prescribed as the project's build runtime; GitHub feedback lookup uses `gh`. Other forge integrations need an equivalent project-owned feedback lookup. Resource isolation, ABI/protocol checks, and service replacement belong to projects that use them.
-
-Give compatibility code an explicit owner and version/support range where it is needed. For persistent databases, test actual historical schema and migration-ledger fixtures with representative non-sensitive data, including upgrades from shipped fork releases; check semantic outcomes, preserved data, and repeat runs. A fresh database alone cannot demonstrate upgrade safety. For wire protocols, test the supported old/new peer combinations; a shared compile does not prove interoperability. Record applicable compatibility limits in release evidence. Projects without these contracts need no empty compatibility subsystem.
-
-The read-only status helper reports registered source/domain drift, local unregistered branches, release movement, and upstream feedback. Git manifests and compose results preserve selection/provenance; post-build receipts preserve verification and artifacts. This skill has no independent run-history database and the status helper does not inspect deployment health or prove historical builds passed.
-
-## Completion
-
-Report completion at the requested stage: setup, migrated source, verified candidate, packaged artifacts, published refs, or deployed service. Do not promote one stage into another.
-
-A source reconstruction has complete ownership/mappings, committed registry/train inputs, matching full-tree evidence for the intended snapshot, relevant verification, and durable personal-fork refs when publication is in scope. Packaging additionally requires promotion of the verified candidate to `local/aggregate`, a successful real build from that aggregate SHA, and a receipt binding final source SHA, train digest, toolchain/configuration, artifact digests, and applicable compatibility evidence. A source-only project records its actual distribution/verification result. Deployment follows the project's existing authorization and service workflow; this skill neither invents a deployment requirement nor overrides one.
+Edit the assets here, then run `node --test tests/test_fork_aggregate.mjs` from this skill's root. Projects keep their own copies; propagate a change to a project only when asked or when that project's copy hits the same bug.
