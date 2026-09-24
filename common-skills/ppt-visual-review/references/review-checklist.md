@@ -18,6 +18,8 @@ node <本技能根目录>/scripts/measure-deck.js --file <deck.html> --out <产�
 
 用可看图的工具打开**每一页的 plain 和 ruler**，先在投影尺度看整页，再放大核对细节。每页对下列各类逐项作答；未报 flag 的区域同样要看，flag 为 0 不等于没问题。
 
+脚本线索怎么对待，按 SKILL.md「脚本线索与独立判断」执行：先看图形成自己的判断，再对照 flag；每条 flag 裁决为 valid / dismissed / threshold 并写理由。下文各节列出的"脚本线索"只是提示去哪里看，判断标准始终是观众在投影尺度下看到的画面。
+
 ### 箭头与连接
 
 - 两端都能读出对象：起点、终点各贴着一个具体元素的边，而不是悬在空白里、落在对象斜角外、或只是夹在两栏之间的装饰（例：左栏说明与右栏大数字之间一根短箭头，起点低于左侧段落底边，读不出"谁导致谁"）。
@@ -47,7 +49,7 @@ node <本技能根目录>/scripts/measure-deck.js --file <deck.html> --out <产�
 - 读 `<label>.json` 的 `inventory`：`fonts`（字体栈与字符占比）、`sizes`（字号档位）、`colors`（调色板与使用页）、`titles`（逐页标题样式）。
 - 字体：正文与标题是否用同一套字体栈；非主字体是否有意（代码、数字）。自定义字体未加载（`font` flag）时截图即为回退字体效果。
 - 字号：层级是否收敛到少数几档；相差 1–2px 的相邻档位多半是同层级写成两个值。
-- 颜色：强调色、正文色、卡片底色各自只有一个值；肉眼难分的近似色（`color` flag）应合并；强调色的用途跨页一致。
+- 颜色：强调色、正文色、卡片底色各自只有一个值；肉眼难分的近似色（`color` flag）看图确认承担同一用途时合并，用途不同（如边框色与底色）则保留；强调色的用途跨页一致。
 
 ### 对齐与排版细节
 
@@ -76,7 +78,7 @@ node <本技能根目录>/scripts/measure-deck.js --file <deck.html> --out <产�
 
 演示有展开、导航、对比滑块等交互时，在实际页面操作并看操作后的图；受权限限制无法操作时写明范围。
 
-完成标准：每页有一句图上可定位的结论；每个 flag 都有看图裁决（成立 → finding；不成立 → 在该页结论里写一句理由）。
+完成标准：每页有一句图上可定位的结论；每个 flag 都在 `flagRulings` 里有裁决与理由；看图发现而脚本未报的问题也已记录。
 
 ## 3. 定级与记录
 
@@ -86,14 +88,14 @@ node <本技能根目录>/scripts/measure-deck.js --file <deck.html> --out <产�
 
 按 `$review-html-report` 的数据契约写 `findings.json`（契约由主 Agent 加载该技能后提供；无法获取时按下列字段写）：
 
-- 顶层：`target`、`title: PPT 版式视觉验收`、`mode`、`evidenceMode: visual`、`pageCount`、`pages`、`findings`、`context`（轮次、审查任务 ID、输入哈希、产物路径）、`limits`。
+- 顶层：`target`、`title: PPT 版式视觉验收`、`mode`、`evidenceMode: visual`、`pageCount`、`pages`、`findings`、`flagRulings`、`context`（轮次、审查任务 ID、输入哈希、产物路径、调整过的阈值及依据）、`limits`。
 - `pages[]`：`id`、`title`、`before`（r1 plain 截图）、`review.before`（真实观察）、`review.interaction`；复审轮补 `after`（最终轮截图）与 `review.after`。
 - `findings[]`：稳定 `id`（跨轮不变）、`page`、`severity`、`category: visual`、`kind`（arrow/void/consistency/font/color/typography/hierarchy/readability）、`title`、`short`（一句话）、`why`（读者影响）、`fix`（具体建议或实际改动）、`img` + `box: [x,y,w,h]`（截图像素坐标，红框圈住真实问题区域）+ `label`（≤16 字）、`resolution`。可附 `flags: ["V12"]` 对应脚本线索。
 - 内容质量问题（论据、数据口径）不在本技能范围；偶然发现时可记一条 `category: content`、`severity: optional` 的待处理项，不进入修复循环。
 
 ## 4. 复审轮
 
-- 全量重跑第 1–2 节，包括未直接改动的页；对照上一轮 flags 看变化，每条残留线索都要有视觉裁决。
+- 全量重跑第 1–2 节，包括未直接改动的页；对照上一轮 flags 看变化，每条残留线索都要有视觉裁决。线索消失不代表修好（可能只是绕开了检测），线索残留也不代表没修好，以画面为准。
 - 已修项：看真实 after 确认解决且无回归，才设 `resolution: fixed`，写 `afterImg`（与 before 同视口同尺寸的整页截图）和 `after`（复验结论）。
 - 未解决项：保持 `open`，在 `why` 追加本轮观察；连续两轮未改善时补充定位证据（元素选择器、坐标、截图裁剪）和可验证的修复方向。
 - 新问题/回归：追加新 finding，使用其首次出现轮次的真实截图；已修问题不从清单删除。

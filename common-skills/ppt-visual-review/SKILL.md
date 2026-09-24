@@ -17,6 +17,18 @@ triggers:
 
 默认**修复模式**：在审查范围内直接修改版式，不逐条询问。用户明确说"只审查/不改源文件"时为**只读模式**：只跑第 1 轮审查，跳过修复循环，直接出报告。
 
+### 脚本线索与独立判断
+
+`measure-deck.js` 只量得到 DOM 几何与计算样式：它不知道这页要观众读出什么，不知道哪处差异是有意强调，阈值也只是通用默认值。flags 是**提问**，不是结论；审查者和主 Agent 都要用自己的眼睛和判断作答，谁也不因为"脚本报了"就认定有问题，也不因为"脚本没报"就放过。
+
+- **审查者裁决每条 flag**，结论三选一，写进 `findings.json` 的 `flagRulings`（`{id, page, ruling, reason}`）：
+  - `valid`：画面上确实影响阅读 → 形成 finding，`why` 写观众看到的影响，不写"flag V12 触发"。
+  - `dismissed`：看图后不成立（有意强调、分栏留白、装饰性元素、测量口径误判等）→ 写一句画面上的理由。
+  - `threshold`：阈值不适合这份 deck（如设计规范本就用 13px 页脚、宽松分栏）→ 按 deck 自身的版式契约调整参数重跑，在 `context` 记录新阈值与依据，后续轮次沿用。
+- 脚本不覆盖的问题（层级、强调、分组、平衡、标点字形等）只凭看图形成 finding，与脚本来源的 finding 同等对待。
+- **主 Agent 同样独立判断审查意见**：画面上看不出影响、只是数值命中的 finding，可以 `kept` 并写理由；审查者漏看的明显问题可以要求补审。
+- 修复目标是画面变好，不是 flag 变少：不为消掉线索而做 1–2px 的凑数挪动、塞装饰填空带、改 class 名绕开检测。修复后线索仍在但画面已解决的，由审查者裁决为 `dismissed`；flags 清零也不等于 clean，clean 只看审查者对真实画面的结论。
+
 ### 派发方式
 
 每次派发审查（首轮与新开的复审线程）都由宿主按名称加载 `$bb-model-routing`，用它的 `bb-dispatch` 发起，难度固定为 `simple`：
@@ -77,7 +89,7 @@ bb-dispatch --difficulty simple --title 'PPT 布局审查 rN' --task '<交接材
 
 - `title: PPT 版式视觉验收`，`evidenceMode: visual`，修复模式 `mode: fix`。
 - **整体前后对照**：`pageCompare: true`；`pages[].before` 为 r1 截图，`pages[].after` 为最终轮截图，`review.after` 写该页的复验结论。
-- `metrics`：从 r1 与最终轮测量 JSON 统计，至少包含布局类线索按 kind 的改前/改后计数（arrow、void、box-style、role-style、title、font-family、font-size、color、align、widow、kinsoku、half-punct、cjk-spacing、line-length、leading、density、min-size、edge），以及 finding 总数/已修/保留/待处理、复审轮次。
+- `metrics`：以看图结论为主、脚本计数为辅。首先列 finding 总数/已修/保留/待处理、复审轮次，以及 `flagRulings` 中 valid/dismissed/threshold 的数量；其后列布局类线索按 kind 的改前/改后计数（arrow、void、box-style、role-style、title、font-family、font-size、color、align、widow、kinsoku、half-punct、cjk-spacing、line-length、leading、density、min-size、edge），指标名注明"脚本线索"，不把它当验收结果。
 - 每条 fixed finding 带红框 `box`/`label` 与真实前后对照；`limits` 记录缺图、未操作的交互、覆盖缺口。
 
 只读模式同样出 HTML（`mode: review`，不设 pageCompare）；用户明确只要文字时改为 Markdown。
