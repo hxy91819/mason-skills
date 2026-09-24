@@ -75,7 +75,7 @@ skills:
 - name: open-source-fork-maintenance
   note: 维护非 maintainer 的公开 fork：local/aggregate 集成与上游反馈闭环
 - name: ppt-visual-review
-  note: PPT 式 HTML 逐页视觉验收
+  note: PPT 式 HTML 布局验收：箭头、留白、同类一致性与全局字体颜色，审查-修复循环
 - name: preflight
   note: 开工前凭据/权限/依赖轻量探针核查
 - name: project-stage

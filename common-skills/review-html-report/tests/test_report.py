@@ -304,6 +304,33 @@ class ReportTests(unittest.TestCase):
         self.assertNotIn('Unchanged page 28', large)
         self.assertLess(len(large) - len(small), 10000)
 
+    def test_page_compare_shows_changed_pages_and_metrics(self):
+        self.covered()
+        self.data['mode'] = 'fix'
+        self.data['pages'][0].update(title='Changed page', after=str(self.root / 'after.png'))
+        self.data['pages'][0]['review']['after'] = 'Gap closed after moving the conclusion.'
+        self.data['pages'].append(dict(self.data['pages'][0], id='p2', title='Same page',
+                                       after=str(self.root / 'before.png')))
+        self.data['pageCount'] = 2
+        self.data['pageCompare'] = True
+        self.data['metrics'] = [{'name': 'void flags', 'before': 9, 'after': 2}]
+        result = self.run_report()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        html = (self.root / 'report.html').read_text()
+        self.assertIn('整体前后对照', html)
+        self.assertEqual(html.count('class="fold pagecmp"'), 1)
+        self.assertIn('data-page-id="p1"', html)
+        self.assertIn('1 页无像素变化：p2', html)
+        self.assertIn('void flags', html)
+        self.assertIn('Gap closed after moving the conclusion.', html)
+
+    def test_page_compare_requires_fix_mode(self):
+        self.covered()
+        self.data['pageCompare'] = True
+        result = self.run_report()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('pageCompare', result.stderr)
+
     def test_open_and_kept_findings_do_not_embed_images(self):
         self.covered()
         self.data['findings'] = [

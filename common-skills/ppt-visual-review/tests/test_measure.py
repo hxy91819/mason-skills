@@ -91,6 +91,64 @@ class MeasureTests(unittest.TestCase):
         self.assertTrue(all('文字带' in f['detail'] for f in conn))
         self.assertEqual(len([f for f in data['flags'] if f['kind'] == 'image' and '失败' in f['detail']]), 1)
 
+    LAYOUT_FIXTURE = '''<!doctype html><meta charset="utf-8"><style>
+      body { margin:0; font-family:Arial, sans-serif; }
+      .slide { position:relative; width:1280px; height:720px; background:#fff; overflow:hidden; }
+      .eyebrow { position:absolute; left:64px; top:40px; font-size:16px; color:#2563eb; margin:0; }
+      .title { position:absolute; left:64px; top:70px; font-size:40px; font-weight:700; color:#111; margin:0; }
+      .card { width:200px; height:120px; border-radius:12px; background:#dbeafe; border:1px solid #93c5fd; }
+      .flow { position:absolute; left:64px; top:260px; display:flex; gap:40px; }
+      .foot { position:absolute; left:64px; bottom:30px; font-size:14px; color:#666; margin:0; }
+    </style>
+    <section class="slide" id="s1">
+      <p class="eyebrow">第一章</p><h1 class="title">箭头悬空</h1>
+      <p style="position:absolute;left:64px;top:200px;width:300px;font-size:24px;margin:0">左侧说明</p>
+      <span style="position:absolute;left:560px;top:320px;font-size:24px">→</span>
+      <p style="position:absolute;left:640px;top:300px;font-size:24px;margin:0">右侧对象</p>
+      <p class="foot">页脚</p>
+    </section>
+    <section class="slide" id="s2">
+      <p class="eyebrow">第二章</p><h1 class="title">大块留白</h1>
+      <div style="position:absolute;left:64px;top:170px;display:flex;gap:24px">
+        <p style="margin:0;font-size:24px;width:200px">Prompt</p><p style="margin:0;font-size:24px;width:200px">Context</p>
+      </div>
+      <p style="position:absolute;left:1000px;top:170px;margin:0;font-size:24px">结论</p>
+      <p class="foot">页脚</p>
+    </section>
+    <section class="slide" id="s3">
+      <p class="eyebrow">第三章</p><h1 class="title">框样式不一</h1>
+      <div class="flow">
+        <div class="card" style="background:#f8fafc;border-color:#e2e8f0"></div>
+        <div class="card"></div><div class="card"></div><div class="card"></div>
+      </div>
+      <p style="position:absolute;left:64px;top:420px;margin:0;font-size:25px;color:#2463ea">近似色与邻近字号</p>
+      <p class="foot" style="font-family:Georgia, serif">页脚</p>
+    </section>
+    <section class="slide" id="s4">
+      <p class="eyebrow" style="left:80px">第四章</p><h1 class="title" style="left:80px;font-size:44px">标题漂移</h1>
+      <p style="position:absolute;left:64px;top:200px;margin:0;font-size:24px">正文</p>
+      <p class="foot">页脚</p>
+    </section>'''
+
+    def test_layout_and_consistency_flags(self):
+        (self.root / 'layout.html').write_text(self.LAYOUT_FIXTURE)
+        result = self.run_measure('--file', str(self.root / 'layout.html'), '--out', str(self.root), '--label', 'layout')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads((self.root / 'layout.json').read_text())
+        by = lambda kind: [f for f in data['flags'] if f['kind'] == kind]
+        self.assertTrue(any(f['page'] == 's1' for f in by('arrow')), data['flags'])
+        self.assertTrue(any(f['page'] == 's2' and f['sel'] == 'horizontal' for f in by('void')), by('void'))
+        self.assertTrue(any(f['page'] == 's2' and f['sel'] == 'vertical' for f in by('void')), by('void'))
+        self.assertTrue(any(f['page'] == 's3' for f in by('box-style')), by('box-style'))
+        titles = by('title')
+        self.assertTrue(any('s4' in f['page'] and f['sel'] == 'headline.size' for f in titles), titles)
+        self.assertTrue(any('s4' in f['page'] and f['sel'] == 'eyebrow.left' for f in titles), titles)
+        self.assertTrue(by('font-family') and by('color') and by('font-size'), data['flags'])
+        self.assertTrue(by('role-style'), data['flags'])
+        inv = data['inventory']
+        self.assertEqual(len(inv['titles']), 4)
+        self.assertGreaterEqual(len(inv['fonts']), 2)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -1,7 +1,7 @@
 interface:
   display_name: "PPT Visual Review"
-  short_description: "委派审查与复验，主 Agent 直接修复视觉和内容问题，默认交付 HTML 前后对比报告"
-  default_prompt: "Use $ppt-visual-review to delegate visual review and revalidation, directly fix actionable findings, and automatically deliver an HTML report using $review-html-report."
+  short_description: "布局验收：subagent 审查箭头、留白、同类一致性与全局字体颜色，主 Agent 修复并循环复审至 clean，输出整体前后对比 HTML 报告"
+  default_prompt: "Use $ppt-visual-review to have a subagent review slide layout (arrows, whitespace, same-type consistency, global fonts and colors), fix the findings, re-review until clean, and deliver a whole-deck before/after HTML report using $review-html-report."
 
 policy:
   allow_implicit_invocation: false

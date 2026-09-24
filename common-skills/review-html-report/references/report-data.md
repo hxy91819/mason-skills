@@ -17,6 +17,8 @@
 | `context` | 背景键值表，如模式、受众、疑问、决策、输入版本、技能版本、执行线程；折叠展示 |
 | `contract` | PPT 既有版面契约键值表，与 context 合并展示 |
 | `showCoverage` | 默认 false；true 时展示紧凑检查记录表，不嵌入逐页全景图 |
+| `pageCompare` | 默认 false；true 时新增「整体前后对照」：逐页用 `pages[].before/after` 真实截图出滑块，只展开有像素变化的页，无变化页只列 id。需要 `mode: fix`，每个视觉页都要有 after |
+| `metrics` | 可选，`[{"name": "箭头线索", "before": 5, "after": 0}]`，在整体对照顶部渲染改前/改后指标表；数值由上游从真实记录统计 |
 | `fixedCopy` | 实际改后全文，仅 mode=fix 使用 |
 | `suggestedCopy` | 可选，完整建议稿，明确标记尚未执行 |
 | `limits` | 缺图、不可辨认区域、未验证状态等；非空时不能报告为完成 |
@@ -47,7 +49,7 @@ HTML 的采纳/讨论/驳回是审阅反馈，不会把 `resolution` 改为已�
 
 ## PPT 映射
 
-已有 `findings.json` 继续使用上述 pages、category 和截图字段，设 `title: PPT 版式视觉验收`，默认 `evidenceMode: visual`，不设 showCoverage。过程记录留在 JSON；已修问题的说明与滑动对照放在同一张卡里。
+已有 `findings.json` 继续使用上述 pages、category 和截图字段，设 `title: PPT 版式视觉验收`，默认 `evidenceMode: visual`，不设 showCoverage。过程记录留在 JSON；已修问题的说明与滑动对照放在同一张卡里。修复模式设 `pageCompare: true` 并填 `metrics`，展示整体改前改后差异；`pages[].before` 为首轮截图，`after` 为最终复验截图。
 
 ## spec-leak 映射与文字示例
 

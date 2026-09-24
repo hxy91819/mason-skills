@@ -277,6 +277,7 @@ DOC = Template("""<!DOCTYPE html>
   </div>
   $contract
   $coverage
+  $overview
   $findings
   $draft
   $limits
@@ -573,6 +574,43 @@ def build(data: dict, max_width: int) -> tuple[str, dict]:
                     verify_image(pathlib.Path(path))
                 except (OSError, ValueError, SyntaxError) as error:
                     missing.append(f"{pid} {key}: 图片读取失败 ({error})")
+    # ---- 整体前后对照：逐页真实 before/after，只展开有像素变化的页 ----
+    overview = ""
+    metrics = data.get("metrics") or []
+    if metrics:
+        if not isinstance(metrics, list) or any(not isinstance(m, dict) or not m.get("name") for m in metrics):
+            raise ValueError("metrics 必须是含 name/before/after 的对象列表")
+        rows = "".join(f"<tr><td>{esc(m['name'])}</td><td>{esc(m.get('before'))}</td><td><b>{esc(m.get('after'))}</b></td></tr>"
+                       for m in metrics)
+        overview += ('<table class="coverage metrics"><thead><tr><th>指标</th><th>改前</th><th>改后</th></tr></thead>'
+                     f'<tbody>{rows}</tbody></table>')
+    if data.get("pageCompare"):
+        if audit["mode"] != "fix":
+            raise ValueError("pageCompare 需要 mode=fix 且各页提供真实 after 截图")
+        changed, unchanged = [], []
+        for pg in data.get("pages", []):
+            if pg.get("evidenceMode", data.get("evidenceMode", "visual")) == "text":
+                continue
+            pid = str(pg["id"])
+            b_uri = img(pg.get("before"), f"{pid} before", required=True)
+            a_uri = img(pg.get("after"), f"{pid} after", required=True)
+            if not (b_uri and a_uri):
+                continue
+            if b_uri == a_uri:
+                unchanged.append(pid)
+                continue
+            note = (pg.get("review") or {}).get("after", "")
+            changed.append(
+                f'<details class="fold pagecmp" data-page-id="{esc(pid)}"><summary><code>{esc(pid)}</code>'
+                f'<span class="ftitle">{esc(pg.get("title", ""))}</span></summary><div class="fbody">'
+                + (f'<p class="review">{esc(note)}</p>' if note else "")
+                + compare_block(esc(pid), b_uri, a_uri) + '</div></details>')
+        overview += (f'<p class="sub">{len(changed)} 页有变化'
+                     + (f"，{len(unchanged)} 页无像素变化：{esc('、'.join(unchanged))}" if unchanged else "")
+                     + '</p>' + "".join(changed))
+    if overview:
+        overview = f'<section id="overview"><h2>整体前后对照</h2>{overview}</section>'
+
     if missing:
         raise ValueError("报告图片不完整：\n  " + "\n  ".join(missing))
     if problems:
@@ -628,7 +666,7 @@ def build(data: dict, max_width: int) -> tuple[str, dict]:
         modeText="只读审查 · 本轮未修改被审文件" if audit["mode"] == "review" else "修复复验",
         target=esc(target), pageCount=len(data.get("pages", [])),
         generated=esc(data.get("generated", "")),
-        summary=summary, contract=contract,
+        summary=summary, contract=contract, overview=overview,
         findings=findings_html, limits=limits, coverage=coverage, draft=draft,
     ), audit
 
