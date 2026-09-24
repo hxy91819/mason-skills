@@ -85,7 +85,9 @@
     "code_anchors": ["稳定的入口文件、符号或搜索词。"],
     "authoritative_inputs": ["规格、ADR 或前置约束。"],
     "write_scope": ["允许修改并应与并发工作隔离的区域。"],
-    "stop_conditions": ["会改变 Goal 或用户边界的新事实。"]
+    "stop_conditions": ["会改变 Goal 或用户边界的新事实。"],
+    "repositories": ["该 Story 要改动的仓库根路径；绝对路径或相对计划所在仓的路径。"],
+    "skills": ["该 Story 需要用到的技能名，只写名字不写路径。"]
   },
   "owner": null,
   "blocker": null,
@@ -97,6 +99,12 @@
 `difficulty` 是规划时判断的首轮能力档：`simple`、`medium` 或 `complex`；省略时按 `medium` 处理。
 `kind` 固定为结构类型 `large-task-story`，不参与路由。Story 不写模型名或路由别名；具体模型由
 `bb-model-routing` 根据 difficulty 配置决定。
+
+`context.repositories` 可选，声明该 Story 要改动的仓库根路径；缺省为计划所在仓，声明后以清单为准
+（要改计划所在仓时也要列出，可用 `.` 表示）。driver 按清单里的每个仓分别记录 HEAD 与 dirty 基线、
+核对改动并分别 checkpoint。报告中计划所在仓的路径用仓库相对路径，其他仓用
+`<仓库根>/<仓库相对路径>`。`context.skills` 可选，由规划者写上该 Story 需要用到的技能名；
+`brief` 原样带给 Worker，并提示需要时按名字加载。
 
 状态只有：
 

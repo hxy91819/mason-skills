@@ -106,10 +106,11 @@ def require_acceptance_ids(values: list[str]) -> list[str]:
 
 
 def validate_change_path(value: Any, label: str) -> str:
+    """计划所在仓用仓库相对路径；跨仓 Story 也可写 `<仓库根>/<仓库相对路径>`（绝对仓库根前缀）。"""
     path = require_text(value, label, limit=500)
     candidate = PurePosixPath(path)
     unsafe_parts = any(part in ("", ".", "..") for part in candidate.parts)
-    if candidate.is_absolute() or "\\" in path or candidate.as_posix() != path or unsafe_parts:
+    if "\\" in path or "//" in path or candidate.as_posix() != path or unsafe_parts:
         raise ReportError(f"{label} must be a normalized repository-relative path")
     return candidate.as_posix()
 

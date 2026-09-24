@@ -206,6 +206,8 @@ class StoryState:
     judge_report_requests: int = 0
     baseline_commit: str = ""
     baseline_dirty: list[str] = field(default_factory=list)
+    # Story 声明的其他仓（context.repositories）分别记录基线；计划所在仓继续用上面的字段，旧状态无需迁移。
+    repo_baselines: dict[str, dict[str, Any]] = field(default_factory=dict)
     last_worker: dict[str, Any] = field(default_factory=dict)
     last_validator: dict[str, Any] = field(default_factory=dict)
 
@@ -234,7 +236,8 @@ class StoryState:
             "judge_prompted_round": self.judge_prompted_round,
             "judge_report_requests": self.judge_report_requests,
             "baseline_commit": self.baseline_commit,
-            "baseline_dirty": self.baseline_dirty, "last_worker": self.last_worker,
+            "baseline_dirty": self.baseline_dirty, "repo_baselines": self.repo_baselines,
+            "last_worker": self.last_worker,
             "last_validator": self.last_validator,
         }
 
@@ -251,6 +254,10 @@ class Driver:
         if not self.report_script.is_file():
             raise DriverError(f"找不到 Worker 报告脚本：{self.report_script}")
         self.dispatch = self._resolve_dispatch(args.dispatch)
+        # 停下或全部完成时通知启动 driver 的 BB 线程；显式参数优先于环境变量，都没有则静默跳过。
+        self.notify_thread = str(
+            getattr(args, "notify_thread", "") or os.environ.get("BB_THREAD_ID") or ""
+        ).strip()
         self.state_dir = self.repository / STATE_ROOT_RELATIVE / topic_slug(self.repository, self.plan_path)
         self.state_path = self.state_dir / STATE_FILENAME
         self.log_path = self.state_dir / LOG_FILENAME
@@ -427,8 +434,8 @@ class Driver:
     def project_args(self) -> list[str]:
         return ["--plan", str(self.plan_path), "--stories-dir", str(self.stories_dir)]
 
-    def git(self, *arguments: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-        return run(["git", *arguments], cwd=self.repository, check=check)
+    def git(self, *arguments: str, repo: Path | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
+        return run(["git", *arguments], cwd=repo or self.repository, check=check)
 
     def bb(self, *arguments: str, check: bool = True) -> subprocess.CompletedProcess[str]:
         return run(["bb", *arguments], cwd=self.repository, check=check)
@@ -477,7 +484,7 @@ class Driver:
         return self.planning("brief", *self.project_args(), "--story", story_id).stdout
 
     def transition(self, story_id: str, status: str, *, expect: str | None = None,
-                   owner: str | None = None, blocker: str | None = None) -> None:
+                   owner: str | None = None, blocker: str | None = None, reopen: bool = False) -> None:
         arguments = ["transition", "--story", str(self.story_path(story_id)), "--status", status]
         if expect:
             arguments += ["--expect", expect]
@@ -485,12 +492,14 @@ class Driver:
             arguments += ["--owner", owner]
         if blocker:
             arguments += ["--blocker", blocker]
+        if reopen:
+            arguments.append("--reopen")
         self.planning(*arguments)
 
     # ----------------------------------------------------------------- Git 事实
 
-    def dirty_paths(self) -> list[str]:
-        output = self.git("status", "--porcelain=v1", "-z", "--untracked-files=all").stdout
+    def dirty_paths(self, repo: Path | None = None) -> list[str]:
+        output = self.git("status", "--porcelain=v1", "-z", "--untracked-files=all", repo=repo).stdout
         records = output.split("\0")
         paths: list[str] = []
         index = 0
@@ -505,12 +514,58 @@ class Driver:
                 index += 1
         return paths
 
-    def head(self) -> str:
-        return self.git("rev-parse", "HEAD").stdout.strip()
+    def head(self, repo: Path | None = None) -> str:
+        return self.git("rev-parse", "HEAD", repo=repo).stdout.strip()
 
-    def story_changes(self, state: StoryState) -> list[str]:
-        baseline = set(state.baseline_dirty)
-        return [path for path in self.dirty_paths() if path not in baseline]
+    def story_repo_entries(self, story: dict[str, Any]) -> list[tuple[Path, str]]:
+        """返回 (仓库根, 报告路径前缀)。缺省为计划所在仓；其他仓的路径用 `<仓库根>/<仓库相对路径>`。"""
+        declared = [str(item) for item in (story.get("context") or {}).get("repositories") or []]
+        entries: list[tuple[Path, str]] = []
+        seen: set[str] = set()
+        for entry in declared:
+            candidate = Path(entry).expanduser()
+            resolved = (candidate if candidate.is_absolute() else self.repository / candidate).resolve()
+            if not (resolved / ".git").exists():
+                raise DriverError(f"Story context.repositories 不是 Git 仓库根目录: {entry}")
+            if str(resolved) in seen:
+                continue
+            seen.add(str(resolved))
+            entries.append((resolved, "" if resolved == self.repository else str(resolved)))
+        if not entries:
+            entries.append((self.repository, ""))
+        return entries
+
+    def repo_baseline(self, state: StoryState, repo: Path) -> tuple[str, list[str]]:
+        if repo == self.repository:
+            return state.baseline_commit, state.baseline_dirty
+        entry = state.repo_baselines.get(str(repo)) or {}
+        return str(entry.get("commit", "")), list(entry.get("dirty", []))
+
+    def set_repo_baseline(self, state: StoryState, repo: Path, commit: str, dirty: list[str]) -> None:
+        if repo == self.repository:
+            state.baseline_commit = commit
+            state.baseline_dirty = dirty
+        else:
+            state.repo_baselines[str(repo)] = {"commit": commit, "dirty": dirty}
+
+    def ensure_story_baselines(self, story: dict[str, Any], state: StoryState, *, record_dirty: bool) -> None:
+        """按 Story 声明的仓库补齐缺失基线；领取时记录 dirty，线程恢复时只记 HEAD。"""
+        for repo, _ in self.story_repo_entries(story):
+            commit, _dirty = self.repo_baseline(state, repo)
+            if commit:
+                continue
+            self.set_repo_baseline(
+                state, repo, self.head(repo),
+                self.dirty_paths(repo) if record_dirty else [],
+            )
+
+    def story_changes(self, story_id: str, state: StoryState) -> list[tuple[Path, str]]:
+        story = self.read_story(story_id)
+        changes: list[tuple[Path, str]] = []
+        for repo, _ in self.story_repo_entries(story):
+            baseline = set(self.repo_baseline(state, repo)[1])
+            changes.extend((repo, path) for path in self.dirty_paths(repo) if path not in baseline)
+        return changes
 
     @staticmethod
     def path_within(path: str, boundary: str) -> bool:
@@ -553,50 +608,105 @@ class Driver:
         return False
 
     def implementation_changes(self, story_id: str, state: StoryState) -> list[str]:
+        story = self.read_story(story_id)
         management = set(self.management_paths(story_id))
-        return [path for path in self.story_changes(state)
-                if path not in management and not self.is_driver_management_path(path)]
+        formatted = []
+        for repo, path in self.story_changes(story_id, state):
+            if repo == self.repository and (
+                path in management or self.is_driver_management_path(path)
+            ):
+                continue
+            formatted.append(self.format_change_path(story, repo, path))
+        return formatted
+
+    def format_change_path(self, story: dict[str, Any], repo: Path, rel: str) -> str:
+        """报告路径约定：计划所在仓用仓库相对路径；其他仓加仓库根前缀。"""
+        label = next((entry for candidate, entry in self.story_repo_entries(story) if candidate == repo), "")
+        return f"{label}/{rel}" if label else rel
 
     def attribution_error(self, story_id: str, state: StoryState, paths: list[str]) -> str:
-        dirty = set(self.dirty_paths())
-        baseline = set(state.baseline_dirty)
-        management = set(self.management_paths(story_id))
-        missing = [path for path in paths if path not in dirty]
-        preexisting = [path for path in paths if path in baseline]
-        reserved = [
-            path for path in paths
-            if path in management or self.path_within(path, ".local/") or self.is_driver_management_path(path)
-        ]
-        reasons = []
-        if missing:
-            reasons.append(f"不是当前精确 dirty 文件：{', '.join(missing)}")
-        if preexisting:
-            reasons.append(f"Story 开始前已 dirty，不能按整文件归属：{', '.join(preexisting)}")
-        if reserved:
-            reasons.append(f"属于 Driver 管理路径：{', '.join(reserved)}")
-        return "；".join(reasons)
+        story = self.read_story(story_id)
+        entries = self.story_repo_entries(story)
+        repo_dirty = {repo: set(self.dirty_paths(repo)) for repo, _ in entries}
+        errors: list[str] = []
+        for raw in paths:
+            matches: set[tuple[Path, str]] = set()
+            for repo, label in entries:
+                rel = raw
+                if label:
+                    if not raw.startswith(label + "/"):
+                        continue
+                    rel = raw[len(label) + 1:]
+                if rel in repo_dirty[repo]:
+                    matches.add((repo, rel))
+            if len(matches) > 1:
+                errors.append(f"{raw}: 同时匹配多个仓库的 dirty 文件，需加仓库根前缀消歧")
+                continue
+            if not matches:
+                errors.append(f"{raw}: 不是涉及仓库的当前精确 dirty 文件")
+                continue
+            repo, rel = next(iter(matches))
+            if rel in set(self.repo_baseline(state, repo)[1]):
+                errors.append(f"{raw}: Story 开始前已 dirty，不能按整文件归属")
+                continue
+            if self.path_within(rel, ".local/"):
+                errors.append(f"{raw}: 属于 Driver 本地状态路径")
+                continue
+            if repo == self.repository and (
+                rel in set(self.management_paths(story_id)) or self.is_driver_management_path(rel)
+            ):
+                errors.append(f"{raw}: 属于 Driver 管理路径")
+        return "；".join(errors)
 
-    def checkpoint(self, story_id: str, state: StoryState) -> str:
-        baseline = set(state.baseline_dirty)
+    def checkpoint(self, story_id: str, state: StoryState) -> dict[str, str]:
+        """在 Story 声明的每个仓分别提交 Validator 确认的路径；返回 仓库根 -> commit。"""
+        story = self.read_story(story_id)
+        entries = self.story_repo_entries(story)
         worker_paths = (
             state.last_validator.get("worker_paths", [])
             if state.last_validator
             else state.last_worker.get("Paths", [])
         )
-        candidates = [*worker_paths, *self.management_paths(story_id)]
-        targets = list(dict.fromkeys(
-            path for path in candidates if path not in baseline and not self.path_within(path, ".local/")
-        ))
-        if not targets:
-            return self.head()
-        self.git("add", "--", *targets)
-        staged = self.git("diff", "--cached", "--quiet", "--", *targets, check=False)
-        if staged.returncode == 0:
-            return self.head()
-        # --only keeps another agent's pre-existing index entries out of this checkpoint.
-        self.git("commit", "-q", "--only", "-m", f"checkpoint({story_id}): {self.read_story(story_id)['title']}",
-                 "--", *targets)
-        return self.head()
+        repo_dirty = {repo: set(self.dirty_paths(repo)) for repo, _ in entries}
+        located: dict[Path, list[str]] = {}
+        for raw in worker_paths:
+            matches: set[tuple[Path, str]] = set()
+            for repo, label in entries:
+                rel = raw
+                if label and not raw.startswith(label + "/"):
+                    continue
+                if label:
+                    rel = raw[len(label) + 1:]
+                if rel in repo_dirty[repo]:
+                    matches.add((repo, rel))
+            if len(matches) != 1:
+                raise DriverError(f"{story_id}: checkpoint 前无法唯一定位 Worker 路径: {raw}")
+            repo, rel = next(iter(matches))
+            located.setdefault(repo, []).append(rel)
+        commits: dict[str, str] = {}
+        roots = {*(repo for repo, _ in entries), self.repository}
+        for repo in sorted(roots, key=str):
+            baseline = set(self.repo_baseline(state, repo)[1])
+            targets = [
+                path for path in located.get(repo, [])
+                if path not in baseline and not self.path_within(path, ".local/")
+            ]
+            if repo == self.repository:
+                targets += [path for path in self.management_paths(story_id) if path not in baseline]
+                targets = list(dict.fromkeys(targets))
+            if not targets:
+                commits[str(repo)] = self.head(repo)
+                continue
+            self.git("add", "--", *targets, repo=repo)
+            staged = self.git("diff", "--cached", "--quiet", "--", *targets, repo=repo, check=False)
+            if staged.returncode == 0:
+                commits[str(repo)] = self.head(repo)
+                continue
+            # --only keeps another agent's pre-existing index entries out of this checkpoint.
+            self.git("commit", "-q", "--only", "-m", f"checkpoint({story_id}): {story['title']}",
+                     "--", *targets, repo=repo)
+            commits[str(repo)] = self.head(repo)
+        return commits
 
     # ----------------------------------------------------------------- BB 线程
 
@@ -695,7 +805,8 @@ JSON
 ```
 
 `result` 只能是 `worker_done|blocked|failed`；`verification[].outcome` 只能是
-`passed|failed|not_run`。`changes[].path` 使用仓库相对路径。`blocked/failed` 必须在
+`passed|failed|not_run`。`changes[].path` 对计划所在仓用仓库相对路径；Story 声明的其他仓用
+`<仓库根>/<仓库相对路径>`（仓库根见上文列出的涉及仓库）。`blocked/failed` 必须在
 `remaining` 写明未完成事项。脚本返回 0 且打印 `WORKER_REPORT_WRITTEN` 才算报告成功。
 最终自然语言回复只需说明“结构化报告已提交”，Driver 不从终答文本提取结果。"""
 
@@ -772,7 +883,9 @@ JSON
 
 `verdict` 只能是 `PASS|FAIL`；每个 Acceptance ID 必须按给定顺序恰好出现一次，`outcome` 只能是
 `holds|missing`，每项必须写实际 evidence。`worker_paths` 必须逐项列出从 Worker 的 BB turn diff
-确认归属该 Worker 的当前仓库相对路径；Driver 只会 checkpoint 这些路径。PASS 要求全部 holds 且
+确认归属该 Worker 的精确路径（计划所在仓相对路径；Story 声明的其他仓用 `<仓库根>/<仓库相对路径>`）；
+Driver 只会 checkpoint 这些路径。只按已写下的 Acceptance 判定，`new_facts` 只是记录并行事实，不能作为
+FAIL 依据。PASS 要求全部 holds 且
 gaps 为空；FAIL 必须至少有一项 missing 或 gap。脚本返回 0 且打印 `VALIDATOR_REPORT_WRITTEN` 才算报告成功。最终自然语言回复只需说明
 “结构化报告已提交”，Driver 不从终答文本提取结果。"""
 
@@ -872,12 +985,35 @@ JSON
             parts.append(self.args.context)
         return "\n".join(parts)
 
+    def story_repo_lines(self, story: dict[str, Any]) -> list[str]:
+        """向 Worker/Validator 写明本 Story 涉及哪些仓；缺省声明时不需要额外说明。"""
+        declared = [str(item) for item in (story.get("context") or {}).get("repositories") or []]
+        if not declared:
+            return []
+        lines = [
+            "本 Story 涉及的仓库（Driver 按仓分别记录基线并分别 checkpoint；"
+            "计划所在仓之外的改动路径在报告中写作 `<仓库根>/<仓库相对路径>`）：",
+        ]
+        for repo, label in self.story_repo_entries(story):
+            role = "计划所在仓" if not label else "context.repositories 声明"
+            lines.append(f"- {repo}（{role}）；当前 HEAD {self.head(repo)}")
+        return lines
+
     def worker_task(
         self, story_id: str, story: dict[str, Any], brief: str, *, attempt: int, resume_note: str = "",
     ) -> str:
+        extras = ""
+        repo_lines = self.story_repo_lines(story)
+        if repo_lines:
+            extras += "\n\n" + "\n".join(repo_lines)
+        skills = [str(item) for item in (story.get("context") or {}).get("skills") or []]
+        if skills:
+            extras += "\n\n需要时按名字加载这些技能：" + "、".join(skills) + (
+                "。技能名来自 Story 的 `context.skills`；只按名字加载，不写路径。"
+            )
         return f"""实现 Story {story_id}，一次只处理这一张 Story。
 
-{self.repo_context()}
+{self.repo_context()}{extras}
 
 以执行包的 Outcome、Acceptance 和公开测试 seam 为准，按 red → green 小循环实现。`write_scope`
 只是预估；需要其他路径时可以修改并在报告中列全。保留共享工作区的并行改动。计划 JSON、SPEC.md、
@@ -914,10 +1050,12 @@ STATUS.md 由 Driver 维护；本线程不提交、推送或派生线程。Accep
         management = "\n".join(f"- {path}" for path in self.management_paths(story_id))
         implementation = "\n".join(f"- {path}" for path in self.implementation_changes(story_id, state)) or "- （无）"
         worker_summary = json.dumps(worker, ensure_ascii=False, indent=2)
+        repo_lines = self.story_repo_lines(story)
+        repo_block = "\n".join(repo_lines) + "\n\n" if repo_lines else ""
         return f"""只读核验 Story {story_id}；可以运行测试，不修改文件或提交。
 
 {self.repo_context()}
-计划：{self.plan_path}
+{repo_block}计划：{self.plan_path}
 Story：{self.story_path(story_id)}
 本 Story 开始时的基线 commit：{state.baseline_commit}
 Worker 线程：{state.worker_thread}
@@ -964,6 +1102,8 @@ Story：{self.story_path(story_id)}
 - `replan`：已用 `{self.planning_script} write/transition` 调整计划并通过校验。
 - `stop`：需要用户决定权限、破坏性/外部动作、显著成本、Goal/黄金判据或并发冲突。
 
+`patch` 和 `replan` 不得新增或加严 Acceptance；验收本身需要调整时选 `stop` 交给用户。
+
 已授权范围内的 pending interaction 可直接处理，再以 `patch` 和 note `interaction handled` 继续；
 越权 interaction 选 `stop`。
 """
@@ -1008,9 +1148,8 @@ Validator 报告：{validator}
             or state.difficulty
             or (str(story_difficulty) if story_difficulty in DIFFICULTIES else self.args.default_difficulty)
         )
-        if not state.baseline_commit:
-            state.baseline_commit = self.head()
-            state.baseline_dirty = self.dirty_paths()
+        # 基线由 ensure_story_baselines 按 Story 声明的仓分别补齐；领取时记录 dirty。
+        self.ensure_story_baselines(story, state, record_dirty=True)
         brief = self.brief(story_id)
         self.clear_worker_report(story_id, attempt)
         thread_id = self.dispatch_thread(
@@ -1089,10 +1228,45 @@ Validator 报告：{validator}
         self.write_story(story_id, story)
         self.transition(story_id, "done", expect="in_progress", owner=state.worker_thread or "driver")
         self.check()
-        commit = self.checkpoint(story_id, state)
+        commits = self.checkpoint(story_id, state)
+        if self.args.deliver_command and not self.deliver_story(story_id, state, commits):
+            return
         self.note_story_done()
         self.set_story_state(story_id, None)
-        self.log("story.done", story=story_id, commit=commit, attempts=state.attempts, patch_rounds=state.patch_rounds)
+        facts: dict[str, Any] = {
+            "story": story_id, "commit": commits.get(str(self.repository), ""),
+            "attempts": state.attempts, "patch_rounds": state.patch_rounds,
+        }
+        if len(commits) > 1:
+            facts["commits"] = commits
+        self.log("story.done", **facts)
+
+    def deliver_story(self, story_id: str, state: StoryState, commits: dict[str, str]) -> bool:
+        """逐仓执行 --deliver-command；失败时把 Story 恢复 in_progress 并按异常路径交 Judge。"""
+        for root in sorted(commits):
+            repo = Path(root)
+            environment = {
+                **os.environ,
+                "LARGE_TASK_STORY_ID": story_id,
+                "LARGE_TASK_REPOSITORY": root,
+                "LARGE_TASK_COMMIT": commits[root],
+            }
+            result = subprocess.run(
+                self.args.deliver_command, shell=True, cwd=repo, env=environment,
+                capture_output=True, text=True, check=False,
+            )
+            if result.returncode == 0:
+                self.log("deliver.ok", story=story_id, repository=root)
+                continue
+            situation = (
+                f"交付命令在 {root} 失败（退出码 {result.returncode}）；Story {story_id} 的改动已 checkpoint。\n"
+                f"stdout: {result.stdout.strip()[:500]}\nstderr: {result.stderr.strip()[:500]}"
+            )
+            self.log("deliver.failed", story=story_id, repository=root, exit=result.returncode)
+            self.transition(story_id, "in_progress", reopen=True)
+            self.consult_judge(story_id, state, situation)
+            return False
+        return True
 
     def block_story(self, story_id: str, reason: str) -> None:
         self.transition(story_id, "blocked", blocker=reason)
@@ -1283,7 +1457,7 @@ Validator 报告：{validator}
                 state.difficulty = state.difficulty or (
                     str(story_difficulty) if story_difficulty in DIFFICULTIES else self.args.default_difficulty
                 )
-                state.baseline_commit = state.baseline_commit or self.head()
+                self.ensure_story_baselines(story, state, record_dirty=False)
                 self.set_story_state(story_id, state)
             else:
                 self.claim_and_dispatch(story_id, resume_note="\n此 Story 之前已领取但线程丢失；先核对工作区已有改动。\n")
@@ -1421,6 +1595,35 @@ Validator 报告：{validator}
         else:
             self.log("delivered", commit=self.head(), pushed=False)
 
+    def stop_with_reason(self, reason: str) -> int:
+        self.log("driver.stopped", reason=reason[:500])
+        self.write_last_stop(reason)
+        print(f"STOP: {reason}", file=sys.stderr)
+        self.notify_parent(
+            "large-task driver 停止（退出码 3），当前现场已保留。",
+            reason,
+        )
+        return 3
+
+    def notify_parent(self, conclusion: str, decision: str) -> None:
+        """把停下事实发回启动 driver 的 BB 线程；取不到线程或发送失败都不影响退出。"""
+        thread_id = self.notify_thread
+        if not thread_id:
+            return
+        status_command = shlex.join([
+            sys.executable, str(Path(__file__).resolve()), "status",
+            "--plan", str(self.plan_path), "--stories-dir", str(self.stories_dir),
+            "--repository", str(self.repository), "--planning-script", str(self.planning_script),
+            "--dispatch", self.args.dispatch,
+        ])
+        message = f"{conclusion}\n需要用户决定：{decision}\n查看状态：{status_command}"
+        try:
+            self.bb("thread", "tell", thread_id, message, "--mode", "auto", check=False)
+        except Exception as error:  # 通知是旁路：失败只告警
+            print(f"WARN: 通知父线程 {thread_id} 失败: {error}", file=sys.stderr)
+            return
+        self.log("parent.notified", thread=thread_id)
+
     def run(self) -> int:
         stories_done = 0
         self.remember_safeguard_config()
@@ -1433,16 +1636,17 @@ Validator 报告：{validator}
                 if outcome == "complete":
                     self.finish()
                     self.clear_last_stop()
+                    self.notify_parent(
+                        f"large-task driver 已完成计划 {self.topic_dir.name} 的全部 Story"
+                        + ("，并已推送到远端。" if self.args.push else "（未推送；未启用 --push）。"),
+                        "无需用户决定；如需远端交付请推送或检查交付命令结果。",
+                    )
                     print("DONE: 全部 Story 完成。")
                     return 0
                 if outcome == "idle":
                     status = self.status()
                     blocked = [f"{s['id']}: {s['blocker']}" for s in status["stories"] if s["status"] == "blocked"]
-                    reason = "没有可推进的 Story。\n" + "\n".join(blocked)
-                    self.log("driver.stopped", reason=reason[:500])
-                    self.write_last_stop(reason)
-                    print("STOP: " + reason, file=sys.stderr)
-                    return 3
+                    return self.stop_with_reason("没有可推进的 Story。\n" + "\n".join(blocked))
                 if outcome == "progress":
                     stories_done = self.status()["plan"]["completed"]
                 if self.args.once:
@@ -1452,10 +1656,7 @@ Validator 报告：{validator}
                     print(f"LIMIT: 已完成 {stories_done} 张 Story，达到 --max-stories。")
                     return 0
         except DriverStop as stop:
-            self.log("driver.stopped", reason=str(stop)[:500])
-            self.write_last_stop(str(stop))
-            print(f"STOP: {stop}", file=sys.stderr)
-            return 3
+            return self.stop_with_reason(str(stop))
 
 
 # --------------------------------------------------------------------------- CLI
@@ -1493,6 +1694,11 @@ def build_parser() -> argparse.ArgumentParser:
         target.add_argument("--wait-timeout", type=int, default=1800, help="单次等待线程的秒数上限；超过后返回 waiting")
         target.add_argument("--poll-seconds", type=int, default=120, help="bb thread wait 的 --timeout")
         target.add_argument("--allow-empty-story", action="store_true", help="允许 Worker 无改动即完成（纯验证类 Story）")
+        target.add_argument("--deliver-command", default="",
+                            help="每张 Story 通过 Validator 并 checkpoint 后在涉及仓执行的交付命令；"
+                                 "环境变量 LARGE_TASK_STORY_ID / LARGE_TASK_REPOSITORY / LARGE_TASK_COMMIT")
+        target.add_argument("--notify-thread", default="",
+                            help="driver 停下或全部完成时通知的 BB 线程 ID；缺省用环境变量 BB_THREAD_ID")
         target.add_argument("--once", action="store_true", help="只推进一步就退出；适合定时调用")
         target.add_argument("--max-stories", type=int, default=0, help="完成 N 张 Story 后退出；0 为不限")
         target.add_argument("--push", action="store_true", help="全部完成后推送当前分支并核对远端 HEAD")
@@ -1541,6 +1747,10 @@ def background_command(args: argparse.Namespace) -> list[str]:
         command += ["--context", args.context]
     if args.allow_empty_story:
         command.append("--allow-empty-story")
+    if args.deliver_command:
+        command += ["--deliver-command", args.deliver_command]
+    if args.notify_thread:
+        command += ["--notify-thread", args.notify_thread]
     if args.once:
         command.append("--once")
     if args.push:

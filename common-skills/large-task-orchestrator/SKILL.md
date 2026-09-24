@@ -50,18 +50,25 @@ python3 <orchestrator-skill>/scripts/large_task_driver.py start \
 
 同一计划已有存活 pid 时 `start` 以退出码 4 拒绝重复启动；陈旧 pid 自动覆盖。不同仓库或同一仓库不同计划使用
 独立的状态目录与锁，可以同时运行。计划中的 `owner` 保留 Worker 线程 ID；遗失计划本地状态时，driver 会从计划
-和 BB 线程恢复。仅在排障或定时任务需要前台单次推进时才用 `run` 或 `start --foreground` 加 `--once`。
+和 BB 线程恢复。driver 因需要用户处理（退出码 3）、受控停止或全部完成而退出时，会向启动它的 BB 线程发一条
+简短消息（结论、需要用户决定什么、`status` 命令）；线程 ID 取 `--notify-thread` 或环境变量
+`BB_THREAD_ID`，都没有则静默跳过。仅在排障或定时任务需要前台单次推进时才用 `run` 或 `start --foreground`
+加 `--once`。
 
 ## 正常循环与异常
 
 正常路径由 driver 选择 ready frontier、领取 Story、派 Worker、核对 Git 改动事实，再派 Validator 判断
 Acceptance、Story 边界和 Worker 路径归属；通过后更新 Handoff、刷新投影并只 checkpoint Validator
-确认归属的 Worker 路径。
+确认归属的 Worker 路径。Story 可用 `context.repositories` 声明要改动的仓库根路径（缺省为计划所在仓）：
+driver 按声明清单分别记录每仓 HEAD 与 dirty 基线、核对改动并分别 checkpoint；报告中的路径约定见
+「报告契约」。配置了 `--deliver-command` 时，每张 Story 在 Validator 通过并 checkpoint 之后，driver 在
+涉及仓逐仓执行该命令（由仓库自行负责推分支、开 MR、等 CI 等），命令失败时把该 Story 按异常路径交 Judge。
 
 发生 Worker `blocked`/`failed`、线程 error、待处理 interaction、空改动、报告无法解析或
 Validator 多轮失败时，driver 才启用 `complex` Judge；同一 Story 后续异常复用该会话，线程失效时才替换。
 Judge 只能选择 `retry`、`escalate`、`patch`、
-`block`、`replan` 或 `stop`。`block` 后继续其他 ready Story；`replan` 后重新校验计划；`stop` 或没有
+`block`、`replan` 或 `stop`，且 `patch`/`replan` 不得新增或加严 Acceptance，需要调整时选 `stop`。
+`block` 后继续其他 ready Story；`replan` 后重新校验计划；`stop` 或没有
 ready Story 时退出并把最小原因写到 stderr。
 
 不要手动篡改 driver 状态文件、Story 的 `owner` 或 Handoff 来跳过这些状态转换。要处理停下原因，先读 driver
@@ -91,7 +98,7 @@ Worker 提交的 payload 只有以下字段，不接受额外字段：
 ```json
 {
   "result": "worker_done | blocked | failed",
-  "changes": [{"path": "仓库相对路径", "summary": "可观察变更"}],
+  "changes": [{"path": "仓库相对路径或其他仓的 <仓库根>/<仓库相对路径>", "summary": "可观察变更"}],
   "verification": [{"command": "实际命令", "outcome": "passed | failed | not_run", "summary": "结果"}],
   "remaining": [],
   "handoff": "下一位 Worker 所需事实"
@@ -99,9 +106,11 @@ Worker 提交的 payload 只有以下字段，不接受额外字段：
 ```
 
 `changes`、`verification` 和 `remaining` 各最多 8 项，`handoff` 最多 400 字符。`worker_done` 至少有一项
-verification；`blocked` 与 `failed` 至少有一项 remaining。
+verification；`blocked` 与 `failed` 至少有一项 remaining。`changes[].path` 对计划所在仓用仓库相对路径；
+Story 用 `context.repositories` 声明的其他仓用 `<仓库根>/<仓库相对路径>`（仓库根即任务文本列出的涉及仓）。
 
-Validator 只读核验 Acceptance，并依据 Outcome、Acceptance、边界和实际 Git 改动判断是否夹带无关或其他
+Validator 只读核验 Acceptance——只按已写下的 Acceptance 判定，`new_facts` 只是记录并行事实，不能作为
+FAIL 依据——并依据 Outcome、Acceptance、边界和实际 Git 改动判断是否夹带无关或其他
 Story 的工作；计划中的 `write_scope` 只是预估线索，不是文件白名单。共享工作区的新 dirty 文件只是候选增量，
 Validator 应以 Worker 的 BB `turn/diff` 确认归属，不得凭 mtime 或活跃时间窗口推断；无法归属的并行改动记为
 新事实，不判当前 Story 失败。报告绑定当前 Worker attempt、Story intent version 和 validation round；
@@ -139,6 +148,11 @@ Judge 报告再绑定 judge round，动作仍限制在固定集合：
 - `--max-blocked-per-story`（默认 2）：同一 Story 累计进入 blocked 的上限；耗尽表示需要用户修改计划。
 - `--poll-seconds`：每次 `bb thread wait` 的节奏；`--wait-timeout` 是该轮等待上限。
 - `--allow-empty-story`：仅纯验证 Story 可无业务改动完成。
+- `--deliver-command <cmd>`：每张 Story 通过 Validator 并 checkpoint 后，在涉及仓逐仓执行一次；以
+  `LARGE_TASK_STORY_ID`、`LARGE_TASK_REPOSITORY`、`LARGE_TASK_COMMIT` 环境变量传入 Story ID、仓库根和
+  该仓 commit，命令由仓库自行提供并负责真实交付；失败按异常路径交 Judge。不传时行为不变。
+- `--notify-thread <id>`：driver 停下（退出码 3）或全部完成时向该 BB 线程发送简短结论与 `status` 命令；
+  缺省取环境变量 `BB_THREAD_ID`，两者都没有时静默跳过。
 - `--once`、`--max-stories N`：适合定时或受限批次；`--push` 在全部完成后推送并核对 upstream HEAD。
 - `status [--json]`：只读显示进程、计划进度、in-progress/blocked Story、全局兜底计数与阈值、最近日志和上次停止原因；不读取线程全文。
 - `stop [--wait]`：向该计划的 pid 发送 SIGTERM；`--wait` 最长等待 `--wait-timeout` 秒。

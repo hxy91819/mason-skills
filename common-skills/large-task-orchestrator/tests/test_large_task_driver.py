@@ -79,7 +79,7 @@ if args[:2] == ["thread", "output"]:
 if args[:3] == ["thread", "interactions", "list"]:
     out(world["threads"][args[3]].get("interactions", []))
 if args[:2] == ["thread", "tell"]:
-    t = world["threads"][args[2]]
+    t = world["threads"].setdefault(args[2], {"status": "idle", "output": "", "queue": []})
     t["status"] = "active"; t["current_task"] = args[3]; t.setdefault("tells", []).append(args[3]); save()
     out({"ok": True})
 if args[:2] == ["thread", "retry"]:
@@ -179,6 +179,7 @@ class DriverTest(unittest.TestCase):
         self.git("add", "-A")
         self.git("commit", "-q", "-m", "plan")
         self.background_pids: list[int] = []
+        self.parent_thread = ""
 
     def tearDown(self) -> None:
         for pid in reversed(self.background_pids):
@@ -322,6 +323,8 @@ class DriverTest(unittest.TestCase):
                     stories: Path | None = None) -> subprocess.CompletedProcess[str]:
         env = {**os.environ, "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}",
                "FAKE_WORLD": str(self.world), "FAKE_REPO": str(self.repo),
+               # 默认置空父线程 ID，除非测试显式设置，避免继承外部 bb 会话的 BB_THREAD_ID。
+               "BB_THREAD_ID": self.parent_thread,
                "FAKE_PLANNING": str(PLANNING), "FAKE_PLAN": str(self.plan), "FAKE_STORIES": str(self.stories)}
         result = subprocess.run(
             [sys.executable, str(DRIVER), command, "--plan", str(plan or self.plan),
@@ -1186,6 +1189,174 @@ class DriverTest(unittest.TestCase):
         payload = self.wait_for_driver_exit()
         self.assertIn("需要用户提供测试凭据", payload["last_stop"])
         self.assertFalse((Path(payload["state_dir"]) / "driver.pid").exists())
+
+    # ----------------------------------------------------------------- 跨仓 / 交付钩子 / 父线程通知
+
+    def make_other_repo(self) -> str:
+        other = self.root / "other-repo"
+        subprocess.run(["git", "init", "-q", "-b", "main", str(other)], check=True)
+        subprocess.run(["git", "-C", str(other), "config", "user.email", "t@example.com"], check=True)
+        subprocess.run(["git", "-C", str(other), "config", "user.name", "t"], check=True)
+        (other / "README.md").write_text("other\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(other), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(other), "commit", "-q", "-m", "init"], check=True)
+        return str(other.resolve())
+
+    def test_multi_repo_story_records_baselines_and_checkpoints_each_repo(self) -> None:
+        other_root = self.make_other_repo()
+        story = self.story("STORY-01")
+        story["context"]["repositories"] = [".", "../other-repo"]
+        self.write_json(self.stories / "STORY-01-first.json", story)
+        self.planning("render")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "declare repositories")
+        self.set_world({
+            "STORY-01:worker": [[{"output": WORKER_DONE,
+                                   "files": {**WORKER_FILES, f"{other_root}/src/helper.py": "value = 2\n"}}]],
+            "STORY-01:validator": [[{"output": VALIDATOR_PASS}]],
+            "STORY-02:worker": [[{"output": WORKER_DONE, "files": {"src/final.py": "x = 1\n"}}]],
+            "STORY-02:validator": [[{"output": VALIDATOR_PASS}]],
+        })
+
+        self.run_driver()
+
+        self.assertEqual(self.story("STORY-01")["status"], "done")
+        self.assertEqual(self.story("STORY-02")["status"], "done")
+        self.assertIn("checkpoint(STORY-01)", self.git("log", "--oneline"))
+        self.assertEqual(self.git("status", "--short").strip(), "")
+        other_log = subprocess.run(["git", "-C", other_root, "log", "--oneline"],
+                                   capture_output=True, text=True, check=True).stdout
+        self.assertIn("checkpoint(STORY-01)", other_log)
+        other_committed = subprocess.run(
+            ["git", "-C", other_root, "show", "--format=", "--name-only", "HEAD"],
+            capture_output=True, text=True, check=True).stdout.splitlines()
+        self.assertIn("src/helper.py", other_committed)
+        other_status = subprocess.run(["git", "-C", other_root, "status", "--short"],
+                                      capture_output=True, text=True, check=True).stdout.strip()
+        self.assertEqual(other_status, "")
+        # Worker 与 Validator 任务文本写明涉及仓库与跨仓路径约定
+        worker_task = self.read_world()["threads"]["thr_worker_story01_1"]["task"]
+        self.assertIn("本 Story 涉及的仓库", worker_task)
+        self.assertIn(other_root, worker_task)
+        validator_task = self.read_world()["threads"]["thr_validator_story01_1"]["task"]
+        self.assertIn(other_root, validator_task)
+        self.assertIn("<仓库根>/<仓库相对路径>", validator_task)
+        self.assertIn(f"{other_root}/src/helper.py", validator_task)
+
+    def test_deliver_command_runs_per_story_with_story_environment(self) -> None:
+        hook_log = self.root / "deliver-log.jsonl"
+        hook = self.root / "deliver_hook.py"
+        hook.write_text(
+            "import json, os\n"
+            "record = json.dumps({\n"
+            "    'story': os.environ.get('LARGE_TASK_STORY_ID'),\n"
+            "    'repository': os.environ.get('LARGE_TASK_REPOSITORY'),\n"
+            "    'commit': os.environ.get('LARGE_TASK_COMMIT'),\n"
+            "})\n"
+            f"open({str(hook_log)!r}, 'a', encoding='utf-8').write(record + '\\n')\n",
+            encoding="utf-8",
+        )
+        self.set_world({
+            "STORY-01:worker": [[{"output": WORKER_DONE, "files": WORKER_FILES}]],
+            "STORY-01:validator": [[{"output": VALIDATOR_PASS}]],
+            "STORY-02:worker": [[{"output": WORKER_DONE, "files": {"src/final.py": "done = True\n"}}]],
+            "STORY-02:validator": [[{"output": VALIDATOR_PASS}]],
+        })
+
+        self.run_driver("--deliver-command", f"{sys.executable} {hook}")
+
+        records = [json.loads(line) for line in hook_log.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([item["story"] for item in records], ["STORY-01", "STORY-02"])
+        self.assertEqual(records[0]["repository"], str(self.repo.resolve()))
+        commits = {
+            message: digest for digest, message in
+            (line.split(" ", 1) for line in reversed(self.git("log", "--format=%H %s").splitlines()))
+        }
+        self.assertEqual(records[0]["commit"], commits["checkpoint(STORY-01): STORY-01 结果"])
+        self.assertEqual(records[1]["commit"], self.git("rev-parse", "HEAD").strip())
+
+    def test_failed_deliver_command_consults_judge_and_stops(self) -> None:
+        self.set_world({
+            "STORY-01:worker": [[{"output": WORKER_DONE, "files": WORKER_FILES}]],
+            "STORY-01:validator": [[{"output": VALIDATOR_PASS}]],
+            "STORY-01:judge": [[{"output": "Action: stop\nNote: 交付失败需要用户处理。"}]],
+        })
+
+        result = self.run_driver("--max-stories", "1", "--deliver-command", "false", expected=3)
+
+        self.assertIn("交付失败需要用户处理", result.stderr)
+        self.assertEqual(self.story("STORY-01")["status"], "in_progress")
+        judge_task = self.read_world()["threads"]["thr_judge_story01_1"]["task"]
+        self.assertIn("交付命令", judge_task)
+        self.assertIn("退出码 1", judge_task)
+
+    def test_failed_deliver_then_judge_patch_retries_delivery(self) -> None:
+        hook_log = self.root / "deliver-log.jsonl"
+        hook = self.root / "deliver_hook_flaky.py"
+        hook.write_text(
+            "import os, sys\n"
+            f"log = {str(hook_log)!r}\n"
+            "open(log, 'a', encoding='utf-8').write(os.environ.get('LARGE_TASK_STORY_ID', '') + '\\n')\n"
+            "count = sum(1 for _ in open(log, encoding='utf-8'))\n"
+            "sys.exit(0 if count >= 2 else 1)\n",
+            encoding="utf-8",
+        )
+        self.set_world({
+            "STORY-01:worker": [[
+                {"output": WORKER_DONE, "files": WORKER_FILES},
+                {"output": WORKER_DONE,
+                 "files": {"src/feature.py": "def feature():\n    return 1  # after deliver retry\n"}},
+            ]],
+            "STORY-01:validator": [[{"output": VALIDATOR_PASS}], [{"output": VALIDATOR_PASS}]],
+            "STORY-01:judge": [[{"output": "Action: patch\nNote: 重新执行交付命令。"}]],
+        })
+
+        self.run_driver("--max-stories", "1", "--deliver-command", f"{sys.executable} {hook}")
+
+        self.assertEqual(self.story("STORY-01")["status"], "done")
+        self.assertEqual(hook_log.read_text(encoding="utf-8").splitlines(), ["STORY-01", "STORY-01"])
+        world = self.read_world()
+        self.assertEqual(world["spawned"]["STORY-01:worker"], 1)
+        self.assertEqual(world["spawned"]["STORY-01:validator"], 2)
+
+    def test_driver_notifies_parent_thread_on_completion(self) -> None:
+        self.parent_thread = "thr_parent"
+        self.set_world({
+            "STORY-01:worker": [[{"output": WORKER_DONE, "files": WORKER_FILES}]],
+            "STORY-01:validator": [[{"output": VALIDATOR_PASS}]],
+            "STORY-02:worker": [[{"output": WORKER_DONE, "files": {"src/final.py": "x = 1\n"}}]],
+            "STORY-02:validator": [[{"output": VALIDATOR_PASS}]],
+        })
+
+        result = self.run_driver()
+
+        self.assertIn("DONE", result.stdout)
+        tells = self.read_world()["threads"]["thr_parent"]["tells"]
+        self.assertEqual(len(tells), 1)
+        self.assertIn("全部 Story", tells[0])
+        self.assertIn("需要用户决定", tells[0])
+        self.assertIn("large_task_driver.py status", tells[0])
+        self.assertIn("--plan", tells[0])
+
+    def test_driver_notifies_parent_thread_on_stop_prefers_explicit_flag(self) -> None:
+        self.parent_thread = "thr_env_parent"
+        self.set_world({
+            "STORY-01:worker": [[{
+                "output": "Result: blocked\nChanged: none\nVerified: none\nRemaining: 缺少凭据\nHandoff: 等待凭据"
+            }]],
+            "STORY-01:judge": [[{"output": "Action: stop\nNote: 需要用户提供测试凭据。"}]],
+        })
+
+        result = self.run_driver("--max-stories", "1", "--notify-thread", "thr_flag_parent", expected=3)
+
+        self.assertIn("需要用户提供测试凭据", result.stderr)
+        world = self.read_world()
+        flag_tells = world["threads"]["thr_flag_parent"]["tells"]
+        self.assertEqual(len(flag_tells), 1)
+        self.assertIn("需要用户提供测试凭据", flag_tells[0])
+        self.assertIn("退出码 3", flag_tells[0])
+        self.assertIn("large_task_driver.py status", flag_tells[0])
+        self.assertNotIn("thr_env_parent", world["threads"])
 
 
 if __name__ == "__main__":

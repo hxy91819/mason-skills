@@ -19,7 +19,9 @@
 
 ## 每张 Story 的状态机
 
-1. `status --json` 给出 ready frontier；driver 领取一张 todo Story，记录基线并经 `bb-dispatch` 派 Worker。
+1. `status --json` 给出 ready frontier；driver 领取一张 todo Story，按 Story `context.repositories`
+   （缺省计划所在仓）分别记录每个仓的 HEAD 与 dirty 基线，并经 `bb-dispatch` 派 Worker；任务文本列明
+   涉及仓库与跨仓路径约定。
 2. `bb thread wait <id> --timeout <poll>` 后读取 `show`、interactions 和 `output`。当前 BB 在 timeout 时返回
    退出码 2；只要线程仍是 `pending|starting|active|stopping`，这表示 busy，不是命令错误。driver 补足
    poll 间隔，避免主循环忙等。driver 同时吸收 BB `thread.updatedAt`，因此外部续跑或 steer 也会刷新
@@ -34,13 +36,17 @@
    失败。Validator 失败把精确缺口发回同一 Worker；报告两次无效时受控停止。
 5. Validator 报告用严格 `worker_paths` 列出从 Worker `turn/diff` 确认归属的精确 dirty 文件路径；目录、
    已变干净的路径、Driver 管理路径和 Story 开始前已有的 dirty 文件均拒绝。完成时写入
-   Acceptance、受限长度的 Handoff、刷新投影，并用 `git commit --only -- <targets>` 创建 checkpoint。
-   业务目标只取 `worker_paths`，再加当前 Story/SPEC/STATUS；开始前的脏路径和 `.local/` 仍排除，因此
+   Acceptance、受限长度的 Handoff、刷新投影，并在 Story 声明的每个仓分别用 `git commit --only -- <targets>`
+   创建 checkpoint（计划所在仓额外提交当前 Story/SPEC/STATUS）。业务路径按声明仓归位：计划所在仓用相对路径，
+   其他仓报告为 `<仓库根>/<仓库相对路径>`；开始前的脏路径和 `.local/` 仍排除，因此
    Story 启动后出现的其他会话改动也不会被共享 dirty 增量带入。
 
 `error` 首次执行 `bb thread retry`；第二次 Worker error 交 Judge，第二次 Validator error 改派新的
 Validator。pending interaction 的完整内容交 Judge；Judge 处理已授权交互并回复 `patch` 加
-`interaction handled` 后，driver 继续等待原线程。
+`interaction handled` 后，driver 继续等待原线程。配置 `--deliver-command` 时，每张 Story 通过 Validator
+并 checkpoint 后在涉及仓逐仓执行一次（环境变量 `LARGE_TASK_STORY_ID`/`LARGE_TASK_REPOSITORY`/
+`LARGE_TASK_COMMIT`）；命令失败会把该 Story 重新置为 `in_progress`（transition `--reopen`）并按既有
+异常路径交 Judge，修补通过后会重新 checkpoint 并重试交付。
 
 每次运行还检查全局计时与累计上限：没有新的 `story.done` 超过 `--no-progress-hours` 即以退出码 3 停下；
 Worker 与 Judge 的累计派发量分别受 `--max-workers-total`（0 表示 Story 总数的 3 倍）和
@@ -57,7 +63,11 @@ Worker 与 Judge 的累计派发量分别受 `--max-workers-total`（0 表示 St
 `routes.complex`。动作含义：
 
 - `retry`：同档 fresh Worker；`escalate`：高一档 Worker；`patch`：向现有 Worker 发送小修复提示。
+  `patch`/`replan` 不得新增或加严 Acceptance；验收需要调整时选 `stop` 交给用户。
 - `block`：写 blocker 后继续其他 ready Story；`replan`：Judge 已改计划，driver 重新 `check`；`stop`：退出码 3。
+
+driver 以退出码 3 停下或全部完成退出时，向 `--notify-thread`（缺省环境变量 `BB_THREAD_ID`）发一条
+简短消息：结论、需要用户决定的事项和 `status` 命令；发送失败只告警，不影响退出码。
 
 `bb-dispatch` 的创建回执在已知 BB 版本中出现过两种形状：`result.thread.id` 与 `result.id`。driver 两者
 都接受；没有任一 ID 时退出码 2，避免在创建结果不明时重复派发。

@@ -64,8 +64,10 @@ agent/*.json + 项目进展.md` 时，再读[迁移说明](references/migrate-v1
 
 把工作拆成 tracer-bullet Story：每张 Story 交付一条窄而完整、可独立验证的纵向结果，并能由一个
 fresh、便宜的 Worker context 完成。粒度判据是 economy 或 standard 档模型能独立做完；预计需要 strong
-才能完成的 Story 先拆，而不是留给 orchestrator 升档。优先把 Acceptance 写成可由脚本或测试直接判定
-的形式，这类 Story 在执行时可以跳过独立 Validator。依赖字段 `blocked_by` 只表达真正阻止开工的边。
+才能完成的 Story 先拆，而不是留给 orchestrator 升档。Acceptance 只写 spec 和用户明确要求的结果，
+第一版写「能跑通、可观察」即可，不加证据链、对账、跨轮拒绝之类用户没有要求的条件；优先把 Acceptance
+写成可由脚本或测试直接判定的形式，这类 Story 在执行时可以跳过独立 Validator。依赖字段 `blocked_by`
+只表达真正阻止开工的边。
 
 给每张 Story 在顶层定下 `difficulty`，由规划者而不是脚本判断首轮路由：
 
@@ -79,7 +81,8 @@ fresh、便宜的 Worker context 完成。粒度判据是 economy 或 standard �
 `complex` 是继续拆分 Story 的信号，`check` 会告警。不要在 Story 写模型名或别名，实际路由由
 `bb-model-routing` 配置决定。
 
-Story Context 只保存执行所需的公共 test seams、代码入口、权威资料、write scope 和停止条件。
+Story Context 只保存执行所需的公共 test seams、代码入口、权威资料、write scope 和停止条件；跨仓
+Story 用 `repositories` 声明要改动的仓库根路径（见格式契约），`skills` 写该 Story 需要用到的技能名。
 Outcome 与 Acceptance 说结果，不列层级实现任务。宽范围机械迁移使用 expand → 分批 migrate →
 contract → final acceptance，而不是硬切伪纵向片段。
 
@@ -110,7 +113,8 @@ python3 <skill-dir>/scripts/epic_story.py check \
 
 Goal、黄金 oracle 和用户边界稳定；Story、依赖、顺序、代码路径与实现方案是当前假设。Orchestrator
 可重排、插入、合并或改写未开始的 Story。改变 Story Outcome/Acceptance 时递增 `intent_version`；
-只更新状态或 handoff 时不递增。改变稳定契约时暂停受影响工作，取得用户决定后递增 `goal_version`。
+只更新状态或 handoff 时不递增。Judge 的 `patch` 和 `replan` 不得新增或加严 Acceptance；验收本身
+需要调整时以 `stop` 交给用户决定。改变稳定契约时暂停受影响工作，取得用户决定后递增 `goal_version`。
 
 只有 orchestrator 修改计划状态和 handoff。领取时使用预期状态保护：
 

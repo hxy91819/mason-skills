@@ -93,7 +93,11 @@ CONTEXT_FIELDS = (
     "authoritative_inputs",
     "write_scope",
     "stop_conditions",
+    "repositories",
+    "skills",
 )
+# repositories/skills 由规划者按需声明；缺省时 driver 分别回退到计划所在仓/不加载技能。
+OPTIONAL_CONTEXT_FIELDS = ("repositories", "skills")
 HANDOFF_FIELDS = ("summary", "verification", "remaining", "risks", "next")
 # Handoff 会原样进入后续 brief，直接消耗便宜 Worker 的上下文；超限只告警，避免阻塞已成立的完成事实。
 HANDOFF_TEXT_LIMIT = 400
@@ -477,7 +481,8 @@ def validate_story_data(path: Path, data: dict[str, Any]) -> list[str]:
     if not isinstance(context, dict):
         errors.append(f"{label}.context: 必须是对象")
     else:
-        _unknown_fields(context, CONTEXT_FIELDS, f"{label}.context", errors)
+        _unknown_fields(context, CONTEXT_FIELDS, f"{label}.context", errors,
+                        optional=OPTIONAL_CONTEXT_FIELDS)
         for field in CONTEXT_FIELDS:
             if field in context:
                 _string_list(

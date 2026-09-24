@@ -359,6 +359,24 @@ class EpicStoryCliTest(unittest.TestCase):
         )
         self.assertIn("未知字段: extra_rule", result.stderr)
 
+    def test_context_repositories_and_skills_are_optional_and_reach_brief(self) -> None:
+        story = json.loads(self.story_1.read_text(encoding="utf-8"))
+        story["context"]["repositories"] = ["/data/other/repo"]
+        story["context"]["skills"] = ["lh-dev-test-db", "tkex"]
+        payload = self.root / "story.json"
+        self.write_json(payload, story)
+        self.run_cli("write", "--file", str(self.story_1), "--from", str(payload))
+        self.run_cli("render", *self.project_args())
+        self.run_cli("check", *self.project_args())
+        brief = json.loads(self.run_cli("brief", *self.project_args(), "--story", "STORY-01").stdout)
+        self.assertEqual(brief["story"]["context"]["repositories"], ["/data/other/repo"])
+        self.assertEqual(brief["story"]["context"]["skills"], ["lh-dev-test-db", "tkex"])
+
+        story["context"]["extra"] = "x"
+        self.write_json(payload, story)
+        rejected = self.run_cli("write", "--file", str(self.story_1), "--from", str(payload), expected=1)
+        self.assertIn("未知字段: extra", rejected.stderr)
+
 
 class MigrationTest(unittest.TestCase):
     def setUp(self) -> None:

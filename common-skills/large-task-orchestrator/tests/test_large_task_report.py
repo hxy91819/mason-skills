@@ -96,7 +96,7 @@ class ReportTest(unittest.TestCase):
         self.assertEqual(envelope["report"], valid_report())
 
     def test_unknown_field_and_unsafe_change_path_are_rejected_without_output(self) -> None:
-        for mutation in ("unknown", "absolute_path", "non_normalized_path"):
+        for mutation in ("unknown", "parent_escape", "non_normalized_path"):
             with self.subTest(mutation=mutation):
                 payload = valid_report()
                 if mutation == "unknown":
@@ -104,11 +104,16 @@ class ReportTest(unittest.TestCase):
                 elif mutation == "non_normalized_path":
                     payload["changes"] = [{"path": "scripts//example.py", "summary": "非规范路径"}]
                 else:
-                    payload["changes"] = [{"path": "/tmp/example.py", "summary": "越界"}]
+                    payload["changes"] = [{"path": "../parallel.txt", "summary": "越界"}]
                 result = self.submit(payload)
                 self.assertEqual(result.returncode, 2)
                 self.assertIn("ERROR:", result.stderr)
                 self.assertFalse(self.output.exists())
+
+    def test_cross_repo_root_prefix_change_path_is_accepted(self) -> None:
+        payload = valid_report()
+        payload["changes"] = [{"path": "/repos/other/src/example.py", "summary": "其他仓改动"}]
+        self.assertEqual(self.submit(payload).returncode, 0)
 
     def test_read_rejects_stale_attempt(self) -> None:
         self.assertEqual(self.submit(valid_report()).returncode, 0)
