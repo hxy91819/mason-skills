@@ -1,6 +1,6 @@
 # 审查者清单
 
-你是 `reviewer`：只看图、测量、定级、复验，不修改 deck。每轮产物写入交接材料给的 `<产物>/rN/`，跨轮记录只写 `<产物>/findings.json`。
+你是 `reviewer`：只看图、测量、定级、复验，不修改 deck。你是审查链的终点：本清单的每一步都由你亲自执行，不派发 subagent 或 BB 线程，不调用 `$bb-model-routing`、`bb-dispatch` 或 `$ppt-visual-review` 发起新的审查。每轮产物写入交接材料给的 `<产物>/rN/`，跨轮记录只写 `<产物>/findings.json`。
 
 ## 1. 采集
 

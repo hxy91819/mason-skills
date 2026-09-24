@@ -12,12 +12,24 @@ triggers:
 
 ## 角色与模式
 
-- **审查者**：独立 subagent。截图、逐页看图、裁决脚本线索、定级、复验；不修改 deck。审查者读完本文件后按 [references/review-checklist.md](references/review-checklist.md) 执行，不再派发。
+- **审查者**：由 `$bb-model-routing` 派发的独立 BB 线程。亲自截图、逐页看图、裁决脚本线索、定级、复验；不修改 deck。审查者读完本文件后按 [references/review-checklist.md](references/review-checklist.md) 自己完成审查，是审查链的终点。
 - **主 Agent**：固定输入、派发、裁决意见是否采纳、修改源文件、运行项目验证、生成最终报告。不自审冒充独立审查。
 
 默认**修复模式**：在审查范围内直接修改版式，不逐条询问。用户明确说"只审查/不改源文件"时为**只读模式**：只跑第 1 轮审查，跳过修复循环，直接出报告。
 
-派发：默认用宿主的 subagent（需能看图、能操作浏览器），使用独立任务上下文；用户选择 BB 或宿主无可用 subagent 时，由宿主按名称加载 `$bb-model-routing` 派发审查线程。模型沿用派发机制与用户配置。无法启动审查者时记录缺口，不以主 Agent 自审替代。一个审查者覆盖全 deck；页数确实过多时才按页拆分并合并覆盖记录。
+### 派发方式
+
+每次派发审查（首轮与新开的复审线程）都由宿主按名称加载 `$bb-model-routing`，用它的 `bb-dispatch` 发起，难度固定为 `simple`：
+
+```bash
+bb-dispatch --difficulty simple --title 'PPT 布局审查 rN' --task '<交接材料>'
+```
+
+- 不改用宿主内置 subagent，也不按页数或 deck 复杂度升档；provider、模型、推理级别由 `bb-model-routing` 的配置决定，不写进 `--task`。
+- `--task` 开头写明：「你是本次 PPT 布局审查的审查者（reviewer）。读取 `<本 Skill 绝对路径>/SKILL.md` 与 `references/review-checklist.md`，亲自完成全部页的截图、看图、定级和记录。这是终点任务：不要再派发 subagent 或 BB 线程，不要调用 `$bb-model-routing`、`bb-dispatch` 或 `$ppt-visual-review` 发起新的审查流程，也不要修改 deck。」随后附交接材料。
+- 派发后结束当前回合，等 BB 完成通知送达再读结果；不用 `bb thread wait` 或反复查询。
+- 派发失败或线程因 provider/额度中断时，按 `bb-model-routing` 的 fallback 规则续派，仍为 `simple`。无法派发时记录缺口，不以主 Agent 自审替代。
+- 一个审查线程覆盖全 deck；只有页数多到单线程无法完成时才按页拆分，每个线程同样是 `simple` 的终点任务，由主 Agent 合并覆盖记录。
 
 ## 工作流
 
@@ -53,7 +65,7 @@ triggers:
 
 ### 4. 复审循环
 
-将改动摘要、处理过的 finding ID、新哈希交回审查者（线程不能续办时交给新审查者，并附 `findings.json` 与历轮产物），轮次 +1。审查者重新测量并**全量**复看每一页（共享样式会波及未改页），把已修项标 `fixed` 并写 `afterImg`，发现回归或新问题追加新 finding（记首次出现的轮次与截图）。
+将改动摘要、处理过的 finding ID、新哈希用 `bb thread tell <审查线程ID> '<复审请求>'` 发给同一审查线程续办（消息里重申它是终点审查者、不再派发），同样等完成通知；线程不能续办时按上文派发方式以 `simple` 新派一个审查线程，并附 `findings.json` 与历轮产物。轮次 +1。审查者重新测量并**全量**复看每一页（共享样式会波及未改页），把已修项标 `fixed` 并写 `afterImg`，发现回归或新问题追加新 finding（记首次出现的轮次与截图）。
 
 循环回到第 3 步，直到审查者返回 **clean**：全部页已覆盖，无 `blocking`/`should` 级 `open` 项，`optional` 项已修或以 `kept` 留痕。同一 finding 连续两轮复验未改善时，审查者补充定位证据与可验证的修复方向，主 Agent 换修法而非重复改动；第三轮仍无改善时保持 `open`、写明阻塞原因并结束循环。只剩依赖缺失输入的 `open` 项时同样结束循环，状态为 `reviewed`。
 
@@ -74,4 +86,4 @@ triggers:
 
 ## 运行记录与回看
 
-每轮在 `findings.json` 的 `context` 中记录审查任务/线程 ID、轮次、输入哈希和产物路径。subagent 用宿主任务记录回看；BB 宿主下用 `bb thread log <id>`、`bb thread output <id>` 回看真实工具调用。结构化自检用 `$review-html-report` 的 `build-report.py --data <findings.json> --check`，它只校验记录一致性，不能证明看过图。当前缺口：无跨 deck 的接受率统计或 rollup，采纳/拒绝理由只存在于本轮 `findings.json`。
+每轮在 `findings.json` 的 `context` 中记录审查线程 ID、`bb-dispatch` 返回的实际选择、轮次、输入哈希和产物路径。用 `bb thread log <id>`、`bb thread output <id>` 回看审查线程的真实工具调用。结构化自检用 `$review-html-report` 的 `build-report.py --data <findings.json> --check`，它只校验记录一致性，不能证明看过图。当前缺口：无跨 deck 的接受率统计或 rollup，采纳/拒绝理由只存在于本轮 `findings.json`。
