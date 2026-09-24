@@ -85,6 +85,8 @@ common-skills/
 
 See [common-skills/README.md](common-skills/README.md) for authoring guidelines.
 
+制作复盘与设计记录见 [docs/README.md](docs/README.md)，包括 [PPT 制作经验](docs/ppt-making-lessons.md)。
+
 Repository tooling includes the [shared-worktree Git stash guard](tools/git-shared-worktree-guard/README.md),
 which prevents state-changing stash operations and autostash.
 

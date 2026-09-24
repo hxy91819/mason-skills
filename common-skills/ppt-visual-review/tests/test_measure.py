@@ -166,6 +166,35 @@ class MeasureTests(unittest.TestCase):
         self.assertEqual(len(inv['titles']), 5)
         self.assertGreaterEqual(len(inv['fonts']), 2)
 
+    def measure_spacing(self, content):
+        fixture = self.root / 'spacing.html'
+        fixture.write_text('''<!doctype html><meta charset="utf-8"><style>
+          body { margin:0; font-family:Arial,sans-serif; }
+          .slide { width:1280px; height:720px; position:relative; }
+          p { margin:16px 64px; font-size:24px; line-height:1.5; }
+        </style><section class="slide" id="spacing">'''
+            + '<p>使用 AI 工具</p>' * 4 + content + '</section>')
+        result = self.run_measure('--file', str(fixture), '--out', str(self.root), '--label', 'spacing')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads((self.root / 'spacing.json').read_text())
+
+    def test_spacing_does_not_join_separate_rendered_lines(self):
+        for content in (
+            '<p>中文<br>Agent</p>',
+            '<p>中文<span style="display:block">Agent</span></p>',
+            '<p style="width:2em;overflow-wrap:anywhere">中文Agent</p>',
+        ):
+            with self.subTest(content=content):
+                data = self.measure_spacing(content)
+                self.assertFalse([f for f in data['flags'] if f['kind'] == 'cjk-spacing'])
+
+    def test_spacing_still_detects_adjacent_text_across_inline_markup(self):
+        data = self.measure_spacing('<p>中文<span>Agent</span></p><p>中文Agent</p>')
+        flags = [f for f in data['flags'] if f['kind'] == 'cjk-spacing']
+        self.assertEqual(len(flags), 1)
+        self.assertEqual(flags[0]['page'], 'spacing')
+        self.assertEqual(flags[0]['values'][0], 2)
+
 
 if __name__ == '__main__':
     unittest.main()

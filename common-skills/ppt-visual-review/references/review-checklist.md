@@ -12,11 +12,13 @@ node <本技能根目录>/scripts/measure-deck.js --file <deck.html> --out <产�
 
 脚本会把页缩放到原画布，适合测量，但不能证明演示时的导航与投影：另在实际演示视口打开原页面，用原控件翻页各看一遍。图片未加载、空白页、切错页都算采集失败，该页记覆盖不足。
 
-完成标准：每页都有 plain 与 ruler 截图，页数与 deck 实际页数一致。
+完成标准：每页都有 plain 与 ruler 截图，页数与 deck 实际页数一致。这里完成的是采集，不能据此填写“已看图”或“审查通过”。
 
 ## 2. 逐页看图
 
 用可看图的工具打开**每一页的 plain 和 ruler**，先在投影尺度看整页，再放大核对细节。先辨认页面的阅读任务（封面/章节停顿、解释实践、数据比较等），观察主体大小、位置和内容分布，再逐项核对下列各类。未报 flag 的区域同样要看，flag 为 0 不等于没问题。
+
+每看完一页再写其 `review.before` / `review.after`，注明本轮 plain/ruler 已查看及具体观察。打开失败或尚未查看的页记入 `limits`，补看后再更新；不复制前一轮结论充当本轮观察，也不从生成文件数推算看图覆盖。
 
 脚本线索怎么对待，按 SKILL.md「脚本线索与独立判断」执行：先看图形成自己的判断，再对照 flag；每条 flag 裁决为 valid / dismissed / threshold 并写理由。下文各节列出的"脚本线索"只是提示去哪里看，判断标准始终是观众在投影尺度下看到的画面。
 
@@ -57,9 +59,9 @@ node <本技能根目录>/scripts/measure-deck.js --file <deck.html> --out <产�
 ### 对齐与排版细节
 
 - **对齐**：同一栏的标题、正文、卡片、图片应落在同一条参考线上；差 3–8px 的"差一点对齐"比明显错开更刺眼（`align`）。同组元素的对齐方式（左对齐/居中）不混用。
-- **孤字与避头尾**：标题或短段落末行只剩 1–2 个字（`widow`）；行首出现「，。、）」或行尾出现「（“」（`kinsoku`）。修法是调整宽度、手动断行或改写，不是缩小字号。
-- **标点**：中文语境里的半角 `, ? ! : ;`（`half-punct`）；全角标点被西文字体渲染成半角宽（引号、问号挤在汉字上，字体栈把西文字体放在前面时常见）。字宽正常但字形是西文样式的标点脚本测不出，看图核对标题里的问号和引号。
-- **中英混排**：中文与英文/数字之间加不加空格全 deck 统一（`cjk-spacing`）；英文术语大小写统一（Agent/agent、SkillHub/Skillhub）。
+- **孤字与避头尾**：标题或短段落末行只剩 1–2 个字（`widow`）；行首出现「，。、）」或行尾出现「（“」（`kinsoku`）。优先调整宽度与语义断行；放大字号、拉伸卡片后重新看这些位置，防止修留白时产生新的孤字。
+- **标点**：中文语境里的半角 `, ? ! : ;`（`half-punct`）；标点偏窄时看是否有字形异常、挤压或碰撞，并结合字体加载信息判断。引号本身可以窄于一个汉字，脚本的宽度比例不能证明某种字体接管了标点。
+- **中英混排**：同类文本中，中文与英文/数字之间的空格写法是否一致（`cjk-spacing`）；英文术语大小写统一（Agent/agent、SkillHub/Skillhub）。先确认文字在画面上属于同一行、同一语句；跨换行或独立标签拼接出的字符串不能当作空格缺失。
 - **行长与行距**：单行过长，投影下读到行尾找不回下一行（`line-length`）；多行正文行距过紧（`leading`）。
 - **字数与字号下限**：单页字数过多，投影下读不完（`density`）；承载论点的文字低于投影下限（`min-size`，页脚/页码等元信息可保留）。
 - **安全边距**：正文、图片贴到页面边缘，投影裁边或显得拥挤（`edge`，每页固定位置的页脚页码不算）。
@@ -92,7 +94,8 @@ node <本技能根目录>/scripts/measure-deck.js --file <deck.html> --out <产�
 按 `$review-html-report` 的数据契约写 `findings.json`（契约由主 Agent 加载该技能后提供；无法获取时按下列字段写）：
 
 - 顶层：`target`、`title: PPT 版式视觉验收`、`mode`、`evidenceMode: visual`、`pageCount`、`pages`、`findings`、`flagRulings`、`context`（轮次、审查任务 ID、输入哈希、产物路径、调整过的阈值及依据）、`limits`。
-- `pages[]`：`id`、`title`、`before`（r1 plain 截图）、`review.before`（真实观察）、`review.interaction`；复审轮补 `after`（最终轮截图）与 `review.after`。
+- `pages[]`：`id`、`title`、`before` / `beforeRuler`（r1 plain / ruler 截图）、`review.before`（真实观察）、`review.interaction`；复审轮补 `after` / `afterRuler`（最终轮截图）与 `review.after`。
+- `flagRulings[]`：记录 `round`、`id`、`page`、`ruling`、`reason`，逐轮追加；跨轮同号 flag 不代表同一个问题，结合页、类型和位置对照。finding 的稳定 ID 则保持不变。
 - `findings[]`：稳定 `id`（跨轮不变）、`page`、`severity`、`category: visual`、`kind`（arrow/void/consistency/font/color/typography/hierarchy/readability）、`title`、`short`（一句话）、`why`（读者影响）、`fix`（具体建议或实际改动）、`img` + `box: [x,y,w,h]`（截图像素坐标，红框圈住真实问题区域）+ `label`（≤16 字）、`resolution`。可附 `flags: ["V12"]` 对应脚本线索。
 - 内容质量问题（论据、数据口径）不在本技能范围；偶然发现时可记一条 `category: content`、`severity: optional` 的待处理项，不进入修复循环。
 

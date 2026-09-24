@@ -615,7 +615,7 @@ const MEASURE = ({ slideSel, idx, ignoreSel, minSpan, overlapTol }) => {
         const r = [...range.getClientRects()].find((x) => x.width > 0);
         if (!r) continue;
         chars.push({ ch: t[i], top: Ly(r.top), h: r.height / scale, left: Lx(r.left), right: Lx(r.right) });
-        // 全角标点被字体栈里靠前的西文字体接管时，会渲染成半角宽，挤在汉字上。
+        // 字宽偏窄只是线索；引号可以天然较窄，具体字体和碰撞仍需看图确认。
         if (/[，。、；：？！（）《》「」『』“”‘’]/.test(t[i]) && r.width / scale < cfs * 0.7) {
           narrow.push({ ch: t[i], ctx: t.slice(Math.max(0, i - 4), i + 2), w: R(r.width / scale), fs: R(cfs) });
         }
@@ -1233,8 +1233,12 @@ function buildFlags(pages, o, fontInfo) {
       const m = ctx(raw, /[\u3400-\u9fff][,?!:;](?=[\u3400-\u9fff\s]|$)/g);
       if (m.length) halfPunct.push({ t, samples: m });
       if (t.narrow && t.narrow.length) narrowPunct.push({ t, samples: t.narrow.map((x) => `${x.ctx}（${x.ch} 宽 ${x.w}/${x.fs}px）`) });
-      for (const s of ctx(raw, /[\u3400-\u9fff][A-Za-z0-9]|[A-Za-z0-9][\u3400-\u9fff]/g)) spacing.tight.push({ page: p.id, s, t });
-      for (const s of ctx(raw, /[\u3400-\u9fff] [A-Za-z0-9]|[A-Za-z0-9] [\u3400-\u9fff]/g)) spacing.spaced.push({ page: p.id, s, t });
+      // 只比较真实同一行的相邻文字；raw 会把 br、块级分隔和自动换行两侧拼接。
+      // 行内 span 等强调标签仍属于同一行，不能靠加包装标签消掉真正的混排线索。
+      for (const line of ls) {
+        for (const s of ctx(line.text, /[\u3400-\u9fff][A-Za-z0-9]|[A-Za-z0-9][\u3400-\u9fff]/g)) spacing.tight.push({ page: p.id, s, t });
+        for (const s of ctx(line.text, /[\u3400-\u9fff] [A-Za-z0-9]|[A-Za-z0-9] [\u3400-\u9fff]/g)) spacing.spaced.push({ page: p.id, s, t });
+      }
     }
     const emit = (kind, list, detail, label) => {
       if (!list.length) return;
@@ -1244,7 +1248,7 @@ function buildFlags(pages, o, fontInfo) {
     emit('widow', widows, (l) => `末行孤字 ${l.length} 处：${l.map((x) => `「…${x.last}」`).join('，')}，标题/短段落末行只剩 1–2 字`, (x) => `孤字 ${x.last}`);
     emit('kinsoku', kinsoku, (l) => `避头尾违规 ${l.length} 处：${l.map((x) => x.what).join('，')}`, (x) => x.what);
     emit('half-punct', halfPunct, (l) => `中文后使用半角标点：${l.flatMap((x) => x.samples).slice(0, 6).map((s) => `「${s}」`).join('，')}`, () => '半角标点');
-    emit('half-punct', narrowPunct, (l) => `全角标点被渲染成半角宽（字体栈里的西文字体接管了标点）：${l.flatMap((x) => x.samples).slice(0, 4).join('；')}`, () => '标点变窄');
+    emit('half-punct', narrowPunct, (l) => `标点字宽偏窄，需看图确认字形或碰撞，宽度本身不证明字体错误：${l.flatMap((x) => x.samples).slice(0, 4).join('；')}`, () => '字宽待核');
     emit('line-length', longLines, (l) => `单行过长 ${l.length} 处：约 ${l.map((x) => x.units).join(' / ')} 字宽（上限 ${o.maxLine}），投影阅读换行困难`, (x) => `${x.units} 字`);
     emit('leading', tight, (l) => `多行正文行距过紧：${l.map((x) => `${x.t.size}px × ${x.t.leading}`).join('，')}（下限 ${o.minLeading}）`, (x) => `行距 ${x.t.leading}`);
 
