@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
-"""Synchronize cataloged project Skills into one harness directory.
+"""Synchronize cataloged project Skills into a harness directory or agy config.
 
 Definition:
     Validate ``.agents/skill-catalog.json`` and create relative links from a
     harness-specific project directory to canonical ``.agents/skills`` paths.
-    A canonical Skill may itself be a symlink into the same repository, such as
-    a tool submodule, but it may not resolve outside the repository.
+    In directory-link mode, a canonical Skill may itself be a symlink into the
+    same repository, such as a tool submodule. In agy mode, symlink sources may
+    resolve outside the repository and are registered by their real paths.
 
 Parameters:
     ``--repo`` selects the repository, ``--target`` selects one harness Skills
-    directory, and ``--apply`` enables writes. Without ``--apply`` the script
-    prints the same plan without changing files.
+    directory, and ``--agy`` generates agy's workspace skills.json for cataloged
+    symlinks. ``--apply`` enables writes; otherwise the script prints a dry run.
 
 Outputs and exit codes:
     stdout contains ``CREATE``/``KEEP`` entries and a summary. Conflicts and
     validation errors go to stderr. Exit 0 means the plan is valid; exit 2
     means no safe synchronization was possible. Apply mode preflights every
-    entry and removes links created by the current run if a later write fails.
+    entry and rolls back newly created targets if a later write fails.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path, PurePath
@@ -242,6 +244,86 @@ def synchronize(repository: Path, apply: bool, target_subpath: str) -> int:
     return 0
 
 
+def synchronize_agy(repository: Path, apply: bool) -> int:
+    """Expose cataloged symlink skills through agy's workspace manifest."""
+    source_root = repository / ".agents" / "skills"
+    if not source_root.is_dir() or source_root.is_symlink():
+        raise ValidationError(f"Invalid project skill source root: {source_root}")
+    entries: dict[Path, set[str]] = {}
+    for item in load_catalog(repository):
+        source = repository.joinpath(*item.path.parts)
+        if source != source_root / item.name:
+            raise ValidationError(f"Catalog skill {item.name} must be a direct .agents/skills entry")
+        try:
+            resolved = source.resolve(strict=True)
+            content = (resolved / "SKILL.md").read_text(encoding="utf-8")
+        except OSError as error:
+            raise ValidationError(f"Catalog skill {item.name} has an unreadable source: {error}") from error
+        if not resolved.is_dir() or not content.strip():
+            raise ValidationError(f"Catalog skill {item.name} needs a nonempty SKILL.md")
+        if source.is_symlink():
+            entries.setdefault(resolved.parent, set()).add(resolved.name)
+
+    if not entries:
+        print("KEEP    agy uses real .agents/skills directories directly.")
+        return 0
+
+    config = repository / ".agents" / "skills.json"
+    tracked = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", "--", ".agents/skills.json"],
+        cwd=repository, text=True, capture_output=True, check=False,
+    )
+    if tracked.returncode == 0:
+        raise ValidationError(f"agy configuration is tracked; preserve the repository convention: {config}")
+    payload = {"entries": [
+        {"path": str(parent), "include_only": sorted(names)}
+        for parent, names in sorted(entries.items())
+    ]}
+    expected = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    git_path = subprocess.run(
+        ["git", "rev-parse", "--git-path", "info/exclude"],
+        cwd=repository, text=True, capture_output=True, check=False,
+    )
+    if git_path.returncode != 0:
+        raise ValidationError(f"Repository has no Git metadata: {repository}")
+    exclude = Path(git_path.stdout.strip())
+    if not exclude.is_absolute():
+        exclude = repository / exclude
+    if not exclude.parent.is_dir():
+        raise ValidationError(f"Missing Git info directory: {exclude.parent}")
+    try:
+        existing = config.read_text(encoding="utf-8") if config.exists() else None
+        excluded = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
+    except OSError as error:
+        raise ValidationError(f"Cannot read agy configuration: {error}") from error
+    if config.is_symlink() or (existing is not None and existing != expected):
+        print(f"CONFLICT {config}: existing configuration differs", file=sys.stderr)
+        return 2
+    exclude_line = "/.agents/skills.json"
+    needs_exclude = exclude_line not in excluded.splitlines()
+    print(f"{'CREATE' if existing is None else 'KEEP  '}  {config}")
+    print(f"{'CREATE' if needs_exclude else 'KEEP  '}  {exclude}: {exclude_line}")
+    if not apply:
+        print("Dry run: agy configuration preflight passed.")
+        return 0
+    if existing is None:
+        try:
+            with config.open("x", encoding="utf-8") as output:
+                output.write(expected)
+        except OSError as error:
+            raise ValidationError(f"Failed to create {config}: {error}") from error
+    if needs_exclude:
+        try:
+            with exclude.open("a", encoding="utf-8") as output:
+                output.write(("" if not excluded or excluded.endswith("\n") else "\n") + exclude_line + "\n")
+        except OSError as error:
+            if existing is None:
+                config.unlink(missing_ok=True)
+            raise ValidationError(f"Failed to update {exclude}: {error}") from error
+    print("Applied: agy configuration is current.")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -255,6 +337,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 Examples:
   %(prog)s --repo /workspace/project
   %(prog)s --repo /workspace/project --target .claude/skills --apply
+  %(prog)s --repo /workspace/project --agy --apply
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -269,10 +352,12 @@ Examples:
         default=".kiro/skills",
         help="Harness project skills directory relative to the repository (default: .kiro/skills)",
     )
+    parser.add_argument("--agy", action="store_true", help="Generate agy's workspace skills.json for cataloged symlink skills")
     args = parser.parse_args(argv)
 
     try:
-        return synchronize(resolve_repository(args.repo), args.apply, args.target)
+        repository = resolve_repository(args.repo)
+        return synchronize_agy(repository, args.apply) if args.agy else synchronize(repository, args.apply, args.target)
     except ValidationError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2

@@ -111,6 +111,52 @@ class SyncProjectAgentSkillsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("unsafe path", result.stderr)
 
+    def test_agy_registers_external_symlink_skills_and_ignores_real_directories(self) -> None:
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
+        external = self.root / "neighbor" / "external"
+        external.mkdir(parents=True)
+        (external / "SKILL.md").write_text("# External\n", encoding="utf-8")
+        (self.repo / ".agents" / "skills" / "external").symlink_to(external)
+        self.make_skill(".agents/skills/local", "local")
+        self.write_catalog([
+            ("external", ".agents/skills/external"),
+            ("local", ".agents/skills/local"),
+        ])
+
+        dry_run = self.run_script("--agy")
+        self.assertEqual(dry_run.returncode, 0, dry_run.stderr)
+        self.assertFalse((self.repo / ".agents" / "skills.json").exists())
+        applied = self.run_script("--agy", "--apply")
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        config = self.repo / ".agents" / "skills.json"
+        self.assertEqual(json.loads(config.read_text()), {
+            "entries": [{"path": str(external.parent), "include_only": ["external"]}]
+        })
+        exclude = (self.repo / ".git" / "info" / "exclude").read_text()
+        self.assertEqual(exclude.splitlines().count("/.agents/skills.json"), 1)
+        repeated = self.run_script("--agy", "--apply")
+        self.assertEqual(repeated.returncode, 0, repeated.stderr)
+        self.assertIn("KEEP", repeated.stdout)
+        self.assertEqual((self.repo / ".git" / "info" / "exclude").read_text(), exclude)
+
+    def test_agy_conflict_prevents_config_and_exclude_writes(self) -> None:
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
+        external = self.root / "neighbor" / "external"
+        external.mkdir(parents=True)
+        (external / "SKILL.md").write_text("# External\n", encoding="utf-8")
+        (self.repo / ".agents" / "skills" / "external").symlink_to(external)
+        self.write_catalog([("external", ".agents/skills/external")])
+        config = self.repo / ".agents" / "skills.json"
+        config.write_text('{"entries": [{"path": "other"}]}\n', encoding="utf-8")
+        exclude = self.repo / ".git" / "info" / "exclude"
+        before = exclude.read_text()
+
+        result = self.run_script("--agy", "--apply")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("CONFLICT", result.stderr)
+        self.assertEqual(config.read_text(), '{"entries": [{"path": "other"}]}\n')
+        self.assertEqual(exclude.read_text(), before)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -44,7 +44,7 @@ triggers:
 
 Kimi Code 走原生快速路径：user scope 直接检查 `~/.agents/AGENTS.md`、`~/.agents/skills/`，project scope 直接检查从项目根到当前目录适用的 `AGENTS.md`/`agents.md` 和 `.agents/skills/`。仅当已有 Kimi 专有内容时再检查 `$KIMI_CODE_HOME/AGENTS.md`、`$KIMI_CODE_HOME/skills/`、项目 `.kimi-code/AGENTS.md` 与 `.kimi-code/skills/`；`KIMI_CODE_HOME` 未设置时默认为 `~/.kimi-code`。
 
-agy 走原生快速路径：project scope 直接检查仓库根 `AGENTS.md` 和 `.agents/skills/`，不需要专有入口；user scope 只检查 `~/.gemini/config/AGENTS.md` 与 `~/.gemini/config/skills` 两条软链。实测注意：新仓库需先注册 project（如 `agy --new-project`）agy 才会加载 project 级内容；`~/.agents/AGENTS.md` 不被 agy 原生发现，必须经 user 软链接入。
+agy 走原生快速路径：project scope 检查仓库根 `AGENTS.md`、`.agents/skills/`；有 catalog 且其中有软链 Skill 时，还要检查 `.agents/skills.json`。user scope 只检查 `~/.gemini/config/AGENTS.md` 与 `~/.gemini/config/skills` 两条软链。新仓库需先注册 project（在仓库内运行 `agy --new-project`，之后可用 `agy --project <项目名或 ID>` 选择）才会加载 project 级内容；`~/.agents/AGENTS.md` 不被 agy 原生发现，必须经 user 软链接入。
 
 Pi 走原生快速路径：user scope 检查 `~/.pi/agent/AGENTS.md`，skills 直接原生读取 `~/.agents/skills/`，不建任何专有 skills 入口；project scope 与标准宿主相同（仓库根 `AGENTS.md` 与 `.agents/skills/`）。
 
@@ -103,20 +103,20 @@ python3 ~/.kiro/skills/harness-config-sync/scripts/sync_project_agent_skills.py 
   --repo "$PWD" --target .kiro/skills --apply
 ```
 
-对 CodeBuddy 和 Claude 分别使用 `.codebuddy/skills`、`.claude/skills`。Kimi Code、Codex 与 Devin 直接读取 `.agents/skills`，不运行 catalog 链接脚本；agy 同样原生读取 `.agents/skills`，且实测不跟随 `.agents/skills/` 内的子目录软链，catalog 软链对 agy 无效——它的 Skill 实体必须落在 `.agents/skills/` 真实子目录中。catalog 只登记团队共享的标准入口；机器绝对路径指向的个人 Skill 不进入 catalog。
+对 CodeBuddy 和 Claude 分别使用 `.codebuddy/skills`、`.claude/skills`。Kimi Code、Codex 与 Devin 直接读取 `.agents/skills`，不运行 catalog 链接脚本。agy 原生读取其中的真实子目录，但不跟随子目录软链；项目有 catalog 且其中存在软链 Skill 时，运行同一脚本 `--repo "$PWD" --agy --apply`，在 `.agents/skills.json` 的 `entries` 中以真实父目录绝对路径和 `include_only` 技能目录名显式登记。agy 内置 `agy-customizations/docs/json_configs.md` 确认了工作区配置位置、JSON 格式和绝对路径规则；目录条目只扫描下一层。catalog 只登记团队共享的标准入口；机器绝对路径指向的个人 Skill 不进入 catalog。
 
 Kimi Code 默认合并自动发现目录；`extra_skill_dirs` 只追加目录，可以保留。`kimi --skills-dir` 会替换自动发现目录；发现固定启动脚本使用该参数时，确保其中显式包含所需标准目录，或者报告它会绕过同步结果。Kimi 手动调用 Skill 使用 `/skill:<name>`；`disable-model-invocation: true` 可直接控制其自动调用，`agents/openai.yaml` 只服务支持该文件的其他宿主。Devin 手动调用使用 `/<name>`；`disable-model-invocation` 与 `agents/openai.yaml` 对 Devin 均无效，其等效控制是 SKILL.md frontmatter 的 `triggers: [user]`（缺省 `[user, model]` 允许 agent 自动触发）。
 
 ### 5. 本地排除与验证
 
-项目中新建且仅服务本机宿主的 `CLAUDE.md`、`.claude/`、`.codebuddy/`、`.kiro/` 等入口写入 `.git/info/exclude`，保持幂等；团队已跟踪的入口遵循仓库约定，不擅自改为本地排除。不要仅为 Kimi 创建 `.kimi-code/`、为 Devin 创建 `.devin/` 或 `.windsurf/`；已有 `.kimi-code/local.toml` 是机器本地配置，按 Kimi 官方建议保持未跟踪。
+项目中新建且仅服务本机宿主的 `CLAUDE.md`、`.claude/`、`.codebuddy/`、`.kiro/` 等入口写入 `.git/info/exclude`，保持幂等；agy 脚本会自行排除本机生成的 `.agents/skills.json`。团队已跟踪的入口遵循仓库约定，不擅自改为本地排除。不要仅为 Kimi 创建 `.kimi-code/`、为 Devin 创建 `.devin/` 或 `.windsurf/`；已有 `.kimi-code/local.toml` 是机器本地配置，按 Kimi 官方建议保持未跟踪。
 
 完成标准：
 
-1. 需要适配的宿主入口均为预期软链；Kimi Code、Codex、agy、Pi 与 Devin 的标准原生路径直接存在且可读。
+1. 需要适配的宿主入口均为预期软链；Kimi Code、Codex、Pi 与 Devin 的标准原生路径直接存在且可读；agy 的真实 Skill 子目录可读，catalog 软链 Skill 已经由 `.agents/skills.json` 指向解析后的实体目录。
 2. 可透过 prompt 入口读取正文，可透过每个目标 skills 入口读取非空 `SKILL.md`。
 3. 当前加载路径无断链或重复的 Kimi 标准镜像；备份目录不计入加载路径。
-4. catalog 脚本复跑显示全部 `KEEP`，无 `CREATE` 或 `CONFLICT`。
+4. catalog 脚本复跑显示全部 `KEEP`，无 `CREATE` 或 `CONFLICT`；agy 分支同样如此，且 `.git/info/exclude` 含 `/.agents/skills.json`。
 5. `git status --short` 只包含任务相关的团队事实源变化；本机宿主入口被正确忽略。
 
 最终只报告范围、事实源、创建/迁移/备份数量、冲突和验证结果。提醒用户重启宿主会话使新 prompt/skills 生效；除非用户明确要求，不再启动宿主做额外行为测试。报告显式调用时同时给出通用 `$<name>`、Kimi `/skill:<name>` 和 Devin `/<name>` 语法。
@@ -129,4 +129,4 @@ Kimi Code 默认合并自动发现目录；`extra_skill_dirs` 只追加目录，
 {"skills": [{"name": "demo-skill", "path": ".agents/skills/demo-skill"}]}
 ```
 
-同步脚本只创建 catalog 条目对应的相对软链。catalog 路径必须按字面位于 `.agents/skills/`；实体 Skill 必须解析在 `.agents/skills/` 内，软链 Skill 可解析到同一仓库内的工具或 submodule，但不能逃逸仓库；每个来源必须含非空 `SKILL.md`。已有正确相对链接保持不变，文件、目录、断链或不同目标链接均作为 `CONFLICT`，整次执行零写入。脚本不 stage、commit，也不修改 `.gitignore` 或 `.git/info/exclude`。
+普通同步模式只创建 catalog 条目对应的相对软链。catalog 路径必须按字面位于 `.agents/skills/`；实体 Skill 必须解析在 `.agents/skills/` 内，软链 Skill 可解析到同一仓库内的工具或 submodule，但不能逃逸仓库；每个来源必须含非空 `SKILL.md`。已有正确相对链接保持不变，文件、目录、断链或不同目标链接均作为 `CONFLICT`，整次执行零写入。普通模式不修改 `.git/info/exclude`；`--agy` 模式允许 catalog 软链解析到仓库外的 Skill，先预检全部来源与已有配置，有冲突零写入，再生成 `.agents/skills.json` 并在 `.git/info/exclude` 登记。脚本不 stage、commit，也不修改 `.gitignore`。
