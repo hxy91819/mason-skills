@@ -8,7 +8,7 @@ triggers:
 
 # PPT Visual Review
 
-流程类 Skill，仅在用户显式调用 `$ppt-visual-review` 时运行。定位是**布局验收**：观众在投影尺度下看到的版面是否有序——箭头能读出起止、留白承担用途、同类元素长得一样、全局字体与颜色成体系。论据、数据口径等内容质量不在本技能范围。真实画面是判定依据，脚本测量是线索。
+流程类 Skill，仅在用户显式调用 `$ppt-visual-review` 时运行。定位是**布局验收**：观众在投影尺度下看到的版面是否有序——箭头能读出起止、留白承担用途、同类元素长得一样、全局字体与颜色成体系、对齐与中文排版细节（孤字、避头尾、标点、中英混排、行长行距、字数字号）过关、层级与分组一眼可读。论据、数据口径等内容质量不在本技能范围。真实画面是判定依据，脚本测量是线索。
 
 ## 角色与模式
 
@@ -45,6 +45,8 @@ triggers:
 - 留白的修法是重排：放大主体、调整分栏、把结论移到空带、收紧容器高度；填充装饰或统一居中不是默认解。
 - 箭头修到能读出"谁指向谁"：对准起止对象的边、落在两者之间的通道里，或删掉不承载关系的箭头。
 - 一致性以多数值或 deck 既有契约为准收敛；刻意的强调（如首尾节点）保留，但需要画面上可读出的区分理由。
+- 对齐收敛到同一条参考线；孤字、避头尾用宽度调整、手动断行或改写解决，不靠缩小字号；标点问题优先修字体栈（中文字体排在西文字体前或为标点单独指定字体），再逐处改字符。
+- 字数过多先压缩成要点或拆页，而不是缩小字号塞下。
 - 保留真实事实与用户原意；缺失的数字或素材不编造。
 
 完成标准：每个 `open` finding 都有处理记录；被审项目现有的相关检查已运行。
@@ -63,7 +65,7 @@ triggers:
 
 - `title: PPT 版式视觉验收`，`evidenceMode: visual`，修复模式 `mode: fix`。
 - **整体前后对照**：`pageCompare: true`；`pages[].before` 为 r1 截图，`pages[].after` 为最终轮截图，`review.after` 写该页的复验结论。
-- `metrics`：从 r1 与最终轮测量 JSON 统计，至少包含布局类线索按 kind 的改前/改后计数（arrow、void、box-style、role-style、title、font-family、font-size、color），以及 finding 总数/已修/保留/待处理、复审轮次。
+- `metrics`：从 r1 与最终轮测量 JSON 统计，至少包含布局类线索按 kind 的改前/改后计数（arrow、void、box-style、role-style、title、font-family、font-size、color、align、widow、kinsoku、half-punct、cjk-spacing、line-length、leading、density、min-size、edge），以及 finding 总数/已修/保留/待处理、复审轮次。
 - 每条 fixed finding 带红框 `box`/`label` 与真实前后对照；`limits` 记录缺图、未操作的交互、覆盖缺口。
 
 只读模式同样出 HTML（`mode: review`，不设 pageCompare）；用户明确只要文字时改为 Markdown。

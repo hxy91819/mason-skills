@@ -27,6 +27,10 @@
  *   title       页标题、眉题跨页的字号/字重/颜色/字体/起点漂移
  *   font-family / font-size / color  全局字体栈、相邻字号档位、近似色（inventory 另存全量清单）
  *
+ * 排版细节线索（逐字符矩形切出真实折行）：
+ *   align 近似对齐；widow 末行孤字；kinsoku 避头尾；half-punct 中文后半角标点；cjk-spacing 中英空格混用；
+ *   line-length 单行过长；leading 行距过紧；density 单页字数过多；min-size 字号过小；edge 文字贴边
+ *
  * 用法：
  *   node measure-deck.js --file <html> [--out <目录>] [--label before]
  *        [--slide-sel .slide] [--tol 2] [--slack 24] [--void 0.12] [--arrow-gap 48] [--shot] [--gate]
@@ -82,12 +86,19 @@ Options:
   --size-near <px>    视为同档位的字号差上限，默认 2
   --color-near <d>    视为近似色的 RGB 欧氏距离上限，默认 12
   --max-sizes <n>     全 deck 常用字号档位上限，默认 8
+  --min-font <px>     投影字号下限（按 1280 宽画布折算），默认 14
+  --max-chars <n>     单页可见字数上限，默认 320
+  --max-line <n>      单行字宽上限（中文按字宽，西文按 2 字符 1 字），默认 40
+  --min-leading <r>   多行正文行距/字号下限，默认 1.2
+  --safe <px>         文字距页面边缘的安全距离（按 1280 宽折算），默认 24
   --shot              逐页生成 plain 与 ruler PNG
   --gate              有 flag 时退出 4；不能据此声明 clean
   -h, --help          显示帮助
 Outputs: <out>/<label>.json（含 inventory：字体栈/字号/调色板/逐页标题），--shot 时生成逐页 PNG；stdout 摘要。
 flags 覆盖：箭头悬空(arrow)、空带(void)、同组/同类盒子样式(box-style)、同类文字样式(role-style)、
 页标题/眉题跨页漂移(title)、全局字体栈(font-family)、字号档位(font-size)、近似色(color)；
+排版细节：近似对齐(align)、末行孤字(widow)、避头尾(kinsoku)、半角标点(half-punct)、中英空格(cjk-spacing)、
+行长(line-length)、行距(leading)、字数(density)、字号下限(min-size)、贴边(edge)；
 以及节奏/对称/档位/留白/跨页边距、连接符对齐、溢出、图片、遮挡、对比度、字体加载。
 全部是看图线索，不是验收结论。
 Exit: 0 成功；1 脚本错误；2 参数错误；3 未命中页；4 几何线索未清零。
@@ -102,11 +113,13 @@ Examples:
     ignoreSel: '.sr-only', tol: 2, slack: 24, near: 6, minGap: 8, minSpan: 0.3,
     connectorTol: 6, viewport: '1600x900', shot: false, gate: false,
     voidRatio: 0.12, arrowGap: 48, sizeNear: 2, colorNear: 12, maxSizes: 8,
+    minFont: 14, maxChars: 320, maxLine: 40, minLeading: 1.2, safe: 24,
   };
   const numeric = {
     tol: 'tol', slack: 'slack', near: 'near', minSpan: 'minSpan', 'min-span': 'minSpan', 'min-gap': 'minGap',
     connectorTol: 'connectorTol', 'connector-tol': 'connectorTol', void: 'voidRatio', 'arrow-gap': 'arrowGap',
     'size-near': 'sizeNear', 'color-near': 'colorNear', 'max-sizes': 'maxSizes',
+    'min-font': 'minFont', 'max-chars': 'maxChars', 'max-line': 'maxLine', 'min-leading': 'minLeading', safe: 'safe',
   };
   const a = process.argv.slice(2);
   for (let i = 0; i < a.length; i++) {
@@ -540,7 +553,16 @@ const MEASURE = ({ slideSel, idx, ignoreSel, minSpan, overlapTol }) => {
           colors: [opaque(cs.fill), stroke !== 'none' ? opaque(cs.stroke) : null].filter(Boolean),
         };
       }))
-    .filter((b) => b.w * b.h < area * 0.6 && b.w >= 24 && b.h >= 16);
+    // 图片与图标只比尺寸：同组插图/图标大小不一是最常见的"看起来不整齐"。
+    .concat(inSlide.filter((el) => /^(img|svg|canvas|video)$/i.test(el.tagName) && !el.parentElement.closest('svg'))
+      .map((el) => {
+        const b = boxOf(el);
+        return {
+          sel: pathOf(el), parent: el.parentElement ? pathOf(el.parentElement) : '', role: classKey(el) ? 'media:' + classKey(el) : '',
+          box: b, w: R(b.right - b.left), h: R(b.bottom - b.top), style: 'media', colors: [], media: true,
+        };
+      }))
+    .filter((b) => b.w * b.h < area * 0.6 && b.w >= 16 && b.h >= 16);
 
   // 页标题：页上部的 h1–h3，缺省取最大字号文字所在的块；眉题是紧贴其上方、字号更小的块。
   // 按块取样式与首行文字起点，标题里高亮的 span 不代表整条标题的颜色和位置。
@@ -570,6 +592,79 @@ const MEASURE = ({ slideSel, idx, ignoreSel, minSpan, overlapTol }) => {
     .sort((a, b) => b.bottom - a.bottom)[0] || null : null;
   const pick = (t) => t && { sel: t.sel, stack: t.stack, size: t.size, weight: t.weight, color: t.color, left: t.left, top: t.top };
 
+  // 逐行排版：按字符矩形切出真实折行，供孤字、避头尾、行长、行距、标点与中英混排判断。
+  const typo = [];
+  const med = (xs) => { const s = [...xs].sort((a, b) => a - b); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+  const blocks = [...new Set(textLeaves.map(blockOf))].slice(0, 150);
+  for (const el of blocks) {
+    const cs = getComputedStyle(el);
+    const fs = num(cs.fontSize);
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    const chars = [];
+    const narrow = [];
+    const range = document.createRange();
+    let raw = '';
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      if (!visible(n.parentElement)) continue;
+      const t = n.textContent;
+      raw += t;
+      const cfs = num(getComputedStyle(n.parentElement).fontSize);
+      for (let i = 0; i < t.length && chars.length < 600; i++) {
+        if (!t[i].trim()) { chars.push({ ch: ' ' }); continue; }
+        range.setStart(n, i); range.setEnd(n, i + 1);
+        const r = [...range.getClientRects()].find((x) => x.width > 0);
+        if (!r) continue;
+        chars.push({ ch: t[i], top: Ly(r.top), h: r.height / scale, left: Lx(r.left), right: Lx(r.right) });
+        // 全角标点被字体栈里靠前的西文字体接管时，会渲染成半角宽，挤在汉字上。
+        if (/[，。、；：？！（）《》「」『』“”‘’]/.test(t[i]) && r.width / scale < cfs * 0.7) {
+          narrow.push({ ch: t[i], ctx: t.slice(Math.max(0, i - 4), i + 2), w: R(r.width / scale), fs: R(cfs) });
+        }
+      }
+    }
+    const lines = [];
+    for (const c of chars) {
+      if (c.top === undefined) { if (lines.length) lines[lines.length - 1].text += ' '; continue; }
+      const cur = lines[lines.length - 1];
+      if (!cur || c.top > cur.top + cur.h * 0.6) lines.push({ text: c.ch, top: c.top, h: c.h, left: c.left, right: c.right });
+      else { cur.text += c.ch; cur.right = Math.max(cur.right, c.right); cur.left = Math.min(cur.left, c.left); }
+    }
+    lines.forEach((l) => { l.text = l.text.replace(/\s+/g, ' ').trim(); });
+    const text = lines.map((l) => l.text).join('');
+    if (!text) continue;
+    const steps = lines.slice(1).map((l, i) => l.top - lines[i].top).filter((d) => d > 0);
+    typo.push({
+      sel: pathOf(el), size: R(fs), box: vbox(el), lines: lines.map((l) => ({ text: l.text, top: R(l.top), left: R(l.left), right: R(l.right) })),
+      leading: steps.length ? R(med(steps) / fs * 100) / 100 : null,
+      heading: /^h[1-3]$/i.test(el.tagName) || fs >= 28,
+      raw: raw.replace(/\s+/g, ' ').trim(), narrow: narrow.slice(0, 12),
+    });
+  }
+
+  // 近似对齐：同页两个不相互包含的块，左边缘只差 tol–8px，且纵向相距不远，肉眼会读成"没对齐"。
+  // 文字块按首行文字起点比，盒子与图片按视觉边比。
+  const alignBox = (el) => {
+    if (el.tagName.toLowerCase() === 'svg') return svgBox(el);
+    const b = vbox(el);
+    return blocks.includes(el) ? { ...b, left: blockInfo(el).left } : b;
+  };
+  const alignItems = [...new Set([...blocks, ...inSlide.filter((el) => decorated(el) || /^(img|svg)$/i.test(el.tagName))])]
+    .filter((el) => el !== slide && !el.parentElement.closest('svg'))
+    .map((el) => ({ el, sel: pathOf(el), b: alignBox(el) }))
+    .filter((x) => x.b.right - x.b.left >= 40 && !bigBackdrop(x.b));
+  const nearAligns = [];
+  for (let i = 0; i < alignItems.length; i++) {
+    for (let j = i + 1; j < alignItems.length; j++) {
+      const a = alignItems[i], c = alignItems[j];
+      if (a.el.contains(c.el) || c.el.contains(a.el)) continue;
+      const d = Math.abs(a.b.left - c.b.left);
+      if (d <= overlapTol || d > 8) continue;
+      const vgap = Math.max(a.b.top, c.b.top) - Math.min(a.b.bottom, c.b.bottom);
+      if (vgap > 160) continue;
+      nearAligns.push({ a: a.sel, b: c.sel, aLeft: a.b.left, bLeft: c.b.left, delta: R(d),
+        y0: Math.min(a.b.top, c.b.top), y1: Math.max(a.b.bottom, c.b.bottom) });
+    }
+  }
+
   const all = inSlide.map(vbox);
   const frame = all.length ? {
     left: R(Math.min(...all.map((b) => b.left))),
@@ -582,6 +677,7 @@ const MEASURE = ({ slideSel, idx, ignoreSel, minSpan, overlapTol }) => {
     id: slide.id || `slide-${idx + 1}`, index: idx, width: W, height: H, scale: R(scale), frame,
     stacks, rows, connectors, overflows, images, occlusions, contrasts,
     occupants, arrows: arrowInfo, texts, boxes, title: { headline: pick(headline), eyebrow: pick(eyebrow) },
+    typo, nearAligns,
   };
 };
 
@@ -937,16 +1033,20 @@ function buildFlags(pages, o, fontInfo) {
     }
   }
 
-  // 同组盒子：同父级、尺寸相近的 ≥3 个兄弟应共用一种框样式；少数派多半是漏改。
+  // 同组盒子：同父级（或同页同 class、分散在不同父级里）的尺寸相近的 ≥3 个元素，
+  // 应共用一种框样式和尺寸；少数派多半是漏改。图片/图标单独成组，只比尺寸。
   const draw = (b, label) => ({ type: 'box', x0: b.box.left, x1: b.box.right, y0: b.box.top, y1: b.box.bottom, label });
   for (const p of pages) {
-    const byParent = new Map();
+    const groups = new Map();
+    const add = (key, b) => { if (!groups.has(key)) groups.set(key, []); groups.get(key).push(b); };
     for (const b of p.boxes || []) {
-      if (!byParent.has(b.parent)) byParent.set(b.parent, []);
-      byParent.get(b.parent).push(b);
+      add(`parent|${b.parent}|${b.media ? 'm' : 'b'}`, b);
+      if (b.role) add(`role|${b.role}`, b);
     }
-    for (const list of byParent.values()) {
+    for (const [key, list] of groups) {
       if (list.length < 3) continue;
+      if (key.startsWith('role|') && new Set(list.map((b) => b.parent)).size < 2) continue;
+      const noun = list[0].media ? '图片/图标' : '盒子';
       const mw = median(list.map((b) => b.w)), mh = median(list.map((b) => b.h));
       const peers = list.filter((b) => Math.abs(b.w - mw) <= mw * 0.3 && Math.abs(b.h - mh) <= mh * 0.3);
       if (peers.length < 3) continue;
@@ -959,7 +1059,7 @@ function buildFlags(pages, o, fontInfo) {
         if (!odd.length || mode[1] < 2 || odd.length >= peers.length / 2) continue;
         push({
           kind: 'box-style', page: p.id, sel: peers[0].parent, spread: r1(Math.max(...odd.map((b) => Math.abs(b[dim] - mode[0])))),
-          detail: `同组盒子${name}度不一：多数 ${mode[0]}px，偏离 ${odd.map((b) => `${b.sel.split('>').pop()} ${b[dim]}px`).join('，')}`,
+          detail: `同组${noun}${name}度不一：多数 ${mode[0]}px，偏离 ${odd.map((b) => `${b.sel.split('>').pop()} ${b[dim]}px`).join('，')}`,
           values: vals, draws: odd.map((b) => draw(b, `${name} ${b[dim]}`)),
         });
       }
@@ -1090,6 +1190,103 @@ function buildFlags(pages, o, fontInfo) {
     });
   }
 
+  /* ---- 排版细节：孤字、避头尾、标点、中英混排、行长、行距、字数、字号下限、贴边、近似对齐 ---- */
+  const CJK = /[\u3400-\u9fff\uf900-\ufaff]/;
+  const HEAD_BAN = /^[，。、；：？！）》」』”’…,.;:?!)\]%]/;
+  const TAIL_BAN = /[（《「『“‘(\[]$/;
+  const tbox = (t, label, page) => ({ type: 'box', page, x0: t.box.left, x1: t.box.right, y0: t.box.top, y1: t.box.bottom, label });
+  const spacing = { tight: [], spaced: [] };
+  // 页脚、页码等每页同位置重复的元素是版式契约，贴边判断不算它们。
+  const chromeKey = (t) => `${norm(t.sel)}@${Math.round(t.box.top / 8)}`;
+  const chromeCount = new Map();
+  for (const p of pages) {
+    for (const k of new Set([...(p.typo || []), ...(p.texts || [])].map(chromeKey))) chromeCount.set(k, (chromeCount.get(k) || 0) + 1);
+  }
+  const isChrome = (t) => pages.length >= 3 && chromeCount.get(chromeKey(t)) >= pages.length / 2;
+  const ctx = (text, re) => {
+    const out = [];
+    for (const m of text.matchAll(re)) out.push(text.slice(Math.max(0, m.index - 3), m.index + m[0].length + 3));
+    return out;
+  };
+  for (const p of pages) {
+    const typo = p.typo || [];
+    const scaleRef = p.width / 1280;
+    const widows = [], kinsoku = [], longLines = [], tight = [], halfPunct = [], narrowPunct = [];
+    for (const t of typo) {
+      const ls = t.lines;
+      const text = ls.map((l) => l.text).join('');
+      if (ls.length >= 2) {
+        const last = ls[ls.length - 1].text.replace(/\s/g, '');
+        if (last.length <= 2 && CJK.test(text)) widows.push({ t, last });
+        ls.slice(1).forEach((l, i) => {
+          if (HEAD_BAN.test(l.text)) kinsoku.push({ t, what: `行首「${l.text[0]}」` });
+          if (TAIL_BAN.test(ls[i].text)) kinsoku.push({ t, what: `行尾「${ls[i].text.slice(-1)}」` });
+        });
+        if (t.leading !== null && t.leading < o.minLeading && !t.heading) tight.push({ t });
+      }
+      for (const l of ls) {
+        const cjk = CJK.test(l.text);
+        const units = cjk ? (l.right - l.left) / t.size : l.text.length / 2;
+        if (units > o.maxLine) { longLines.push({ t, units: Math.round(units) }); break; }
+      }
+      const raw = t.raw || text;
+      const m = ctx(raw, /[\u3400-\u9fff][,?!:;](?=[\u3400-\u9fff\s]|$)/g);
+      if (m.length) halfPunct.push({ t, samples: m });
+      if (t.narrow && t.narrow.length) narrowPunct.push({ t, samples: t.narrow.map((x) => `${x.ctx}（${x.ch} 宽 ${x.w}/${x.fs}px）`) });
+      for (const s of ctx(raw, /[\u3400-\u9fff][A-Za-z0-9]|[A-Za-z0-9][\u3400-\u9fff]/g)) spacing.tight.push({ page: p.id, s, t });
+      for (const s of ctx(raw, /[\u3400-\u9fff] [A-Za-z0-9]|[A-Za-z0-9] [\u3400-\u9fff]/g)) spacing.spaced.push({ page: p.id, s, t });
+    }
+    const emit = (kind, list, detail, label) => {
+      if (!list.length) return;
+      push({ kind, page: p.id, sel: list.map((x) => x.t.sel).join(' | '), spread: list.length, detail: detail(list),
+        values: [], draws: list.map((x) => tbox(x.t, label(x))) });
+    };
+    emit('widow', widows, (l) => `末行孤字 ${l.length} 处：${l.map((x) => `「…${x.last}」`).join('，')}，标题/短段落末行只剩 1–2 字`, (x) => `孤字 ${x.last}`);
+    emit('kinsoku', kinsoku, (l) => `避头尾违规 ${l.length} 处：${l.map((x) => x.what).join('，')}`, (x) => x.what);
+    emit('half-punct', halfPunct, (l) => `中文后使用半角标点：${l.flatMap((x) => x.samples).slice(0, 6).map((s) => `「${s}」`).join('，')}`, () => '半角标点');
+    emit('half-punct', narrowPunct, (l) => `全角标点被渲染成半角宽（字体栈里的西文字体接管了标点）：${l.flatMap((x) => x.samples).slice(0, 4).join('；')}`, () => '标点变窄');
+    emit('line-length', longLines, (l) => `单行过长 ${l.length} 处：约 ${l.map((x) => x.units).join(' / ')} 字宽（上限 ${o.maxLine}），投影阅读换行困难`, (x) => `${x.units} 字`);
+    emit('leading', tight, (l) => `多行正文行距过紧：${l.map((x) => `${x.t.size}px × ${x.t.leading}`).join('，')}（下限 ${o.minLeading}）`, (x) => `行距 ${x.t.leading}`);
+
+    const chars = typo.reduce((s, t) => s + t.lines.map((l) => l.text).join('').replace(/\s/g, '').length, 0);
+    if (chars > o.maxChars) {
+      push({ kind: 'density', page: p.id, sel: p.id, spread: chars,
+        detail: `本页可见文字约 ${chars} 字（上限 ${o.maxChars}），投影下难以读完，考虑拆页或压缩成要点`, values: [chars], draws: [] });
+    }
+    const edgeHits = typo.filter((t) => !isChrome(t)
+      && Math.min(t.box.left, t.box.top, p.width - t.box.right, p.height - t.box.bottom) < o.safe * scaleRef);
+    emit('edge', edgeHits.map((t) => ({ t })), (l) => `文字距页面边缘不足 ${o.safe}px：${l.length} 处，投影裁边或观感拥挤`, () => '贴边');
+
+    const na = p.nearAligns || [];
+    if (na.length) {
+      push({ kind: 'align', page: p.id, sel: na.slice(0, 4).map((x) => `${x.a} ~ ${x.b}`).join(' | '), spread: Math.max(...na.map((x) => x.delta)),
+        detail: `近似对齐 ${na.length} 对：左边缘只差 ${[...new Set(na.map((x) => x.delta))].slice(0, 6).join('/')}px，肉眼读作"没对齐"，应统一到同一条参考线`,
+        values: na.map((x) => x.delta),
+        draws: na.slice(0, 8).map((x) => ({ type: 'line', x0: Math.min(x.aLeft, x.bLeft), x1: Math.max(x.aLeft, x.bLeft) + 2, y0: x.y0, y1: x.y0 + 2, label: `差 ${x.delta}` })) });
+    }
+  }
+  // 字号下限按 1280 宽画布折算，跨 deck 按字号合并成一条，页脚/页码等元信息看图裁决。
+  const small = new Map();
+  for (const p of pages) {
+    for (const t of p.texts || []) {
+      if (t.size >= o.minFont * (p.width / 1280) || isChrome(t)) continue;
+      if (!small.has(t.size)) small.set(t.size, []);
+      small.get(t.size).push({ ...t, page: p.id });
+    }
+  }
+  for (const [size, list] of small) {
+    push({ kind: 'min-size', page: [...new Set(list.map((x) => x.page))].join(','), sel: `${size}px`, spread: r1(o.minFont - size),
+      detail: `字号 ${size}px 低于投影下限 ${o.minFont}px，共 ${list.length} 处（如「${list[0].sel.split('>').pop()}」），页脚/页码等元信息可保留，承载论点的文字需放大`,
+      values: [size], draws: list.map((x) => ({ ...tbox(x, `${size}px`, x.page) })) });
+  }
+  // 中英文之间是否加空格：两种写法并存时报少数派。
+  if (spacing.tight.length && spacing.spaced.length) {
+    const minor = spacing.tight.length <= spacing.spaced.length ? ['不加空格', spacing.tight, '加空格'] : ['加空格', spacing.spaced, '不加空格'];
+    push({ kind: 'cjk-spacing', page: [...new Set(minor[1].map((x) => x.page))].join(','), sel: 'cjk-latin', spread: minor[1].length,
+      detail: `中英文/数字之间空格写法不统一：多数${minor[2]}（${Math.max(spacing.tight.length, spacing.spaced.length)} 处），${minor[0]} ${minor[1].length} 处，如 ${minor[1].slice(0, 5).map((x) => `「${x.s}」`).join('')}`,
+      values: [spacing.tight.length, spacing.spaced.length], draws: minor[1].slice(0, 30).map((x) => tbox(x.t, '空格', x.page)) });
+  }
+
   // 同页同文案的同类线索（如一排相同箭头各自低对比）合并为一条，减噪不丢证据。
   const merged = new Map();
   for (const f of flags) {
@@ -1211,6 +1408,7 @@ function buildFlags(pages, o, fontInfo) {
     thresholds: {
       tol: o.tol, slack: o.slack, near: o.near, minGap: o.minGap, minSpan: o.minSpan, connectorTol: o.connectorTol,
       voidRatio: o.voidRatio, arrowGap: o.arrowGap, sizeNear: o.sizeNear, colorNear: o.colorNear, maxSizes: o.maxSizes,
+      minFont: o.minFont, maxChars: o.maxChars, maxLine: o.maxLine, minLeading: o.minLeading, safe: o.safe,
     },
     pageCount: count, pages, histogram, inventory, flags, shots, fonts: fontInfo,
   };

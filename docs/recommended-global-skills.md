@@ -42,7 +42,7 @@ user 级 prompt 正文不在此清单范围内：由 [`config/user-agents.md`](.
 | 7 | `local-test` | 实际搭建、复用或管理本地联调/项目预览环境 | 允许隐式触发（窄条件） |
 | 8 | `mermaid-lint` | Markdown 中 Mermaid 图表的渲染级批量校验与自动修复 | 显式调用 (`$mermaid-lint`) |
 | 9 | `open-source-contribution` | 开源贡献与发布前的合规与代码卫生审计 | 允许隐式触发 |
-| 10 | `ppt-visual-review` | PPT 布局验收：箭头、留白、同类一致性、全局字体颜色，循环复审至 clean | 显式调用 (`$ppt-visual-review`) |
+| 10 | `ppt-visual-review` | PPT 布局验收：箭头、留白、同类一致性、字体颜色、对齐与中文排版，循环复审至 clean | 显式调用 (`$ppt-visual-review`) |
 | 11 | `preflight` | 开工前凭据、权限、工具与外部依赖轻量探针核查 | 显式调用 (`$preflight`) |
 | 12 | `readiness-fix` | 根据本地 readiness 报告修复失败的信号项 | 显式调用 (`$readiness-fix`) |
 | 13 | `readiness-report` | 对当前代码库做只读静态 Agent-Readiness 审计，并为已启动的修复流程提供评估契约 | 允许隐式触发（窄下游），也可显式调用 (`$readiness-report`) |

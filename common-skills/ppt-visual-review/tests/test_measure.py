@@ -128,10 +128,23 @@ class MeasureTests(unittest.TestCase):
       <p class="eyebrow" style="left:80px">第四章</p><h1 class="title" style="left:80px;font-size:44px">标题漂移</h1>
       <p style="position:absolute;left:64px;top:200px;margin:0;font-size:24px">正文</p>
       <p class="foot">页脚</p>
+    </section>
+    <section class="slide" id="s5">
+      <p class="eyebrow">第五章</p><h1 class="title">排版细节</h1>
+      <p style="position:absolute;left:64px;top:170px;width:330px;font-size:24px;line-height:26px;margin:0">这一段正文用于检查行距过紧呀</p>
+      <p style="position:absolute;left:69px;top:260px;width:600px;font-size:24px;margin:0">为什么会卡住?交付Agent流程</p>
+      <p style="position:absolute;left:64px;top:320px;width:400px;font-size:24px;margin:0">使用 AI 工具与 Agent 协作</p>
+      <p style="position:absolute;left:8px;top:400px;font-size:11px;margin:0">贴边的小字说明</p>
+      <div style="position:absolute;left:64px;top:460px;display:flex;gap:24px">
+        <img src="sq.png" style="width:64px;height:64px"><img src="sq.png" style="width:64px;height:64px">
+        <img src="sq.png" style="width:64px;height:64px"><img src="sq.png" style="width:48px;height:48px">
+      </div>
+      <p class="foot">页脚</p>
     </section>'''
 
     def test_layout_and_consistency_flags(self):
         (self.root / 'layout.html').write_text(self.LAYOUT_FIXTURE)
+        Image.new('RGB', (64, 64), (60, 120, 200)).save(self.root / 'sq.png')
         result = self.run_measure('--file', str(self.root / 'layout.html'), '--out', str(self.root), '--label', 'layout')
         self.assertEqual(result.returncode, 0, result.stderr)
         data = json.loads((self.root / 'layout.json').read_text())
@@ -145,8 +158,12 @@ class MeasureTests(unittest.TestCase):
         self.assertTrue(any('s4' in f['page'] and f['sel'] == 'eyebrow.left' for f in titles), titles)
         self.assertTrue(by('font-family') and by('color') and by('font-size'), data['flags'])
         self.assertTrue(by('role-style'), data['flags'])
+        for kind in ('widow', 'leading', 'half-punct', 'cjk-spacing', 'min-size', 'edge', 'align'):
+            self.assertTrue(any(f['page'] == 's5' or 's5' in f['page'].split(',') for f in by(kind)), (kind, data['flags']))
+        self.assertFalse(any(f['kind'] == 'edge' and 'foot' in f['sel'] for f in data['flags']))
+        self.assertTrue(any(f['page'] == 's5' and '图片/图标' in f['detail'] for f in by('box-style')), by('box-style'))
         inv = data['inventory']
-        self.assertEqual(len(inv['titles']), 4)
+        self.assertEqual(len(inv['titles']), 5)
         self.assertGreaterEqual(len(inv['fonts']), 2)
 
 
