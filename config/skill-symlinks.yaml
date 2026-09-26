@@ -99,6 +99,8 @@ skills:
   note: 解决进行中的 merge/rebase 冲突
 - name: review-html-report
   note: 审查结果的共享 HTML 输出：文字对照、真实修复滑块和反馈复制
+- name: safe-refactor
+  note: 手动启动的保持行为重构：影响面、旧版基线与独立验收
 - name: setup-matt-pocock-skills
   source: mattpocock-skills
   note: 该仓库工程技能的一次性初始配置
