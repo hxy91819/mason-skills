@@ -35,7 +35,7 @@ const cliproxyConfigSchema = z.object({
   managementBaseUrl: z.string().url(),
   managementKeyEnv: z.string().min(1).optional(),
   managementKeyFile: z.string().min(1).optional(),
-  accounts: z.array(cliproxyAccountSchema),
+  accounts: z.array(cliproxyAccountSchema).default([]),
 });
 
 const localConfigSchema = z.object({
@@ -96,20 +96,6 @@ export function cliproxyProviderDisplayName(provider: string): string {
   };
   const normalized = provider.toLowerCase();
   return labels[normalized] ?? provider;
-}
-
-export function activeCliproxyAccountsByProvider(
-  accounts: readonly CliproxyAccount[],
-): Map<string, CliproxyAccount[]> {
-  const groups = new Map<string, CliproxyAccount[]>();
-  for (const account of accounts) {
-    if (account.enabled === false) continue;
-    const provider = account.provider.toLowerCase();
-    const group = groups.get(provider);
-    if (group) group.push(account);
-    else groups.set(provider, [account]);
-  }
-  return groups;
 }
 
 export function loadLocalAccountLimitsConfigFile(
