@@ -57,10 +57,6 @@ common-skills/
 │   ├── SKILL.md
 │   ├── agents/
 │   └── scripts/
-├── mermaid-lint/
-│   ├── SKILL.md
-│   ├── validate-mermaid.py    # Extracts mermaid blocks, drives the worker
-│   └── mermaid-worker.mjs     # Renders every block in one browser session
 ├── open-source-contribution/
 │   └── SKILL.md
 ├── open-source-fork-maintenance/
@@ -150,7 +146,6 @@ python3 common-skills/skill-manifest-sync/scripts/sync_skill_symlinks.py --mode 
 | [distill](common-skills/distill/) | Reviews one session or a bounded periodic cross-session window for evidence-backed harness and project-knowledge improvements, explicitly auditing repository Skills and AGENTS.md instructions for design and usability problems. |
 | [large-task-planning](common-skills/large-task-planning/) | Compiles a large engineering goal into reader-friendly SPEC/STATUS views and a JSON execution plan; also supplies its contract and CLI to active orchestration flows. |
 | [large-task-orchestrator](common-skills/large-task-orchestrator/) | 用带 pid 锁的后台确定性 driver 经 BB（`bb-model-routing`）派发 Worker / Validator，并仅在异常时派 Judge 执行计划；按计划隔离状态，支持并行。仅显式调用。 |
-| [mermaid-lint](common-skills/mermaid-lint/) | Validates and fixes mermaid diagrams in markdown. Renders every block against the real mermaid renderer and reports all failures in one pass. Original skill design. |
 | [readiness-report](common-skills/readiness-report/) | Read-only Agent-Readiness audit with a local JSON report; also supplies evaluation contracts to an active `readiness-fix` flow. |
 | [readiness-fix](common-skills/readiness-fix/) | Fixes failing signals from the latest local readiness report; asks whether to generate a report first when none exists. Adapted from Factory Droid's built-in `/readiness-fix` with remote report access removed. Explicit invocation only. |
 | [open-source-contribution](common-skills/open-source-contribution/) | Open-source contribution hygiene: identity verification, privacy scanning, Git history cleanup, installer hardening, autoreview, and safe push/PR validation. |
@@ -235,29 +230,6 @@ BB 线程记录让会话可替换、长时执行可恢复。两项 Skill 共享
 [核心设计](common-skills/large-task-planning/references/large-task-system-design.md)，v2 令牌登录示例在
 [`docs/largeplan-example/`](docs/largeplan-example/)。
 
-### mermaid-lint
-
-Finds every mermaid diagram in one or more markdown files, validates it, and fixes the
-broken ones. Unlike the other skills here it ships executable helpers, so it needs
-Node.js and [`@mermaid-js/mermaid-cli`](https://github.com/mermaid-js/mermaid-cli)
-available on `PATH`; the skill will not install them for you.
-
-Two design decisions are worth calling out, because the obvious alternatives are worse:
-
-- **It renders each diagram instead of only parsing it.** `mermaid.parse()` covers the
-  parse phase only, so errors raised while rendering slip through — an invalid gantt date
-  such as `notadate` parses fine but fails to render. Rendering answers the question a
-  document author actually has: will this diagram show up?
-- **It renders the whole batch in a single browser session.** Spawning one Chromium per
-  diagram costs roughly 1.7s each; sharing a session brings the marginal cost down to
-  about 12ms, so 60 diagrams take ~2s instead of ~100s. Running `mmdc` over the markdown
-  file directly would also share a session, but it aborts on the first bad diagram, which
-  defeats the point of a linter.
-
-Block extraction follows CommonMark fence rules. A deliberately broken example nested
-inside a longer fence is not reported as a real error, and directive-style blocks,
-fences carrying an info string, and tilde fences are all recognized.
-
 ### open-source-contribution
 
 Standardizes open-source contribution cleanup and release checks for coding
@@ -331,12 +303,6 @@ Derivative work based on [baoyu-translate](https://github.com/JimLiu/baoyu-skill
 ### [article-workflow](common-skills/article-workflow/)
 
 Original skill designs for a phased article optimization workflow. Each skill covers one phase — from brief generation through publication. The visual planning phase references a generic `article-illustrator` skill for prompt construction rules.
-
-### [mermaid-lint](common-skills/mermaid-lint/)
-
-Original skill design. Drives [mermaid](https://github.com/mermaid-js/mermaid) through
-[`@mermaid-js/mermaid-cli`](https://github.com/mermaid-js/mermaid-cli) (MIT) at runtime;
-neither project's code is vendored here.
 
 ### [large-task-planning](common-skills/large-task-planning/)
 
