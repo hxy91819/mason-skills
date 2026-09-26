@@ -1,6 +1,6 @@
 ---
 name: safe-refactor
-description: 带证据门禁的保持行为重构：先定影响面和授权范围，再固定旧版行为基线，委派编码，最后独立验收 PASS/BLOCK/INSUFFICIENT。
+description: 手动启动保持行为重构的完整流程，或只审查已完成重构的实际 diff 与行为证据。
 disable-model-invocation: true
 triggers:
   - user
@@ -8,9 +8,9 @@ triggers:
 
 # Safe Refactor：先圈边界，再改代码
 
-这是流程类 Skill，仅在用户显式调用 `$safe-refactor` 时运行。你负责把一次重构推进到“具备进入发布流程的证据”，不负责宣布生产安全，也不自动推送、合并、部署。
+这是流程类 Skill，仅在用户显式调用 `$safe-refactor` 时运行。完整流程把重构推进到“具备进入发布流程的证据”；只做 review 时停在审查结论。不负责宣布生产安全，也不自动推送、合并、部署。
 
-适合共享组件、数据访问（如 N+1）、异步化、跨语言替换，或接手一份没有事前验证的重构 diff。小范围纯函数整理只需按下文“小任务”走轻量路径。
+适合共享组件、数据访问（如 N+1）、异步化、跨语言替换，或审查／接手一份没有事前验证的重构 diff。小范围纯函数整理只需按下文“小任务”走轻量路径。
 
 ## 入口与模式
 
@@ -21,11 +21,16 @@ triggers:
 | 新的重构目标 | 完整流程（下文 1–7） | 全部阶段按到达时读取 |
 | “只分析影响面” | plan 或 actual 影响分析，不改生产代码 | [change-impact.md](references/change-impact.md) |
 | “只补基线／测试” | 行为基线 | [behavior-baseline.md](references/behavior-baseline.md) |
-| “验收这个重构”，或协调者派来的独立验收 | verify，不改生产代码 | [verify.md](references/verify.md) |
-| 已有 diff | 下文“接手已有改动” | — |
+| “重构已完成，只做 review” | 事后审查实际 diff 和现有证据，不继续实现 | [verify.md](references/verify.md) 的事后 review 分支 |
+| 协调者派来的独立验收，或明确要求正式证据门禁 | verify，不改生产代码 | [verify.md](references/verify.md) 的正式验收分支 |
+| 已有 diff，要求继续重构或补齐事前基线 | 下文“接手并继续已有改动” | — |
 | 继续任务 | 读取工作单及当前 Git 状态，先检查版本和证据是否仍匹配 | — |
 
-所有模式先读 [共享规则](references/workflow.md)。用 [工作单](assets/work-item.md) 持久化状态；运行脚本时读 [工具说明](references/tooling.md)。
+所有模式先读 [共享规则](references/workflow.md)。完整流程和接手实施用 [工作单](assets/work-item.md) 持久化状态；仅做事后 review 可直接使用现有材料。运行脚本时读 [工具说明](references/tooling.md)。
+
+用户只要求 review 时，优先按其指定的旧版和候选版划界；未指定则从当前分支、Git 历史及未提交改动确定实际范围，并说明候选是固定提交还是工作区状态。只报告发现的问题、验证结果和证据缺口，不补写“事前”批准或进入下文实施步骤。
+
+手动调用示例：`$safe-refactor 只做 review：审查当前分支相对 main 的已完成重构，包含未提交改动；检查行为变化、调用方和现有测试，不修改代码。`
 
 ## 1. 收敛任务
 
@@ -103,7 +108,7 @@ triggers:
 
 结束回复只保留：结果、变化与收益、关键证据、未解决风险、下一项必要动作。不要倾倒整个工作单。
 
-## 接手已有改动
+## 接手并继续已有改动
 
 保存现有 diff 与工作区状态，不 reset／clean／stash 覆盖未知工作。找真实旧提交，在独立工作树恢复旧实现并补行为基线；确认候选实现没有污染 oracle。
 
@@ -115,6 +120,6 @@ triggers:
 
 ## 回看与缺口
 
-单一事实源是任务目录（放在源码仓库外）：`work-item.md` 记状态与决策，`evidence/*.json` 记每次运行的 SHA、命令、耗时、退出码和测试统计，`verification.json` 记验收结论。事后复查对该目录重跑 `refactor_guard.py gate`（只读）即可得到当前机械结论。
+完整流程的单一事实源是任务目录（放在源码仓库外）：`work-item.md` 记状态与决策，`evidence/*.json` 记每次运行的 SHA、命令、耗时、退出码和测试统计，`verification.json` 记验收结论。事后复查对该目录重跑 `refactor_guard.py gate`（只读）即可得到当前机械结论。
 
 缺口：没有跨任务的聚合账本，无法统计 verify 结论分布、返工轮次或 INSUFFICIENT 原因的长期趋势；需要时再按仓库可观测标准补建。

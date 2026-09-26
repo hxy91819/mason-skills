@@ -1,7 +1,7 @@
 interface:
   display_name: "Safe Refactor"
-  short_description: "带影响面、旧版基线和独立验收门禁的保持行为重构"
-  default_prompt: "Use $safe-refactor to plan, baseline, implement and independently verify this behavior-preserving refactor."
+  short_description: "手动启动保持行为重构，或只审查已完成的重构"
+  default_prompt: "Use $safe-refactor for this behavior-preserving refactor. Follow my requested mode: full workflow or review only."
 
 policy:
   allow_implicit_invocation: false
