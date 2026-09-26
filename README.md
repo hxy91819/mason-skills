@@ -68,6 +68,14 @@ common-skills/
 │   ├── agents/
 │   ├── assets/                # fork-aggregate script and project templates
 │   └── tests/
+├── safe-refactor/              # Evidence-gated behavior-preserving refactor ($safe-refactor)
+│   ├── SKILL.md
+│   ├── agents/
+│   ├── references/            # Impact / baseline / verify phases, shared protocol
+│   ├── assets/                # Work item, policy and verification templates
+│   ├── scripts/               # refactor_guard.py evidence gate
+│   ├── examples/              # Runnable SQLite N+1 demo
+│   └── tests/
 ├── story-direction-review/
 │   ├── SKILL.md
 │   └── agents/

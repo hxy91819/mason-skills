@@ -1,0 +1,7 @@
+interface:
+  display_name: "Safe Refactor"
+  short_description: "带影响面、旧版基线和独立验收门禁的保持行为重构"
+  default_prompt: "Use $safe-refactor to plan, baseline, implement and independently verify this behavior-preserving refactor."
+
+policy:
+  allow_implicit_invocation: false

@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "task_id": "REPLACE_WITH_TASK_ID",
+  "base_revision": "REPLACE_WITH_FULL_BASELINE_COMMIT",
+  "candidate_revision": "REPLACE_WITH_FULL_CANDIDATE_COMMIT",
+  "policy_sha256": "REPLACE_WITH_APPROVED_POLICY_SHA256",
+  "seal_sha256": "REPLACE_WITH_APPROVED_SEAL_SHA256",
+  "decision": "INSUFFICIENT",
+  "implementer_session_id": "REPLACE_WITH_ACTUAL_SESSION",
+  "reviewer": {
+    "session_id": "REPLACE_WITH_ACTUAL_REVIEW_SESSION",
+    "independent": false,
+    "note": "记录实际运行者和独立性；不得伪造"
+  },
+  "impact": {
+    "reviewed_revision": "REPLACE_WITH_FULL_CANDIDATE_COMMIT",
+    "all_changed_paths_reviewed": false,
+    "shared_state_reviewed": false,
+    "unresolved": [
+      "尚未进行实际 diff 及共享状态复核"
+    ]
+  },
+  "contracts": [],
+  "benefit": {
+    "status": "INSUFFICIENT",
+    "evidence": [],
+    "note": "尚未核对收益的实际执行证据"
+  },
+  "blocking_findings": [],
+  "residual_risks": []
+}
