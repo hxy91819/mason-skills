@@ -7,7 +7,7 @@
 # 外部项目位置按序解析：$SKILL_SOURCE_<NAME>_DIR > $SKILL_SOURCES_DIR/<项目名> > 本仓库
 # 同级目录 <项目名>；清单只写项目名，不写机器绝对路径。
 # worktree-cleanup 已迁移至私有仓 hxy91819/mole-linux（.claude/skills/worktree-cleanup）
-# mermaid-lint 已退役
+# mermaid-lint 已 archive：源码留在 archive/mermaid-lint，不推荐全局软链
 version: 1
 sources:
 - name: mattpocock-skills
