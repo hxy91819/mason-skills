@@ -13,6 +13,8 @@ sources:
 skills:
 - name: anti-ai-slop
   note: 检查刚改的 diff 或 commit 里的 AI slop
+- name: ask-gpt-pro
+  note: 通过已登录 ChatGPT 浏览器咨询 GPT Pro
 - name: ask-matt
   source: mattpocock-skills
   note: 路由：问哪个 skill 或流程适合当前处境
@@ -24,6 +26,8 @@ skills:
   note: 提交/发布前的结构化代码审查
 - name: bb-model-routing
   note: 用户明确要求使用 BB 派发或派发任务时采用，保留默认 subagent 行为
+- name: chatgpt-web-image
+  note: 通过已登录 ChatGPT 浏览器生成并保存图片
 - name: code-review
   source: mattpocock-skills
   note: 双轴审查：仓库编码规范 + 规格符合度
