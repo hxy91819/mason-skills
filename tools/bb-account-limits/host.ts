@@ -1,5 +1,4 @@
 import {
-  activeCliproxyAccountsByProvider,
   cliproxyProviderDisplayName,
   cliproxyProviderId,
   config,
@@ -8,7 +7,7 @@ import { experimental_acpProviderBridge } from "@get-bb/plugin-sdk/provider-brid
 import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
 import { bridgeRequestEnvelopeSchema, createBridgeIo, experimental_defineProviderBridge, providerMaintenanceParamsSchema, type ProviderBridgeEntry, type ProviderUsageResult } from "@get-bb/plugin-sdk/provider-bridge";
 import { accountLimitsHostContract, cliproxyUsageSnapshotSchema, type CliproxyUsageSnapshot } from "./contract.js";
-import { readAgyUsage, readCliproxyManagementKey, readCliproxyProviderUsage, readCodexUsage, readKiroUsage, usageError, type CliproxyUsageAccount, type CliproxyUsageOptions } from "./usage.js";
+import { discoverCliproxyAccounts, discoveredCliproxyGroups, readAgyUsage, readCliproxyManagementKey, readCliproxyProviderUsage, readCodexUsage, readKiroUsage, usageError, type CliproxyUsageAccount, type CliproxyUsageOptions } from "./usage.js";
 
 // usage 查询支持的本插件 provider ID：三个原生入口 + config.codexAccounts 里的额外 Codex 账号。
 const usageProviderIds = new Set([
@@ -69,13 +68,12 @@ export function withAccountLimits(
 export const experimental_providerBridge = withAccountLimits(experimental_acpProviderBridge, (id, signal) =>
   resolveUsageReader(id, signal));
 
-function enabledCliproxyGroups(providerIds?: readonly string[]): Map<string, CliproxyUsageAccount[]> {
-  const selected = providerIds ? new Set(providerIds) : null;
-  return new Map([...activeCliproxyAccountsByProvider(config.cliproxy.accounts)]
-    .filter(([provider]) => {
-      const providerId = cliproxyProviderId(provider);
-      return config.enabledProviders.includes(providerId) && (!selected || selected.has(providerId));
-    }));
+async function enabledCliproxyGroups(
+  options: CliproxyUsageOptions,
+  providerIds?: readonly string[],
+): Promise<{ groups: Map<string, CliproxyUsageAccount[]>; authFiles: unknown }> {
+  const { accounts, authFiles } = await discoverCliproxyAccounts(options, config.cliproxy.accounts);
+  return { groups: discoveredCliproxyGroups(accounts, config.enabledProviders, providerIds), authFiles };
 }
 
 function compactCliproxyUsage(result: ProviderUsageResult): CliproxyUsageSnapshot["providers"][number]["usage"] {
@@ -98,8 +96,9 @@ function compactCliproxyUsage(result: ProviderUsageResult): CliproxyUsageSnapsho
 }
 
 export async function readCliproxyUsageSnapshot(
-  groups: ReadonlyMap<string, readonly CliproxyUsageAccount[]> = enabledCliproxyGroups(),
+  groups?: ReadonlyMap<string, readonly CliproxyUsageAccount[]>,
   options: Partial<CliproxyUsageOptions> = {},
+  providerIds?: readonly string[],
 ): Promise<CliproxyUsageSnapshot> {
   const managementKey = options.managementKey ?? await readCliproxyManagementKey(config.cliproxy);
   const query: CliproxyUsageOptions = {
@@ -108,10 +107,14 @@ export async function readCliproxyUsageSnapshot(
     timeoutMs: options.timeoutMs,
     signal: options.signal,
   };
-  const providers = await Promise.all([...groups].map(async ([provider, accounts]) => ({
+  const resolved = groups
+    ? { groups, authFiles: query.authFiles }
+    : await enabledCliproxyGroups(query, providerIds);
+  const queryWithFiles = { ...query, authFiles: resolved.authFiles };
+  const providers = await Promise.all([...resolved.groups].map(async ([provider, accounts]) => ({
     id: cliproxyProviderId(provider),
     displayName: cliproxyProviderDisplayName(provider),
-    usage: compactCliproxyUsage(await readCliproxyProviderUsage(accounts, query)),
+    usage: compactCliproxyUsage(await readCliproxyProviderUsage(accounts, queryWithFiles)),
   })));
   return cliproxyUsageSnapshotSchema.parse({ providers });
 }
@@ -119,6 +122,6 @@ export async function readCliproxyUsageSnapshot(
 export default experimental_defineHostEntry({
   contract: accountLimitsHostContract,
   handlers: {
-    readCliproxyUsage: ({ providerIds }, context) => readCliproxyUsageSnapshot(enabledCliproxyGroups(providerIds), { signal: context.signal }),
+    readCliproxyUsage: ({ providerIds }, context) => readCliproxyUsageSnapshot(undefined, { signal: context.signal }, providerIds),
   },
 });

@@ -46,7 +46,7 @@ Codex ACP provider 会声明 BB Goal 能力；在 composer 中可使用 Goal 操
 
 ### Cliproxy 供应商聚合额度
 
-Cliproxy 配额以**账户**为单位配置、以**上游供应商**为单位显示。相同 `provider` 的账户会聚合成“账户额度”侧边栏页面中的一张卡：每个额度行带账号标签，不会把不同账号或不同限额池相加。`cliproxy-<provider>` 只控制这张卡是否显示；不注册为 BB Provider，因此不会出现在模型选择器或原生 Provider Usage 面板。
+Cliproxy 配额以**账户**为单位发现、以**上游供应商**为单位显示。启用 `cliproxy-<provider>` 后，插件会读取 Cliproxy `/auth-files` 里该供应商的全部凭证，不再要求在 local JSON 里逐个登记。相同 `provider` 的账户会聚合成“账户额度”侧边栏页面中的一张卡：每个额度行带账号标签，不会把不同账号或不同限额池相加。`cliproxy-<provider>` 只控制这张卡是否显示；不注册为 BB Provider，因此不会出现在模型选择器或原生 Provider Usage 面板。`accounts` 仍可选：用来覆盖显示名、给未内置查询的供应商补 `cachedWindows`，或设 `enabled: false` 隐藏某个账号。
 
 ```json
 {
@@ -110,7 +110,7 @@ Cliproxy 配额以**账户**为单位配置、以**上游供应商**为单位显
 }
 ```
 
-`authIndex` 是 Cliproxy `/auth-files` 返回的稳定运行时 ID，优先使用；它可避免相同 provider 下多个账号名称相同或变更时选错账户。若不想保存 ID，可用 `account` 精确匹配 Cliproxy 返回的 `account`、`email`、`name` 或 `label` 字段；匹配到多个账号时插件会拒绝查询并提示改用 `authIndex`。`managementKeyEnv` 优先于 `managementKeyFile`，密钥值本身永远不写入 JSON 或日志。
+发现到的账号默认用 Cliproxy 返回的 `email` / `account` / `label` 作为显示名。`accounts` 里仍可用 `authIndex` 或 `account` 精确匹配一条凭证以覆盖标签、补 `cachedWindows`，或设 `enabled: false` 把它从额度页拿掉。覆盖项若用 `account` 命中多条凭证，该覆盖不会生效，发现结果仍会列出这些账号。`managementKeyEnv` 优先于 `managementKeyFile`，密钥值本身永远不写入 JSON 或日志。
 
 `provider: "codex"` 读取 ChatGPT 的认证用量端点，显示主额度和各附加模型组额度；它会与本机原生 Codex Provider 并存，因为后者仍是可执行的模型入口。Claude 账号通过 Cliproxy 的 `/api-call` 在服务端代入 OAuth token，读取 Anthropic 官方 usage 响应；响应不可用时，会降级显示 Cliproxy 缓存的 5 小时、周和 scoped 周限额信号。`provider: "xai"` 是 Cliproxy 的 Grok 供应商标识，插件会读取其账单接口的当前周期与产品额度。`provider: "antigravity"` 会先从 Google Code Assist 读取项目 ID，再读取 Gemini、Claude/GPT 的 5 小时与周额度摘要；每个账户保持独立行。`provider: "kimi"` 会读取 Kimi Coding Plan 的官方用量端点，显示周和滚动窗口额度。`provider: "zai"` 会显示为 Z.ai；待 Cliproxy 提供其认证记录或缓存额度信号后，可与其他未内置直连查询的 provider 一样通过 `cachedWindows` 映射。`scale` 选 `fraction` 时会将 0–1 转为百分比，默认为 `percent`。没有额度数据绝不显示为零。单个账号失败不会影响同一聚合卡中的其他账号。
 
