@@ -61,3 +61,39 @@ test("账户额度页面注册为导航面板并显示独立 Cliproxy 数据", a
   ]);
   slot.lifecycle.unmount();
 });
+
+test("各账号额度直接显示重置倒计时，并随时间更新而不重新查询", async t => {
+  t.mock.timers.enable({ apis: ["Date", "setInterval"], now: new Date("2026-09-27T00:00:00Z") });
+  installTestPluginRuntime();
+  const app = await loadPluginApp(() => import("./app.js"));
+  const cases = [
+    ["2026-09-29T03:40:00Z", "还剩 2 天 3 小时重置"],
+    ["2026-09-27T03:17:00Z", "还剩 3 小时 17 分钟重置"],
+    ["2026-09-27T00:02:00Z", "还剩 2 分钟重置"],
+    ["2026-09-27T00:00:30Z", "不到 1 分钟重置"],
+    ["2026-09-27T00:00:00Z", "已到重置时间，待刷新"],
+    [null, "重置时间未知"],
+  ] as const;
+  const snapshot: AccountLimitsPanelSnapshot = {
+    machines: [{ id: "local", displayName: "本机", status: "connected", error: null,
+      providers: [{ id: "cliproxy-claude", displayName: "Claude", updatedAt: "2026-09-27T00:00:00Z",
+        usage: { status: "ok", planLabel: null, windows: cases.map(([resetsAt], index) => ({
+          accountLabel: `账号 ${index}`, label: "Weekly limit", usedPercent: 25, resetsAt,
+        })) },
+      }],
+    }],
+  };
+  const slot = renderSlot(app.navPanels[0]!, { subPath: "" }, { rpc: { readCliproxyUsage: () => snapshot } });
+  t.after(() => slot.lifecycle.unmount());
+  await slot.findByText("Claude");
+  for (const [index, [, expected]] of cases.entries()) {
+    const account = slot.getByRole("region", { name: `账号 ${index} 的额度` });
+    assert.ok(account.textContent?.includes(expected), `${expected} must be visible in the account row`);
+    assert.ok(!account.textContent?.includes("2026-"));
+  }
+  await act(async () => { t.mock.timers.tick(60_000); });
+  assert.ok(slot.getByText("还剩 1 分钟重置"));
+  assert.ok(slot.getByText("还剩 3 小时 16 分钟重置"));
+  assert.ok(slot.getByRole("region", { name: "账号 3 的额度" }).textContent?.includes("已到重置时间，待刷新"));
+  assert.equal(slot.inspection.rpcCalls.length, 1);
+});

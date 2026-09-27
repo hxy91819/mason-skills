@@ -2,11 +2,18 @@ import { useCallback, useEffect, useState } from "react";
 import { definePluginApp, useRpc } from "@get-bb/plugin-sdk/app";
 import { accountLimitsPanelRpcContract, type AccountLimitsPanelSnapshot, type CliproxyUsageSnapshot } from "./contract.js";
 
-function compactReset(value: string | null): string | null {
-  if (!value) return null;
-  const date = new Date(value);
-  if (!Number.isFinite(date.getTime())) return null;
-  return new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(date);
+function compactReset(value: string | null, now: number): string {
+  const resetAt = value ? Date.parse(value) : NaN;
+  if (!Number.isFinite(resetAt)) return "重置时间未知";
+  const remainingMs = resetAt - now;
+  if (remainingMs <= 0) return "已到重置时间，待刷新";
+  const minutes = Math.floor(remainingMs / 60_000);
+  if (minutes < 1) return "不到 1 分钟重置";
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+  const duration = days > 0 ? `${days} 天 ${hours % 24} 小时`
+    : hours > 0 ? `${hours} 小时 ${minutes % 60} 分钟` : `${minutes} 分钟`;
+  return `还剩 ${duration}重置`;
 }
 
 function updatedLabel(value: string): string {
@@ -59,10 +66,10 @@ function remainingPercent(usedPercent: number): number {
   return Math.max(0, Math.min(100, 100 - usedPercent));
 }
 
-function WindowMeter({ window }: { window: QuotaWindow }) {
+function WindowMeter({ window, now }: { window: QuotaWindow; now: number }) {
   const label = displayWindowLabel(window);
   const remaining = remainingPercent(window.usedPercent);
-  const reset = compactReset(window.resetsAt);
+  const reset = compactReset(window.resetsAt, now);
   const depleted = remaining <= 10;
   return <li className="min-w-0">
     <div className="flex items-baseline justify-between gap-2 text-xs">
@@ -72,17 +79,18 @@ function WindowMeter({ window }: { window: QuotaWindow }) {
     <div className="mt-0.5 h-1 overflow-hidden rounded-full bg-muted" role="progressbar" aria-label={`${label} 剩余额度`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={remaining} title={reset ? `${label} · ${reset}` : label}>
       <div className={`h-full rounded-full ${depleted ? "bg-destructive" : "bg-primary"}`} style={{ width: `${remaining}%` }} />
     </div>
+    <p className="mt-1 text-xs text-muted-foreground tabular-nums">{reset}</p>
   </li>;
 }
 
-function Usage({ usage }: { usage: CliproxyUsageSnapshot["providers"][number]["usage"] }) {
+function Usage({ usage, now }: { usage: CliproxyUsageSnapshot["providers"][number]["usage"]; now: number }) {
   if (usage.status === "ok") {
     const columns = Math.max(...groupWindowsByAccount(usage.windows).map(([, windows]) => windows.length), 1);
     return <div className="space-y-1.5">
       {groupWindowsByAccount(usage.windows).map(([accountLabel, windows]) => <section key={accountLabel} aria-label={`${accountLabel} 的额度`} className="grid items-center gap-x-3 gap-y-1 sm:grid-cols-[minmax(8rem,14rem)_1fr]">
         <h3 className="truncate text-xs font-medium" title={accountLabel}>{accountLabel}</h3>
         <ul className="grid min-w-0 gap-x-3 gap-y-1" style={{ gridTemplateColumns: `repeat(${Math.min(columns, 4)}, minmax(4.5rem, 1fr))` }}>
-          {windows.map((window, index) => <WindowMeter key={`${window.label}-${index}`} window={window} />)}
+          {windows.map((window, index) => <WindowMeter key={`${window.label}-${index}`} window={window} now={now} />)}
         </ul>
       </section>)}
     </div>;
@@ -102,6 +110,11 @@ function accountCountLabel(planLabel: string | null): string | null {
 
 function AccountLimitsPanel() {
   const rpc = useRpc<typeof accountLimitsPanelRpcContract>();
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
   const [snapshot, setSnapshot] = useState<AccountLimitsPanelSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -168,7 +181,7 @@ function AccountLimitsPanel() {
               {refreshingProviderIds.has(provider.id) ? "刷新中" : "刷新"}
             </button>
           </div>
-          <Usage usage={provider.usage} />
+          <Usage usage={provider.usage} now={now} />
         </article>)}
       </section>)}
     </div>
