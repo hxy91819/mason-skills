@@ -42,6 +42,8 @@ BB 本地 provider 插件：将 CodexL、Kiro、AGY 账户额度接入原生 `sy
 
 CodexL 包装脚本应原样转发参数，不固定注入 `danger-full-access` 或 `approval=never`。如果不需要账户隔离，`codex` 配置可直接填已登录的 `codex` 命令；provider ID 仍为 `acp-codexl`。
 
+Codex ACP provider 会声明 BB Goal 能力；在 composer 中可使用 Goal 操作，状态由 `codex-acp` 的 ACP Goal 扩展同步到线程。
+
 所有 Codex ACP 入口会将 `~/.agents/skills` 声明为原生技能根，BB 的 `/` 菜单与 Codex 的 `/skills` 会使用同一组用户级技能。隔离账号的 `CODEX_HOME/skills` 应链接到此目录。
 
 ### Cliproxy 供应商聚合额度

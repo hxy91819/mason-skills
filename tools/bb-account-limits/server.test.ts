@@ -49,6 +49,16 @@ test("Codex ACP providers expose the shared user skill root", () => {
   }
 });
 
+test("Codex ACP providers advertise BB Goal support", () => {
+  const codexProviders = providers.filter(provider => provider.id.startsWith("acp-codex"));
+  for (const provider of codexProviders) {
+    assert.deepEqual(provider.composerActions, ["goal"]);
+    assert.ok(provider.extensionKinds?.goal?.state);
+  }
+  const kiro = providers.find(provider => provider.id === "acp-kiro");
+  assert.deepEqual(kiro?.composerActions, []);
+});
+
 function cliproxySnapshot(claudeUsedPercent: number, grokUsedPercent: number): CliproxyUsageSnapshot {
   return {
     providers: [
