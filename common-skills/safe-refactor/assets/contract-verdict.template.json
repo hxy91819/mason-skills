@@ -1,0 +1,15 @@
+{
+  "id": "C1",
+  "status": "INSUFFICIENT",
+  "tests": [
+    "test-file::test-case"
+  ],
+  "assertion": "填写具体断言，以及为什么覆盖了本次语义风险",
+  "assertions_reviewed": false,
+  "red_control_confirmed": false,
+  "evidence": [
+    "evidence/baseline.json",
+    "evidence/candidate.json",
+    "evidence/red-control.json"
+  ]
+}

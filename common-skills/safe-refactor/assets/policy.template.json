@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "task_id": "replace-with-task-id",
+  "goal": "填写本次目标与可观察收益",
+  "non_goals": [
+    "不改变已承诺的外部行为",
+    "不顺便修改其他调用方",
+    "不自动部署"
+  ],
+  "origin_revision": "REPLACE_WITH_FULL_ORIGIN_COMMIT",
+  "base_revision": "REPLACE_WITH_FULL_BASELINE_COMMIT",
+  "scope": {
+    "strategy": "local",
+    "allowed_paths": [],
+    "protected_paths": [
+      ".github/**",
+      "AGENTS.md",
+      "migrations/**"
+    ],
+    "baseline_paths": [],
+    "frozen_paths": []
+  },
+  "contracts": [],
+  "benefit": {
+    "required": true,
+    "criterion": "填写可以通过测试、基准或架构检查验证的收益标准"
+  },
+  "review": {
+    "independent_required": true
+  },
+  "budget": {
+    "max_repairs": 2,
+    "max_replans": 1
+  }
+}

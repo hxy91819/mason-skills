@@ -1,4 +1,4 @@
-import { cliproxyProviderDisplayName, config } from "./config.js";
+import { cliproxyProviderDisplayName, cliproxyProviderId, config } from "./config.js";
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -74,6 +74,7 @@ export interface CliproxyUsageAccount {
   authIndex?: string;
   account?: string;
   label?: string;
+  enabled?: boolean;
   cachedWindows?: Array<{
     label: string;
     usedPercentSignal: string;
@@ -87,6 +88,7 @@ export interface CliproxyUsageOptions {
   managementKey?: string;
   timeoutMs?: number;
   signal?: AbortSignal;
+  authFiles?: unknown;
 }
 
 export function normalizeAgyUsage(raw: string): ProviderUsageResult {
@@ -253,6 +255,73 @@ function cliproxyRecordMatches(record: JsonRecord, account: CliproxyUsageAccount
   if (!selected) return false;
   return [record.account, record.email, record.name, record.label]
     .some(value => typeof value === "string" && value.toLowerCase() === selected);
+}
+
+function cliproxyRecordAuthIndex(record: JsonRecord): string | null {
+  return asString(record.auth_index) ?? asString(record.authIndex);
+}
+
+function cliproxyRecordProvider(record: JsonRecord): string | null {
+  const provider = asString(record.provider) ?? asString(record.type);
+  return provider ? provider.toLowerCase() : null;
+}
+
+function cliproxyRecordIdentity(record: JsonRecord): string | null {
+  return asString(record.email) ?? asString(record.account) ?? asString(record.label) ?? asString(record.name);
+}
+
+export function cliproxyAccountsFromAuthFiles(
+  raw: unknown,
+  configured: readonly CliproxyUsageAccount[] = [],
+): CliproxyUsageAccount[] {
+  const response = asRecord(raw);
+  const files = response && Array.isArray(response.files)
+    ? response.files.map(asRecord).filter((value): value is JsonRecord => value !== null)
+    : [];
+  const accounts: CliproxyUsageAccount[] = [];
+  for (const record of files) {
+    const provider = cliproxyRecordProvider(record);
+    const authIndex = cliproxyRecordAuthIndex(record);
+    if (!provider || !authIndex) continue;
+    const identity = cliproxyRecordIdentity(record);
+    const match = configured.find(account => cliproxyRecordMatches(record, account));
+    if (match?.enabled === false) continue;
+    accounts.push({
+      provider,
+      authIndex,
+      ...(identity ? { account: identity } : {}),
+      label: match?.label ?? identity ?? authIndex,
+      ...(match?.cachedWindows ? { cachedWindows: match.cachedWindows } : {}),
+    });
+  }
+  return accounts;
+}
+
+export function discoveredCliproxyGroups(
+  accounts: readonly CliproxyUsageAccount[],
+  enabledProviders: readonly string[],
+  providerIds?: readonly string[],
+): Map<string, CliproxyUsageAccount[]> {
+  const selected = providerIds ? new Set(providerIds) : null;
+  const groups = new Map<string, CliproxyUsageAccount[]>();
+  for (const account of accounts) {
+    const provider = account.provider.toLowerCase();
+    const providerId = cliproxyProviderId(provider);
+    if (!enabledProviders.includes(providerId)) continue;
+    if (selected && !selected.has(providerId)) continue;
+    const group = groups.get(provider);
+    if (group) group.push(account);
+    else groups.set(provider, [account]);
+  }
+  return groups;
+}
+
+export async function discoverCliproxyAccounts(
+  options: CliproxyUsageOptions,
+  configured: readonly CliproxyUsageAccount[] = [],
+): Promise<{ accounts: CliproxyUsageAccount[]; authFiles: unknown }> {
+  const authFiles = options.authFiles ?? await readCliproxyAuthFiles(options);
+  return { accounts: cliproxyAccountsFromAuthFiles(authFiles, configured), authFiles };
 }
 
 function getSelectedCliproxyRecord(raw: unknown, account: CliproxyUsageAccount): JsonRecord | ProviderUsageResult {
@@ -761,6 +830,7 @@ function aggregateCliproxyUsage(
 }
 
 async function readCliproxyAuthFiles(options: CliproxyUsageOptions): Promise<unknown> {
+  if (options.authFiles !== undefined) return options.authFiles;
   const managementBaseUrl = options.managementBaseUrl.replace(/\/$/, "");
   const response = await fetchCliproxy(`${managementBaseUrl}/auth-files`, {
     headers: managementHeaders(options.managementKey),

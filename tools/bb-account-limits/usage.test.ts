@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { normalizeAgyUsage, normalizeAntigravityUsage, normalizeClaudeUsage, normalizeCliproxyCachedUsage, normalizeCliproxyCodexUsage, normalizeGrokUsage, normalizeKimiUsage, readAgyUsage, readCliproxyProviderUsage, readCliproxyUsage, normalizeCodexLimits, normalizeKiroUsage, readCodexUsage, readKiroUsage } from "./usage.js";
+import { cliproxyAccountsFromAuthFiles, discoveredCliproxyGroups, normalizeAgyUsage, normalizeAntigravityUsage, normalizeClaudeUsage, normalizeCliproxyCachedUsage, normalizeCliproxyCodexUsage, normalizeGrokUsage, normalizeKimiUsage, readAgyUsage, readCliproxyProviderUsage, readCliproxyUsage, normalizeCodexLimits, normalizeKiroUsage, readCodexUsage, readKiroUsage } from "./usage.js";
 
 const agy = "Gemini Models\tWeekly Limit Remaining\t94%\t2026-09-11T02:49:57Z\nClaude and GPT models\tFive Hour Limit Remaining\t99.5%\t2026-09-07T08:07:15Z\n";
 
@@ -247,6 +247,33 @@ test("Cliproxy queries the selected credential, uses token substitution only ins
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("Cliproxy discovery uses live auth-files instead of the local account whitelist", () => {
+  const files = {
+    files: [
+      { provider: "claude", auth_index: "configured", email: "old@example.com", label: "old@example.com" },
+      { provider: "claude", auth_index: "discovered", email: "new@example.com", account: "new@example.com" },
+      { provider: "codex", auth_index: "codex-1", email: "codex@example.com" },
+      { provider: "claude", email: "missing-index@example.com" },
+      { provider: "devin", auth_index: "devin-1", email: "devin@example.com" },
+      { provider: "claude", auth_index: "hidden", email: "hidden@example.com" },
+    ],
+  };
+  const configured = [
+    { id: "claude-old", provider: "claude", authIndex: "configured", label: "Claude · 账号 1" },
+    { id: "claude-hidden", provider: "claude", authIndex: "hidden", enabled: false },
+  ];
+  const discovered = cliproxyAccountsFromAuthFiles(files, configured);
+  assert.deepEqual(discovered, [
+    { provider: "claude", authIndex: "configured", account: "old@example.com", label: "Claude · 账号 1" },
+    { provider: "claude", authIndex: "discovered", account: "new@example.com", label: "new@example.com" },
+    { provider: "codex", authIndex: "codex-1", account: "codex@example.com", label: "codex@example.com" },
+    { provider: "devin", authIndex: "devin-1", account: "devin@example.com", label: "devin@example.com" },
+  ]);
+  const groups = discoveredCliproxyGroups(discovered, ["cliproxy-claude", "cliproxy-codex"], ["cliproxy-claude"]);
+  assert.deepEqual([...groups.keys()], ["claude"]);
+  assert.equal(groups.get("claude")?.length, 2);
 });
 
 test("Cliproxy provider aggregation keeps successful account limits when another account fails", async () => {

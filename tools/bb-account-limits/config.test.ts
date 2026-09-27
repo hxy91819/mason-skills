@@ -39,6 +39,21 @@ test("valid local config overrides only the fields it provides", async () => {
   });
 });
 
+test("Cliproxy config can omit the account whitelist", async () => {
+  const { overrides, warnings } = await withLocalConfig(JSON.stringify({
+    cliproxy: {
+      managementBaseUrl: "http://127.0.0.1:8317/v0/management",
+      managementKeyFile: "/run/user/1000/cliproxy-management.key",
+    },
+  }));
+  assert.deepEqual(warnings, []);
+  assert.deepEqual(overrides.cliproxy, {
+    managementBaseUrl: "http://127.0.0.1:8317/v0/management",
+    managementKeyFile: "/run/user/1000/cliproxy-management.key",
+    accounts: [],
+  });
+});
+
 test("Cliproxy accounts require a stable selector and keep credential locations out of source", async () => {
   const { overrides, warnings } = await withLocalConfig(JSON.stringify({
     cliproxy: {

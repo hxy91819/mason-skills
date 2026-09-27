@@ -1,12 +1,18 @@
 ---
 name: mermaid-lint
-description: Create, edit, validate, and fix Mermaid diagrams in Markdown with secure defaults, rendering every block with the real renderer.
+description: "Archived historical Mermaid render-and-fix workflow. Kept in-tree for reference; not selected for new work."
 disable-model-invocation: true
 triggers:
   - user
+metadata:
+  status: archived
 ---
 
-# Mermaid Lint
+# Mermaid Lint（archived）
+
+This skill is archived. The files stay in `archive/mermaid-lint/` as historical reference and are not recommended for user-scope install. Ordinary Mermaid authoring does not load it.
+
+The rest of this file is the archived workflow.
 
 Author Mermaid safely, then validate every diagram with the real renderer. Locate and fix syntax, rendering, and unsafe-configuration defects.
 

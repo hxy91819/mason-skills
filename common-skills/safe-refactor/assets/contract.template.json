@@ -1,0 +1,10 @@
+{
+  "id": "C1",
+  "behavior": "填写必须保持的外部行为",
+  "oracle": {
+    "kind": "contract",
+    "source": "填写业务规则／协议路径@版本或确认记录"
+  },
+  "baseline_required": true,
+  "red_control_required": true
+}
