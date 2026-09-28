@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>横向留白：看内容之间的关系</title>
+<style>
+*{box-sizing:border-box}body{margin:0;padding:32px;background:#eef1f5;color:#182332;font:18px/1.6 system-ui,sans-serif}
+main{max-width:1060px;margin:auto}h1{font-size:30px}h2{font-size:23px;margin:0 0 16px}p{margin:10px 0}
+section{background:white;padding:28px;margin:24px 0;border-radius:12px}.board{padding:30px 20px;background:#f9fbff;border:1px solid #dde4ee}
+.row{display:flex;align-items:center;gap:16px;min-height:120px}.step{flex:none}b{display:block;color:#285bd4;font-size:23px}small{font-size:16px;color:#536477}
+.arrow{color:#285bd4;font-size:28px}.note{border-left:2px solid #dce4f2;padding-left:20px}.bad .note{margin-left:auto}
+.good{display:grid;grid-template-columns:1fr 28px 1fr 1.3fr;gap:24px}.good .step{justify-self:center}
+.columns{display:grid;grid-template-columns:repeat(3,1fr);gap:76px;text-align:center}.tile{background:#e9efff;border-radius:12px;min-height:112px;display:grid;place-items:center;font-size:24px;font-weight:700;color:#285bd4}
+.caption{border-left:4px solid #285bd4;padding-left:16px;margin-top:20px}.label{font-weight:700}.scroll{overflow-x:auto}.board{min-width:940px}
+</style>
+<main>
+<h1>横向留白：看内容之间的关系</h1>
+<p>三个合成例图用于校准判断。空档宽度只帮助定位；是否影响阅读，要看两侧内容的关系和整行分布。</p>
+<section>
+<h2>A · 同一组内容被推向两端：应改</h2>
+<div class="scroll"><div class="board"><div class="row bad">
+<div class="step"><b>识别任务</b><small>先理解目标</small></div><span class="arrow">→</span>
+<div class="step"><b>准备材料</b><small>提供相关信息</small></div>
+<div class="note"><b>为后续执行做好准备</b><small>这句说明承接左侧两个步骤</small></div>
+</div></div></div>
+<p class="caption">左边两个步骤需要接到右侧解释，但解释被推到远端，中间没有需要表达的独立阶段。竖线能够分组，却不能解释为什么要留这么大的距离。可重新分配三组内容的宽度，让步骤和解释连贯；不必添加文字、插画或额外箭头填空。</p>
+</section>
+<section>
+<h2>B · 相同内容重新分配宽度：关系更连贯</h2>
+<div class="scroll"><div class="board"><div class="row good">
+<div class="step"><b>识别任务</b><small>先理解目标</small></div><span class="arrow">→</span>
+<div class="step"><b>准备材料</b><small>提供相关信息</small></div>
+<div class="note"><b>为后续执行做好准备</b><small>这句说明承接左侧两个步骤</small></div>
+</div></div></div>
+<p class="caption">步骤、连接符、解释共同占据这一行，视线不需要跨过一个突兀的空区。保留组内与组间的区别，同时检查箭头是否靠近两侧对象、说明是否出现不自然断行。这里的列宽只是示例，不是推荐所有页面采用同一网格。</p>
+</section>
+<section>
+<h2>C · 三个独立主题之间的通道：可以保留</h2>
+<div class="scroll"><div class="board"><div class="columns">
+<div><div class="tile">验证</div><p class="label">检查一次改动</p><small>环境与结果</small></div>
+<div><div class="tile">接续</div><p class="label">完成一个任务</p><small>状态与恢复</small></div>
+<div><div class="tile">协作</div><p class="label">连接多个角色</p><small>职责与交接</small></div>
+</div></div></div>
+<p class="caption">三列各自具备标题、主体和说明，通道在两侧重复出现，帮助区分三个主题。图与文在各自列内联系紧密。若扩大色块只会增加块内空白，或压缩间隔会削弱分组，保留通道有依据；仍需结合实际字号和页面尺度判断。</p>
+</section>
+<p>记录裁决时写出具体对象和读者影响。整体均衡不能替代对局部空档的判断，局部有间隔也不能推导出整页必须填满。</p>
+</main>
+</html>
