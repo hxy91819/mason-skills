@@ -28,6 +28,8 @@ function updatedLabel(value: string): string {
 
 type OkUsage = Extract<CliproxyUsageSnapshot["providers"][number]["usage"], { status: "ok" }>;
 type QuotaWindow = OkUsage["windows"][number];
+type DisplayMode = "remaining" | "used";
+const displayModeStorageKey = "account-limits.display-mode";
 
 function displayWindowLabel(window: QuotaWindow): string {
   const prefix = window.accountLabel ? `${window.accountLabel} · ` : "";
@@ -66,31 +68,32 @@ function remainingPercent(usedPercent: number): number {
   return Math.max(0, Math.min(100, 100 - usedPercent));
 }
 
-function WindowMeter({ window, now }: { window: QuotaWindow; now: number }) {
+function WindowMeter({ window, now, mode }: { window: QuotaWindow; now: number; mode: DisplayMode }) {
   const label = displayWindowLabel(window);
   const remaining = remainingPercent(window.usedPercent);
+  const percent = mode === "used" ? 100 - remaining : remaining;
   const reset = compactReset(window.resetsAt, now);
   const depleted = remaining <= 10;
   return <li className="min-w-0">
     <div className="flex items-baseline justify-between gap-2 text-xs">
       <span className="truncate text-muted-foreground">{shortWindowLabel(label)}</span>
-      <span className={`shrink-0 tabular-nums ${depleted ? "text-destructive" : ""}`}>{`${Math.round(remaining)}%`}</span>
+      <span className={`shrink-0 tabular-nums ${depleted ? "text-destructive" : ""}`}>{`${Math.round(percent)}%`}</span>
     </div>
-    <div className="mt-0.5 h-1 overflow-hidden rounded-full bg-muted" role="progressbar" aria-label={`${label} 剩余额度`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={remaining} title={reset ? `${label} · ${reset}` : label}>
-      <div className={`h-full rounded-full ${depleted ? "bg-destructive" : "bg-primary"}`} style={{ width: `${remaining}%` }} />
+    <div className="mt-0.5 h-1 overflow-hidden rounded-full bg-muted" role="progressbar" aria-label={`${label} ${mode === "used" ? "已用" : "剩余"}额度`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent} title={reset ? `${label} · ${reset}` : label}>
+      <div className={`h-full rounded-full ${depleted ? "bg-destructive" : "bg-primary"}`} style={{ width: `${percent}%` }} />
     </div>
     <p className="mt-1 text-xs text-muted-foreground tabular-nums">{reset}</p>
   </li>;
 }
 
-function Usage({ usage, now }: { usage: CliproxyUsageSnapshot["providers"][number]["usage"]; now: number }) {
+function Usage({ usage, now, mode }: { usage: CliproxyUsageSnapshot["providers"][number]["usage"]; now: number; mode: DisplayMode }) {
   if (usage.status === "ok") {
     const columns = Math.max(...groupWindowsByAccount(usage.windows).map(([, windows]) => windows.length), 1);
     return <div className="space-y-1.5">
       {groupWindowsByAccount(usage.windows).map(([accountLabel, windows]) => <section key={accountLabel} aria-label={`${accountLabel} 的额度`} className="grid items-center gap-x-3 gap-y-1 sm:grid-cols-[minmax(8rem,14rem)_1fr]">
         <h3 className="truncate text-xs font-medium" title={accountLabel}>{accountLabel}</h3>
         <ul className="grid min-w-0 gap-x-3 gap-y-1" style={{ gridTemplateColumns: `repeat(${Math.min(columns, 4)}, minmax(4.5rem, 1fr))` }}>
-          {windows.map((window, index) => <WindowMeter key={`${window.label}-${index}`} window={window} now={now} />)}
+          {windows.map((window, index) => <WindowMeter key={`${window.label}-${index}`} window={window} now={now} mode={mode} />)}
         </ul>
       </section>)}
     </div>;
@@ -110,6 +113,15 @@ function accountCountLabel(planLabel: string | null): string | null {
 
 function AccountLimitsPanel() {
   const rpc = useRpc<typeof accountLimitsPanelRpcContract>();
+  const [mode, setMode] = useState<DisplayMode>(() => {
+    try { return window.localStorage.getItem(displayModeStorageKey) === "used" ? "used" : "remaining"; }
+    catch { return "remaining"; }
+  });
+  const changeMode = (next: DisplayMode) => {
+    setMode(next);
+    try { window.localStorage.setItem(displayModeStorageKey, next); }
+    catch { /* 禁用浏览器存储时仍允许本次切换。 */ }
+  };
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 60_000);
@@ -164,6 +176,11 @@ function AccountLimitsPanel() {
   const showMachineName = (snapshot?.machines.length ?? 0) > 1;
   return <main className="h-full overflow-auto p-3">
     <div className="mx-auto max-w-6xl space-y-2">
+      <div className="flex justify-end gap-1" role="group" aria-label="额度显示模式">
+        {(["remaining", "used"] as const).map(value => <button key={value} type="button" aria-pressed={mode === value}
+          className={`rounded border border-border px-2 py-1 text-xs ${mode === value ? "bg-accent font-medium" : "text-muted-foreground hover:bg-accent"}`}
+          onClick={() => changeMode(value)}>{value === "used" ? "已用（Used）" : "剩余"}</button>)}
+      </div>
       {error && <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">{error}</p>}
       {!snapshot && loading && <p className="text-xs text-muted-foreground">正在读取账户额度…</p>}
       {snapshot?.machines.map(machine => <section key={machine.id} className="space-y-2" aria-label={`${machine.displayName} 的账户额度`}>
@@ -181,7 +198,7 @@ function AccountLimitsPanel() {
               {refreshingProviderIds.has(provider.id) ? "刷新中" : "刷新"}
             </button>
           </div>
-          <Usage usage={provider.usage} now={now} />
+          <Usage usage={provider.usage} now={now} mode={mode} />
         </article>)}
       </section>)}
     </div>
