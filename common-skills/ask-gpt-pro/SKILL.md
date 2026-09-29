@@ -5,17 +5,17 @@ description: 通过已登录的 ChatGPT 浏览器向 GPT Pro 咨询具体难题�
 
 # Ask GPT Pro
 
-使用 Oracle CLI 的 browser engine 发送一次性咨询。Oracle 负责浏览器连接、会话记录和回答抓取；登录态由浏览器 profile 保存。该 Skill 不管理 Chrome、显示服务或本机账号配置。
+使用 Oracle CLI 的 browser engine 发送一次性咨询。Oracle 负责浏览器连接、会话记录和回答抓取；登录态由 Chromium profile 保存。先确认 `oracle` 在 PATH，并用 `oracle --help --verbose` 确认当前版本支持所用参数。Oracle browser 只接 Chrome/Chromium CDP；Firefox 远程调试是 WebDriver BiDi，不能 attach。
 
 ## 浏览器入口
 
-先确认 `oracle` 可用，并从 `oracle --help --verbose` 确认当前版本支持所用参数。优先复用已有、已登录且开放 Chrome DevTools 的浏览器：
+先探测本机 DevTools。`curl -sS -m 2 http://127.0.0.1:9222/json/version` 返回 `webSocketDebuggerUrl` 时，只 attach，不要再启动第二个浏览器：
 
 ```bash
 oracle --engine browser --browser-attach-running --model gpt-6-pro -p "<问题>"
 ```
 
-浏览器端口不是默认值时，另加 `--remote-chrome <host:port>`。首次登录或需要 Oracle 自己持有持久 profile 时，使用 `--browser-manual-login --browser-keep-browser`；后续运行继续使用该 profile。`--browser-keep-browser` 只决定进程是否常驻，登录态保存在 profile 中。当前账号没有所写模型时，根据账号可用的 Pro 型号显式调整 `--model`，检查 Oracle 的模型选择结果，不依赖网页默认选择。
+端口不是 `9222` 时另加 `--remote-chrome <host:port>`。没有常驻 DevTools 时，使用 `--browser-manual-login`，让 Oracle 读取 `~/.oracle/config.json` 里的 `chromePath` 和 `manualLoginProfileDir`。该 profile 保存登录态；`--browser-keep-browser` 只决定进程是否常驻。无 `DISPLAY` 时，从用户图形会话复制 `DISPLAY`、`XAUTHORITY`、`DBUS_SESSION_BUS_ADDRESS` 再启动。页面出现登录按钮时停止并请用户在该 profile 登录一次，不要循环重试。当前账号没有所写模型时，根据账号可用的 Pro 型号显式调整 `--model`，检查 Oracle 的模型选择结果，不依赖网页默认选择。
 
 ## 咨询与取回
 

@@ -5,7 +5,7 @@ import { act } from "react";
 import { installTestPluginRuntime, loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import type { AccountLimitsPanelSnapshot } from "./contract.js";
 
-const dom = new JSDOM("<!doctype html><html><body></body></html>");
+const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost" });
 Object.assign(globalThis, {
   window: dom.window,
   document: dom.window.document,
@@ -59,7 +59,26 @@ test("账户额度页面注册为导航面板并显示独立 Cliproxy 数据", a
     { method: "readCliproxyUsage", input: {} },
     { method: "readCliproxyUsage", input: { providerIds: ["cliproxy-claude"], force: true } },
   ]);
+  await act(async () => { slot.getByRole("button", { name: "已用（Used）" }).click(); });
+  const usedMeter = slot.getByRole("progressbar", { name: "Weekly limit 已用额度" });
+  assert.equal(usedMeter.getAttribute("aria-valuenow"), "25");
+  assert.equal((usedMeter.firstElementChild as HTMLElement).style.width, "25%");
+  assert.ok(slot.getByText("25%"));
+  assert.equal(slot.inspection.rpcCalls.length, 2);
   slot.lifecycle.unmount();
+
+  const restored = renderSlot(app.navPanels[0]!, { subPath: "" }, { rpc: { readCliproxyUsage: () => snapshot } });
+  await restored.findByText("Claude");
+  assert.equal(restored.getByRole("button", { name: "已用（Used）" }).getAttribute("aria-pressed"), "true");
+  assert.equal(restored.getByRole("progressbar", { name: "Weekly limit 已用额度" }).getAttribute("aria-valuenow"), "25");
+  await act(async () => { restored.getByRole("button", { name: "剩余" }).click(); });
+  assert.equal(restored.getByRole("progressbar", { name: "Weekly limit 剩余额度" }).getAttribute("aria-valuenow"), "75");
+  restored.lifecycle.unmount();
+  const remaining = renderSlot(app.navPanels[0]!, { subPath: "" }, { rpc: { readCliproxyUsage: () => snapshot } });
+  await remaining.findByText("Claude");
+  assert.equal(remaining.getByRole("button", { name: "剩余" }).getAttribute("aria-pressed"), "true");
+  remaining.lifecycle.unmount();
+  dom.window.localStorage.clear();
 });
 
 test("各账号额度直接显示重置倒计时，并随时间更新而不重新查询", async t => {
