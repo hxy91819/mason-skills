@@ -73,11 +73,12 @@ fresh、便宜的 Worker context 完成。粒度判据是 economy 或 standard �
 
 | 能力档 | `difficulty` | 使用条件 |
 | --- | --- | --- |
-| economy | `simple` | write scope 窄，验收可直接脚本化，没有设计分叉 |
-| standard | `medium` | 常规跨文件实现，公开 seam 和验收明确 |
-| strong | `complex` | 已证明的能力不足、跨模块不确定性或复杂整合 |
+| economy | `simple` | 边界已闭合：做什么、改哪里、怎么算完成都已写进 Story，Worker 不做方案选择 |
+| standard | `medium` | 边界待闭合：需要探索方案或 POC、与外部系统交互且结果不可完全预期、跨模块排查 |
+| strong | `complex` | 根因未定位且跨系统、跨系统设计裁决，或低档已证明能力不足 |
 
-缺省的 `difficulty` 视为 `medium`，但新计划应显式写入。
+三档按 `bb-model-routing` 的同一套归类标准判断，衡量 Worker 要自行消化多少不确定性，不是工作量。
+字段缺失时按 `medium` 处理，这只是缺字段的兜底值，不是分类默认；新计划应显式写入。
 `complex` 是继续拆分 Story 的信号，`check` 会告警。不要在 Story 写模型名或别名，实际路由由
 `bb-model-routing` 配置决定。
 
