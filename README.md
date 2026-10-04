@@ -75,16 +75,11 @@ common-skills/
 ├── story-direction-review/
 │   ├── SKILL.md
 │   └── agents/
-├── tech-doc-html/
-│   ├── SKILL.md
-│   ├── references/       # Design system, component templates, security rules
-│   ├── scripts/          # Validation helpers
-│   └── assets/           # Example output
-└── worktree-cleanup/
+└── tech-doc-html/
     ├── SKILL.md
-    ├── agents/
-    ├── scripts/
-    └── tests/
+    ├── references/       # Design system, component templates, security rules
+    ├── scripts/          # Validation helpers
+    └── assets/           # Example output
 ```
 
 ```
@@ -165,7 +160,6 @@ python3 common-skills/skill-manifest-sync/scripts/sync_skill_symlinks.py --mode 
 | [submitting-github-issues-with-images](common-skills/submitting-github-issues-with-images/) | Uploads local screenshots, videos, or diagnostic attachments as GitHub Release Assets, embeds them in issues, PR bodies, or comments, and verifies the published result by reading it back online. Explicit invocation only, with a stated exception for authorized caller workflows. |
 | [story-direction-review](common-skills/story-direction-review/) | Reviews a completed Story for direction drift, invalidated assumptions, coverage gaps, and necessary plan changes. Explicit invocation only. |
 | [tech-doc-html](common-skills/tech-doc-html/) | Interactive single-file HTML from technical design docs. Original skill design; visual style inspired by [html-effectiveness](https://github.com/ThariqS/html-effectiveness). |
-| [worktree-cleanup](common-skills/worktree-cleanup/) | Audits clean worktrees, proves their HEAD is durable on GitHub, and removes one reviewed report in a resilient batch. Explicit invocation only. |
 
 ### ask-oracle
 
@@ -324,7 +318,3 @@ Original skill design for independent, big-picture review of completed engineeri
 ### [tech-doc-html](common-skills/tech-doc-html/)
 
 Original Cursor skill design. Visual style inspired by [html-effectiveness](https://github.com/ThariqS/html-effectiveness) (Apache-2.0, Copyright Anthropic PBC). Style patterns used in `references/design_system.md` and `references/component_patterns.md`. [Full Apache-2.0 text](licenses/APACHE-2.0.txt).
-
-### [worktree-cleanup](common-skills/worktree-cleanup/)
-
-Original skill design for explicitly invoked, GitHub-aware worktree retirement. It proves each clean HEAD is remotely durable, inventories ignored data, backs up `.local`, applies one reviewed audit report without admitting new candidates, and isolates stale or failed candidates instead of aborting the batch.

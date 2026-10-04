@@ -7,7 +7,7 @@ This directory holds maintained repository design notes and examples. Skill sour
 | [PPT 制作复盘](ppt-making-lessons.md) | 工程成果汇报的叙事、实践表达、视觉审查和交付经验；供类似需求参考，不是固定模板或技能入口 |
 | [Fork 维护决策](adr/0001-two-tier-fork-maintenance.md) | 面向人的简短决策记录：独立来源、可选领域与新旧项目接入；不属于 Agent 默认加载材料 |
 | [large-task system design](../common-skills/large-task-planning/references/large-task-system-design.md) | Shared design principles and boundaries for planning and orchestrating large tasks; owned by `large-task-planning` |
-| [harness/](harness/README.md) | Harness 大全：按主题收录真实项目验证过的 pre-commit、测试分层、testcontainers、迁移、覆盖率门禁和 Agent 工作面做法，附新项目接入清单 |
+| [harness/](harness/) | Harness 大全：按主题收录真实项目验证过的 pre-commit、测试分层、testcontainers、迁移、覆盖率门禁和 Agent 工作面做法，附新项目接入清单 |
 | [recommended-global-skills.md](recommended-global-skills.md) | 推荐全局技能的准入标准与同步方式；完整清单以 `config/skill-symlinks.yaml` 为准 |
 | [authenticated HTML preview](../common-skills/local-test/references/authenticated-html-preview.md) | 单服务器 HTTPS、Cookie 登录和临时 HTML 预览；由 `local-test` 持有共享基础设施契约 |
 | [largeplan-example/](largeplan-example/) | Valid v2 two-audience example for token login |
