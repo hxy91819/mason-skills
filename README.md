@@ -219,9 +219,8 @@ Cross-session signal tables stay temporary: the skill creates no learning ledger
 recurring report, and routes only the confirmed durable result to its authoritative
 source. It presents up to eight changes or questions per message as a category-based
 frontier, with no total cap on candidates or rounds, then applies the confirmed set behind
-one approval gate. Periodic reviews use a user-local, repository-specific checkpoint to
-avoid re-reading covered sessions by default; the manager may reopen earlier evidence when
-it is useful.
+one approval gate. Periodic reviews default to the last seven days unless the caller gives a
+boundary; a BB stage review runs through plain `bb thread` commands with no helper script.
 
 ### large-task-planning
 
