@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { JSDOM } from "jsdom";
 import { act } from "react";
@@ -15,6 +16,14 @@ Object.assign(globalThis, {
   IS_REACT_ACT_ENVIRONMENT: true,
 });
 Object.defineProperty(globalThis, "navigator", { configurable: true, value: dom.window.navigator });
+
+test("账户额度导航使用插件的额度图标", async () => {
+  const app = await loadPluginApp(() => import("./app.js"));
+  const panel = app.navPanels.find(panel => panel.path === "account-limits");
+  const manifest = JSON.parse(await readFile(new URL("./package.json", import.meta.url), "utf8"));
+  assert.equal(panel?.icon, "CircleDollarSign");
+  assert.equal(panel.icon, manifest.bb.branding.icon);
+});
 
 test("账户额度页面注册为导航面板并显示独立 Cliproxy 数据", async () => {
   installTestPluginRuntime();

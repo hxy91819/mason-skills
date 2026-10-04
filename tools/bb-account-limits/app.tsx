@@ -209,7 +209,8 @@ export default definePluginApp(app => {
   app.slots.navPanel({
     id: "account-limits",
     title: "账户额度",
-    icon: "ChartColumn",
+    // 导航图标优先于插件品牌图标，与 package.json 的 bb.branding.icon 保持一致。
+    icon: "CircleDollarSign",
     path: "account-limits",
     component: AccountLimitsPanel,
   });
