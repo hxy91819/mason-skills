@@ -6,10 +6,14 @@
 # - 其他电脑 clone 本仓库后同步本机：--mode check 预览，--mode apply 执行
 # 外部项目位置按序解析：$SKILL_SOURCE_<NAME>_DIR > $SKILL_SOURCES_DIR/<项目名> > 本仓库
 # 同级目录 <项目名>；清单只写项目名，不写机器绝对路径。
+# sources 也用于声明 skill 运行时的上游文档依赖（如 prompt-audit → anthropics-skills），
+# 这类来源只声明项目位置、不注册软链。
 # worktree-cleanup 已迁移至私有仓 hxy91819/mole-linux（.claude/skills/worktree-cleanup）
 # mermaid-lint 已 archive：源码留在 archive/mermaid-lint，不推荐全局软链
 version: 1
 sources:
+- name: anthropics-skills
+  note: prompt-audit 的上游文档依赖；只声明项目位置，不注册软链
 - name: mattpocock-skills
 skills:
 - name: anti-ai-slop
@@ -83,6 +87,8 @@ skills:
   note: 开工前凭据/权限/依赖轻量探针核查
 - name: project-stage
   note: 声明仓库实验期/线上期，杜绝无消费者的兼容代码
+- name: prompt-audit
+  note: 审计 prompt/skill/tool 描述/agent 配置里为旧模型留下的过时指令，出报告 + 建议 diff（仅手动调用）
 - name: prototype
   source: mattpocock-skills
   note: 用一次性原型回答设计问题

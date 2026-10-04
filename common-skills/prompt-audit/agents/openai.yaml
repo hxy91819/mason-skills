@@ -1,0 +1,6 @@
+interface:
+  display_name: "Prompt Audit"
+  short_description: "Audit prompts and agent config for dated instructions"
+  default_prompt: "Use $prompt-audit to audit the prompt surface and report dated patterns with a proposed diff."
+policy:
+  allow_implicit_invocation: false

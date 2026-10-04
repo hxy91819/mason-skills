@@ -27,9 +27,9 @@ user 级 prompt 正文不在此清单范围内：由 [`config/user-agents.md`](.
 
 ---
 
-## 二、推荐全局技能清单（共 21 个）
+## 二、推荐全局技能清单
 
-当前清单经严格审计，仅包含以下 21 个核心工程与治理技能：
+完整清单以 [`config/skill-symlinks.yaml`](../config/skill-symlinks.yaml) 为准；下表只对其中核心工程与治理技能作说明，增减一律以清单文件为准，本文不复述清单规模。
 
 | 序号 | 技能名称 | 用途说明 | 默认触发机制 |
 |:---:|---|---|---|
@@ -51,9 +51,9 @@ user 级 prompt 正文不在此清单范围内：由 [`config/user-agents.md`](.
 | 16 | `submit-pr-mr` | 提交 PR / MR 的标准前置检查与推送流程 | 显式调用 (`$submit-pr-mr`) |
 | 17 | `use-worktree` | 在隔离的 Git worktree 中安全开展并发任务 | 显式调用 (`$use-worktree`) |
 | 18 | `what-changed` | 用平实人读语言说明变更内容 | 显式调用 (`$what-changed`) |
-| 19 | `worktree-cleanup` | 审计并安全清理已完成使命的 Git worktree | 显式调用 (`$worktree-cleanup`) |
-| 20 | `dev-html-preview` | 将生成的静态 HTML 发布为带认证和有效期的浏览器链接 | 允许隐式触发（窄条件） |
-| 21 | `ask-oracle` | 调查具体的高影响技术疑点，并经 BB Oracle 路由取得独立专家判断 | 允许隐式触发（窄条件），也可显式调用 (`$ask-oracle`) |
+| 19 | `dev-html-preview` | 将生成的静态 HTML 发布为带认证和有效期的浏览器链接 | 允许隐式触发（窄条件） |
+| 20 | `ask-oracle` | 调查具体的高影响技术疑点，并经 BB Oracle 路由取得独立专家判断 | 允许隐式触发（窄条件），也可显式调用 (`$ask-oracle`) |
+| 21 | `prompt-audit` | 审计 prompt、skill、tool 描述与 agent 配置中为旧模型留下的过时指令，输出 file:line 报告与建议 diff（需按 sources 约定提供 `anthropics-skills`） | 显式调用 (`$prompt-audit`) |
 
 ---
 
@@ -70,10 +70,10 @@ python3 common-skills/skill-manifest-sync/scripts/sync_skill_symlinks.py --mode 
 ```bash
 python3 common-skills/skill-manifest-sync/scripts/sync_skill_symlinks.py --mode apply --yes
 ```
-该命令会自动创建缺失的推荐软链，并移除已废弃的软链。
+该命令会自动创建缺失的推荐软链，并删除未列入本机白名单的多余软链。先跑 `--mode check` 核对待删项；要保留某条本机软链，用不带 `--yes` 的交互式 apply 选 `k` 写入白名单。
 
 ### 3. 清单变更维护规范
 若后续确实需要新增或移除推荐全局的技能，必须严格遵循仓库 `AGENTS.md`：
 - 新增推荐全局技能：`python3 common-skills/skill-manifest-sync/scripts/sync_skill_symlinks.py --mode register --skill <name> --note "..."`
 - 移除推荐全局技能：`python3 common-skills/skill-manifest-sync/scripts/sync_skill_symlinks.py --mode remove --skill <name>`
-- 同步更新本文档及 `config/skill-symlinks.yaml`。
+- 同步更新本文档：仅在准入标准或代表技能说明变化时；清单本身以 `config/skill-symlinks.yaml` 为准，不在本文复述。
