@@ -1,6 +1,6 @@
 ---
 name: distill
-description: Review the current conversation or a bounded set of recent sessions as a harness and project-knowledge retrospective, with an explicit audit of repository Skills and AGENTS.md instructions, then prune or strengthen the surfaces that shape future human and agent work. Use only when a user or scheduler explicitly invokes $distill after substantial agent work, debugging, retries, user corrections, or skill execution, or for a periodic or milestone review.
+description: Review the current conversation as a harness and project-knowledge retrospective, with an explicit audit of repository Skills and AGENTS.md instructions, then prune or strengthen the surfaces that shape future human and agent work. Use only when a user explicitly invokes $distill after substantial agent work, debugging, retries, user corrections, or skill execution.
 disable-model-invocation: true
 triggers:
   - user
@@ -20,11 +20,9 @@ of the candidate set authorizes its smallest in-scope edits. Ask again only for 
 materially different target, an external repository, or a destructive change. Finish
 without edits when no candidate survives.
 
-## Evidence scope
-
-- **Session mode** (default): the current conversation and its tool evidence.
-- **Review mode** (explicit or scheduler-invoked): a bounded set of recent sessions, to find
-  recurring patterns and judge whether earlier changes worked. See _Review mode_ below.
+The evidence is the current conversation and its tool output. Other sessions are out of
+scope; a pattern that spans sessions shows up here when an existing rule or Skill failed to
+prevent it again.
 
 ## Phase 1: Replay
 
@@ -75,7 +73,7 @@ behavior. Never silently pick between unresolved rules.
 ### Evidence weight
 
 Judge **authority** (is it intended truth?), **scope** (task, repository, team, user
-preference, or general practice), **recurrence** (repeated cost across distinct tasks), and
+preference, or general practice), **recurrence** (expected repeat cost in future tasks), and
 **impact** separately.
 
 - One explicit user correction can justify a candidate when its scope is clear and durable.
@@ -84,8 +82,9 @@ preference, or general practice), **recurrence** (repeated cost across distinct 
   project truth; route preferences to user-scoped context when available.
 - Agent-inferred gotchas need independent verification. Recurrence raises value, never
   truth. Retries inside one task count once.
-- A verified, high-impact one-off may justify a candidate. Recurrence after an earlier
-  change is the strongest signal that the change is wrong, unreachable, or too weak.
+- A verified, high-impact one-off may justify a candidate. A mistake made while an
+  existing rule or Skill already covered it is the strongest signal that the rule is wrong,
+  unreachable, or too weak.
 
 ### Material decisions
 
@@ -188,10 +187,6 @@ Everything technical (files, commands, mechanisms, verification, eval prediction
 the blockquote, once. Check before sending: with the blockquotes hidden, a reader without
 repository context can still choose.
 
-In review mode, open with one sentence giving the review window, the number of sessions
-covered, the evidence sources, and coverage gaps. Paraphrase corrections; never quote
-private transcript text.
-
 Edit nothing until the frontier is empty and the user confirms the set. A candidate is not
 ready without a solution paragraph and a check that can run now.
 
@@ -206,39 +201,4 @@ Confirm that conflicts and duplicates are gone, pointers resolve, each decision 
 home with its approval provenance, changed Skills validate, and unrelated work is
 untouched. Revise or revert a change whose prediction fails.
 
-Report the user-visible outcome first, then files, commands, and results. In review mode,
-classify each earlier accepted change as **effective**, **inconclusive**, **regressed**, or
-**superseded**; absence of recurrence proves nothing without a comparable opportunity.
-
-## Review mode
-
-Use the boundary the user or scheduler gives (dates, commits, milestone, sessions);
-otherwise the last seven days of sessions with material work in this repository. Freeze
-the upper bound before collecting. A session is material when it holds a substantial
-change, a durable decision, an explicit correction, a verified gotcha, a repeated
-debugging path, or real friction.
-
-Prefer evidence in this order: conversation and approval traces, tool traces, then commits,
-diffs, tests, and CI as corroboration. Without conversation traces, never reconstruct user
-intent or approval from repository evidence. Work through a large window in batches until
-every material session is considered, and name any gap. Merge signals by meaning; a pattern
-counts again only when a distinct task exposes it. Keep the signal table temporary.
-
-### BB sessions
-
-When the user asks to review a stage of BB threads:
-
-1. List candidate threads with `bb thread list` for the window, then choose the material
-   ones yourself; the list is not the evidence boundary.
-2. When a thread was abandoned and another finished the same work, review only the last
-   thread in that chain and count the pair once.
-3. Send `$distill` (session mode) with `bb thread tell --mode auto` only to threads that are idle with
-   no pending interaction; never steer a running thread.
-4. Wait for every thread with `bb thread wait <id>`. If any fails, stop and report instead of aggregating.
-5. Aggregate their outputs (`bb thread output <id> --json`) yourself, or dispatch one
-   aggregator through `$bb-model-routing`, and continue at Phase 2 in review mode. The
-   aggregator stops at the first Phase 3 brief and edits nothing.
-
-BB thread records are the run history; keep no separate ledger. Look back with
-`bb thread show <id> --json` and `bb thread log <id> --all`. `bb thread list` may page, so
-state how threads were selected and any coverage gap.
+Report the user-visible outcome first, then files, commands, and results.

@@ -203,24 +203,20 @@ The `article-workflow-skill-maker` is a meta skill for turning a manually execut
 
 ### distill
 
-Replays either the current session or a bounded periodic or milestone review window as a
-harness and project-knowledge retrospective. It treats explicit user corrections as
-high-authority belief changes, separates their intended scope from recurrence and impact,
-and ignores ordinary errors unless investigation produced a verified reusable conclusion.
-In review mode it merges semantically equivalent signals across distinct tasks, checks
-whether earlier improvements worked or regressed, and discloses evidence coverage without
-claiming access to unavailable conversation history.
+Replays the current session as a harness and project-knowledge retrospective. It treats
+explicit user corrections as high-authority belief changes, separates their intended scope
+from recurrence and impact, and ignores ordinary errors unless investigation produced a
+verified reusable conclusion. It reviews only the session it runs in: a pattern that spans
+sessions surfaces when an existing rule or Skill failed to prevent it again.
 
 Before adding guidance, it explicitly audits the applicable `AGENTS.md` chain and the
 repository's Skill catalog as harness surfaces. It checks ownership and coverage,
 invocation policy, reachability, usability, coherence, and observed effectiveness, while
 also pruning stale, duplicate, conflicting, or misplaced rules and project documentation.
-Cross-session signal tables stay temporary: the skill creates no learning ledger or
-recurring report, and routes only the confirmed durable result to its authoritative
-source. It presents up to eight changes or questions per message as a category-based
-frontier, with no total cap on candidates or rounds, then applies the confirmed set behind
-one approval gate. Periodic reviews default to the last seven days unless the caller gives a
-boundary; a BB stage review runs through plain `bb thread` commands with no helper script.
+It creates no learning ledger or recurring report, and routes only the confirmed durable
+result to its authoritative source. It presents up to eight changes or questions per
+message as a category-based frontier, with no total cap on candidates or rounds, then
+applies the confirmed set behind one approval gate.
 
 ### large-task-planning
 

@@ -35,7 +35,7 @@ user 级 prompt 正文不在此清单范围内：由 [`config/user-agents.md`](.
 |:---:|---|---|---|
 | 1 | `anti-ai-slop` | 检查刚改的 diff 或 commit 里的 AI slop 并改到干净 | 显式调用 (`$anti-ai-slop`) |
 | 2 | `autoreview` | 提交/发布前通过 BB 路由派发代码审查 | 显式调用 (`$autoreview`) |
-| 3 | `distill` | 从会话历史与实践中蒸馏可沉淀的规则与经验 | 显式调用 (`$distill`) |
+| 3 | `distill` | 复盘当前会话，蒸馏可沉淀的规则与经验 | 显式调用 (`$distill`) |
 | 4 | `harness-config-sync` | 跨 Agent 宿主（Codex/Claude/Pi 等）收敛 prompts 与 skills 布局 | 显式调用 (`$harness-config-sync`) |
 | 5 | `large-task-orchestrator` | 用确定性 driver 与按需 Judge 持续推进大型工程计划 | 显式调用 (`$large-task-orchestrator`) |
 | 6 | `large-task-planning` | 大型工程任务的双层规划，并为已启动的执行/方向审查流程提供计划契约 | 允许隐式触发（窄下游），也可显式调用 (`$large-task-planning`) |
