@@ -188,7 +188,7 @@ home.
 For a surviving project-knowledge candidate, read
 [核心知识落点](references/knowledge-sinks.md). Route it to the narrowest live source rather
 than adding retrospective prose: `AGENTS.md` for mandatory agent behavior and reachability,
-`CONTEXT.md` for domain boundaries, the documentation index for routing, a domain contract
+the domain glossary (`GLOSSARY.md`, or `CONTEXT.md` in repositories on the older convention) for domain boundaries, the documentation index for routing, a domain contract
 for durable decisions and user-visible behavior, and Skills/scripts for repeatable work.
 The source must carry the choice, rationale, scope, authority, and a current verification
 path; code, tests, schema, and configuration remain authoritative for mechanically cheap
@@ -223,6 +223,16 @@ closest reliable layer:
 | Check must apply to every change | Run the same local verifier from pre-commit and existing CI |
 | Environment, access, or consequence risk | Reproducible environment, permission boundary, or approval control |
 | Promising but unverified change | Falsifiable eval with a predicted outcome |
+
+Classify an agent mistake before routing it. A **mechanical** violation (a fixed syntactic
+pattern, a banned API, an import shape, a file-location rule) gets a deterministic check
+in the repository's own linter, pre-commit hook, or CI, whichever is cheapest; build the
+check rather than writing the rule. Prose rules are for **judgement calls** no check can
+replace, and they belong in the coding standards the review stage reads, because the
+reviewer works from a diff while the implementer already carries the heaviest context.
+Read the repository's existing check commands and CI first: a check that exists but is
+unwired or broken is the finding. A repository with no guardrail at all (no pre-commit
+hook and no CI job running its lint, typecheck, or tests) is itself a candidate.
 
 #### Agent instructions and Skills
 

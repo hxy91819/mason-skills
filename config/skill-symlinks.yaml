@@ -93,9 +93,6 @@ skills:
 - name: research
   source: mattpocock-skills
   note: 高可信一手来源调研并沉淀 Markdown
-- name: resolving-merge-conflicts
-  source: mattpocock-skills
-  note: 解决进行中的 merge/rebase 冲突
 - name: review-html-report
   note: 审查结果的共享 HTML 输出：文字对照、真实修复滑块和反馈复制
 - name: safe-refactor
