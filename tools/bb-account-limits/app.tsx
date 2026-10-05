@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { definePluginApp, useRpc } from "@get-bb/plugin-sdk/app";
 import { accountLimitsPanelRpcContract, type AccountLimitsPanelSnapshot, type CliproxyUsageSnapshot } from "./contract.js";
 import { aggregateCliproxyPool, type PoolWindow } from "./pool.js";
+import { AntigravityIcon, GrokIcon } from "./provider-icons.js";
 
 function compactReset(value: string | null, now: number): string {
   const resetAt = value ? Date.parse(value) : NaN;
@@ -249,6 +250,10 @@ function AccountLimitsPanel() {
 }
 
 export default definePluginApp(app => {
+  // Provider Usage resolves these marks by resource providerId, including IDs
+  // without an executable agent provider. Keep them scoped to Cliproxy.
+  app.slots.experimental_providerIcon({ providerKind: "agent", providerId: "cliproxy-xai", icon: GrokIcon });
+  app.slots.experimental_providerIcon({ providerKind: "agent", providerId: "cliproxy-antigravity", icon: AntigravityIcon });
   app.slots.navPanel({
     id: "account-limits",
     title: "账户额度",

@@ -118,11 +118,13 @@ Cliproxy 配额以**账户**为单位发现、以**上游供应商**为单位显
 
 在 BB 0.45+ 上，本插件注册了 `provider-usage.v1` 来源（`experimental_discoverable`），官方 Usage 卡片底部会出现 `Cliproxy` 组：每个启用供应商先是一个 `池 · <供应商>` 资源，再列出该供应商的各账号资源。账号资源 ID 形如 `account:<provider>:<authIndex sha256 前 16 位>`，`accountKey` 恒为 null（不含邮箱/标签/凭据）。
 
-- `providerId` 映射：`codex` → `codex`、`claude` → `claude-code`（复用官方图标），其余供应商 → `cliproxy-<provider>`（显示默认 Bot 图标和原始 ID，属已知限制）。
+- `providerId` 映射：`codex` → `codex`、`claude` → `claude-code`（复用官方图标），其余供应商 → `cliproxy-<provider>`。`cliproxy-xai` 和 `cliproxy-antigravity` 通过 `experimental_providerIcon` 显示 Grok、Antigravity 品牌图标（内联 SVG，随主题颜色变化）；其他供应商仍显示默认 Bot 图标。官方卡片的 tab 名称仍显示原始 ID：当前 Usage 来源契约不提供供应商显示名覆盖字段。
 - `listResources` 只读本地 SQLite 额度缓存，不触发 Cliproxy 查询；缓存为空时卡片暂时只显示空的 Cliproxy 组，下一次面板打开或 30 分钟定时刷新后自动出现。
 - `getResource` 的 `refresh=false` 返回缓存；无缓存或 `refresh=true` 时只重读该资源所属供应商并回写缓存。`observedAt` 是最后一次成功测量时间；账号失败以 usage 状态表达，绝不显示 0 用量。
 
 **池聚合语义**（`pool.ts`，server 与“账户额度”页共用）：只统计 `status=ok` 的账号，按归一化窗口身份分组（去掉账号前缀后的窗口种类，如 `5h`、`7d`、`scoped`、`Gem 5h`、`C/G 7d`）；池已用% = 按账号 `poolWeight` 加权的均值（缺省权重 1）；池重置时间取该窗口全部账号中最早的 `resetsAt`，都没有则为 null；每窗口记录覆盖率（报出该窗口的账号数 / 账号总数）与耗尽账号数（已用 ≥100%）。没有任何 ok 账号时池资源返回 error。“账户额度”页右上角的“账号 / 池”切换在同一个供应商卡上展示池聚合，选择经 localStorage 记忆，并沿用“剩余 / 已用”模式。
+
+图标实现参考 `bb-plugin-acp-profile-icons` 的 provider icon slot；Grok 图形来自 BB 的 `plugins/provider-acp/icons/grok.svg`，Antigravity 图形来自该图标插件。源码和 MIT 许可声明保存在 `provider-icons.tsx`，无外部图片请求。
 
 **上游契约同步**：`usage-source-contract.ts` 逐字复制自 `bb/plugins/provider-usage/usage-source-contract.ts`（上游 commit `c7d2c7f593`）。BB 升级后先 `diff` 该文件与上游新版，有变化就同步更新本插件的副本并重新验证 `bb plugin rpc call` 两个方法。
 
