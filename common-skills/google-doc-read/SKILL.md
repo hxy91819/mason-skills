@@ -24,16 +24,13 @@ scripts/gdoc_fetch.py '<链接或文件ID>' [--out /tmp/gdoc]
 失败时：
 
 - `rclone 失败` 且公开链接返回登录页：文件没分享给已授权账号，请用户让对方分享给自己，或设为「知道链接的人可查看」。
-- 未配置远端：按「新机器配置」处理。
+- 未配置远端：按「配置」一节处理。
 - token 失效 / `invalid_grant`：按「重新授权」处理。
 
-## 新机器配置
+## 配置
 
-1. 安装 `rclone`、`uv`。
-2. 从已配置好的机器复制 rclone 配置（`rclone config file` 查看路径）里的 `[gdrive]` 整段到新机器同一文件，`chmod 600`。用 `rclone lsd gdrive:` 验证。多台机器共用同一授权，在谷歌账号撤销时一起失效。
-3. 没有可复制的机器时，按「重新授权」新建，事先设置 `GDRIVE_CLIENT_ID`、`GDRIVE_CLIENT_SECRET`。
-
-OAuth client 要用户自建（rclone 自带的共享 client 在 2026 年内停用）：Google Cloud 项目启用 Drive API，创建 Desktop 类型 client，并把应用发布为 In production；停在 Testing 时 refresh token 7 天过期。发布前控制台要求 Branding 填写主页、隐私政策、服务条款链接及已在 Search Console 验证的授权域名。
+- 在另一台机器启用（已有配好的机器可复制授权）：读 [references/new-machine.md](references/new-machine.md)。
+- 打通新的谷歌账号，或从零自建 OAuth client：读 [references/new-account.md](references/new-account.md)。
 
 ## 重新授权（无头机器，用户手机即可完成）
 
