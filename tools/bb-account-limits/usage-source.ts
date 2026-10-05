@@ -1,5 +1,5 @@
 import { cliproxyProviderDisplayName, cliproxyProviderId } from "./config.js";
-import { aggregateCliproxyPool, normalizeCliproxyWindow, type CliproxyWindowIdentity, type PoolWindow } from "./pool.js";
+import { aggregateCliproxyPool, normalizeCliproxyWindow, orderQuotaWindows, type CliproxyWindowIdentity, type PoolWindow } from "./pool.js";
 import type { CliproxyAccountUsageEntry, CliproxyUsageSnapshot } from "./contract.js";
 import {
   usageFetchMethod,
@@ -56,7 +56,7 @@ function uniqueWindows(windows: readonly SourceWindow[]): SourceWindow[] {
 }
 
 function accountWindows(usage: Extract<CliproxyAccountUsageEntry["usage"], { status: "ok" }>): SourceWindow[] {
-  return uniqueWindows(usage.windows.map(window => sourceWindow(normalizeCliproxyWindow(window.label), window.usedPercent, window.resetsAt)));
+  return uniqueWindows(orderQuotaWindows(usage.windows).map(window => sourceWindow(normalizeCliproxyWindow(window.label), window.usedPercent, window.resetsAt)));
 }
 
 function poolWindows(windows: readonly PoolWindow[]): SourceWindow[] {

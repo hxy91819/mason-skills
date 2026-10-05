@@ -233,3 +233,34 @@ test("统一页面同时显示两种来源，共用池与账号切换，刷新 A
   assert.ok(poolSection().getByRole("region", { name: "Pool A 的额度" }));
   assert.equal(poolSection().queryByRole("region", { name: "Pool B 的额度" }), null);
 });
+
+test("Gemini 已缓存的逆序窗口在账号和池视图都显示 5h 再 7d，并保留模型分组", async t => {
+  dom.window.localStorage.clear();
+  installTestPluginRuntime();
+  const app = await loadPluginApp(() => import("./app.js"));
+  const windows = [
+    { label: "Gemini Models: Weekly limit", usedPercent: 21, resetsAt: null },
+    { label: "Gemini Models: 5-hour limit", usedPercent: 16, resetsAt: null },
+    { label: "Claude and GPT models: Weekly limit", usedPercent: 31, resetsAt: null },
+    { label: "Claude and GPT models: 5-hour limit", usedPercent: 26, resetsAt: null },
+  ];
+  const snapshot: AccountLimitsPanelSnapshot = { machines: [{
+    id: "local", displayName: "本机", status: "connected", error: null,
+    providers: [{ id: "cliproxy-antigravity", displayName: "Gemini", updatedAt: "2026-10-05T10:00:00Z",
+      accounts: [{ key: "gem", label: "Gemini 账号", weight: 1, usage: { status: "ok", planLabel: null, windows } }],
+      usage: { status: "ok", planLabel: null, windows: windows.map(window => ({ ...window, accountLabel: "Gemini 账号" })) },
+    }],
+  }] };
+  const slot = renderSlot(app.navPanels[0]!, { subPath: "" }, { rpc: { readAccountLimits: () => snapshot } });
+  t.after(() => { slot.lifecycle.unmount(); dom.window.localStorage.clear(); });
+  await slot.findByText("Gemini 账号");
+  assert.deepEqual(slot.getAllByRole("progressbar").map(meter => meter.getAttribute("aria-label")), [
+    "Gemini Models: 5-hour limit 剩余额度", "Gemini Models: Weekly limit 剩余额度",
+    "Claude and GPT models: 5-hour limit 剩余额度", "Claude and GPT models: Weekly limit 剩余额度",
+  ]);
+  await act(async () => { slot.getByRole("button", { name: "池" }).click(); });
+  assert.deepEqual(slot.getAllByRole("progressbar").map(meter => meter.getAttribute("aria-label")), [
+    "Gem 5h 剩余额度", "Gem 7d 剩余额度", "C/G 5h 剩余额度", "C/G 7d 剩余额度",
+  ]);
+  assert.deepEqual(windows.map(window => window.usedPercent), [21, 16, 31, 26]);
+});

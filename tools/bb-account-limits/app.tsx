@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { definePluginApp, useRpc } from "@get-bb/plugin-sdk/app";
 import { accountLimitsPanelRpcContract, type AccountLimitsPanelSnapshot, type CliproxyUsageSnapshot } from "./contract.js";
-import { aggregateCliproxyPool, type PoolWindow } from "./pool.js";
+import { aggregateCliproxyPool, orderQuotaWindows, type PoolWindow } from "./pool.js";
 import { AntigravityIcon, GrokIcon } from "./provider-icons.js";
 
 function compactReset(value: string | null, now: number): string {
@@ -124,7 +124,7 @@ function Usage({ usage, now, mode }: { usage: CliproxyUsageSnapshot["providers"]
       {groupWindowsByAccount(usage.windows).map(([accountLabel, windows]) => <section key={accountLabel} aria-label={`${accountLabel} 的额度`} className="grid items-center gap-x-3 gap-y-1 sm:grid-cols-[minmax(8rem,14rem)_1fr]">
         <h3 className="truncate text-xs font-medium" title={accountLabel}>{accountLabel}</h3>
         <ul className="grid min-w-0 gap-x-3 gap-y-1" style={{ gridTemplateColumns: `repeat(${Math.min(columns, 4)}, minmax(4.5rem, 1fr))` }}>
-          {windows.map((window, index) => <WindowMeter key={`${window.label}-${index}`} window={window} now={now} mode={mode} />)}
+          {orderQuotaWindows(windows).map((window, index) => <WindowMeter key={`${window.label}-${index}`} window={window} now={now} mode={mode} />)}
         </ul>
       </section>)}
     </div>;
@@ -151,7 +151,7 @@ function AccountUsage({ provider, now, mode }: { provider: PanelProvider; now: n
         ? account.usage.windows.length === 0
           ? <p className="text-xs text-muted-foreground">未报告额度窗口。</p>
           : <ul className="grid min-w-0 gap-x-3 gap-y-1" style={{ gridTemplateColumns: `repeat(${Math.min(account.usage.windows.length, 4)}, minmax(4.5rem, 1fr))` }}>
-            {account.usage.windows.map((window, index) => <WindowMeter key={window.id ?? `${window.label}-${index}`} window={{ ...window, accountLabel: null }} now={now} mode={mode} />)}
+            {orderQuotaWindows(account.usage.windows).map((window, index) => <WindowMeter key={window.id ?? `${window.label}-${index}`} window={{ ...window, accountLabel: null }} now={now} mode={mode} />)}
           </ul>
         : <Usage usage={account.usage} now={now} mode={mode} />}
     </section>)}

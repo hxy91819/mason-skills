@@ -1,4 +1,5 @@
 import { cliproxyProviderDisplayName, cliproxyProviderId, config } from "./config.js";
+import { orderQuotaWindows } from "./pool.js";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
@@ -425,7 +426,7 @@ export function normalizeAntigravityUsage(raw: unknown, account: CliproxyUsageAc
     });
   });
   if (!windows.length) return usageError("Cliproxy returned an unrecognized Antigravity quota response.");
-  return { supported: true, usage: { status: "ok", accountEmail: null, planLabel: usageLabel(account), windows } };
+  return { supported: true, usage: { status: "ok", accountEmail: null, planLabel: usageLabel(account), windows: orderQuotaWindows(windows) } };
 }
 
 function positiveNumber(value: unknown): number | null {

@@ -50,6 +50,20 @@ export function normalizeCliproxyWindow(label: string): CliproxyWindowIdentity {
   return { id: `${short} ${base.id}`, kind: "custom", label: `${short} ${base.label}` };
 }
 
+/** 保留模型分组顺序；组内按 5h、日、周、其他排列，返回新数组以兼容已有缓存。 */
+export function orderQuotaWindows<T extends { label: string }>(windows: readonly T[]): T[] {
+  const groups = new Map<string, number>();
+  const ranks: Record<string, number> = { "5h": 0, "1d": 1, "7d": 2 };
+  return windows.map(window => {
+    const separator = window.label.lastIndexOf(": ");
+    const shortGroup = /^(.*\S) (5h|7d)$/u.exec(window.label);
+    const group = separator >= 0 ? window.label.slice(0, separator) : shortGroup?.[1] ?? "";
+    const label = separator >= 0 ? window.label.slice(separator + 2) : shortGroup?.[2] ?? window.label;
+    if (!groups.has(group)) groups.set(group, groups.size);
+    return { window, group: groups.get(group)!, rank: ranks[normalizeBaseWindow(label).id] ?? 3 };
+  }).sort((a, b) => a.group - b.group || a.rank - b.rank).map(entry => entry.window);
+}
+
 export interface PoolWindow {
   id: string;
   kind: CliproxyWindowKind;
@@ -102,7 +116,7 @@ export function aggregateCliproxyPool(accounts: readonly CliproxyAccountUsageEnt
     status: "ok",
     okAccounts: okAccounts.length,
     totalAccounts: accounts.length,
-    windows: [...groups.values()].map(group => ({
+    windows: orderQuotaWindows([...groups.values()].map(group => ({
       id: group.identity.id,
       kind: group.identity.kind,
       label: group.identity.label,
@@ -110,6 +124,6 @@ export function aggregateCliproxyPool(accounts: readonly CliproxyAccountUsageEnt
       resetsAt: group.resetsAtMs === null ? null : new Date(group.resetsAtMs).toISOString(),
       accounts: group.accounts,
       exhausted: group.exhausted,
-    })),
+    }))),
   };
 }
