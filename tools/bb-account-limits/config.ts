@@ -27,6 +27,7 @@ const cliproxyAccountSchema = z.object({
   label: z.string().min(1).optional(),
   enabled: z.boolean().optional(),
   cachedWindows: z.array(cliproxyCachedWindowSchema).optional(),
+  poolWeight: z.number().positive().optional(),
 }).refine(account => account.authIndex !== undefined || account.account !== undefined, {
   message: "either authIndex or account is required",
 });

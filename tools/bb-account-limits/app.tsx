@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { definePluginApp, useRpc } from "@get-bb/plugin-sdk/app";
 import { accountLimitsPanelRpcContract, type AccountLimitsPanelSnapshot, type CliproxyUsageSnapshot } from "./contract.js";
+import { aggregateCliproxyPool, type PoolWindow } from "./pool.js";
 
 function compactReset(value: string | null, now: number): string {
   const resetAt = value ? Date.parse(value) : NaN;
@@ -28,8 +29,11 @@ function updatedLabel(value: string): string {
 
 type OkUsage = Extract<CliproxyUsageSnapshot["providers"][number]["usage"], { status: "ok" }>;
 type QuotaWindow = OkUsage["windows"][number];
+type PanelProvider = AccountLimitsPanelSnapshot["machines"][number]["providers"][number];
 type DisplayMode = "remaining" | "used";
+type PanelView = "accounts" | "pool";
 const displayModeStorageKey = "account-limits.display-mode";
+const panelViewStorageKey = "account-limits.view";
 
 function displayWindowLabel(window: QuotaWindow): string {
   const prefix = window.accountLabel ? `${window.accountLabel} · ` : "";
@@ -68,7 +72,7 @@ function remainingPercent(usedPercent: number): number {
   return Math.max(0, Math.min(100, 100 - usedPercent));
 }
 
-function WindowMeter({ window, now, mode }: { window: QuotaWindow; now: number; mode: DisplayMode }) {
+function WindowMeter({ window, now, mode, detail }: { window: QuotaWindow; now: number; mode: DisplayMode; detail?: string }) {
   const label = displayWindowLabel(window);
   const remaining = remainingPercent(window.usedPercent);
   const percent = mode === "used" ? 100 - remaining : remaining;
@@ -82,8 +86,31 @@ function WindowMeter({ window, now, mode }: { window: QuotaWindow; now: number; 
     <div className="mt-0.5 h-1 overflow-hidden rounded-full bg-muted" role="progressbar" aria-label={`${label} ${mode === "used" ? "已用" : "剩余"}额度`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent} title={reset ? `${label} · ${reset}` : label}>
       <div className={`h-full rounded-full ${depleted ? "bg-destructive" : "bg-primary"}`} style={{ width: `${percent}%` }} />
     </div>
-    <p className="mt-1 text-xs text-muted-foreground tabular-nums">{reset}</p>
+    <p className="mt-1 text-xs text-muted-foreground tabular-nums">{detail ? `${reset} · ${detail}` : reset}</p>
   </li>;
+}
+
+function poolWindowDetail(window: PoolWindow, totalAccounts: number): string {
+  const exhausted = window.exhausted > 0 ? ` · ${window.exhausted} 账号已耗尽` : "";
+  return `覆盖 ${window.accounts}/${totalAccounts}${exhausted}`;
+}
+
+function PoolUsage({ provider, now, mode }: { provider: PanelProvider; now: number; mode: DisplayMode }) {
+  const pool = aggregateCliproxyPool(provider.accounts);
+  if (pool.status !== "ok") {
+    const message = provider.accounts.length === 0 && provider.usage.status === "error" ? provider.usage.message : pool.message;
+    return <p className="text-xs text-destructive">{message}</p>;
+  }
+  const columns = Math.min(Math.max(pool.windows.length, 1), 4);
+  return <ul className="grid min-w-0 gap-x-3 gap-y-1" style={{ gridTemplateColumns: `repeat(${columns}, minmax(4.5rem, 1fr))` }}>
+    {pool.windows.map(window => <WindowMeter
+      key={window.id}
+      window={{ accountLabel: null, label: window.label, usedPercent: window.usedPercent, resetsAt: window.resetsAt }}
+      now={now}
+      mode={mode}
+      detail={poolWindowDetail(window, pool.totalAccounts)}
+    />)}
+  </ul>;
 }
 
 function Usage({ usage, now, mode }: { usage: CliproxyUsageSnapshot["providers"][number]["usage"]; now: number; mode: DisplayMode }) {
@@ -120,6 +147,15 @@ function AccountLimitsPanel() {
   const changeMode = (next: DisplayMode) => {
     setMode(next);
     try { window.localStorage.setItem(displayModeStorageKey, next); }
+    catch { /* 禁用浏览器存储时仍允许本次切换。 */ }
+  };
+  const [view, setView] = useState<PanelView>(() => {
+    try { return window.localStorage.getItem(panelViewStorageKey) === "pool" ? "pool" : "accounts"; }
+    catch { return "accounts"; }
+  });
+  const changeView = (next: PanelView) => {
+    setView(next);
+    try { window.localStorage.setItem(panelViewStorageKey, next); }
     catch { /* 禁用浏览器存储时仍允许本次切换。 */ }
   };
   const [now, setNow] = useState(Date.now);
@@ -176,10 +212,17 @@ function AccountLimitsPanel() {
   const showMachineName = (snapshot?.machines.length ?? 0) > 1;
   return <main className="h-full overflow-auto p-3">
     <div className="mx-auto max-w-6xl space-y-2">
-      <div className="flex justify-end gap-1" role="group" aria-label="额度显示模式">
-        {(["remaining", "used"] as const).map(value => <button key={value} type="button" aria-pressed={mode === value}
-          className={`rounded border border-border px-2 py-1 text-xs ${mode === value ? "bg-accent font-medium" : "text-muted-foreground hover:bg-accent"}`}
-          onClick={() => changeMode(value)}>{value === "used" ? "已用（Used）" : "剩余"}</button>)}
+      <div className="flex justify-end gap-3">
+        <div className="flex gap-1" role="group" aria-label="额度视图">
+          {(["accounts", "pool"] as const).map(value => <button key={value} type="button" aria-pressed={view === value}
+            className={`rounded border border-border px-2 py-1 text-xs ${view === value ? "bg-accent font-medium" : "text-muted-foreground hover:bg-accent"}`}
+            onClick={() => changeView(value)}>{value === "pool" ? "池" : "账号"}</button>)}
+        </div>
+        <div className="flex gap-1" role="group" aria-label="额度显示模式">
+          {(["remaining", "used"] as const).map(value => <button key={value} type="button" aria-pressed={mode === value}
+            className={`rounded border border-border px-2 py-1 text-xs ${mode === value ? "bg-accent font-medium" : "text-muted-foreground hover:bg-accent"}`}
+            onClick={() => changeMode(value)}>{value === "used" ? "已用（Used）" : "剩余"}</button>)}
+        </div>
       </div>
       {error && <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">{error}</p>}
       {!snapshot && loading && <p className="text-xs text-muted-foreground">正在读取账户额度…</p>}
@@ -198,7 +241,7 @@ function AccountLimitsPanel() {
               {refreshingProviderIds.has(provider.id) ? "刷新中" : "刷新"}
             </button>
           </div>
-          <Usage usage={provider.usage} now={now} mode={mode} />
+          {view === "pool" ? <PoolUsage provider={provider} now={now} mode={mode} /> : <Usage usage={provider.usage} now={now} mode={mode} />}
         </article>)}
       </section>)}
     </div>

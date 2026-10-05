@@ -49,6 +49,10 @@ test("账户额度页面注册为导航面板并显示独立 Cliproxy 数据", a
             { accountLabel: "Claude 个人账号", label: "Claude 个人账号 · 5-hour limit", usedPercent: 50, resetsAt: "2026-09-10T01:30:22.000Z" },
           ],
         },
+        accounts: [
+          { key: "claude-work", label: "Claude 工作账号", weight: 1, usage: { status: "ok", planLabel: null, windows: [{ label: "Weekly limit", usedPercent: 25, resetsAt: "2026-09-15T01:30:22.000Z" }] } },
+          { key: "claude-personal", label: "Claude 个人账号", weight: 1, usage: { status: "ok", planLabel: null, windows: [{ label: "5-hour limit", usedPercent: 50, resetsAt: "2026-09-10T01:30:22.000Z" }] } },
+        ],
       }],
     }],
   };
@@ -90,6 +94,49 @@ test("账户额度页面注册为导航面板并显示独立 Cliproxy 数据", a
   dom.window.localStorage.clear();
 });
 
+test("池视图把同供应商账号额度聚合成一池并记住选择", async () => {
+  installTestPluginRuntime();
+  const app = await loadPluginApp(() => import("./app.js"));
+  const snapshot: AccountLimitsPanelSnapshot = {
+    machines: [{
+      id: "host-local",
+      displayName: "本机",
+      status: "connected",
+      error: null,
+      providers: [{
+        id: "cliproxy-claude",
+        displayName: "Claude",
+        updatedAt: "2026-09-09T01:30:22.000Z",
+        usage: { status: "ok", planLabel: "Claude · Cliproxy · 2/2 accounts", windows: [
+          { accountLabel: "Claude 工作账号", label: "Claude 工作账号 · Weekly limit", usedPercent: 20, resetsAt: "2026-09-15T01:30:22.000Z" },
+          { accountLabel: "Claude 个人账号", label: "Claude 个人账号 · Weekly limit", usedPercent: 60, resetsAt: "2026-09-12T01:30:22.000Z" },
+        ] },
+        accounts: [
+          { key: "k1", label: "Claude 工作账号", weight: 3, usage: { status: "ok", planLabel: null, windows: [{ label: "Weekly limit", usedPercent: 20, resetsAt: "2026-09-15T01:30:22.000Z" }] } },
+          { key: "k2", label: "Claude 个人账号", weight: 1, usage: { status: "ok", planLabel: null, windows: [{ label: "Weekly limit", usedPercent: 60, resetsAt: "2026-09-12T01:30:22.000Z" }] } },
+        ],
+      }],
+    }],
+  };
+  const slot = renderSlot(app.navPanels[0]!, { subPath: "" }, { rpc: { readCliproxyUsage: () => snapshot } });
+  await slot.findByText("Claude");
+  assert.ok(slot.getByRole("region", { name: "Claude 工作账号 的额度" }));
+  await act(async () => { slot.getByRole("button", { name: "池" }).click(); });
+  // (3×20 + 1×60) / 4 = 30，剩余模式显示 70%；覆盖 2/2。
+  const meter = slot.getByRole("progressbar", { name: "7d 剩余额度" });
+  assert.equal(meter.getAttribute("aria-valuenow"), "70");
+  assert.ok(slot.getByText(/覆盖 2\/2/));
+  assert.equal(slot.queryByRole("region", { name: "Claude 工作账号 的额度" }), null);
+  slot.lifecycle.unmount();
+
+  const restored = renderSlot(app.navPanels[0]!, { subPath: "" }, { rpc: { readCliproxyUsage: () => snapshot } });
+  await restored.findByText("Claude");
+  assert.equal(restored.getByRole("button", { name: "池" }).getAttribute("aria-pressed"), "true");
+  assert.ok(restored.getByRole("progressbar", { name: "7d 剩余额度" }));
+  restored.lifecycle.unmount();
+  dom.window.localStorage.clear();
+});
+
 test("各账号额度直接显示重置倒计时，并随时间更新而不重新查询", async t => {
   t.mock.timers.enable({ apis: ["Date", "setInterval"], now: new Date("2026-09-27T00:00:00Z") });
   installTestPluginRuntime();
@@ -108,6 +155,10 @@ test("各账号额度直接显示重置倒计时，并随时间更新而不重�
         usage: { status: "ok", planLabel: null, windows: cases.map(([resetsAt], index) => ({
           accountLabel: `账号 ${index}`, label: "Weekly limit", usedPercent: 25, resetsAt,
         })) },
+        accounts: cases.map(([resetsAt], index) => ({
+          key: `account-${index}`, label: `账号 ${index}`, weight: 1,
+          usage: { status: "ok" as const, planLabel: null, windows: [{ label: "Weekly limit", usedPercent: 25, resetsAt }] },
+        })),
       }],
     }],
   };

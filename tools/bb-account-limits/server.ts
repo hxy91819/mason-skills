@@ -12,6 +12,8 @@ import {
   type CliproxyUsageSnapshot,
 } from "./contract.js";
 import { extraProviders } from "./extra-providers.js";
+import { createCliproxyUsageSource } from "./usage-source.js";
+import { usageSourceRpcContract } from "./usage-source-contract.js";
 
 export const CLIPROXY_USAGE_CACHE_MAX_AGE_MS = 30 * 60 * 1000;
 export const CLIPROXY_USAGE_REFRESH_SCHEDULE_NAME = "refresh-cliproxy-usage";
@@ -84,7 +86,9 @@ export function createSqlitePanelCache(database: SqliteDatabase): PanelCache {
   return {
     read(hostId) {
       const meta = asRecord(readMeta.get(hostId));
-      const providers = readProviders.all(hostId).flatMap(row => {
+      // 旧格式缓存行解析失败时丢弃；一行都不剩视同无缓存，由调用方重新读取。
+      const rows = readProviders.all(hostId);
+      const providers = rows.flatMap(row => {
         const record = asRecord(row);
         const updatedAtMs = asTimestamp(record?.updated_at_ms);
         if (updatedAtMs === null || typeof record?.provider_json !== "string") return [];
@@ -93,6 +97,7 @@ export function createSqlitePanelCache(database: SqliteDatabase): PanelCache {
           return parsed.success ? cachedProviders(parsed.data.providers, updatedAtMs) : [];
         } catch { return []; }
       });
+      if (rows.length > 0 && providers.length === 0) return null;
       if (!meta && providers.length === 0) return null;
       return { fullSnapshotUpdatedAtMs: asTimestamp(meta?.full_snapshot_updated_at_ms), providers };
     },
@@ -242,13 +247,31 @@ export default function accountLimitsPlugin(bb: BbPluginApi) {
     "CREATE TABLE IF NOT EXISTS cliproxy_usage_cache_providers (host_id TEXT NOT NULL, provider_id TEXT NOT NULL, provider_json TEXT NOT NULL, updated_at_ms INTEGER NOT NULL, PRIMARY KEY (host_id, provider_id))",
   ]);
   const database = rawDatabase as unknown as SqliteDatabase;
+  const panelCache = createSqlitePanelCache(database);
+  const readHostUsage = (hostId: string, providerIds?: readonly string[]) =>
+    host.call("readCliproxyUsage", providerIds ? { providerIds: [...providerIds] } : {}, { hostId });
   const readPanelSnapshot = createPanelSnapshotReader({
-    cache: createSqlitePanelCache(database),
+    cache: panelCache,
     listHosts: () => bb.sdk.hosts.list(),
-    readHost: (hostId, providerIds) => host.call("readCliproxyUsage", providerIds ? { providerIds: [...providerIds] } : {}, { hostId }),
+    readHost: readHostUsage,
     now: () => Date.now(),
   });
   bb.rpc.register(accountLimitsPanelRpcContract, { readCliproxyUsage: readPanelSnapshot });
+  bb.rpc.register(
+    usageSourceRpcContract,
+    createCliproxyUsageSource({
+      readCache: hostId => panelCache.read(hostId),
+      updateCache: (hostId, providers, updatedAtMs) => panelCache.update(hostId, providers, updatedAtMs),
+      listHosts: () => bb.sdk.hosts.list(),
+      readHost: (hostId, providerIds) => readHostUsage(hostId, providerIds),
+      enabledProviderIds: () => config.enabledProviders,
+      now: () => Date.now(),
+    }),
+    {
+      experimental_discoverable: true,
+      experimental_description: "Cliproxy provider pools and per-account quota windows read through the local account-limits cache.",
+    },
+  );
   registerCliproxyUsageRefreshSchedule(bb.background, readPanelSnapshot);
   bb.cli.register({
     name: "account-limits",

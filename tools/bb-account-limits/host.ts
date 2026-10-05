@@ -6,8 +6,8 @@ import {
 import { experimental_acpProviderBridge } from "@get-bb/plugin-sdk/provider-bridge/acp";
 import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
 import { bridgeRequestEnvelopeSchema, createBridgeIo, experimental_defineProviderBridge, providerMaintenanceParamsSchema, type ProviderBridgeEntry, type ProviderUsageResult } from "@get-bb/plugin-sdk/provider-bridge";
-import { accountLimitsHostContract, cliproxyUsageSnapshotSchema, type CliproxyUsageSnapshot } from "./contract.js";
-import { discoverCliproxyAccounts, discoveredCliproxyGroups, readAgyUsage, readCliproxyManagementKey, readCliproxyProviderUsage, readCodexUsage, readKiroUsage, usageError, type CliproxyUsageAccount, type CliproxyUsageOptions } from "./usage.js";
+import { accountLimitsHostContract, cliproxyUsageSnapshotSchema, type CliproxyAccountUsageEntry, type CliproxyUsageSnapshot } from "./contract.js";
+import { aggregateCliproxyUsage, cliproxyQueryError, discoverCliproxyAccounts, discoveredCliproxyGroups, readAgyUsage, readCliproxyManagementKey, readCliproxyProviderAccountUsages, readCodexUsage, readKiroUsage, usageError, type CliproxyProviderAccountUsage, type CliproxyUsageAccount, type CliproxyUsageOptions } from "./usage.js";
 
 // usage 查询支持的本插件 provider ID：三个原生入口 + config.codexAccounts 里的额外 Codex 账号。
 const usageProviderIds = new Set([
@@ -76,6 +76,24 @@ async function enabledCliproxyGroups(
   return { groups: discoveredCliproxyGroups(accounts, config.enabledProviders, providerIds), authFiles };
 }
 
+function compactAccountUsage(result: ProviderUsageResult): CliproxyAccountUsageEntry["usage"] {
+  if (!result.supported) return { status: "error", message: "Cliproxy quota querying is not supported on this machine." };
+  switch (result.usage.status) {
+    case "ok":
+      return {
+        status: "ok",
+        planLabel: result.usage.planLabel,
+        windows: result.usage.windows.map(window => ({
+          label: window.label,
+          usedPercent: Math.min(100, Math.max(0, window.usedPercent)),
+          resetsAt: window.resetsAt,
+        })),
+      };
+    case "error": return { status: "error", message: result.usage.message };
+    default: return { status: result.usage.status };
+  }
+}
+
 function compactCliproxyUsage(result: ProviderUsageResult): CliproxyUsageSnapshot["providers"][number]["usage"] {
   if (!result.supported) return { status: "error", message: "Cliproxy quota querying is not supported on this machine." };
   switch (result.usage.status) {
@@ -111,11 +129,29 @@ export async function readCliproxyUsageSnapshot(
     ? { groups, authFiles: query.authFiles }
     : await enabledCliproxyGroups(query, providerIds);
   const queryWithFiles = { ...query, authFiles: resolved.authFiles };
-  const providers = await Promise.all([...resolved.groups].map(async ([provider, accounts]) => ({
-    id: cliproxyProviderId(provider),
-    displayName: cliproxyProviderDisplayName(provider),
-    usage: compactCliproxyUsage(await readCliproxyProviderUsage(accounts, queryWithFiles)),
-  })));
+  const providers = await Promise.all([...resolved.groups].map(async ([provider, accounts]) => {
+    let entries: CliproxyProviderAccountUsage[] = [];
+    let result: ProviderUsageResult;
+    try {
+      entries = await readCliproxyProviderAccountUsages(accounts, queryWithFiles);
+      result = entries.length
+        ? aggregateCliproxyUsage(provider, entries)
+        : usageError("Cliproxy provider has no configured accounts.");
+    } catch (error) {
+      result = cliproxyQueryError(error, queryWithFiles.signal);
+    }
+    return {
+      id: cliproxyProviderId(provider),
+      displayName: cliproxyProviderDisplayName(provider),
+      usage: compactCliproxyUsage(result),
+      accounts: entries.map(entry => ({
+        key: entry.key,
+        label: entry.label,
+        weight: entry.weight,
+        usage: compactAccountUsage(entry.result),
+      })),
+    };
+  }));
   return cliproxyUsageSnapshotSchema.parse({ providers });
 }
 

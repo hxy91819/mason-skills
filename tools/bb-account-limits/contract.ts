@@ -18,11 +18,36 @@ const quotaUsageSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("error"), message: z.string().min(1) }).strict(),
 ]);
 
+const accountQuotaWindowSchema = z.object({
+  label: z.string().min(1),
+  usedPercent: z.number().finite().min(0).max(100),
+  resetsAt: z.string().datetime().nullable(),
+}).strict();
+
+const accountQuotaUsageSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("ok"), planLabel: z.string().nullable(), windows: z.array(accountQuotaWindowSchema) }).strict(),
+  z.object({ status: z.literal("unauthenticated") }).strict(),
+  z.object({ status: z.literal("expired") }).strict(),
+  z.object({ status: z.literal("not_installed") }).strict(),
+  z.object({ status: z.literal("error"), message: z.string().min(1) }).strict(),
+]);
+
+// key 是 authIndex 的 sha256 前 16 位（host 侧计算），稳定且不含凭据；weight 供池聚合加权。
+const cliproxyAccountUsageSchema = z.object({
+  key: z.string().min(1),
+  label: z.string().min(1),
+  weight: z.number().finite().positive(),
+  usage: accountQuotaUsageSchema,
+}).strict();
+
+export type CliproxyAccountUsageEntry = z.infer<typeof cliproxyAccountUsageSchema>;
+
 export const cliproxyUsageSnapshotSchema = z.object({
   providers: z.array(z.object({
     id: z.string().min(1),
     displayName: z.string().min(1),
     usage: quotaUsageSchema,
+    accounts: z.array(cliproxyAccountUsageSchema),
   }).strict()),
 }).strict();
 
@@ -39,6 +64,7 @@ const panelProviderSchema = z.object({
   id: z.string().min(1),
   displayName: z.string().min(1),
   usage: quotaUsageSchema,
+  accounts: z.array(cliproxyAccountUsageSchema),
   updatedAt: z.string().datetime(),
 }).strict();
 
