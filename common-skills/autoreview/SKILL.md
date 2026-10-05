@@ -1,14 +1,11 @@
 ---
 name: autoreview
-description: "提交或发布前的代码审查；通过 bb-model-routing 派发独立 review agent。"
-disable-model-invocation: true
-triggers:
-  - user
+description: "代码修改完成、准备提交或发布时，或用户要求交付前审查时，通过 bb-model-routing 派发独立代码审查并核实发现。普通代码解释、检索、纯文案修改不触发；用户指定其他审查流程时沿用该流程。"
 ---
 
 # Auto Review
 
-这是用户显式调用 `$autoreview` 的审查流程。必须先按名称加载 `$bb-model-routing`；其路由配置是 reviewer 的 provider、模型、推理级别与 fallback 的唯一来源。依赖不可用时报告缺失，不改用本机 CLI 或宿主 subagent。
+按 description 的条件自动调用，也可显式调用 `$autoreview`。必须先按名称加载 `$bb-model-routing`；其路由配置是 reviewer 的 provider、模型、推理级别与 fallback 的唯一来源。依赖不可用时报告缺失，不改用本机 CLI 或宿主 subagent。
 
 ## 派发审查
 
