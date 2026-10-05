@@ -1,6 +1,6 @@
 # BB Account Limits
 
-BB 本地 provider 插件：将 CodexL、Kiro、AGY 账户额度接入原生 `system.usageLimits` 和 Provider Usage 面板；将 Cliproxy 的账户额度放入侧边栏独立的“账户额度”页面，同时作为 Provider Usage 来源出现在官方 Usage 卡片（每供应商一个池资源 + 各账号资源）。附带 Copilot、CodeBuddy 原生 ACP 入口与独立图标；这两者没有额度适配。
+BB 本地 provider 插件：将 CodexL、Kiro、AGY 账户额度接入原生 `system.usageLimits` 和 Provider Usage 面板；在侧边栏独立的“账户额度”页面同时展示 Cliproxy 和 BB Account Pooler 的账号与池额度，同时作为 Provider Usage 来源出现在官方 Usage 卡片（每供应商一个池资源 + 各账号资源）。附带 Copilot、CodeBuddy 原生 ACP 入口与独立图标；这两者没有额度适配。
 
 使用公开 Plugin SDK 0.6.15。Usage 卡片来源需要 BB 0.45+（`experimental_discoverable` RPC 发现）；更早的 BB 上其余功能不受影响。无需修改 BB 安装文件。此目录是可安装插件，不是 skill。
 
@@ -114,6 +114,14 @@ Cliproxy 配额以**账户**为单位发现、以**上游供应商**为单位显
 
 发现到的账号默认用 Cliproxy 返回的 `email` / `account` / `label` 作为显示名。`accounts` 里仍可用 `authIndex` 或 `account` 精确匹配一条凭证以覆盖标签、补 `cachedWindows`、设 `poolWeight`（正数，池聚合权重，默认 1，用于 Pro/Max 等容量不同的账号），或设 `enabled: false` 把它从额度页拿掉。覆盖项若用 `account` 命中多条凭证，该覆盖不会生效，发现结果仍会列出这些账号。`managementKeyEnv` 优先于 `managementKeyFile`，密钥值本身永远不写入 JSON 或日志。
 
+### “账户额度”统一页面
+
+页面同时显示 Cliproxy（按执行机器分组）和 BB Account Pooler（共享来源，仅列一次），每张供应商卡标注来源。右上角“账号 / 池”和“剩余 / 已用”对两种来源同时生效，选择保存在 localStorage；“刷新全部”重新读取两种来源，每张卡的刷新只读取该来源和该供应商。账号视图保留失败、过期和未登录账号的状态；池视图只统计查询成功的账号，显示窗口覆盖率与耗尽账号数，两个来源分别汇总，不跨来源混算。
+
+Account Pooler 适配器只调用公开的 `provider-usage.v1.listResources` / `getResource` RPC，不读取它的认证文件、数据库或内部模块，也不修改 BB、Account Pooler 或官方 Usage 卡片。Account Pooler 自行管理查询缓存；普通读取传 `refresh=false`，用户刷新传 `refresh=true`。其账号默认等权（权重 1），不从套餐名称猜容量；窗口按来源提供的 kind、id、model 分组，保留模型窗口的区别。百分比控件最多显示 100%，超额视为已耗尽。账号时间取 `observedAt`，供应商时间取成功账号中最早的测量时间，没有测量时间时显示未知。来源暂时不可用时显示明确提示；已有内存快照会保留并标为上次读取的数据，插件重载后重新读取。
+
+新面板 RPC `readAccountLimits` 返回两种来源；旧的 `readCliproxyUsage` 保留 Cliproxy 专用语义和 30 分钟 SQLite 缓存。`bb account-limits` 保留原有 `providers` / `cliproxy`，新增 `accountPool`；Account Pooler 是共享来源，`--host` 只筛选机器级 Cliproxy 数据。Account Pooler 未安装、禁用或接口不可用时，只在页面自己的区域显示错误，不影响 Cliproxy。接入无需额外配置；在 Account Pooler 中添加账号后，打开页面或刷新全部即可出现。
+
 ### Provider Usage 卡片来源与池视图
 
 在 BB 0.45+ 上，本插件注册了 `provider-usage.v1` 来源（`experimental_discoverable`），官方 Usage 卡片底部会出现 `Cliproxy` 组：每个启用供应商先是一个 `池 · <供应商>` 资源，再列出该供应商的各账号资源。账号资源 ID 形如 `account:<provider>:<authIndex sha256 前 16 位>`，`accountKey` 恒为 null（不含邮箱/标签/凭据）。
@@ -189,7 +197,7 @@ Copilot 使用 `--acp`，Full Access 映射 `--yolo`；CodeBuddy 使用 `--acp`�
 
 回退到旧路径插件时重新安装原路径。回退为普通 ACP 条目时先禁用本插件，再将备份条目合并回当前 `customAgents`，避免重复 ID；不删除线程、认证或原生会话数据。
 
-测试覆盖额度解析、池聚合、Provider Usage 来源契约、失败状态、精度、超时/取消、退出清理和 ACP bridge conformance。
+测试覆盖额度解析、跨来源页面切换与定向刷新、Account Pooler RPC 适配与故障隔离、池聚合、Provider Usage 来源契约、失败状态、精度、超时/取消、退出清理和 ACP bridge conformance。
 
 ### AGY 长任务时限
 

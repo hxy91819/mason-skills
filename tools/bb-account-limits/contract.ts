@@ -19,6 +19,8 @@ const quotaUsageSchema = z.discriminatedUnion("status", [
 ]);
 
 const accountQuotaWindowSchema = z.object({
+  // 外部来源提供的窗口身份，避免同名模型窗口在池聚合时混合。
+  id: z.string().min(1).optional(),
   label: z.string().min(1),
   usedPercent: z.number().finite().min(0).max(100),
   resetsAt: z.string().datetime().nullable(),
@@ -37,6 +39,7 @@ const cliproxyAccountUsageSchema = z.object({
   key: z.string().min(1),
   label: z.string().min(1),
   weight: z.number().finite().positive(),
+  updatedAt: z.string().datetime().nullable().optional(),
   usage: accountQuotaUsageSchema,
 }).strict();
 
@@ -65,13 +68,14 @@ const panelProviderSchema = z.object({
   displayName: z.string().min(1),
   usage: quotaUsageSchema,
   accounts: z.array(cliproxyAccountUsageSchema),
-  updatedAt: z.string().datetime(),
+  updatedAt: z.string().datetime().nullable(),
 }).strict();
 
 export const accountLimitsPanelSnapshotSchema = z.object({
   machines: z.array(z.object({
     id: z.string().min(1),
     displayName: z.string().min(1),
+    source: z.enum(["cliproxy", "account-pool"]).optional(),
     status: z.enum(["connected", "disconnected", "error"]),
     providers: z.array(panelProviderSchema),
     error: z.string().min(1).nullable(),
@@ -87,7 +91,16 @@ export const accountLimitsPanelReadInputSchema = z.object({
 
 export type AccountLimitsPanelReadInput = z.infer<typeof accountLimitsPanelReadInputSchema>;
 
+export const accountLimitsReadInputSchema = accountLimitsPanelReadInputSchema.extend({
+  source: z.enum(["cliproxy", "account-pool"]).optional(),
+});
+export type AccountLimitsReadInput = z.infer<typeof accountLimitsReadInputSchema>;
+
 export const accountLimitsPanelRpcContract = defineRpcContract({
+  readAccountLimits: {
+    input: accountLimitsReadInputSchema,
+    output: accountLimitsPanelSnapshotSchema,
+  },
   readCliproxyUsage: {
     input: accountLimitsPanelReadInputSchema,
     output: accountLimitsPanelSnapshotSchema,

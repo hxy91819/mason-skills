@@ -8,7 +8,7 @@
   },
   "bb": {
     "name": "Account Limits",
-    "description": "Native provider limits plus a dedicated Cliproxy account-limits panel.",
+    "description": "Native provider limits plus a unified Cliproxy and Account Pooler quota panel.",
     "branding": {
       "icon": "CircleDollarSign"
     },

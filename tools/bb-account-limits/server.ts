@@ -13,7 +13,8 @@ import {
 } from "./contract.js";
 import { extraProviders } from "./extra-providers.js";
 import { createCliproxyUsageSource } from "./usage-source.js";
-import { usageSourceRpcContract } from "./usage-source-contract.js";
+import { usageFetchMethod, usageListMethod, usageSourceRpcContract } from "./usage-source-contract.js";
+import { createAccountLimitsReader, createAccountPoolPanelReader } from "./account-pool-panel.js";
 
 export const CLIPROXY_USAGE_CACHE_MAX_AGE_MS = 30 * 60 * 1000;
 export const CLIPROXY_USAGE_REFRESH_SCHEDULE_NAME = "refresh-cliproxy-usage";
@@ -256,7 +257,23 @@ export default function accountLimitsPlugin(bb: BbPluginApi) {
     readHost: readHostUsage,
     now: () => Date.now(),
   });
-  bb.rpc.register(accountLimitsPanelRpcContract, { readCliproxyUsage: readPanelSnapshot });
+  const readAccountPool = createAccountPoolPanelReader({
+    listResources: () => bb.sdk.plugins.callRpc({
+      pluginId: "account-pool", method: usageListMethod, input: {},
+      outputSchema: usageSourceRpcContract[usageListMethod].output,
+      signal: AbortSignal.timeout(45_000),
+    }),
+    getResource: (resourceId, refresh) => bb.sdk.plugins.callRpc({
+      pluginId: "account-pool", method: usageFetchMethod, input: { resourceId, refresh },
+      outputSchema: usageSourceRpcContract[usageFetchMethod].output,
+      signal: AbortSignal.timeout(45_000),
+    }),
+  });
+  const readAccountLimits = createAccountLimitsReader(readPanelSnapshot, readAccountPool);
+  bb.rpc.register(accountLimitsPanelRpcContract, {
+    readCliproxyUsage: readPanelSnapshot,
+    readAccountLimits,
+  });
   bb.rpc.register(
     usageSourceRpcContract,
     createCliproxyUsageSource({
@@ -275,20 +292,21 @@ export default function accountLimitsPlugin(bb: BbPluginApi) {
   registerCliproxyUsageRefreshSchedule(bb.background, readPanelSnapshot);
   bb.cli.register({
     name: "account-limits",
-    summary: "Query native provider limits and the Cliproxy account-limits panel data",
+    summary: "Query native, Cliproxy and Account Pooler account limits",
     commands: [{ name: "show", summary: "Read account limits", usage: "bb account-limits [--host <id>]" }],
     async run(argv) {
       if (argv.includes("--help")) return { exitCode: 0, stdout: "Usage: bb account-limits [--host <id>]\n" };
       if (argv.length !== 0 && !(argv.length === 2 && argv[0] === "--host")) {
         return { exitCode: 2, stderr: "Usage: bb account-limits [--host <id>]\n" };
       }
-      const [usage, panel] = await Promise.all([
+      const [usage, panel, accountPool] = await Promise.all([
         bb.sdk.system.usageLimits(argv.length ? { hostId: argv[1] } : {}),
         readPanelSnapshot({}),
+        readAccountPool({}),
       ]);
       const cliproxy = argv.length === 0 ? panel : { machines: panel.machines.filter(machine => machine.id === argv[1]) };
       const native = Object.fromEntries(enabled.filter(p => p.maintenance?.usage).map(p => [p.id, usage[p.id] ?? null]));
-      return { exitCode: 0, stdout: JSON.stringify({ providers: native, cliproxy }, null, 2) + "\n" };
+      return { exitCode: 0, stdout: JSON.stringify({ providers: native, cliproxy, accountPool }, null, 2) + "\n" };
     },
   });
 }

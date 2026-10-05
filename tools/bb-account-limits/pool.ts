@@ -23,7 +23,7 @@ const shortGroupPrefixes: Record<string, string> = {
 
 function normalizeBaseWindow(label: string): CliproxyWindowIdentity {
   const text = label.trim().toLowerCase();
-  if (text === "5-hour limit" || text === "5h" || text === "session") return { id: "5h", kind: "five-hour", label: "5h" };
+  if (text === "5-hour limit" || text === "five-hour limit" || text === "5h" || text === "session") return { id: "5h", kind: "five-hour", label: "5h" };
   if (text === "weekly limit" || text === "7d") return { id: "7d", kind: "weekly", label: "7d" };
   if (text === "daily limit") return { id: "1d", kind: "daily", label: "1d" };
   if (text === "weekly scoped limit") return { id: "scoped", kind: "custom", label: "scoped" };
@@ -70,7 +70,7 @@ export type CliproxyPoolUsage =
 
 /** 只统计 status=ok 的账号；没有任何 ok 账号时返回 error，绝不显示 0 用量。 */
 export function aggregateCliproxyPool(accounts: readonly CliproxyAccountUsageEntry[]): CliproxyPoolUsage {
-  if (accounts.length === 0) return { status: "error", message: "该供应商没有可用的 Cliproxy 账号。" };
+  if (accounts.length === 0) return { status: "error", message: "该供应商没有可用的账号。" };
   const okAccounts = accounts.filter(account => account.usage.status === "ok");
   if (okAccounts.length === 0) return { status: "error", message: "该供应商的全部账号额度查询均失败。" };
   const groups = new Map<string, { identity: CliproxyWindowIdentity; weight: number; weighted: number; resetsAtMs: number | null; accounts: number; exhausted: number }>();
@@ -79,7 +79,8 @@ export function aggregateCliproxyPool(accounts: readonly CliproxyAccountUsageEnt
     const weight = Number.isFinite(account.weight) && account.weight > 0 ? account.weight : 1;
     const seen = new Set<string>();
     for (const window of account.usage.windows) {
-      const identity = normalizeCliproxyWindow(window.label);
+      const normalized = normalizeCliproxyWindow(window.label);
+      const identity = { ...normalized, id: window.id ?? normalized.id };
       if (seen.has(identity.id)) continue;
       seen.add(identity.id);
       let group = groups.get(identity.id);
