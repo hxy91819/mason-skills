@@ -49,6 +49,8 @@ skills:
 - name: domain-modeling
   source: mattpocock-skills
   note: 构建领域模型并维护 CONTEXT.md 与 ADR
+- name: google-doc-read
+  note: 按链接读取 Google 表格/文档（rclone 只读）
 - name: grill-me
   source: mattpocock-skills
   note: 连环追问打磨计划或设计(路由到 grilling)

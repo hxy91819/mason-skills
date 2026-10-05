@@ -1,0 +1,7 @@
+interface:
+  display_name: "Google Doc Read"
+  short_description: "按链接读取 Google 表格/文档/幻灯片/Drive 文件"
+  default_prompt: "Use $google-doc-read to read the Google Docs/Sheets link I sent."
+
+policy:
+  allow_implicit_invocation: true
