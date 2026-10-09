@@ -148,22 +148,27 @@ environments:
         result = m.dispatch(self.args('--project', 'other', '--environment', str(workspace), '--dry-run'), self.fake)
         self.assertNotIn('--parent-thread', result['argv'])
 
-    def test_explicit_alias_overrides_default_candidate(self):
-        config = m.yaml.safe_load(self.config.read_text())
-        config['agents']['primary']['routes']['complex'] = {'model': 'fast-model', 'reasoning': 'low'}
-        self.config.write_text(m.yaml.safe_dump(config))
-        result = m.dispatch(self.args('--difficulty', 'complex', '--agent', 'primary', '--dry-run'), self.fake)
-        self.assertEqual(result['selection']['agent'], 'primary')
+    def test_agent_override_is_rejected_before_calling_bb(self):
+        import contextlib
+        import io
+
+        for flags in (('--agent', 'primary'), ('--agent', 'primary', '--fallback-from', 'specialist')):
+            with self.subTest(flags=flags), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as error:
+                    m.dispatch(self.args(*flags), self.fake)
+                self.assertEqual(error.exception.code, 2)
+        self.assertEqual(self.calls, [])
 
     def test_routes_use_exact_route_then_default(self):
         primary = m.yaml.safe_load(self.config.read_text())['agents']['primary']['routes']
         primary['default'] = {'model': 'fast-model', 'reasoning': 'low'}
         config = m.yaml.safe_load(self.config.read_text())
         config['agents']['primary']['routes'] = primary
+        config['defaults']['complex'] = 'primary'
         self.config.write_text(m.yaml.safe_dump(config))
         medium = m.dispatch(self.args('--difficulty', 'medium', '--dry-run'), self.fake)
         self.assertEqual((medium['selection']['model'], medium['selection']['reasoning']), ('medium-model', 'high'))
-        fallback = m.dispatch(self.args('--difficulty', 'complex', '--agent', 'primary', '--dry-run'), self.fake)
+        fallback = m.dispatch(self.args('--difficulty', 'complex', '--dry-run'), self.fake)
         self.assertEqual((fallback['selection']['model'], fallback['selection']['reasoning']), ('fast-model', 'low'))
 
     def test_unknown_provider_rejected_before_model_query(self):
@@ -365,13 +370,6 @@ environments:
                     m.dispatch(self.args(), self.fake)
         self.assertFalse(any(c[:2] == ('provider', 'list') for c in self.calls))
 
-    def test_agent_is_pinned_and_never_falls_back(self):
-        self.chain_config(['primary', 'specialist'])
-        self.providers[0]['available'] = False
-        with self.assertRaises(m.DispatchError):
-            m.dispatch(self.args('--agent', 'primary'), self.fake)
-        self.assertFalse(any(c[:2] == ('thread', 'spawn') for c in self.calls))
-
     def test_fallback_from_resumes_chain_at_alias(self):
         self.chain_config(['primary', 'specialist'])
         result = m.dispatch(self.args('--fallback-from', 'specialist', '--dry-run'), self.fake)
@@ -379,8 +377,6 @@ environments:
         self.assertEqual(result['selection']['candidates'], ['specialist'])
         with self.assertRaises(m.DispatchError):
             m.dispatch(self.args('--fallback-from', 'missing'), self.fake)
-        with self.assertRaises(m.DispatchError):
-            m.dispatch(self.args('--agent', 'primary', '--fallback-from', 'specialist'), self.fake)
         self.assertFalse(any(c[:2] == ('thread', 'spawn') for c in self.calls))
 
     def test_spawn_failure_is_not_retried_but_names_next_candidate(self):

@@ -75,11 +75,6 @@ def thread_title(title, task):
 
 
 def candidate_chain(args, defaults, route):
-    if args.agent is not None:
-        if args.fallback_from is not None:
-            raise DispatchError("--agent 与 --fallback-from 不能同时使用。")
-        alias = string(args.agent, "--agent")
-        return [alias], "pinned", {alias: 1}
     value = defaults.get(route)
     if isinstance(value, str):
         chain, mode, weights = [value], "fallback", None
@@ -280,7 +275,6 @@ def parser():
     p.add_argument("--config", default=os.environ.get("BB_DISPATCH_CONFIG", str(Path.home() / ".config/bb-dispatch/config.yaml")), help="用户 YAML 配置路径，也可设置 BB_DISPATCH_CONFIG")
     p.add_argument("--difficulty", required=True, choices=["simple", "medium", "complex"], help="任务难度")
     p.add_argument("--task", required=True, help="任务目标、范围和验收要求")
-    p.add_argument("--agent", help="配置中的工具别名，覆盖默认路由；固定单候选，不进 fallback 链")
     p.add_argument("--fallback-from", metavar="别名", help="从 defaults.<路由> 链中该别名起续派；用于前次派发失败且确认未创建后的同档改派")
     p.add_argument("--reasoning", help="覆盖推理级别，仍校验模型目录")
     p.add_argument("--project", help="项目 ID；ID 模式默认环境所属项目，路径模式默认当前项目")

@@ -25,10 +25,9 @@ bb-dispatch --difficulty simple --task '补充 README 示例' --dry-run
 bb-dispatch --difficulty medium --task '定位登录失败，给出复现和修复'
 bb-dispatch --difficulty simple --task '验证用户登录与权限判定测试用例' --dry-run
 bb-dispatch --difficulty complex --task '审查证据并裁决指定的技术问题' --dry-run
-bb-dispatch --difficulty medium --agent primary --task '执行已授权的任务' --dry-run
 ```
 
-`--task` 只传递任务本身：目标、范围、必要输入和验收要求。provider、模型、推理级别、权限和目录校验由脚本和配置处理，不能写进子线程 prompt，也不要求子 agent 重复检查。用户直接给出 provider 或模型要求时，调用方须把它转换为匹配的配置别名或配置变更，再调用脚本。
+`--task` 只传递任务本身：目标、范围、必要输入和验收要求。provider、模型、推理级别、权限和目录校验由脚本和配置处理，不能写进子线程 prompt，也不要求子 agent 重复检查。用户直接给出 provider 或模型要求时，调用方须调整用户配置，再调用脚本。
 
 默认权限为 `accept-edits`。用户可在顶层或环境配置中设置已授权的 `permission_mode`；权限不兼容时报告错误，不自动升级。
 
@@ -58,9 +57,9 @@ defaults:
 
 路由项只由 `--difficulty simple|medium|complex` 决定；候选仅在存在该难度或显式 `default` 时参与。难度归类标准只在 SKILL.md「判断与调用」维护，本文不复述。没有任何匹配项会报错，不会猜测模型。
 
-优先级：命令行覆盖 > 环境配置 > 顶层配置。`--agent` 覆盖 defaults；它仍使用本次 difficulty 选择该 agent 的 routes。`environments.<精确环境 ID>` 可覆盖 defaults、agents、permission_mode；同名 agent 整体替换，必须写出 provider 和 routes。目录路径模式尚无环境 ID，不应用 `environments.<id>` 覆盖，只使用顶层配置。模型和思考深度的明确要求用配置别名、`--reasoning` 表达，缺失配置时先补齐，不静默替换。
+优先级：命令行覆盖 > 环境配置 > 顶层配置。候选始终由 defaults 决定，脚本不提供 `--agent` 覆盖入口。`environments.<精确环境 ID>` 可覆盖 defaults、agents、permission_mode；同名 agent 整体替换，必须写出 provider 和 routes。目录路径模式尚无环境 ID，不应用 `environments.<id>` 覆盖，只使用顶层配置。模型的明确要求通过配置调整表达，思考深度的明确要求用 `--reasoning` 表达，缺失配置时先补齐，不静默替换。
 
-`--agent` 固定单候选，不进 fallback 链。`--fallback-from <别名>` 把本次候选截取为从该别名起的后缀，用于前次派发失败且确认线程未创建后的同档续派；与 `--agent` 互斥，别名不在候选中时报错。负载均衡续派须保持原 route 和完整 `--task` 文本，才能复现返回的 `selection.fallbacks` 顺序；任务文本需要补充进展时，改用 `--agent <selection.fallbacks 中的下一别名>` 固定下一候选。
+`--fallback-from <别名>` 把本次候选截取为从该别名起的后缀，用于前次派发失败且确认线程未创建后的同档续派；别名不在候选中时报错。负载均衡续派须保持原 route 和完整 `--task` 文本，才能复现返回的 `selection.fallbacks` 顺序；需要补充进展时，续派保留原任务文本，创建成功后通过 `bb thread tell` 向新线程补充进展与位置。
 
 默认从 `bb status` 解析环境，项目使用该环境的所属项目。`--environment` 接受现有环境 ID 或本机已存在的目录路径：ID 模式下 `--project` 与环境所属项目必须匹配；路径模式下目录会解析为绝对路径并原样交给 BB 创建 project-checkout 附着环境，项目取 `--project` 或当前 `bb status`，两者都没有时须显式提供 `--project`。同项目时关联当前父线程，跨环境也保留关联；跨项目不关联。
 
