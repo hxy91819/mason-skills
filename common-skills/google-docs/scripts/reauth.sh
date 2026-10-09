@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Authorize rclone remote (default gdrive:, drive.readonly) on a headless box.
+# Authorize an rclone Drive remote on a headless box.
+# Remote: GDOC_RCLONE_REMOTE (default gdrive). Scope: GDRIVE_SCOPE, comma-separated short names
+# (default drive.readonly; full access: drive,documents,spreadsheets).
 #   reauth.sh start            -> prints the Google consent URL to send to the user
 #   reauth.sh finish '<url>'   -> takes the http://127.0.0.1:53682/?...code=... URL, saves token, verifies
 # OAuth client: GDRIVE_CLIENT_ID / GDRIVE_CLIENT_SECRET, else the existing remote's client_id / client_secret.
 set -euo pipefail
 REMOTE=${GDOC_RCLONE_REMOTE:-gdrive}
+SCOPE=${GDRIVE_SCOPE:-drive.readonly}
 LOG=${TMPDIR:-/tmp}/rclone-auth-$REMOTE.log
 
 conf() { rclone config show "$REMOTE" 2>/dev/null | sed -n "s/^$1 = //p"; }
@@ -14,7 +17,7 @@ CSECRET=${GDRIVE_CLIENT_SECRET:-$(conf client_secret)}
 
 case "${1:-}" in
 start)
-  B=$(printf '{"scope":"drive.readonly","client_id":"%s","client_secret":"%s"}' "$CID" "$CSECRET" | base64 | tr -d '\n=' | tr '+/' '-_')
+  B=$(printf '{"scope":"%s","client_id":"%s","client_secret":"%s"}' "$SCOPE" "$CID" "$CSECRET" | base64 | tr -d '\n=' | tr '+/' '-_')
   nohup rclone authorize drive "$B" --auth-no-open-browser > "$LOG" 2>&1 &
   L=
   for _ in $(seq 20); do L=$(grep -o 'http://127.0.0.1:53682/auth?state=[^ ]*' "$LOG" || true); [ -n "$L" ] && break; sleep 0.5; done
@@ -28,9 +31,9 @@ finish)
   TOKEN=$(python3 -c 'import sys,base64,json;s=sys.argv[1];s+="="*(-len(s)%4);print(json.loads(base64.urlsafe_b64decode(s))["token"])' "$B" 2>/dev/null || true)
   [ -n "$TOKEN" ] || { echo "没拿到 token（日志保留在 $LOG），配置未改动" >&2; exit 1; }
   if rclone listremotes | grep -qx "$REMOTE:"; then
-    rclone config update "$REMOTE" client_id="$CID" client_secret="$CSECRET" token="$TOKEN" config_refresh_token=false --non-interactive > /dev/null
+    rclone config update "$REMOTE" scope="$SCOPE" client_id="$CID" client_secret="$CSECRET" token="$TOKEN" config_refresh_token=false --non-interactive > /dev/null
   else
-    rclone config create "$REMOTE" drive scope=drive.readonly client_id="$CID" client_secret="$CSECRET" token="$TOKEN" config_refresh_token=false --non-interactive > /dev/null
+    rclone config create "$REMOTE" drive scope="$SCOPE" client_id="$CID" client_secret="$CSECRET" token="$TOKEN" config_refresh_token=false --non-interactive > /dev/null
   fi
   chmod 600 "$(rclone config file | tail -1)"
   rm -f "$LOG"

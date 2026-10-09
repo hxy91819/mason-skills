@@ -1,0 +1,7 @@
+interface:
+  display_name: "Google Docs"
+  short_description: "读写 Google 表格/文档/幻灯片/Drive 文件"
+  default_prompt: "Use $google-docs to read or edit the Google Docs/Sheets I mention."
+
+policy:
+  allow_implicit_invocation: true

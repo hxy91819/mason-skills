@@ -16,7 +16,7 @@ External + In production 的应用可被任意谷歌账号授权，未审核时�
 ### 1. GCP 项目与 API
 
 - https://console.cloud.google.com/projectcreate 新建项目，确认顶部项目选择器已切到它。
-- 启用 Drive API（`apis/library/drive.googleapis.com`）。读取只需要 Drive；Sheets/Docs API 仅在改用 gog 等按 API 读取的工具时才需要。
+- 启用 Drive API（`apis/library/drive.googleapis.com`）、Sheets API（`sheets.googleapis.com`）、Docs API（`docs.googleapis.com`）。只读取时 Drive 即可；`scripts/gog.sh` 编辑单元格和文档正文需要后两者。
 
 ### 2. OAuth 同意屏幕（Google Auth Platform）
 
@@ -63,6 +63,7 @@ https://console.cloud.google.com/auth/clients → Create client → 类型 **Des
 - `GDRIVE_CLIENT_ID=... GDRIVE_CLIENT_SECRET=... scripts/reauth.sh start`，把输出的地址交给用户。
 - 用户选对账号；出现「Google 尚未验证此应用」时点 高级 → 转至 <应用名> → 继续/允许；回传打不开的 `http://127.0.0.1:53682/?state=...&code=...` 地址。
 - `scripts/reauth.sh finish '<地址>'`：打印已授权账号，核对是否为目标账号；再用 `scripts/gdoc_fetch.py` 读一个该账号能访问的表格链接。
+- 开通写入：`GDOC_RCLONE_REMOTE=gdrive-rw GDRIVE_SCOPE=drive,documents,spreadsheets` 加同样的 client 变量，再走一遍 `start`/`finish`。同意页会列出「查看、修改、新建和删除」等多项，需全部勾选。完成后用 `scripts/gog.sh sheets create` 建测试表、`sheets update` 写入、`sheets get` 读回，再 `drive delete` 清理。只读远端 `gdrive:` 保持不变。
 - 迁移自旧授权（如 rclone 共享 client）时，验证通过后请用户在 https://myaccount.google.com/permissions 撤销旧条目，保留新应用。
 
 ## 易错点
