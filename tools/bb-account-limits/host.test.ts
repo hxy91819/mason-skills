@@ -50,8 +50,46 @@ test("Cliproxy snapshot accepts an empty enabled group set", async () => {
   assert.deepEqual(snapshot, { providers: [] });
 });
 
+test("Cliproxy snapshot keeps failed accounts alongside healthy ones", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url.endsWith("/auth-files")) return new Response(JSON.stringify({ files: [
+      { provider: "claude", auth_index: "auth-1" },
+      { provider: "claude", auth_index: "auth-2" },
+    ] }), { status: 200 });
+    const body = JSON.parse(String(init?.body));
+    if (body.auth_index === "auth-2") return new Response(JSON.stringify({ status_code: 503, body: "{}" }), { status: 200 });
+    return new Response(JSON.stringify({ status_code: 200, body: JSON.stringify({ limits: [
+      { kind: "weekly_all", percent: 25, resets_at: "2026-09-12T10:00:00Z" },
+    ] }) }), { status: 200 });
+  };
+  try {
+    const groups = new Map([["claude", [
+      { provider: "claude", authIndex: "auth-1", label: "账号 1" },
+      { provider: "claude", authIndex: "auth-2", label: "账号 2" },
+    ]]]);
+    const snapshot = await readCliproxyUsageSnapshot(groups, { managementKey: "test" });
+    assert.equal(snapshot.providers.length, 1);
+    const provider = snapshot.providers[0]!;
+    assert.equal(provider.accounts.length, 2);
+    assert.equal(provider.accounts[0]?.usage.status, "ok");
+    assert.equal(provider.accounts[1]?.usage.status, "error");
+    assert.notEqual(provider.accounts[0]?.key, provider.accounts[1]?.key);
+    assert.equal(provider.accounts[0]?.weight, 1);
+    // 供应商级压平窗口只保留成功账号，失败账号不丢。
+    assert.equal(provider.usage.status, "ok");
+    if (provider.usage.status === "ok") {
+      assert.equal(provider.usage.windows.length, 1);
+      assert.equal(provider.usage.windows[0]?.accountLabel, "账号 1");
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("provider bridge passes SDK conformance with an offline ACP agent", { timeout: 25000 }, async () => {
-  const { stdout } = await promisify(execFile)(process.execPath, ["--import", "./test-runtime.mjs", "--import", "tsx", "./fixtures/conformance.mjs"], { timeout: 22000, maxBuffer: 1024 * 1024 });
+  const { stdout } = await promisify(execFile)(process.execPath, ["--import", "tsx", "./fixtures/conformance.mjs"], { timeout: 22000, maxBuffer: 1024 * 1024 });
   const report = JSON.parse(stdout);
   assert.equal(report.passed, true, JSON.stringify(report.results.filter((r: any) => r.status !== "pass")));
 });

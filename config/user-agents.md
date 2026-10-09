@@ -33,6 +33,7 @@ alwaysApply: true
 - 全局规则正文维护在 `mason-skills` 仓库的 `config/user-agents.md`，通过软链接入 `~/.agents/AGENTS.md`；各宿主全局入口（如 `~/.codex/AGENTS.md`、`~/.claude/CLAUDE.md`）复用该正文，不复制规则。
 - 项目约定、历史决策和对外契约查项目级 `AGENTS.md` 及其指定文档；运行现状查实时状态、脚本和探针，文档与实测冲突时明确指出。
 - 用户引用的技能（`$name` / `/name`）在当前环境的技能列表里找不到时，按顺序查找其 `SKILL.md`：先 `~/.agents/skills/<name>/`，再当前仓库 `.agents/skills/<name>/`；找到后读取并按其内容继续任务。
+- 压缩摘要或接续会话里记住的文件内容与 API 是线索不是事实；编辑或新增依赖某文件的代码前，先重读该文件与型别定义。
 - 设计应该以长远维护、消除歧义为目标，应考虑此会话结束后，新的会话也能有轻松接手工作。主动优化用户的仓库上下文，包含但不限于 AGENTS.md，skills，docs。
 
 ## 共享工作区

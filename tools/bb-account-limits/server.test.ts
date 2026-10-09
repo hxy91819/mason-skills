@@ -62,8 +62,8 @@ test("Codex ACP providers advertise BB Goal support", () => {
 function cliproxySnapshot(claudeUsedPercent: number, grokUsedPercent: number): CliproxyUsageSnapshot {
   return {
     providers: [
-      { id: "cliproxy-claude", displayName: "Claude", usage: { status: "ok", planLabel: null, windows: [{ accountLabel: "Claude", label: "Weekly limit", usedPercent: claudeUsedPercent, resetsAt: null }] } },
-      { id: "cliproxy-xai", displayName: "Grok", usage: { status: "ok", planLabel: null, windows: [{ accountLabel: "Grok", label: "Weekly limit", usedPercent: grokUsedPercent, resetsAt: null }] } },
+      { id: "cliproxy-claude", displayName: "Claude", accounts: [], usage: { status: "ok", planLabel: null, windows: [{ accountLabel: "Claude", label: "Weekly limit", usedPercent: claudeUsedPercent, resetsAt: null }] } },
+      { id: "cliproxy-xai", displayName: "Grok", accounts: [], usage: { status: "ok", planLabel: null, windows: [{ accountLabel: "Grok", label: "Weekly limit", usedPercent: grokUsedPercent, resetsAt: null }] } },
     ],
   };
 }

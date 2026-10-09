@@ -3,4 +3,4 @@ interface:
   short_description: "Run a pre-commit or ship review through BB"
   default_prompt: "Use $autoreview to review the requested local change or PR through bb-model-routing at medium difficulty."
 policy:
-  allow_implicit_invocation: false
+  allow_implicit_invocation: true

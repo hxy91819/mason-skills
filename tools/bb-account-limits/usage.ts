@@ -1,4 +1,6 @@
 import { cliproxyProviderDisplayName, cliproxyProviderId, config } from "./config.js";
+import { orderQuotaWindows } from "./pool.js";
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -81,6 +83,7 @@ export interface CliproxyUsageAccount {
     resetsAtSignal?: string;
     scale?: "fraction" | "percent";
   }>;
+  poolWeight?: number;
 }
 
 export interface CliproxyUsageOptions {
@@ -292,6 +295,7 @@ export function cliproxyAccountsFromAuthFiles(
       ...(identity ? { account: identity } : {}),
       label: match?.label ?? identity ?? authIndex,
       ...(match?.cachedWindows ? { cachedWindows: match.cachedWindows } : {}),
+      ...(match?.poolWeight !== undefined ? { poolWeight: match.poolWeight } : {}),
     });
   }
   return accounts;
@@ -422,7 +426,7 @@ export function normalizeAntigravityUsage(raw: unknown, account: CliproxyUsageAc
     });
   });
   if (!windows.length) return usageError("Cliproxy returned an unrecognized Antigravity quota response.");
-  return { supported: true, usage: { status: "ok", accountEmail: null, planLabel: usageLabel(account), windows } };
+  return { supported: true, usage: { status: "ok", accountEmail: null, planLabel: usageLabel(account), windows: orderQuotaWindows(windows) } };
 }
 
 function positiveNumber(value: unknown): number | null {
@@ -794,12 +798,26 @@ async function readCliproxyAccountUsage(
   return normalizeCliproxyCachedUsage(selected, account);
 }
 
-function aggregateCliproxyUsage(
-  accounts: readonly CliproxyUsageAccount[],
-  results: readonly ProviderUsageResult[],
+export interface CliproxyProviderAccountUsage {
+  /** 稳定且不含凭据的账号 key：authIndex 的 sha256 前 16 位。 */
+  key: string;
+  label: string;
+  /** 池聚合权重（cliproxy.accounts[].poolWeight），默认 1。 */
+  weight: number;
+  result: ProviderUsageResult;
+}
+
+export function cliproxyAccountKey(account: CliproxyUsageAccount): string {
+  const identity = account.authIndex ?? account.account ?? usageLabel(account);
+  return createHash("sha256").update(identity).digest("hex").slice(0, 16);
+}
+
+export function aggregateCliproxyUsage(
+  provider: string,
+  entries: readonly CliproxyProviderAccountUsage[],
 ): ProviderUsageResult {
-  const windows = results.flatMap((result, index) => {
-    const usage = asRecord(result.usage);
+  const windows = entries.flatMap(entry => {
+    const usage = asRecord(entry.result.usage);
     if (usage?.status !== "ok" || !Array.isArray(usage.windows)) return [];
     return usage.windows.flatMap(rawWindow => {
       const window = asRecord(rawWindow);
@@ -808,22 +826,22 @@ function aggregateCliproxyUsage(
       const usedPercent = Number(window.usedPercent);
       if (!label || !Number.isFinite(usedPercent) || usedPercent < 0 || usedPercent > 100) return [];
       return [{
-        label: `${usageLabel(accounts[index]!)} · ${label}`,
-        accountLabel: usageLabel(accounts[index]!),
+        label: `${entry.label} · ${label}`,
+        accountLabel: entry.label,
         usedPercent,
         resetsAt: typeof window.resetsAt === "string" ? window.resetsAt : null,
       }];
     });
   });
   if (!windows.length) return usageError("Cliproxy did not return quota data for any configured account.");
-  const displayName = cliproxyProviderDisplayName(accounts[0]?.provider ?? "Cliproxy");
-  const successful = results.filter(hasOkUsage).length;
+  const displayName = cliproxyProviderDisplayName(provider);
+  const successful = entries.filter(entry => hasOkUsage(entry.result)).length;
   return {
     supported: true,
     usage: {
       status: "ok",
       accountEmail: null,
-      planLabel: `${displayName} · Cliproxy · ${successful}/${accounts.length} accounts`,
+      planLabel: `${displayName} · Cliproxy · ${successful}/${entries.length} accounts`,
       windows,
     },
   };
@@ -839,7 +857,7 @@ async function readCliproxyAuthFiles(options: CliproxyUsageOptions): Promise<unk
   return readJson(response);
 }
 
-function cliproxyQueryError(error: unknown, signal: AbortSignal | undefined): ProviderUsageResult {
+export function cliproxyQueryError(error: unknown, signal: AbortSignal | undefined): ProviderUsageResult {
   if (signal?.aborted || (error as Error).message === "cliproxy-query-cancelled") return usageError("Cliproxy quota query cancelled.");
   if ((error as Error).message === "cliproxy-query-timed-out") return usageError("Cliproxy quota query timed out.");
   const status = /^cliproxy-credential-query-(\d+)$/u.exec((error as Error).message)?.[1];
@@ -863,24 +881,37 @@ export async function readCliproxyUsage(account: CliproxyUsageAccount, options: 
   }
 }
 
+/**
+ * 按账号读取 Cliproxy 额度：每个账号返回独立结果，失败账号保留为 error 状态，
+ * 不再压平丢失。auth-files 本身不可用时整体抛错，由调用方转成供应商级 error。
+ */
+export async function readCliproxyProviderAccountUsages(
+  accounts: readonly CliproxyUsageAccount[],
+  options: CliproxyUsageOptions,
+): Promise<CliproxyProviderAccountUsage[]> {
+  if (!accounts.length) return [];
+  const authFiles = await readCliproxyAuthFiles(options);
+  return Promise.all(accounts.map(async account => {
+    let result: ProviderUsageResult;
+    try {
+      const selected = getSelectedCliproxyRecord(authFiles, account);
+      result = isUsageResult(selected)
+        ? selected
+        : await readCliproxyAccountUsage(account, selected, options);
+    } catch (error) {
+      result = cliproxyQueryError(error, options.signal);
+    }
+    return { key: cliproxyAccountKey(account), label: usageLabel(account), weight: account.poolWeight ?? 1, result };
+  }));
+}
+
 export async function readCliproxyProviderUsage(
   accounts: readonly CliproxyUsageAccount[],
   options: CliproxyUsageOptions,
 ): Promise<ProviderUsageResult> {
   if (!accounts.length) return usageError("Cliproxy provider has no configured accounts.");
   try {
-    const authFiles = await readCliproxyAuthFiles(options);
-    const results = await Promise.all(accounts.map(async account => {
-      try {
-        const selected = getSelectedCliproxyRecord(authFiles, account);
-        return isUsageResult(selected)
-          ? selected
-          : await readCliproxyAccountUsage(account, selected, options);
-      } catch (error) {
-        return cliproxyQueryError(error, options.signal);
-      }
-    }));
-    return aggregateCliproxyUsage(accounts, results);
+    return aggregateCliproxyUsage(accounts[0]!.provider, await readCliproxyProviderAccountUsages(accounts, options));
   } catch (error) {
     return cliproxyQueryError(error, options.signal);
   }

@@ -126,8 +126,8 @@ test("Antigravity converts each authoritative quota bucket from remaining to use
   ] }, { provider: "antigravity", authIndex: "account-1", label: "Gemini · 账号 1" });
   assert.ok(result.supported && result.usage.status === "ok");
   assert.deepEqual(result.usage.windows, [
-    { label: "Gemini Models: Weekly limit", usedPercent: 21, resetsAt: "2026-09-12T10:00:00.000Z" },
     { label: "Gemini Models: 5-hour limit", usedPercent: 16, resetsAt: "2026-09-09T11:00:00.000Z" },
+    { label: "Gemini Models: Weekly limit", usedPercent: 21, resetsAt: "2026-09-12T10:00:00.000Z" },
     { label: "Claude and GPT models: Weekly limit", usedPercent: 0, resetsAt: "2026-09-12T10:00:00.000Z" },
   ]);
   for (const invalid of [{}, { groups: [{ buckets: [{ remainingFraction: 1.01 }] }] }]) {
