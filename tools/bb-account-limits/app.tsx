@@ -47,7 +47,7 @@ function shortWindowLabel(label: string): string {
     "5-hour limit": "5h",
     "Five-hour limit": "5h",
     "Weekly limit": "周",
-    "Weekly scoped limit": "scoped",
+    "Weekly scoped limit": "Fable",
     "Current limit": "当前",
     "Secondary limit": "次级",
   };
