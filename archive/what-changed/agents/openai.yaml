@@ -1,0 +1,7 @@
+interface:
+  display_name: "What Changed (archived)"
+  short_description: "已归档：历史变更说明流程，不推荐安装"
+  default_prompt: "This skill is archived. Do not run it unless the user asked to restore the archived What Changed workflow."
+
+policy:
+  allow_implicit_invocation: false

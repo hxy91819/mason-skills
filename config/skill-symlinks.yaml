@@ -10,6 +10,7 @@
 # 这类来源只声明项目位置、不注册软链。
 # worktree-cleanup 已迁移至私有仓 hxy91819/mole-linux（.claude/skills/worktree-cleanup）
 # mermaid-lint 已 archive：源码留在 archive/mermaid-lint，不推荐全局软链
+# what-changed 已 archive：源码留在 archive/what-changed，不推荐全局软链
 version: 1
 sources:
 - name: anthropics-skills
@@ -144,8 +145,6 @@ skills:
 - name: wayfinder
   source: mattpocock-skills
   note: 把超大工作规划成 tracker 决策工单地图
-- name: what-changed
-  note: 用平实语言说明改动内容
 - name: wizard
   source: mattpocock-skills
   note: 生成引导人工完成操作的 bash 向导

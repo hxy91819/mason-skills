@@ -70,17 +70,17 @@ assert_ok "白名单生效：check 退出 0" python3 "$SCRIPT" --mode check
 assert_ok "白名单条目链接仍在（未被删除）" test -e "$SKILLS/secure-release"
 
 echo "=== 场景 5: conflict 保护——真实目录占用绝不删除 ==="
-rm "$SKILLS/what-changed"
-mkdir -p "$SKILLS/what-changed" && echo "user data" > "$SKILLS/what-changed/local.txt"
-assert_out "apply 报告 conflict" "\[conflict\] what-changed" python3 "$SCRIPT" --mode apply --yes
-assert_ok "真实目录未被触碰" test -f "$SKILLS/what-changed/local.txt"
+rm "$SKILLS/preflight"
+mkdir -p "$SKILLS/preflight" && echo "user data" > "$SKILLS/preflight/local.txt"
+assert_out "apply 报告 conflict" "\[conflict\] preflight" python3 "$SCRIPT" --mode apply --yes
+assert_ok "真实目录未被触碰" test -f "$SKILLS/preflight/local.txt"
 assert_fail "存在未解决 conflict 时 apply 退出 1" python3 "$SCRIPT" --mode apply --yes
-rm -rf "$SKILLS/what-changed"
+rm -rf "$SKILLS/preflight"
 
 echo "=== 场景 6: fix——指向仓库内错误位置的软链被修复 ==="
-ln -s /work/repo/common-skills/use-worktree "$SKILLS/what-changed"
+ln -s /work/repo/common-skills/use-worktree "$SKILLS/preflight"
 python3 "$SCRIPT" --mode apply --yes >/dev/null
-assert_ok "what-changed 被修复为正确目标" test "$(readlink "$SKILLS/what-changed")" = "/work/repo/common-skills/what-changed"
+assert_ok "preflight 被修复为正确目标" test "$(readlink "$SKILLS/preflight")" = "/work/repo/common-skills/preflight"
 
 echo "=== 场景 7: 第三方中转链接不算 extra（管理边界）==="
 mkdir -p /opt/other-workspace/.agents/skills
@@ -124,7 +124,7 @@ python3 "$SCRIPT" --mode apply --yes >/dev/null
 assert_ok "apply --yes 删除了外部项目 extra 链接" test ! -e "$SKILLS/handoff"
 python3 "$SCRIPT" --mode register --source mattpocock-skills --skill handoff --note "把当前会话压缩成交接文档交给下一个 agent" >/dev/null
 python3 "$SCRIPT" --mode apply --yes >/dev/null
-assert_ok "register --source 重新登记后链接恢复" test "$(readlink "$SKILLS/handoff")" = "/work/mattpocock-skills/skills/productivity/handoff"
+assert_ok "register --source 重新登记后链接恢复" test "$(readlink "$SKILLS/handoff")" = "/work/mattpocock-skills/skills/engineering/handoff"
 assert_ok "最终 check 收敛" python3 "$SCRIPT" --mode check
 
 echo

@@ -1,9 +1,18 @@
 ---
 name: what-changed
-description: 用平实语言说明上一轮、当前 diff 或当前 PR/MR 改了什么、为什么这样改。
+description: "Archived historical change explanation workflow. Kept in-tree for reference; not selected for new work."
+disable-model-invocation: true
+triggers:
+  - user
+metadata:
+  status: archived
 ---
 
-# What Changed
+# What Changed（archived）
+
+This skill is archived. The files stay in `archive/what-changed/` as historical reference and are not recommended for user-scope install. Ordinary workflows do not load it.
+
+The rest of this file is the archived workflow.
 
 用户要听的是改动说明，不是代码走查。核心原则：讲决定，用按意图分类的精简清单呈现。
 
