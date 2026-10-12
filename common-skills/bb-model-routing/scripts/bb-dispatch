@@ -25,6 +25,7 @@ class DispatchError(Exception):
 
 
 ROUTE_KEYS = frozenset(("simple", "medium", "complex", "default"))
+TITLE_PREFIXES = {"simple": "🟢", "medium": "🟡", "complex": "🔴"}
 
 
 def bb(*args):
@@ -64,14 +65,18 @@ def unique(items, key, value, label):
     return matches[0]
 
 
-def thread_title(title, task):
+def thread_title(title, task, difficulty):
     text = " ".join((title or "").split()) or " ".join(task.split())
-    while text == "[Agent]" or text.startswith("[Agent] "):
-        text = text[len("[Agent]"):].strip()
+    prefixes = ("[Agent]", *TITLE_PREFIXES.values())
+    while True:
+        prefix = next((p for p in prefixes if text == p or text.startswith(p + " ")), None)
+        if prefix is None:
+            break
+        text = text[len(prefix):].strip()
     text = text or "任务"
     if len(text) > 80:
         text = text[:79] + "…"
-    return "[Agent] " + text
+    return TITLE_PREFIXES[difficulty] + " " + text
 
 
 def candidate_chain(args, defaults, route):
@@ -237,7 +242,7 @@ def dispatch(args, call=bb):
                "--permission-mode", permission, "--prompt", task]
     if reasoning is not None:
         command += ["--reasoning-level", reasoning]
-    title = thread_title(args.title, args.task)
+    title = thread_title(args.title, args.task, args.difficulty)
     command += ["--title", title]
     # 当前线程属于目标项目时自动关联；跨项目派发不能误继承父线程。
     parent = context.get("thread") or {}
@@ -280,7 +285,7 @@ def parser():
     p.add_argument("--project", help="项目 ID；ID 模式默认环境所属项目，路径模式默认当前项目")
     p.add_argument("--environment", help="现有环境 ID 或本机工作区目录；默认当前 BB 环境")
     p.add_argument("--permission-mode", choices=["accept-edits", "auto", "full"], help="已获授权的权限；默认用户配置或 accept-edits")
-    p.add_argument("--title", help="可选标题正文；自动加 [Agent] 前缀，省略时从任务文本截取")
+    p.add_argument("--title", help="可选标题正文；按难度自动加 🟢/🟡/🔴 前缀，省略时从任务文本截取")
     p.add_argument("--dry-run", action="store_true", help="只读校验并输出启动参数，不创建线程")
     return p
 

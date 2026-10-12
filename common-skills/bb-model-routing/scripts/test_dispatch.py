@@ -239,21 +239,27 @@ environments:
         self.assertEqual(self.calls, [])
 
     def test_titles_are_prefixed_in_preview_and_spawn(self):
-        cases = [(None, '[Agent] literal $(touch nope) "text"'),
-                 ('修复登录', '[Agent] 修复登录'),
-                 ('  [Agent] [Agent] 修复\n登录 ', '[Agent] 修复 登录'),
-                 ('[Agent]', '[Agent] 任务'),
-                 ('文' * 100, '[Agent] ' + '文' * 79 + '…')]
+        cases = [(None, 'literal $(touch nope) "text"'),
+                 ('  ', 'literal $(touch nope) "text"'),
+                 ('修复登录', '修复登录'),
+                 ('  [Agent] [Agent] 修复\n登录 ', '修复 登录'),
+                 ('🟢 🟡 🔴 [Agent] 修复登录', '修复登录'),
+                 ('[Agent]', '任务'),
+                 ('🟢', '任务'),
+                 ('文' * 100, '文' * 79 + '…')]
         for supplied, expected in cases:
-            for dry_run in (False, True):
-                with self.subTest(title=supplied, dry_run=dry_run):
-                    extra = ['--title', supplied] if supplied is not None else []
-                    if dry_run:
-                        extra += ['--dry-run']
-                    result = m.dispatch(self.args(*extra), self.fake)
-                    command = result['argv'] if dry_run else self.calls[-1]
-                    self.assertEqual(command[command.index('--title') + 1], expected)
-                    self.assertEqual(result['selection']['title'], expected)
+            for difficulty, prefix in [('simple', '🟢'), ('medium', '🟡'), ('complex', '🔴')]:
+                for dry_run in (False, True):
+                    with self.subTest(title=supplied, difficulty=difficulty, dry_run=dry_run):
+                        extra = ['--difficulty', difficulty]
+                        if supplied is not None:
+                            extra += ['--title', supplied]
+                        if dry_run:
+                            extra += ['--dry-run']
+                        result = m.dispatch(self.args(*extra), self.fake)
+                        command = result['argv'] if dry_run else self.calls[-1]
+                        self.assertEqual(command[command.index('--title') + 1], prefix + ' ' + expected)
+                        self.assertEqual(result['selection']['title'], prefix + ' ' + expected)
 
     def test_spawn_failure_is_not_retried(self):
         def failing(*args):
