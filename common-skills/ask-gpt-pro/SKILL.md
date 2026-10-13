@@ -12,10 +12,14 @@ description: 通过已登录的 ChatGPT 浏览器向 GPT Pro 咨询具体难题�
 先探测本机 DevTools。`curl -sS -m 2 http://127.0.0.1:9222/json/version` 返回 `webSocketDebuggerUrl` 时，只 attach，不要再启动第二个浏览器：
 
 ```bash
-oracle --engine browser --browser-attach-running --model gpt-6-pro -p "<问题>"
+oracle --engine browser --browser-attach-running --model gpt-6-pro --browser-archive never -p "<问题>"
 ```
 
 端口不是 `9222` 时另加 `--remote-chrome <host:port>`。没有常驻 DevTools 时，使用 `--browser-manual-login`，让 Oracle 读取 `~/.oracle/config.json` 里的 `chromePath` 和 `manualLoginProfileDir`。该 profile 保存登录态；`--browser-keep-browser` 只决定进程是否常驻。无 `DISPLAY` 时，从用户图形会话复制 `DISPLAY`、`XAUTHORITY`、`DBUS_SESSION_BUS_ADDRESS` 再启动。页面出现登录按钮时停止并请用户在该 profile 登录一次，不要循环重试。当前账号没有所写模型时，根据账号可用的 Pro 型号显式调整 `--model`，检查 Oracle 的模型选择结果，不依赖网页默认选择。
+
+GPT-6 Astra 在 ChatGPT 的高级模型选择器中显示为 `Latest`（本地化界面可能显示“最新”），Pro 档位的输入框标签为 `6 Pro`。`--model gpt-6-pro` 需要 Oracle 同时支持这一模型选择器和 Pro 档位；核对实际选择结果，不能只根据 CLI 接受模型参数就判定已适配。
+
+发送问题的 browser 调用（包括 manual-login 和 follow-up）默认显式传入 `--browser-archive never`，将会话保留在 ChatGPT 历史中。只有用户明确要求归档时才改用其他策略。Oracle 自身的默认 `auto` 会归档成功的非项目单次咨询；本机通用默认可在 `~/.oracle/config.json` 的 `browser` 对象中设置 `archiveConversations: "never"`，CLI 显式参数优先。`oracle session <id>` 只取回已有记录，无需加归档参数。
 
 ## 咨询与取回
 
