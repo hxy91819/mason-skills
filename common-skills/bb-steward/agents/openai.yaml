@@ -1,0 +1,6 @@
+interface:
+  display_name: "BB 管家"
+  short_description: "以管家身份跨会话推进目标：自行规划、经 BB 派发、维护工作簿"
+  default_prompt: "使用 $bb-steward 推进这个目标：读取或创建工作簿，决定下一步，经 bb-model-routing 派发，收通知后回写路线、关键决策与用户待办。"
+policy:
+  allow_implicit_invocation: false
