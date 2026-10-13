@@ -71,7 +71,8 @@ environments:
     def test_dry_run_never_spawns_and_preserves_task(self):
         result = m.dispatch(self.args('--dry-run'), self.fake)
         self.assertEqual(result['selection']['agent'], 'primary')
-        self.assertIn('literal $(touch nope) "text"', result['argv'])
+        prompt = result['argv'][result['argv'].index('--prompt') + 1]
+        self.assertTrue(prompt.startswith(self.args().task + '\n\n'))
         self.assertIn('parent', result['argv'])
         self.assertFalse(any(c[:2] == ('thread', 'spawn') for c in self.calls))
 
@@ -147,6 +148,7 @@ environments:
         workspace.mkdir()
         result = m.dispatch(self.args('--project', 'other', '--environment', str(workspace), '--dry-run'), self.fake)
         self.assertNotIn('--parent-thread', result['argv'])
+        self.assertEqual(result['argv'][result['argv'].index('--prompt') + 1], self.args().task)
 
     def test_agent_override_is_rejected_before_calling_bb(self):
         import contextlib

@@ -236,14 +236,7 @@ def dispatch(args, call=bb):
         raise DispatchError(f"defaults.{route} 候选链 {chain} 均不可用：{detail}")
     index, alias, provider, model, reasoning = choice
     fallbacks = chain[index + 1:]
-    task = args.task
-    command = ["thread", "spawn", "--project", project, "--environment", environment,
-               "--provider", provider, "--model", model,
-               "--permission-mode", permission, "--prompt", task]
-    if reasoning is not None:
-        command += ["--reasoning-level", reasoning]
     title = thread_title(args.title, args.task, args.difficulty)
-    command += ["--title", title]
     # 当前线程属于目标项目时自动关联；跨项目派发不能误继承父线程。
     parent = context.get("thread") or {}
     if not parent and os.environ.get("BB_THREAD_ID"):
@@ -252,6 +245,22 @@ def dispatch(args, call=bb):
             parent = {}
     elif project != current_project:
         parent = {}
+    task = args.task
+    if parent.get("id"):
+        task += (
+            "\n\n## 向父会话回报\n"
+            f"父会话：{parent['id']}。执行期间需要向父会话发送进度、阶段结果或非紧急问题时，"
+            f"使用 `bb thread tell {parent['id']} --mode queue ...`，让父 Agent 先完成当前回合。"
+            f"只有必须立即纠正父 Agent 当前工作时（例如发现它正执行错误方案），才使用 "
+            f"`bb thread tell {parent['id']} --mode steer ...`。"
+            "最终结果写在 final 回复中，由 BB 自动汇报给父会话。\n"
+        )
+    command = ["thread", "spawn", "--project", project, "--environment", environment,
+               "--provider", provider, "--model", model,
+               "--permission-mode", permission, "--prompt", task]
+    if reasoning is not None:
+        command += ["--reasoning-level", reasoning]
+    command += ["--title", title]
     if parent.get("id"):
         command += ["--parent-thread", parent["id"]]
     plan = dict(project=project, environment=environment, validation_environment=validation_environment,
