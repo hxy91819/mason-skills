@@ -5,6 +5,7 @@ This directory holds maintained repository design notes and examples. Skill sour
 | Path | What it is |
 | --- | --- |
 | [PPT 制作复盘](ppt-making-lessons.md) | 工程成果汇报的叙事、实践表达、视觉审查和交付经验；供类似需求参考，不是固定模板或技能入口 |
+| [原型到正式实现复盘](prototype-to-production-lessons.md) | 原型分两条线承载（UI 抽共用包加截图比对；需求走文档链加编号测试）、领域驱动轻量版与七项守护、派发合并流程、测试分层、前端薄化、本地入口与踩坑；供同类项目参考 |
 | [Fork 维护决策](adr/0001-two-tier-fork-maintenance.md) | 面向人的简短决策记录：独立来源、可选领域与新旧项目接入；不属于 Agent 默认加载材料 |
 | [large-task system design](../common-skills/large-task-planning/references/large-task-system-design.md) | Shared design principles and boundaries for planning and orchestrating large tasks; owned by `large-task-planning` |
 | [harness/](harness/) | Harness 大全：按主题收录真实项目验证过的 pre-commit、测试分层、testcontainers、迁移、覆盖率门禁和 Agent 工作面做法，附新项目接入清单 |
