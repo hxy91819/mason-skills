@@ -14,7 +14,7 @@ Invoke explicitly as `$open-source-fork-maintenance` for a public upstream fork 
 2. the owner can aggregate those branches and distribute installable packages through the fork's CI;
 3. new upstream stable releases can be absorbed.
 
-State lives in Git: the branches themselves plus one `.fork/branches` list. `local/aggregate` is a disposable product rebuilt from the stable tag by merging the listed branches; `git rerere` remembers conflict resolutions between runs. Domains, patch registries, frozen trains, SHA tables, candidate tags, and build receipts are out of scope: they cost more integration time than they save.
+State lives in Git: the branches themselves plus one `.fork/branches` list. `main` is the personal fork's default branch and latest aggregate, rebuilt from the stable tag by merging the listed branches; `git rerere` remembers conflict resolutions between runs. Domains, patch registries, frozen trains, SHA tables, candidate tags, and build receipts are out of scope: they cost more integration time than they save.
 
 After setup, the project owns its copy of the rules, script, and release workflow when packaging applies. Day-to-day work (new branches, aggregation, packaging, conflicts, upgrades, upstream feedback) follows the project's `docs/fork-maintenance.md`; this skill is for setup, migration, and changing the shared template.
 
@@ -25,10 +25,11 @@ After setup, the project owns its copy of the rules, script, and release workflo
 | Remotes | `origin` = upstream (read-only), `fork` = personal fork (all pushes) |
 | Base | a tag from the upstream release channel, recorded on the `base` line of `.fork/branches` |
 | Tooling branch | `fork-tooling`, based on the base tag; holds `.fork/branches`, `scripts/fork-aggregate`, `docs/fork-maintenance.md`, and the AGENTS section; merged like any other branch |
-| Aggregate | `scripts/fork-aggregate` builds `aggregate/next` in `.worktrees/aggregate-next`; `--promote` moves the root `local/aggregate` there and pushes it to `fork` with a lease |
+| Default branch | `main` on the personal fork; ordinary clones receive the latest aggregate |
+| Aggregate | `scripts/fork-aggregate` builds `aggregate/next` in `.worktrees/aggregate-next`; `--promote` moves the root `main` there and pushes it to `fork` with a lease |
 | Worktrees | `.worktrees/<name>`, excluded via `.git/info/exclude` or `.gitignore` |
 
-Upstream issues, comments, and PRs always need the user's confirmation per item. Rewriting fork branches (rebase onto a new tag, rebuilt `local/aggregate`) uses `--force-with-lease` against the observed remote SHA without asking again; never push to `origin`.
+Upstream issues, comments, and PRs always need the user's confirmation per item. Rewriting fork branches (rebase onto a new tag, rebuilt `main`) uses `--force-with-lease` against the observed remote SHA without asking again; never push to `origin`.
 
 ## Setup
 
@@ -40,9 +41,15 @@ Upstream issues, comments, and PRs always need the user's confirmation per item.
    - `assets/AGENTS.fork-maintenance.md` → appended to the project's always-loaded agent instructions (`AGENTS.md` or `CLAUDE.md`).
 3. When installable artifacts and packaging commands are known, include a tag-triggered release workflow in `fork-tooling`, adapting the [packaging and release contract](assets/fork-maintenance.md#3-打包与发布) to the project's actual platforms and runtime dependencies. Reuse upstream build tooling where useful, and publish to the personal fork. Deliver a runnable pipeline and installation instructions rather than recurring instructions to build on each machine. If the artifact or target remains unclear, continue independent setup work and clarify that missing choice.
 4. Rebase each existing change onto the base as its own branch (see Migration for a fork with history), register it in the list, and push branches and `fork-tooling` to `fork`.
-5. Run `scripts/fork-aggregate`, verify with the project's checks, then `--promote`. When packaging applies, release that verified aggregate through CI using the project's documented tag flow.
+5. Prepare a clean root on `main`, preserving any previous `main` tip under an archive ref before replacing it. Run `scripts/fork-aggregate`, verify with the project's checks, then `--promote`. Set the personal fork's GitHub default branch to `main` and verify it. When packaging applies, release that verified aggregate through CI using the project's documented tag flow.
 
-Done when every listed branch is on `fork`, the root checkout is `local/aggregate` at the promoted commit, and the remote `local/aggregate` SHA matches. When packaging applies, also require a successful fork Release and an installation smoke test using its downloaded artifact; report unavailable runners, credentials, or failed builds as unfinished release work.
+Done when every listed branch is on `fork`, the root checkout is `main` at the promoted commit, the remote `main` SHA matches, and the personal fork's default branch is `main`. When packaging applies, also require a successful fork Release and an installation smoke test using its downloaded artifact; report unavailable runners, credentials, or failed builds as unfinished release work.
+
+## Moving an existing aggregate to main
+
+Update the project's scripts, rules, packaging and deployment checks to use `fork/main`. Preserve the previous local and remote `main` tips under archive refs, then put the clean root on `main` at the verified aggregate. Publish it with a lease against the observed remote `main` SHA; set and verify the personal fork's default branch as `main`. Stop publishing `local/aggregate`; it may remain as a historical ref. Verify a fresh ordinary clone receives the aggregate. This migration does not require a new package release or service restart.
+
+The base remains the recorded stable tag. GitHub can still show commits behind upstream development `main`; changing the fork's default branch does not change its release baseline.
 
 ## Migration from a registry/domain/train model
 

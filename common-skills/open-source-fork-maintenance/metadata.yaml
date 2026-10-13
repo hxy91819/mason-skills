@@ -3,4 +3,4 @@ scope: project
 tags:
   - fork-maintenance
   - non-maintainer
-  - local-aggregate
+  - fork-aggregate

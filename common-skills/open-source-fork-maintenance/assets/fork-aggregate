@@ -7,7 +7,7 @@ usage() {
 
 从 .fork/branches 的 base（或 --base）重新生成聚合：依次 merge 清单中的分支到
 .worktrees/aggregate-next 的 aggregate/next 分支。已解决过的冲突由 git rerere 自动复用。
---promote  成功后把根目录 local/aggregate 移到新结果，并推送到 fork（带 lease）。
+--promote  成功后把根目录 main 移到新结果，并推送到 fork（带 lease）。
 清单读取自 fork-tooling 分支（本地优先，其次 fork/fork-tooling）。
 USAGE
 }
@@ -101,17 +101,17 @@ echo "聚合完成：aggregate/next = $result（base $base，${#branches[@]} 个
 
 [ "$promote" = 1 ] || exit 0
 
-if [ "$(git -C "$root" branch --show-current)" != local/aggregate ]; then
-  echo "根目录不在 local/aggregate，停止" >&2
+if [ "$(git -C "$root" branch --show-current)" != main ]; then
+  echo "根目录不在 main，停止" >&2
   exit 1
 fi
 if [ -n "$(git -C "$root" status --porcelain --untracked-files=no)" ]; then
   echo "根目录有未提交的已跟踪改动，停止" >&2
   exit 1
 fi
-remote_before="$(git ls-remote fork refs/heads/local/aggregate | cut -f1)"
+remote_before="$(git ls-remote fork refs/heads/main | cut -f1)"
 git -C "$root" reset --quiet --keep "$result"
-git -C "$root" push --quiet --force-with-lease="refs/heads/local/aggregate:$remote_before" fork local/aggregate
-remote_after="$(git ls-remote fork refs/heads/local/aggregate | cut -f1)"
-[ "$remote_after" = "$result" ] || { echo "fork 上的 local/aggregate=$remote_after 与 $result 不一致" >&2; exit 1; }
-echo "已提升并推送 local/aggregate = $result"
+git -C "$root" push --quiet --force-with-lease="refs/heads/main:$remote_before" fork main
+remote_after="$(git ls-remote fork refs/heads/main | cut -f1)"
+[ "$remote_after" = "$result" ] || { echo "fork 上的 main=$remote_after 与 $result 不一致" >&2; exit 1; }
+echo "已提升并推送 main = $result"

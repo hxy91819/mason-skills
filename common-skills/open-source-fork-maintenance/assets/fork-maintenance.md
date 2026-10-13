@@ -18,9 +18,11 @@
 | `<release-tag-pattern>` tag | 上游稳定版，聚合和新分支的基线 |
 | `feature/*`、`fix/*` | 每个改动一个分支，基于基线 tag |
 | `fork-tooling` | 维护规则、`.fork/branches`、聚合脚本、适用的发布流程；和其他分支一样被 merge |
-| `local/aggregate` | 聚合产物，每次从 tag 重新生成并覆盖，根目录永远检出它 |
+| `main` | 个人 fork 默认分支，保存最新聚合产物，根目录永远检出它 |
 
 当前基线是 `.fork/branches` 里 `base` 行的 tag。上游主干上还没进 tag 的提交不追，除非用户明确要求。
+
+个人 fork 的 `main` 是最新聚合入口，`origin/main` 是上游开发主干，两者用途不同。GitHub 默认分支设为 `main`，访客打开仓库或普通 clone 即可拿到最新聚合代码。聚合仍基于稳定 tag，因此 GitHub 与上游主干比较时可能显示落后；是否纳入新代码以基线 tag 和分支清单为准。
 
 ## 1. 开发新功能或修复
 
@@ -31,7 +33,7 @@ base=$(git show fork-tooling:.fork/branches | awk '$1=="base"{print $2}')
 git worktree add .worktrees/<name> -b feature/<name> "$base"   # 修复用 fix/<name>
 ```
 
-- 不要从 `local/aggregate` 拉分支，否则分支会带上全部聚合内容，无法单独提给上游。
+- 不要从 `main` 拉分支，否则分支会带上全部聚合内容，无法单独提给上游。
 - 只有真正依赖另一个 fork 分支时，才从那个分支拉出（叠放），并在清单说明里写"叠在 X 上"。
 - 修改已有功能：直接在它的分支上继续提交。分支落后于基线也没关系，merge 会处理；只有冲突时才 rebase。
 - 完成后：相关测试通过 → 提交 → `git push fork <branch>` 并核对远端 SHA。
@@ -41,7 +43,7 @@ git worktree add .worktrees/<name> -b feature/<name> "$base"   # 修复用 fix/<
 
 ```bash
 scripts/fork-aggregate            # 生成 .worktrees/aggregate-next 上的 aggregate/next
-scripts/fork-aggregate --promote  # 成功后移动根目录 local/aggregate 并推送到 fork
+scripts/fork-aggregate --promote  # 成功后移动根目录 main 并推送到 fork
 ```
 
 脚本从基线 tag 开始，依次 `merge --no-ff` 清单中的分支。每次都从头生成，没有中间状态需要维护。

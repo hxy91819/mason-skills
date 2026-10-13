@@ -43,13 +43,13 @@ function withFork(run) {
     git(upstream, "config", "user.name", "T");
     commitFile(upstream, "app.txt", "line1\nline2\nline3\n", "v1");
     git(upstream, "tag", "v1");
-    git(dir, "init", "-q", "--bare", forkRemote);
+    git(dir, "init", "-q", "--bare", "-b", "main", forkRemote);
     git(dir, "clone", "-q", upstream, root);
     git(root, "config", "user.email", "t@example.com");
     git(root, "config", "user.name", "T");
     git(root, "remote", "add", "fork", forkRemote);
-    git(root, "checkout", "-q", "-b", "local/aggregate", "v1");
-    git(root, "push", "-q", "fork", "local/aggregate");
+    git(root, "checkout", "-q", "main");
+    git(root, "push", "-q", "fork", "main");
     run({ upstream, root });
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -118,14 +118,19 @@ test("a branch that conflicts with a new upstream tag is sent back to its own re
   });
 });
 
-test("--promote moves local/aggregate and publishes it to the fork", () => {
+test("--promote moves main and publishes it to the fork", () => {
   withFork(({ root }) => {
     addBranch(root, "feature/a", "a.txt", "a\n");
     writeList(root, "v1", ["feature/a"]);
     const { status, output } = runAggregate(root, "--promote");
     assert.equal(status, 0, output);
     const head = git(root, "rev-parse", "HEAD");
+    assert.equal(git(root, "branch", "--show-current"), "main");
     assert.equal(head, git(root, "rev-parse", "aggregate/next"));
-    assert.equal(git(root, "ls-remote", "fork", "refs/heads/local/aggregate").split("\t")[0], head);
+    assert.equal(git(root, "ls-remote", "fork", "refs/heads/main").split("\t")[0], head);
+    const clone = join(root, ".git", "clone");
+    git(root, "clone", "-q", git(root, "remote", "get-url", "fork"), clone);
+    assert.equal(git(clone, "branch", "--show-current"), "main");
+    assert.equal(git(clone, "rev-parse", "HEAD"), head);
   });
 });
