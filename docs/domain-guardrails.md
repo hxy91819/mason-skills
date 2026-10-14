@@ -69,4 +69,4 @@
 - 文档内部不一致（导言写简化版、表格写精确版）会被实现照导言做；表是规则，导言要改。编号冻结后，改文档必须改到对应测试，这是追溯脚本在守。
 - 聚合里的常量（默认数量、上限、槽位键）是前端最想复制的东西；全部走投影 API 回传，前端 lint 禁字面值，分叉就不会发生。
 
-相关：[原型到正式实现复盘](prototype-to-production-lessons.md) 第三节是本文的摘要；[harness/](harness/) 收录 lint 与测试分层的接入清单。
+相关：[架构不腐化](architecture-anti-erosion.md) 讲规则之外的防腐化手段；[原型到正式实现复盘](prototype-to-production-lessons.md) 第三节是本文的摘要；[harness/](harness/) 收录 lint 与测试分层的接入清单。
