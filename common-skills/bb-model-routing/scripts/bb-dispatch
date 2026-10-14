@@ -2,8 +2,8 @@
 """按用户配置校验 BB 路由并创建一个线程；不拆任务、不重试创建、不预先修改环境。
 
 defaults.<路由> 可为有序 fallback 链，也可配置 load-balance 候选。脚本只在
-spawn 前校验候选（provider 可用性、权限、模型目录），首个通过者派发；spawn
-发出后任何失败都中止，由调用方确认后用 --fallback-from 续派。
+spawn 前校验候选（provider 可用性、权限、模型目录与熔断冷却），首个通过者派发；
+spawn 发出后任何失败都中止，由调用方确认后用 --fallback-from 续派。
 
 参数见 --help。stdout 为 JSON；stderr 为错误；退出码 0 成功、2 失败。
 依赖 Python 3.10+、PyYAML 和 PATH 上的 bb。
@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 import yaml
 
@@ -25,7 +26,14 @@ class DispatchError(Exception):
 
 
 ROUTE_KEYS = frozenset(("simple", "medium", "complex", "default"))
+DIFFICULTIES = ("simple", "medium", "complex")
 TITLE_PREFIXES = {"simple": "🟢", "medium": "🟡", "complex": "🔴"}
+OUTCOME_KEYS = ("spawned", "completed", "failed_quota", "failed_transient", "failed_other")
+DECISION_KEYS = ("accepted", "rejected", "reworked", "escalated")
+COOLDOWN_SECONDS = {"failed_quota": 6 * 3600, "failed_transient": 15 * 60}
+MAX_LIVE_ENTRIES = 200
+DEFAULT_MAX_TASK_CHARS = 2500
+REVIEW_PROMPT_ANCHOR = "# Review agent 提示词"
 
 
 def bb(*args):
@@ -77,6 +85,250 @@ def thread_title(title, task, difficulty):
     if len(text) > 80:
         text = text[:79] + "…"
     return TITLE_PREFIXES[difficulty] + " " + text
+
+
+def effective_task_chars(task):
+    body = task.split(REVIEW_PROMPT_ANCHOR, 1)[0] if REVIEW_PROMPT_ANCHOR in task else task
+    return len(body.strip())
+
+
+def ledger_path_from(args):
+    raw = getattr(args, "ledger", None) or os.environ.get(
+        "BB_DISPATCH_LEDGER_PATH", str(Path.home() / ".cache/bb-dispatch/ledger.json")
+    )
+    return Path(raw).expanduser()
+
+
+def empty_ledger():
+    return {"version": 1, "entries": [], "rollups": {}, "cooldowns": {}}
+
+
+def load_ledger(path, strict=False):
+    if not path.exists():
+        return empty_ledger()
+    try:
+        data = json.loads(path.read_text())
+        if not isinstance(data, dict) or data.get("version") != 1:
+            raise ValueError("账本版本或格式无效")
+        if not isinstance(data.get("entries"), list) or not isinstance(data.get("rollups"), dict) or not isinstance(data.get("cooldowns"), dict):
+            raise ValueError("账本字段缺失或类型错误")
+        return data
+    except Exception as exc:
+        if strict:
+            raise DispatchError(f"无法读取运行账本 {path}：{exc}") from exc
+        print(f"warning: 账本读取失败（已旁路忽略）：{exc}", file=sys.stderr)
+        return empty_ledger()
+
+
+def save_ledger(path, data, strict=False):
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+        tmp.replace(path)
+    except Exception as exc:
+        if strict:
+            raise DispatchError(f"无法写入运行账本 {path}：{exc}") from exc
+        print(f"warning: 账本写入失败（已旁路忽略）：{exc}", file=sys.stderr)
+
+
+def rollup_entry(rollups, entry):
+    key = f"{entry.get('difficulty')}|{entry.get('agent')}|{entry.get('provider')}|{entry.get('model')}"
+    bucket = rollups.get(key)
+    if not isinstance(bucket, dict):
+        bucket = {
+            "difficulty": entry.get("difficulty"),
+            "agent": entry.get("agent"),
+            "provider": entry.get("provider"),
+            "model": entry.get("model"),
+            "total": 0,
+            "outcomes": {k: 0 for k in OUTCOME_KEYS},
+            "decisions": {k: 0 for k in DECISION_KEYS},
+        }
+        rollups[key] = bucket
+    bucket["total"] = int(bucket.get("total", 0)) + 1
+    outcome = entry.get("outcome") or "spawned"
+    if outcome in bucket["outcomes"]:
+        bucket["outcomes"][outcome] = int(bucket["outcomes"].get(outcome, 0)) + 1
+    decision = entry.get("decision")
+    if decision in bucket["decisions"]:
+        bucket["decisions"][decision] = int(bucket["decisions"].get(decision, 0)) + 1
+
+
+def append_ledger_entry(ledger, entry, max_live=MAX_LIVE_ENTRIES):
+    entries = ledger.setdefault("entries", [])
+    rollups = ledger.setdefault("rollups", {})
+    # 同一稳定 ID 若已存在则原地覆盖，避免重复计数。
+    for idx, existing in enumerate(entries):
+        if isinstance(existing, dict) and existing.get("id") == entry["id"]:
+            entries[idx] = entry
+            return
+    entries.append(entry)
+    while len(entries) > max_live:
+        oldest = entries.pop(0)
+        if isinstance(oldest, dict):
+            rollup_entry(rollups, oldest)
+
+
+def apply_cooldown(ledger, difficulty, agent, outcome, thread_id=None, now=None):
+    now = int(time.time() if now is None else now)
+    cooldowns = ledger.setdefault("cooldowns", {})
+    key = f"{difficulty}|{agent}"
+    if outcome in COOLDOWN_SECONDS:
+        cooldowns[key] = {
+            "difficulty": difficulty,
+            "agent": agent,
+            "reason": outcome,
+            "until": now + COOLDOWN_SECONDS[outcome],
+            "thread_id": thread_id,
+        }
+    elif outcome == "completed":
+        cooldowns.pop(key, None)
+
+
+def record_decision_command(args, now=None):
+    if not args.decision and not args.outcome:
+        raise DispatchError("--record-decision 必须至少配合 --decision 或 --outcome 之一。")
+    path = ledger_path_from(args)
+    ledger = load_ledger(path, strict=True)
+    target_id = string(args.record_decision, "--record-decision")
+    matched = None
+    for entry in ledger.get("entries", []):
+        if isinstance(entry, dict) and entry.get("id") == target_id:
+            matched = entry
+            break
+    if matched is None:
+        raise DispatchError(f"账本 live 窗口中未找到线程 {target_id!r}，拒绝回写未知 ID。")
+    if args.outcome:
+        matched["outcome"] = args.outcome
+        apply_cooldown(ledger, matched.get("difficulty"), matched.get("agent"), args.outcome, target_id, now=now)
+    if args.decision:
+        matched["decision"] = args.decision
+    matched["updated_ts"] = int(time.time() if now is None else now)
+    save_ledger(path, ledger, strict=True)
+    return {"recorded": True, "entry": matched}
+
+
+def summarize_ledger(ledger, now=None):
+    now = int(time.time() if now is None else now)
+    by_difficulty = {
+        d: {"total": 0, "failed": 0, "decided": 0, "accepted": 0}
+        for d in DIFFICULTIES
+    }
+    by_agent = {}
+
+    def ensure_agent(agent):
+        if agent not in by_agent:
+            by_agent[agent] = {
+                "total": 0,
+                "outcomes": {k: 0 for k in OUTCOME_KEYS},
+                "decisions": {k: 0 for k in DECISION_KEYS},
+            }
+        return by_agent[agent]
+
+    rolled_up_count = 0
+    for bucket in (ledger.get("rollups") or {}).values():
+        if not isinstance(bucket, dict):
+            continue
+        total = int(bucket.get("total", 0))
+        rolled_up_count += total
+        diff = bucket.get("difficulty")
+        agent = bucket.get("agent") or "unknown"
+        outcomes = bucket.get("outcomes") or {}
+        decisions = bucket.get("decisions") or {}
+        failed = sum(int(outcomes.get(k, 0)) for k in ("failed_quota", "failed_transient", "failed_other"))
+        decided = sum(int(decisions.get(k, 0)) for k in DECISION_KEYS)
+        accepted = int(decisions.get("accepted", 0))
+        if diff in by_difficulty:
+            by_difficulty[diff]["total"] += total
+            by_difficulty[diff]["failed"] += failed
+            by_difficulty[diff]["decided"] += decided
+            by_difficulty[diff]["accepted"] += accepted
+        ag = ensure_agent(agent)
+        ag["total"] += total
+        for k in OUTCOME_KEYS:
+            ag["outcomes"][k] += int(outcomes.get(k, 0))
+        for k in DECISION_KEYS:
+            ag["decisions"][k] += int(decisions.get(k, 0))
+
+    live_entries = [e for e in (ledger.get("entries") or []) if isinstance(e, dict)]
+    for entry in live_entries:
+        diff = entry.get("difficulty")
+        agent = entry.get("agent") or "unknown"
+        outcome = entry.get("outcome") or "spawned"
+        decision = entry.get("decision")
+        is_failed = 1 if outcome in ("failed_quota", "failed_transient", "failed_other") else 0
+        is_decided = 1 if decision in DECISION_KEYS else 0
+        is_accepted = 1 if decision == "accepted" else 0
+        if diff in by_difficulty:
+            by_difficulty[diff]["total"] += 1
+            by_difficulty[diff]["failed"] += is_failed
+            by_difficulty[diff]["decided"] += is_decided
+            by_difficulty[diff]["accepted"] += is_accepted
+        ag = ensure_agent(agent)
+        ag["total"] += 1
+        if outcome in ag["outcomes"]:
+            ag["outcomes"][outcome] += 1
+        if decision in ag["decisions"]:
+            ag["decisions"][decision] += 1
+
+    total_dispatches = rolled_up_count + len(live_entries)
+    for diff, stats in by_difficulty.items():
+        stats["share"] = round(stats["total"] / total_dispatches, 4) if total_dispatches else 0.0
+
+    hooks = []
+    if total_dispatches >= 5 and by_difficulty["simple"]["share"] < 0.20:
+        hooks.append({
+            "hook": "simple_share_low",
+            "numerator": by_difficulty["simple"]["total"],
+            "denominator": total_dispatches,
+            "message": f"simple 难度占比仅 {by_difficulty['simple']['total']}/{total_dispatches} (<20%)，请核查是否将边界已闭合任务误判为 medium/complex。",
+        })
+
+    for agent, ag in sorted(by_agent.items()):
+        total = ag["total"]
+        failed = sum(ag["outcomes"][k] for k in ("failed_quota", "failed_transient", "failed_other"))
+        decided = sum(ag["decisions"][k] for k in DECISION_KEYS)
+        accepted = ag["decisions"]["accepted"]
+        ag["failed"] = failed
+        ag["failure_rate"] = round(failed / total, 4) if total else 0.0
+        ag["decided"] = decided
+        ag["accepted"] = accepted
+        ag["acceptance_rate"] = round(accepted / decided, 4) if decided else None
+        if total >= 3 and ag["failure_rate"] >= 0.30:
+            hooks.append({
+                "hook": "high_failure_rate",
+                "agent": agent,
+                "numerator": failed,
+                "denominator": total,
+                "message": f"候选 {agent} 失败率 {failed}/{total} (>=30%)，请检查其配额或服务稳定性。",
+            })
+        if decided >= 3 and ag["acceptance_rate"] is not None and ag["acceptance_rate"] < 0.50:
+            hooks.append({
+                "hook": "low_acceptance_rate",
+                "agent": agent,
+                "numerator": accepted,
+                "denominator": decided,
+                "message": f"候选 {agent} 接受率 {accepted}/{decided} (<50%)，请复盘其绑定模型与路由难度是否匹配。",
+            })
+
+    active_cooldowns = []
+    for key, cd in sorted((ledger.get("cooldowns") or {}).items()):
+        if isinstance(cd, dict) and int(cd.get("until", 0)) > now:
+            active_cooldowns.append({
+                **cd,
+                "remaining_seconds": int(cd["until"]) - now,
+            })
+
+    return {
+        "total_dispatches": total_dispatches,
+        "live_entries": len(live_entries),
+        "rolled_up_entries": rolled_up_count,
+        "by_difficulty": by_difficulty,
+        "by_agent": by_agent,
+        "active_cooldowns": active_cooldowns,
+        "review_hooks": hooks,
+    }
 
 
 def candidate_chain(args, defaults, route):
@@ -131,12 +383,13 @@ def candidate_chain(args, defaults, route):
                 uniform = (int.from_bytes(digest) + 1) / (2 ** 256 + 1)
                 return -math.log(uniform) / weights[alias]
             chain = sorted(chain, key=weighted_score)
+    full_chain = list(chain)
     if args.fallback_from is not None:
         start = string(args.fallback_from, "--fallback-from")
         if start not in chain:
             raise DispatchError(f"--fallback-from {start!r} 不在 defaults.{route} 候选 {chain} 中。")
         chain = chain[chain.index(start):]
-    return chain, mode, {alias: weights[alias] for alias in chain}
+    return chain, mode, {alias: weights[alias] for alias in chain}, full_chain
 
 
 def model_and_reasoning(agent, alias, route):
@@ -157,13 +410,45 @@ def model_and_reasoning(agent, alias, route):
     return model, reasoning
 
 
-def dispatch(args, call=bb):
+def validate_contract_gates(args, call):
+    escalate_from = getattr(args, "escalate_from", None)
+    if escalate_from is not None:
+        escalate_from = string(escalate_from, "--escalate-from")
+        shown = mapping(call("thread", "show", escalate_from), "escalate-from thread")
+        shown_thread = shown.get("thread") if isinstance(shown.get("thread"), dict) else shown
+        if shown_thread.get("id") and shown_thread.get("id") != escalate_from:
+            raise DispatchError(f"--escalate-from 线程 {escalate_from!r} 校验不匹配。")
+
+    if getattr(args, "closed_scope", False) and args.difficulty != "simple" and not escalate_from:
+        raise DispatchError(
+            f"边界已闭合（--closed-scope）的任务必须使用 --difficulty simple；"
+            f"当前传入 {args.difficulty!r}。若因前序低档线程失败需升档，请提供 --escalate-from <前序线程ID>。"
+        )
+
+    max_chars = getattr(args, "max_task_chars", DEFAULT_MAX_TASK_CHARS)
+    if max_chars is None:
+        max_chars = DEFAULT_MAX_TASK_CHARS
+    if max_chars > 0 and args.difficulty in ("medium", "complex") and not escalate_from:
+        chars = effective_task_chars(args.task)
+        if chars > max_chars:
+            raise DispatchError(
+                f"{args.difficulty} 任务应把探索留给子线程；当前任务指导长达 {chars} 字符（上限 {max_chars}），"
+                "说明父线程已完成细化。请改用 --difficulty simple、精简任务书，或传入 --escalate-from <前序失败线程ID>。"
+            )
+    return escalate_from
+
+
+def dispatch(args, call=bb, now=None):
+    now = int(time.time() if now is None else now)
     try:
         config = mapping(yaml.safe_load(Path(args.config).expanduser().read_text()), "config")
     except (OSError, yaml.YAMLError) as exc:
         raise DispatchError(f"无法读取配置 {args.config}：{exc}") from exc
     if config.get("version") != 2:
         raise DispatchError("配置必须包含 version: 2。")
+
+    escalate_from = validate_contract_gates(args, call)
+
     environment_path = Path(args.environment).expanduser() if args.environment else None
     path_mode = environment_path is not None and environment_path.is_dir()
     context = call("status") if path_mode or not (args.project and args.environment) else {}
@@ -196,14 +481,34 @@ def dispatch(args, call=bb):
     permission = args.permission_mode or override.get("permission_mode", config.get("permission_mode", "accept-edits"))
     if permission not in ("accept-edits", "auto", "full"):
         raise DispatchError("permission_mode 必须是 accept-edits、auto 或 full。")
-    chain, routing_mode, candidate_weights = candidate_chain(args, defaults, route)
+    chain, routing_mode, candidate_weights, full_chain = candidate_chain(args, defaults, route)
+
+    lpath = ledger_path_from(args)
+    ledger = load_ledger(lpath, strict=False)
+    if args.fallback_from is not None and not args.dry_run:
+        start_idx = full_chain.index(args.fallback_from)
+        for skipped_alias in full_chain[:start_idx]:
+            apply_cooldown(ledger, route, skipped_alias, "failed_transient", now=now)
+
     providers = call("provider", "list", "--environment", validation_environment)
     # 同档 fallback：每个候选按本次路由项解析自己的 routes，首个通过校验者派发。
+    # 优先跳过熔断冷却中的候选；若所有候选均在冷却中，则保底降级尝试，避免单候选链死锁。
+    cooldowns = ledger.get("cooldowns") or {}
+
+    def is_cooled_down(alias):
+        cd = cooldowns.get(f"{route}|{alias}")
+        return isinstance(cd, dict) and int(cd.get("until", 0)) > now and args.fallback_from != alias
+
+    all_cooled = all(is_cooled_down(alias) for alias in chain)
     attempts = []
     catalogs = {}
     choice = None
     for index, alias in enumerate(chain):
         try:
+            if not all_cooled and is_cooled_down(alias):
+                cd = cooldowns[f"{route}|{alias}"]
+                rem = int(cd["until"]) - now
+                raise DispatchError(f"候选 {alias} 处于熔断冷却中（原因：{cd.get('reason')}，剩余 {rem}s）。")
             agent = mapping(agents.get(alias), f"agents.{alias}")
             provider = string(agent.get("provider"), f"agents.{alias}.provider")
             model, reasoning = model_and_reasoning(agent, alias, route)
@@ -249,13 +554,9 @@ def dispatch(args, call=bb):
     if parent.get("id"):
         task += (
             "\n\n## 向父会话回报\n"
-            f"父会话：{parent['id']}。执行期间默认静默推进，不要发送常规进度或阶段结果；"
-            "每次 `bb thread tell` 都会唤醒父会话消耗回合。"
-            f"仅当遇到无法自行裁决的阻塞问题、且必须拿到父会话回复才能继续时，使用 "
-            f"`bb thread tell {parent['id']} --mode queue ...` 提问并等待；"
-            f"只有发现父会话正执行错误方案等必须立即打断的情况，才使用 "
-            f"`bb thread tell {parent['id']} --mode steer ...`。"
-            "其余所有过程、结论与未完成项一律写在最终回复（final response）中，由 BB 自动汇报给父会话。\n"
+            f"父会话：{parent['id']}。遵循 BB 规则：不要对父会话调用 `bb thread tell` 发送常规进度或阶段结果；"
+            "最终结果、阶段结论或需要父会话裁决的阻塞问题，一律写在最终回复（final response）中并结束当前回合，由 BB 自动汇报给父会话。"
+            "若确需向其他会话发消息，显式传 `--mode queue` 避免默认 `steer` 打断对方；仅在必须立即纠正对方当前错误工作时才用 `--mode steer`。\n"
         )
     command = ["thread", "spawn", "--project", project, "--environment", environment,
                "--provider", provider, "--model", model,
@@ -271,6 +572,8 @@ def dispatch(args, call=bb):
                 difficulty=args.difficulty, title=title,
                 routing_mode=routing_mode, candidate_weights=candidate_weights,
                 candidates=chain, fallbacks=fallbacks, attempts=attempts)
+    if escalate_from:
+        plan["escalated_from"] = escalate_from
     if args.dry_run:
         return {"dry_run": True, "selection": plan, "argv": ["bb", *command, "--json"]}
     try:
@@ -281,16 +584,41 @@ def dispatch(args, call=bb):
                 f"{exc} 同档候选 {fallbacks} 未尝试；确认线程未创建后可用 --fallback-from {fallbacks[0]} 续派。"
             ) from exc
         raise
+    thread_obj = result.get("thread") if isinstance(result, dict) and isinstance(result.get("thread"), dict) else result
+    created_id = (thread_obj or {}).get("id") if isinstance(thread_obj, dict) else None
+    if created_id:
+        append_ledger_entry(ledger, {
+            "id": str(created_id),
+            "ts": now,
+            "project": project,
+            "parent_thread": parent.get("id"),
+            "difficulty": args.difficulty,
+            "agent": alias,
+            "provider": provider,
+            "model": model,
+            "reasoning": reasoning,
+            "task_chars": effective_task_chars(args.task),
+            "outcome": "spawned",
+            "decision": None,
+        })
+        save_ledger(lpath, ledger, strict=False)
+        summary = summarize_ledger(ledger, now=now)
+        if summary["review_hooks"]:
+            plan["warnings"] = [h["message"] for h in summary["review_hooks"]]
     # 返回完整创建回执，包括排队状态；不把创建成功宣称为任务完成。
     return {"dry_run": False, "selection": plan, "result": result}
 
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="示例：\n  bb-dispatch --difficulty simple --task '补充 README' --dry-run\n  bb-dispatch --difficulty medium --task '定位登录失败'\n输出：stdout JSON，stderr 错误；退出码 0 成功，2 失败。")
+        epilog="示例：\n  bb-dispatch --difficulty simple --task '补充 README' --dry-run\n  bb-dispatch --difficulty medium --task '定位登录失败'\n  bb-dispatch --history-summary\n  bb-dispatch --record-decision thr_xxx --outcome failed_quota --decision rejected\n输出：stdout JSON，stderr 错误；退出码 0 成功，2 失败。")
     p.add_argument("--config", default=os.environ.get("BB_DISPATCH_CONFIG", str(Path.home() / ".config/bb-dispatch/config.yaml")), help="用户 YAML 配置路径，也可设置 BB_DISPATCH_CONFIG")
-    p.add_argument("--difficulty", required=True, choices=["simple", "medium", "complex"], help="任务难度")
-    p.add_argument("--task", required=True, help="任务目标、范围和验收要求")
+    p.add_argument("--ledger", default=os.environ.get("BB_DISPATCH_LEDGER_PATH", str(Path.home() / ".cache/bb-dispatch/ledger.json")), help="运行账本与熔断缓存路径，也可设置 BB_DISPATCH_LEDGER_PATH")
+    p.add_argument("--difficulty", choices=["simple", "medium", "complex"], help="任务难度")
+    p.add_argument("--task", help="任务目标、范围和验收要求")
+    p.add_argument("--closed-scope", action="store_true", help="声明任务边界已闭合（目标文件、改法、验证已定）；未传 --escalate-from 时强制要求 simple")
+    p.add_argument("--escalate-from", metavar="线程ID", help="前序失败或返工的低档线程 ID，用作升档或豁免长任务门禁的凭证")
+    p.add_argument("--max-task-chars", type=int, default=DEFAULT_MAX_TASK_CHARS, help=f"medium/complex 任务指导的最大字符数（默认 {DEFAULT_MAX_TASK_CHARS}，0 为不限制）")
     p.add_argument("--fallback-from", metavar="别名", help="从 defaults.<路由> 链中该别名起续派；用于前次派发失败且确认未创建后的同档改派")
     p.add_argument("--reasoning", help="覆盖推理级别，仍校验模型目录")
     p.add_argument("--project", help="项目 ID；ID 模式默认环境所属项目，路径模式默认当前项目")
@@ -298,12 +626,25 @@ def parser():
     p.add_argument("--permission-mode", choices=["accept-edits", "auto", "full"], help="已获授权的权限；默认用户配置或 accept-edits")
     p.add_argument("--title", help="可选标题正文；按难度自动加 🟢/🟡/🔴 前缀，省略时从任务文本截取")
     p.add_argument("--dry-run", action="store_true", help="只读校验并输出启动参数，不创建线程")
+    p.add_argument("--history-summary", "--stats", dest="history_summary", action="store_true", help="只读输出运行账本的聚合统计与确定性复盘 hooks")
+    p.add_argument("--record-decision", metavar="线程ID", help="按稳定线程 ID 回写运行结果或父线程裁决（覆盖而非追加）")
+    p.add_argument("--outcome", choices=list(OUTCOME_KEYS), help="配合 --record-decision 回写子线程运行终态（failed_quota/failed_transient 自动触发冷却）")
+    p.add_argument("--decision", choices=list(DECISION_KEYS), help="配合 --record-decision 回写父线程裁决")
     return p
 
 
 def main():
     args = parser().parse_args()
     try:
+        if args.history_summary:
+            ledger = load_ledger(ledger_path_from(args), strict=False)
+            print(json.dumps(summarize_ledger(ledger), ensure_ascii=False, indent=2))
+            return 0
+        if args.record_decision is not None:
+            print(json.dumps(record_decision_command(args), ensure_ascii=False, indent=2))
+            return 0
+        if not args.difficulty or args.task is None:
+            raise DispatchError("派发模式必须提供 --difficulty 与 --task。")
         string(args.task, "task")
         print(json.dumps(dispatch(args), ensure_ascii=False, indent=2))
     except DispatchError as exc:

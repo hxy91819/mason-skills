@@ -18,6 +18,7 @@ class DispatchTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.config = Path(self.temp.name) / 'config.yaml'
+        self.ledger = Path(self.temp.name) / 'ledger.json'
         self.config.write_text('''version: 2
 permission_mode: accept-edits
 defaults: {simple: primary, medium: primary, complex: specialist}
@@ -42,6 +43,7 @@ environments:
           default: {model: remote-model, reasoning: medium}
 ''')
         self.calls = []
+        self.spawn_counter = 0
         self.providers = [{'id': name, 'available': True, 'capabilities': {'permissionModes': ['accept-edits']}} for name in ['primary', 'specialist', 'remote-provider']]
 
     def fake(self, *args):
@@ -50,6 +52,8 @@ environments:
             return {'project': {'id': 'proj'}, 'thread': {'id': 'parent', 'environment': {'display': {'id': 'env'}}}}
         if args[:2] == ('environment', 'show'):
             return {'id': args[2], 'projectId': 'proj'}
+        if args[:2] == ('thread', 'show'):
+            return {'thread': {'id': args[2], 'projectId': 'proj', 'status': 'error'}}
         if args[:2] == ('provider', 'list'):
             return self.providers
         if args[:2] == ('provider', 'models'):
@@ -62,18 +66,25 @@ environments:
                 {'reasoningEffort': x} for x in ['low', 'medium', 'high', 'xhigh', 'max']
             ]} for model in models]
         if args[:2] == ('thread', 'spawn'):
-            return {'thread': {'id': 'created', 'status': 'queued'}}
+            self.spawn_counter += 1
+            return {'thread': {'id': f'created_{self.spawn_counter}', 'status': 'queued'}}
         raise AssertionError(args)
 
     def args(self, *extra):
-        return m.parser().parse_args(['--config', str(self.config), '--difficulty', 'simple', '--task', 'literal $(touch nope) "text"', *extra])
+        return m.parser().parse_args([
+            '--config', str(self.config),
+            '--ledger', str(self.ledger),
+            '--difficulty', 'simple',
+            '--task', 'literal $(touch nope) "text"',
+            *extra,
+        ])
 
     def test_dry_run_never_spawns_and_preserves_task(self):
         result = m.dispatch(self.args('--dry-run'), self.fake)
         self.assertEqual(result['selection']['agent'], 'primary')
         prompt = result['argv'][result['argv'].index('--prompt') + 1]
         self.assertTrue(prompt.startswith(self.args().task + '\n\n'))
-        self.assertIn('默认静默推进，不要发送常规进度或阶段结果', prompt)
+        self.assertIn('不要对父会话调用 `bb thread tell` 发送常规进度或阶段结果', prompt)
         self.assertIn('parent', result['argv'])
         self.assertFalse(any(c[:2] == ('thread', 'spawn') for c in self.calls))
 
@@ -409,6 +420,132 @@ environments:
         result = m.dispatch(self.args('--environment', 'env_other', '--difficulty', 'complex', '--dry-run'), self.fake)
         self.assertEqual(result['selection']['agent'], 'specialist')
         self.assertEqual(result['selection']['provider'], 'remote-provider')
+
+    def test_closed_scope_requires_simple_unless_escalated(self):
+        with self.assertRaisesRegex(m.DispatchError, '--closed-scope.*--difficulty simple'):
+            m.dispatch(self.args('--difficulty', 'medium', '--closed-scope', '--dry-run'), self.fake)
+        self.assertEqual(self.calls, [])
+        ok_simple = m.dispatch(self.args('--difficulty', 'simple', '--closed-scope', '--dry-run'), self.fake)
+        self.assertEqual(ok_simple['selection']['difficulty'], 'simple')
+        ok_escalated = m.dispatch(
+            self.args('--difficulty', 'medium', '--closed-scope', '--escalate-from', 'thr_prev_failed', '--dry-run'),
+            self.fake,
+        )
+        self.assertEqual(ok_escalated['selection']['escalated_from'], 'thr_prev_failed')
+        self.assertIn(('thread', 'show', 'thr_prev_failed'), self.calls)
+
+    def test_overlong_task_rejected_for_medium_and_complex_but_allowed_for_simple_or_review(self):
+        long_task = '细化步骤' * 700  # 2800 chars > 2500
+        for diff in ('medium', 'complex'):
+            with self.assertRaisesRegex(m.DispatchError, '说明父线程已完成细化'):
+                m.dispatch(self.args('--difficulty', diff, '--task', long_task, '--dry-run'), self.fake)
+        # simple 允许长任务书
+        simple_ok = m.dispatch(self.args('--difficulty', 'simple', '--task', long_task, '--dry-run'), self.fake)
+        self.assertEqual(simple_ok['selection']['difficulty'], 'simple')
+        # autoreview 附加的审查提示词不计入有效任务指导长度
+        review_task = '只读审查 commit abc123\n\n# Review agent 提示词\n' + ('标准正文' * 800)
+        review_ok = m.dispatch(self.args('--difficulty', 'medium', '--task', review_task, '--dry-run'), self.fake)
+        self.assertEqual(review_ok['selection']['difficulty'], 'medium')
+        # 显式传入 --escalate-from 允许豁免
+        esc_ok = m.dispatch(
+            self.args('--difficulty', 'medium', '--task', long_task, '--escalate-from', 'thr_prev', '--dry-run'),
+            self.fake,
+        )
+        self.assertEqual(esc_ok['selection']['escalated_from'], 'thr_prev')
+
+    def test_ledger_records_minimal_facts_and_overwrites_on_repeat_decision(self):
+        res = m.dispatch(self.args('--task', 'SENSITIVE_SECRET_TOKEN_123'), self.fake, now=1000)
+        tid = res['result']['thread']['id']
+        raw_ledger = self.ledger.read_text()
+        self.assertNotIn('SENSITIVE_SECRET_TOKEN_123', raw_ledger)
+        # 未知 ID 拒绝
+        with self.assertRaisesRegex(m.DispatchError, '拒绝回写未知 ID'):
+            m.record_decision_command(
+                m.parser().parse_args(['--ledger', str(self.ledger), '--record-decision', 'thr_unknown', '--decision', 'accepted']),
+                now=1010,
+            )
+        # 首次回写与重复回写同一 ID 覆盖而非追加
+        m.record_decision_command(
+            m.parser().parse_args(['--ledger', str(self.ledger), '--record-decision', tid, '--outcome', 'completed', '--decision', 'rejected']),
+            now=1010,
+        )
+        m.record_decision_command(
+            m.parser().parse_args(['--ledger', str(self.ledger), '--record-decision', tid, '--decision', 'accepted']),
+            now=1020,
+        )
+        ledger_data = m.load_ledger(self.ledger, strict=True)
+        self.assertEqual(len(ledger_data['entries']), 1)
+        self.assertEqual(ledger_data['entries'][0]['decision'], 'accepted')
+        self.assertEqual(ledger_data['entries'][0]['outcome'], 'completed')
+        summary = m.summarize_ledger(ledger_data, now=1020)
+        self.assertEqual(summary['total_dispatches'], 1)
+        self.assertEqual(summary['by_agent']['primary']['decided'], 1)
+        self.assertEqual(summary['by_agent']['primary']['accepted'], 1)
+
+    def test_ledger_rollover_never_double_counts(self):
+        ledger = m.empty_ledger()
+        for idx in range(205):
+            m.append_ledger_entry(ledger, {
+                'id': f'thr_{idx}',
+                'ts': 1000 + idx,
+                'difficulty': 'simple' if idx % 2 == 0 else 'medium',
+                'agent': 'primary',
+                'provider': 'primary',
+                'model': 'fast-model',
+                'reasoning': 'max',
+                'outcome': 'completed',
+                'decision': 'accepted',
+            }, max_live=200)
+        self.assertEqual(len(ledger['entries']), 200)
+        summary = m.summarize_ledger(ledger, now=2000)
+        self.assertEqual(summary['live_entries'], 200)
+        self.assertEqual(summary['rolled_up_entries'], 5)
+        self.assertEqual(summary['total_dispatches'], 205)
+        self.assertEqual(summary['by_agent']['primary']['total'], 205)
+        self.assertEqual(summary['by_agent']['primary']['accepted'], 205)
+
+    def test_circuit_breaker_skips_cooled_down_candidate_and_recovers(self):
+        self.chain_config(['primary', 'specialist'])
+        first = m.dispatch(self.args(), self.fake, now=1000)
+        self.assertEqual(first['selection']['agent'], 'primary')
+        tid = first['result']['thread']['id']
+        # 回写 primary 配额耗尽（403）
+        m.record_decision_command(
+            m.parser().parse_args(['--ledger', str(self.ledger), '--record-decision', tid, '--outcome', 'failed_quota']),
+            now=1010,
+        )
+        # 冷却期内自动跳过 primary，选择 specialist
+        second = m.dispatch(self.args('--dry-run'), self.fake, now=1100)
+        self.assertEqual(second['selection']['agent'], 'specialist')
+        self.assertIn('熔断冷却中', second['selection']['attempts'][0]['error'])
+        # 6 小时后冷却自动解除
+        third = m.dispatch(self.args('--dry-run'), self.fake, now=1010 + 6 * 3600 + 1)
+        self.assertEqual(third['selection']['agent'], 'primary')
+
+    def test_fallback_from_automatically_cools_down_skipped_candidate(self):
+        self.chain_config(['primary', 'specialist'])
+        m.dispatch(self.args('--fallback-from', 'specialist'), self.fake, now=2000)
+        # 下一笔未传 --fallback-from 的任务在 15 分钟内也应自动跳过刚刚失败的 primary
+        nxt = m.dispatch(self.args('--dry-run'), self.fake, now=2100)
+        self.assertEqual(nxt['selection']['agent'], 'specialist')
+
+    def test_review_hooks_detect_simple_skew_and_failure_rates(self):
+        for _ in range(5):
+            res = m.dispatch(self.args('--difficulty', 'medium'), self.fake, now=3000)
+            m.record_decision_command(
+                m.parser().parse_args([
+                    '--ledger', str(self.ledger),
+                    '--record-decision', res['result']['thread']['id'],
+                    '--outcome', 'failed_transient',
+                    '--decision', 'rejected',
+                ]),
+                now=3005,
+            )
+        summary = m.summarize_ledger(m.load_ledger(self.ledger, strict=True), now=3010)
+        hook_names = {h['hook'] for h in summary['review_hooks']}
+        self.assertIn('simple_share_low', hook_names)
+        self.assertIn('high_failure_rate', hook_names)
+        self.assertIn('low_acceptance_rate', hook_names)
 
 
 if __name__ == '__main__':

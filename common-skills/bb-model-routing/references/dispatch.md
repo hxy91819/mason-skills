@@ -49,7 +49,11 @@ defaults:
 
 优先级：命令行覆盖 > 环境配置 > 顶层配置。候选始终由 defaults 决定，脚本不提供 `--agent` 覆盖入口。`environments.<精确环境 ID>` 可覆盖 defaults、agents、permission_mode；同名 agent 整体替换，必须写出 provider 和 routes。目录路径模式尚无环境 ID，不应用 `environments.<id>` 覆盖，只使用顶层配置。模型的明确要求通过配置调整表达，思考深度的明确要求用 `--reasoning` 表达，缺失配置时先补齐，不静默替换。
 
-`--fallback-from <别名>` 把本次候选截取为从该别名起的后缀，用于前次派发失败且确认线程未创建后的同档续派；别名不在候选中时报错。负载均衡续派须保持原 route 和完整 `--task` 文本，才能复现返回的 `selection.fallbacks` 顺序；需要补充进展时，续派保留原任务文本，创建成功后通过 `bb thread tell` 向新线程补充进展与位置。
+`--fallback-from <别名>` 把本次候选截取为从该别名起的后缀，用于前次派发失败且确认线程未创建后的同档续派；别名不在候选中时报错。实际派发时使用 `--fallback-from` 会自动将本次链上位于该别名之前的候选记入短期熔断冷却（15 分钟），避免紧邻的下一笔独立任务在负载均衡下再次命中刚故障的候选。负载均衡续派须保持原 route 和完整 `--task` 文本，才能复现返回的 `selection.fallbacks` 顺序；需要补充进展时，续派保留原任务文本，创建成功后通过 `bb thread tell` 向新线程补充进展与位置。
+
+`--closed-scope` 声明任务边界已闭合（目标文件、改法、验证方式均已明确），未配合 `--escalate-from <线程ID>` 时强制要求 `--difficulty simple`。`--max-task-chars`（默认 2500，0 为不限制）对未传 `--escalate-from` 的 `medium`/`complex` 任务检查有效指导长度（剥离 `# Review agent 提示词` 后的字符数），超长时拒绝派发并提示改用 `simple` 或精简任务书。
+
+`--record-decision <线程ID>` 配合 `--outcome {spawned,completed,failed_quota,failed_transient,failed_other}` 与 `--decision {accepted,rejected,reworked,escalated}` 将运行终态与父线程裁决覆盖回写到本地账本（默认 `~/.cache/bb-dispatch/ledger.json`）；`--history-summary`（别名 `--stats`）只读输出按难度与候选的聚合统计、活跃冷却及确定性复盘 hooks。
 
 默认从 `bb status` 解析环境，项目使用该环境的所属项目。`--environment` 接受现有环境 ID 或本机已存在的目录路径：ID 模式下 `--project` 与环境所属项目必须匹配；路径模式下目录会解析为绝对路径并原样交给 BB 创建 project-checkout 附着环境，项目取 `--project` 或当前 `bb status`，两者都没有时须显式提供 `--project`。同项目时关联当前父线程，跨环境也保留关联；跨项目不关联。
 
