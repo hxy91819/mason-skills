@@ -16,6 +16,7 @@ sh build.sh
 python3 test_abi.py
 # Linux arm64 安装包（安装交叉编译器及其 libc headers 后）：
 CC=aarch64-linux-gnu-gcc sh build.sh dist/arm64
+python3 package.py dist/arm64/cpa-muse-full-models.so
 ```
 
 构建产物为 `dist/cpa-muse-full-models.so`，用于 Linux；用 CLIProxy 所在架构的 C 编译器构建。测试通过 `ctypes` 调用真实 ABI，验证生命周期、准确路由和分配/释放边界。
@@ -24,7 +25,9 @@ CC=aarch64-linux-gnu-gcc sh build.sh dist/arm64
 
 将 `.so` 安装到 CLIProxy 的 `plugins.dir`，并启用 `plugins.configs.cpa-muse-full-models.enabled`。也可在 v8 Plugin Store 中添加本目录的 [registry.json](registry.json) 作为自定义源，使用 `direct` install artifact（平台、HTTPS URL、SHA-256 和 size）安装。
 
-`artifacts/linux-arm64/` 保留由本目录源码构建的版本化安装包，供无法回连构建机器的代理下载。已经发布的版本文件不覆盖；更新时使用新版本文件名、版本号和校验值。它不含凭证。临时下载源只在安装期间启用，安装后移除。若使用 HTTP 临时源，CLIProxy 要求匹配该地址的 `store-auth` 规则：`type: none`、`apply-to: [registry, artifact]`、`allow-insecure: true`；安装后同时删除该临时规则。
+`artifacts/linux-arm64/` 保留由本目录源码构建的版本化安装包，供无法回连构建机器的代理下载。Plugin Store 的 direct artifact 必须为 ZIP，根目录只放 `cpa-muse-full-models.so`；裸 `.so` 只能手动复制安装。`package.py` 检查架构及注册版本，生成时间戳固定的 ZIP，并更新 registry 的 SHA-256/size。
+
+已经发布的版本文件不覆盖；更新时同时更新 C 的 `PLUGIN_VERSION` 和 registry 的版本，再构建新版本包。历史 v0.1.0 裸库保留为构建快照，当前可通过 Store 安装的版本为 v0.1.1 ZIP。安装包不含凭证。临时下载源只在安装期间启用，安装后移除。若使用 HTTP 临时源，CLIProxy 要求匹配该地址的 `store-auth` 规则：`type: none`、`apply-to: [registry, artifact]`、`allow-insecure: true`；安装后同时删除该临时规则。
 
 验收必须同时核对客户端 `/v1/models`、原有 Meta 模型仍可列举、Full 两版的 Responses 请求（返回的模型 ID 一致），以及 BB 的 `provider models pi`。如上游目录正式收录 Full，可禁用并删除这个扩展，保留 BB 中的模型 ID；无需改登录凭证。
 

@@ -54,6 +54,8 @@ class NativeABI(unittest.TestCase):
         initial = self.request(b"plugin.register")
         self.assertEqual(initial, self.request(b"plugin.reconfigure"))
         self.assertTrue(initial["ok"])
+        registry = json.loads((pathlib.Path(__file__).parent / "registry.json").read_text())
+        self.assertEqual(initial["result"]["metadata"]["Version"], registry["plugins"][0]["version"])
         # Registrar metadata is additive. ModelProvider would replace OAuth discovery.
         self.assertEqual(initial["result"]["capabilities"], {"model_registrar": True})
 

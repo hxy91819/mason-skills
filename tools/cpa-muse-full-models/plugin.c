@@ -7,6 +7,7 @@
 #include <string.h>
 
 #define EXPORT __attribute__((visibility("default")))
+#define PLUGIN_VERSION "0.1.1"
 
 typedef struct { void *ptr; size_t len; } buffer;
 typedef struct {
@@ -24,7 +25,7 @@ typedef struct {
 
 static const char registration[] =
     "{\"ok\":true,\"result\":{\"schema_version\":1,"
-    "\"metadata\":{\"Name\":\"cpa-muse-full-models\",\"Version\":\"0.1.0\","
+    "\"metadata\":{\"Name\":\"cpa-muse-full-models\",\"Version\":\"" PLUGIN_VERSION "\","
     "\"Author\":\"hxy91819\",\"ConfigFields\":[]},"
     "\"capabilities\":{\"model_registrar\":true}}}";
 
