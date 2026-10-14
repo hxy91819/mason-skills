@@ -85,7 +85,7 @@ skills:
 - name: open-source-contribution
   note: 开源贡献与发布卫生规范
 - name: open-source-fork-maintenance
-  note: 维护非 maintainer 的公开 fork：local/aggregate 集成与上游反馈闭环
+  note: 维护非 maintainer 的公开 fork：main 聚合集成与上游反馈闭环
 - name: ppt-visual-review
   note: PPT 式 HTML 布局验收：箭头、留白、同类一致性、字体颜色与中文排版细节，审查-修复循环
 - name: preflight
