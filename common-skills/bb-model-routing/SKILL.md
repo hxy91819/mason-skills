@@ -11,7 +11,7 @@ description: 用户明确要求使用 BB 派发时，或已启动的 ask-oracle 
 
 Agent 自行决定使用 subagent，或用户只要求“用 subagent 检查一下”时，沿用宿主默认机制。查看或继续已有线程沿用现有上下文。
 
-为用户已要求的任务调用 `scripts/bb-dispatch`。工具别名、模型、推理级别和环境映射以用户配置为准。配置文件不存在时（`bb-dispatch` 报“无法读取配置”）进入 bootstrap：按[首次配置引导](references/bootstrap.md)边汇报进度边检测可用 provider 与模型，给出建议配置，经用户确认后写入并 dry-run 验证，再回到派发。调整已有映射时读取[配置与派发](references/dispatch.md)。参数细节查 `bb-dispatch --help`。
+为用户已要求的任务调用 `scripts/bb-dispatch`。工具别名、模型、推理级别和环境映射以用户配置为准。派发前确认配置文件存在，`bb-dispatch` 报“无法读取配置”时也先核对该路径：文件确实不存在才进入 bootstrap，按[首次配置引导](references/bootstrap.md)边汇报进度边检测可用 provider 与模型，给出建议配置，经用户确认后写入并 dry-run 验证，再回到派发；文件存在但读不了是配置损坏，报告并修复，不新建覆盖。调整已有映射时读取[配置与派发](references/dispatch.md)。参数细节查 `bb-dispatch --help`。
 
 ## 判断与调用
 
