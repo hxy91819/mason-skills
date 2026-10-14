@@ -8,6 +8,7 @@ This directory holds maintained repository design notes and examples. Skill sour
 | [领域设计不跑偏](domain-guardrails.md) | 规则只住聚合、用例只编排、规则与呈现一句判准、事务与版本、七项 CI 必过的守护、领域影响评估让 Agent 自己停下；适合单体单库的业务系统 |
 | [项目 Y 架构参考](project-y-architecture.md) | 单体 Go + PostgreSQL + 对象存储、两端 React 前端与原型共用呈现层的仓库布局、请求路径、认证、附件、测试分层、部署与文档链；去业务名词的已跑通形状 |
 | [架构不腐化](architecture-anti-erosion.md) | 唯一来源加生成与一致性检查、文档与代码不分叉、棘轮基线只能缩、派发与合并边界、升级过滤器；与领域设计不跑偏配套 |
+| [客户确认原型复盘](client-confirmation-prototype-lessons.md) | 用点击原型让客户把规则改定：示范层与产品层分开、没答的题按默认做并标暂定、获奖标准加自审的视觉提示词、空数据路径、固定走查工具、发布门禁与踩坑；原型冻结前的那一段 |
 | [原型到正式实现复盘](prototype-to-production-lessons.md) | 原型分两条线承载（UI 抽共用包加截图比对；需求走文档链加编号测试）、领域驱动轻量版与七项守护、派发合并流程、测试分层、前端薄化、本地入口与踩坑；供同类项目参考 |
 | [Fork 维护决策](adr/0001-two-tier-fork-maintenance.md) | 面向人的简短决策记录：独立来源、可选领域与新旧项目接入；不属于 Agent 默认加载材料 |
 | [large-task system design](../common-skills/large-task-planning/references/large-task-system-design.md) | Shared design principles and boundaries for planning and orchestrating large tasks; owned by `large-task-planning` |
