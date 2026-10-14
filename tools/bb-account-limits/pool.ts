@@ -1,7 +1,7 @@
 import type { CliproxyAccountUsageEntry } from "./contract.js";
 
 /**
- * Cliproxy 池级聚合：把同一供应商下全部账号的额度窗口合成一个池。
+ * Cliproxy 池级聚合：先按 Claude 全模型周额度的可用性分池，再合并各池的窗口。
  * server（Provider Usage 来源）和 app（“账户额度”池视图）共用，保持纯函数、不引 Node API。
  */
 
@@ -81,6 +81,32 @@ export interface PoolWindow {
 export type CliproxyPoolUsage =
   | { status: "ok"; okAccounts: number; totalAccounts: number; windows: PoolWindow[] }
   | { status: "error"; message: string };
+
+export interface AccountPoolGroup {
+  id: "default" | "without-weekly";
+  label: string | null;
+  accounts: readonly CliproxyAccountUsageEntry[];
+}
+
+/** 按实际报告的额度分组，不从套餐名猜测；查询失败或空响应不视为无周额度账号。 */
+export function groupAccountPools(providerId: string, accounts: readonly CliproxyAccountUsageEntry[]): AccountPoolGroup[] {
+  if (!["claude", "cliproxy-claude", "account-pool:claude-code"].includes(providerId)) {
+    return [{ id: "default", label: null, accounts }];
+  }
+  const regular: CliproxyAccountUsageEntry[] = [];
+  const withoutWeekly: CliproxyAccountUsageEntry[] = [];
+  for (const account of accounts) {
+    const usage = account.usage;
+    const missingWeekly = usage.status === "ok" && usage.windows.length > 0
+      && !usage.windows.some(window => normalizeCliproxyWindow(window.label).id === "7d");
+    (missingWeekly ? withoutWeekly : regular).push(account);
+  }
+  if (withoutWeekly.length === 0) return [{ id: "default", label: null, accounts }];
+  return [
+    ...(regular.length ? [{ id: "default" as const, label: "含全模型周额度", accounts: regular }] : []),
+    { id: "without-weekly", label: "未报告全模型周额度", accounts: withoutWeekly },
+  ];
+}
 
 /** 只统计 status=ok 的账号；没有任何 ok 账号时返回 error，绝不显示 0 用量。 */
 export function aggregateCliproxyPool(accounts: readonly CliproxyAccountUsageEntry[]): CliproxyPoolUsage {

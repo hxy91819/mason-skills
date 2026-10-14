@@ -23,6 +23,7 @@ const twoAccounts: SnapshotProvider["accounts"] = [
   ] } },
   { key: "key-personal", label: "Claude 个人", weight: 1, usage: { status: "ok", planLabel: null, windows: [
     { label: "5-hour limit", usedPercent: 80, resetsAt: "2026-10-05T06:00:00Z" },
+    { label: "Weekly limit", usedPercent: 40, resetsAt: null },
   ] } },
 ];
 
@@ -60,6 +61,68 @@ const list = (source: ReturnType<typeof createCliproxyUsageSource>) =>
   source["provider-usage.v1.listResources"]();
 const get = (source: ReturnType<typeof createCliproxyUsageSource>, resourceId: string, refresh: boolean) =>
   source["provider-usage.v1.getResource"]({ resourceId, refresh });
+
+test("没有全模型周额度的 Claude 账号形成独立池，不影响原池均值和重置时间", async () => {
+  const personal = twoAccounts[1]!;
+  assert.equal(personal.usage.status, "ok");
+  if (personal.usage.status !== "ok") return;
+  const accounts = [twoAccounts[0]!, { ...personal, usage: { ...personal.usage,
+    windows: personal.usage.windows.filter(window => window.label !== "Weekly limit"),
+  } }, {
+    key: "key-team", label: "Claude 另一个账号", weight: 1,
+    usage: { status: "ok" as const, planLabel: null, windows: [
+      { label: "5-hour limit", usedPercent: 40, resetsAt: "2026-10-05T05:00:00Z" },
+      { label: "Weekly scoped limit", usedPercent: 30, resetsAt: null },
+    ] },
+  }];
+  const { source } = makeSource({ cached: [{ ...provider(accounts), updatedAtMs: 42 }] });
+  const resources = await list(source);
+  assert.ok(usageResourceListSchema.safeParse(resources).success);
+  assert.deepEqual(resources.resources.filter(resource => resource.id.startsWith("pool:")).map(resource => resource.id), [
+    "pool:claude", "pool:claude:without-weekly",
+  ]);
+  const regular = await get(source, "pool:claude", false);
+  const withoutWeekly = await get(source, "pool:claude:without-weekly", false);
+  assert.ok(usageMeasurementSchema.safeParse(regular).success);
+  assert.ok(usageMeasurementSchema.safeParse(withoutWeekly).success);
+  assert.equal(regular.usage.status, "ok");
+  assert.equal(withoutWeekly.usage.status, "ok");
+  if (regular.usage.status !== "ok" || withoutWeekly.usage.status !== "ok") return;
+  assert.equal(regular.usage.planLabel, "1/1 账号");
+  assert.equal(withoutWeekly.usage.planLabel, "2/2 账号");
+  assert.deepEqual(regular.usage.windows.map(window => [window.id, window.usedPercent, window.resetsAt]), [
+    ["5h", 20, "2026-10-05T08:00:00.000Z"], ["7d", 40, null],
+  ]);
+  assert.deepEqual(withoutWeekly.usage.windows.map(window => [window.id, window.usedPercent, window.resetsAt]), [
+    ["5h", 60, "2026-10-05T05:00:00.000Z"], ["scoped", 30, null],
+  ]);
+});
+
+test("Claude 刷新后按新窗口换池，消失的独立池资源要求重新列举", async () => {
+  const initial = [{ key: "team", label: "Team", weight: 1, usage: { status: "ok" as const, planLabel: null,
+    windows: [{ label: "5-hour limit", usedPercent: 25, resetsAt: null }] } }];
+  const { source, calls } = makeSource({
+    cached: [{ ...provider(initial), updatedAtMs: 1 }],
+    readHost: async () => ({ providers: [provider([{ ...initial[0]!, usage: { ...initial[0]!.usage,
+      windows: [...initial[0]!.usage.windows, { label: "Weekly limit", usedPercent: 60, resetsAt: null }],
+    } }])] }),
+  });
+  assert.deepEqual((await list(source)).resources.filter(resource => resource.id.startsWith("pool:")).map(resource => resource.id), [
+    "pool:claude:without-weekly",
+  ]);
+  await assert.rejects(() => get(source, "pool:claude", false), /no longer exists/);
+  const initialPool = await get(source, "pool:claude:without-weekly", false);
+  assert.equal(initialPool.usage.status, "ok");
+  await assert.rejects(() => get(source, "pool:claude:without-weekly", true), /no longer exists/);
+  assert.deepEqual(calls, [{ hostId: "host-local", providerIds: ["cliproxy-claude"] }]);
+  assert.deepEqual((await list(source)).resources.filter(resource => resource.id.startsWith("pool:")).map(resource => resource.id), ["pool:claude"]);
+  const regular = await get(source, "pool:claude", false);
+  assert.equal(regular.usage.status, "ok");
+  if (regular.usage.status === "ok") assert.equal(regular.usage.windows.find(window => window.id === "7d")?.usedPercent, 60);
+  assert.equal((await get(source, "account:claude:team", false)).usage.status, "ok");
+  await assert.rejects(() => get(source, "pool:claude:unknown", false), /no longer exists/);
+  await assert.rejects(() => get(source, "pool:codex:without-weekly", false), /no longer exists/);
+});
 
 test("listResources 只读缓存并输出池与账号资源，顺序即显示顺序", async () => {
   let hostReads = 0;

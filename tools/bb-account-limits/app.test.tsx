@@ -18,6 +18,46 @@ Object.assign(globalThis, {
 });
 Object.defineProperty(globalThis, "navigator", { configurable: true, value: dom.window.navigator });
 
+test("Claude 池视图把没有全模型周额度的账号单独合并，两种来源共用分组", async t => {
+  installTestPluginRuntime();
+  const app = await loadPluginApp(() => import("./app.js"));
+  for (const source of ["cliproxy", "account-pool"] as const) {
+    dom.window.localStorage.clear();
+    const account = (key: string, percent: number, weekly: boolean, weight: number) => ({
+      key, label: key, weight, usage: { status: "ok" as const, planLabel: null, windows: [
+        { label: "5-hour limit", usedPercent: percent, resetsAt: null },
+        ...(weekly ? [{ label: "Weekly limit", usedPercent: 50, resetsAt: null }] : []),
+        { label: "Weekly scoped limit", usedPercent: percent, resetsAt: null },
+      ] },
+    });
+    const snapshot: AccountLimitsPanelSnapshot = { machines: [{
+      id: source, source, displayName: source, status: "connected", error: null,
+      providers: [{ id: source === "cliproxy" ? "cliproxy-claude" : "account-pool:claude-code",
+        displayName: "Claude", updatedAt: null,
+        usage: { status: "ok", planLabel: null, windows: [] },
+        accounts: [account("有周额度 A", 20, true, 2), account("有周额度 B", 80, true, 1),
+          account("未报周额度 A", 0, false, 2), account("未报周额度 B", 30, false, 1)],
+      }],
+    }] };
+    const slot = renderSlot(app.navPanels[0]!, { subPath: "" }, { rpc: { readAccountLimits: () => snapshot } });
+    t.after(() => { slot.lifecycle.unmount(); dom.window.localStorage.clear(); });
+    await slot.findByText("Claude");
+    await act(async () => { slot.getByRole("button", { name: "池" }).click(); });
+    const regular = within(slot.getByRole("region", { name: "含全模型周额度 的池额度" }));
+    const withoutWeekly = within(slot.getByRole("region", { name: "未报告全模型周额度 的池额度" }));
+    assert.equal(regular.getByRole("progressbar", { name: "5h 剩余额度" }).getAttribute("aria-valuenow"), "60");
+    assert.equal(withoutWeekly.getByRole("progressbar", { name: "5h 剩余额度" }).getAttribute("aria-valuenow"), "90");
+    assert.equal(regular.getByRole("progressbar", { name: "7d 剩余额度" }).getAttribute("aria-valuenow"), "50");
+    assert.equal(withoutWeekly.queryByRole("progressbar", { name: "7d 剩余额度" }), null);
+    assert.equal(withoutWeekly.getByRole("progressbar", { name: "scoped 剩余额度" }).getAttribute("aria-valuenow"), "90");
+    assert.ok(regular.getAllByText(/覆盖 2\/2/).length > 0);
+    assert.ok(withoutWeekly.getAllByText(/覆盖 2\/2/).length > 0);
+    await act(async () => { slot.getByRole("button", { name: "账号" }).click(); });
+    assert.ok(slot.getByRole("region", { name: "未报周额度 A 的额度" }));
+    slot.lifecycle.unmount();
+  }
+});
+
 test("账户额度导航使用插件的额度图标", async () => {
   const app = await loadPluginApp(() => import("./app.js"));
   const panel = app.navPanels.find(panel => panel.path === "account-limits");

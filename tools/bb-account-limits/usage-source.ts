@@ -1,5 +1,5 @@
 import { cliproxyProviderDisplayName, cliproxyProviderId } from "./config.js";
-import { aggregateCliproxyPool, normalizeCliproxyWindow, orderQuotaWindows, type CliproxyWindowIdentity, type PoolWindow } from "./pool.js";
+import { aggregateCliproxyPool, groupAccountPools, normalizeCliproxyWindow, orderQuotaWindows, type AccountPoolGroup, type CliproxyWindowIdentity, type PoolWindow } from "./pool.js";
 import type { CliproxyAccountUsageEntry, CliproxyUsageSnapshot } from "./contract.js";
 import {
   usageFetchMethod,
@@ -30,10 +30,11 @@ function sourceProviderId(provider: string): string {
   return cliproxyProviderId(provider);
 }
 
-function parseResourceId(resourceId: string): { kind: "pool" | "account"; provider: string; accountKey: string | null } | null {
+function parseResourceId(resourceId: string): { kind: "pool" | "account"; provider: string; accountKey: string | null; poolGroup?: AccountPoolGroup["id"] } | null {
   if (resourceId.startsWith("pool:")) {
-    const provider = resourceId.slice(5);
-    return provider ? { kind: "pool", provider, accountKey: null } : null;
+    const [provider, group, ...extra] = resourceId.slice(5).split(":");
+    if (!provider || extra.length || (group !== undefined && (provider !== "claude" || group !== "without-weekly"))) return null;
+    return { kind: "pool", provider, accountKey: null, poolGroup: group === "without-weekly" ? group : "default" };
   }
   if (!resourceId.startsWith("account:")) return null;
   const rest = resourceId.slice(8);
@@ -73,7 +74,7 @@ function accountSourceUsage(usage: CliproxyAccountUsageEntry["usage"]): SourceUs
 }
 
 /**
- * 官方 Provider Usage 卡片的 Cliproxy 来源：每供应商一个池资源 + 各账号资源。
+ * 官方 Provider Usage 卡片的 Cliproxy 来源：各供应商池资源 + 各账号资源，Claude 按周额度分池。
  * listResources 只读本地 SQLite 缓存（面板/定时刷新写入），不触发 host 查询；
  * getResource 只刷新该资源所属供应商并回写同一份缓存。
  */
@@ -106,11 +107,13 @@ export function createCliproxyUsageSource(deps: CliproxyUsageSourceDeps) {
       for (const provider of await cachedProviders()) {
         const raw = provider.id.replace(/^cliproxy-/u, "");
         const providerId = sourceProviderId(raw);
-        resources.push({
-          accountKey: null, id: `pool:${raw}`, providerId,
-          label: `池 · ${cliproxyProviderDisplayName(raw)}`,
-          scope: { kind: "shared" },
-        });
+        for (const group of groupAccountPools(raw, provider.accounts)) {
+          resources.push({
+            accountKey: null, id: `pool:${raw}${group.id === "default" ? "" : `:${group.id}`}`, providerId,
+            label: `池 · ${cliproxyProviderDisplayName(raw)}${group.label ? ` · ${group.label}` : ""}`,
+            scope: { kind: "shared" },
+          });
+        }
         for (const account of provider.accounts) {
           resources.push({
             accountKey: null, id: `account:${raw}:${account.key}`, providerId,
@@ -145,7 +148,9 @@ export function createCliproxyUsageSource(deps: CliproxyUsageSourceDeps) {
       }
       const accountFields = { plan: null, accountEmail: null, planLabel: null };
       if (parsed.kind === "pool") {
-        const pool = aggregateCliproxyPool(provider.accounts);
+        const group = groupAccountPools(parsed.provider, provider.accounts).find(group => group.id === parsed.poolGroup);
+        if (!group) throw new Error("Usage resource no longer exists.");
+        const pool = aggregateCliproxyPool(group.accounts);
         if (pool.status !== "ok") {
           return { accountKey: null, observedAt: null, usage: { status: "error", ...accountFields, message: pool.message } };
         }

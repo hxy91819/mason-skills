@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { aggregateCliproxyPool, normalizeCliproxyWindow } from "./pool.js";
+import { aggregateCliproxyPool, groupAccountPools, normalizeCliproxyWindow } from "./pool.js";
 import type { CliproxyAccountUsageEntry } from "./contract.js";
 
 function account(key: string, weight: number, windows: Array<{ label: string; usedPercent: number; resetsAt: string | null }>): CliproxyAccountUsageEntry {
@@ -10,6 +10,25 @@ function account(key: string, weight: number, windows: Array<{ label: string; us
 function failing(key: string): CliproxyAccountUsageEntry {
   return { key, label: key, weight: 1, usage: { status: "error", message: "query failed" } };
 }
+
+test("Claude 根据全模型周窗口分池，模型周额度不算全模型周额度，查询失败不误分", () => {
+  const accounts = [
+    account("weekly-zero", 1, [{ label: "Weekly limit", usedPercent: 0, resetsAt: null }]),
+    account("scoped", 1, [{ label: "Weekly scoped limit", usedPercent: 30, resetsAt: null }]),
+    account("cached-opus", 1, [{ label: "Weekly Opus limit", usedPercent: 40, resetsAt: null }]),
+    account("session-only", 1, [{ label: "5-hour limit", usedPercent: 20, resetsAt: null }]),
+    failing("failed"), account("empty", 1, []),
+  ];
+  const groups = groupAccountPools("claude", accounts);
+  assert.deepEqual(groups.map(group => [group.id, group.accounts.map(account => account.key)]), [
+    ["default", ["weekly-zero", "failed", "empty"]],
+    ["without-weekly", ["scoped", "cached-opus", "session-only"]],
+  ]);
+  const otherProvider = groupAccountPools("codex", accounts);
+  assert.equal(otherProvider.length, 1);
+  assert.deepEqual(otherProvider[0]?.accounts.map(account => account.key), accounts.map(account => account.key));
+  assert.deepEqual(groupAccountPools("claude", [accounts[1]!, accounts[2]!]).map(group => group.id), ["without-weekly"]);
+});
 
 test("池聚合按权重合成已用百分比并保留最早重置时间", () => {
   const pool = aggregateCliproxyPool([

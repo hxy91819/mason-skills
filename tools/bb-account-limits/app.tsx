@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { definePluginApp, useRpc } from "@get-bb/plugin-sdk/app";
 import { accountLimitsPanelRpcContract, type AccountLimitsPanelSnapshot, type CliproxyUsageSnapshot } from "./contract.js";
-import { aggregateCliproxyPool, orderQuotaWindows, type PoolWindow } from "./pool.js";
+import { aggregateCliproxyPool, groupAccountPools, orderQuotaWindows, type PoolWindow } from "./pool.js";
 import { AntigravityIcon, GrokIcon } from "./provider-icons.js";
 
 function compactReset(value: string | null, now: number): string {
@@ -99,9 +99,22 @@ function poolWindowDetail(window: PoolWindow, totalAccounts: number): string {
 }
 
 function PoolUsage({ provider, now, mode }: { provider: PanelProvider; now: number; mode: DisplayMode }) {
-  const pool = aggregateCliproxyPool(provider.accounts);
+  return <div className="space-y-2">
+    {groupAccountPools(provider.id, provider.accounts).map(group => <section key={group.id}
+      aria-label={group.label ? `${group.label} 的池额度` : undefined}>
+      {group.label && <h3 className="mb-1 text-xs font-medium">{group.label}</h3>}
+      <PoolGroupUsage accounts={group.accounts} providerUsage={provider.usage} now={now} mode={mode} />
+    </section>)}
+  </div>;
+}
+
+function PoolGroupUsage({ accounts, providerUsage, now, mode }: {
+  accounts: readonly PanelProvider["accounts"][number][];
+  providerUsage: PanelProvider["usage"]; now: number; mode: DisplayMode;
+}) {
+  const pool = aggregateCliproxyPool(accounts);
   if (pool.status !== "ok") {
-    const message = provider.accounts.length === 0 && provider.usage.status === "error" ? provider.usage.message : pool.message;
+    const message = accounts.length === 0 && providerUsage.status === "error" ? providerUsage.message : pool.message;
     return <p className="text-xs text-destructive">{message}</p>;
   }
   if (pool.windows.length === 0) return <p className="text-xs text-muted-foreground">未报告额度窗口。</p>;
