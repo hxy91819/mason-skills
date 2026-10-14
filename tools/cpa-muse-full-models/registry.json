@@ -1,0 +1,29 @@
+{
+  "schema_version": 2,
+  "plugins": [
+    {
+      "id": "cpa-muse-full-models",
+      "name": "Muse Wonder Full models",
+      "description": "Add exact Muse Wonder Full model IDs to the native Meta provider.",
+      "author": "hxy91819",
+      "version": "0.1.0",
+      "repository": "https://github.com/hxy91819/mason-skills",
+      "license": "MIT",
+      "tags": [
+        "Models"
+      ],
+      "install": {
+        "type": "direct",
+        "artifacts": [
+          {
+            "goos": "linux",
+            "goarch": "arm64",
+            "url": "https://raw.githubusercontent.com/hxy91819/mason-skills/main/tools/cpa-muse-full-models/artifacts/linux-arm64/cpa-muse-full-models-v0.1.0.so",
+            "sha256": "c99f76b8e3a41d71a29e32c936d94d372e7116c9e14e82eb24eb5d143bd9bb92",
+            "size": 70080
+          }
+        ]
+      }
+    }
+  ]
+}
