@@ -4,17 +4,7 @@
 
 ## 首次配置与迁移
 
-配置路径优先级：`--config` > `BB_DISPATCH_CONFIG` > `~/.config/bb-dispatch/config.yaml`。先读取已有配置；没有时，以 [config.example.yaml](config.example.yaml) 为模板创建用户配置。模板中的尖括号值必须替换，不能直接派发。配置不含凭据，认证由 BB provider 管理。
-
-先使用以下只读命令发现目标环境实际提供的能力（ID 使用返回值）：
-
-```bash
-bb status --json
-bb provider list --environment <environment-id> --json
-bb provider models <provider-id> --environment <environment-id> --json
-```
-
-从可用 provider 中选择符合用户要求的模型，检查 `permissionModes` 和模型的 `supportedReasoningEfforts`；多个候选缺乏选择依据时询问用户。目录能证明可用性，不能证明价格和任务质量。将选择写入任意别名，例如 `primary`，然后配置各难度的默认别名。
+配置路径优先级：`--config` > `BB_DISPATCH_CONFIG` > `~/.config/bb-dispatch/config.yaml`。文件不存在时按[首次配置引导](bootstrap.md)检测环境、给出建议并经用户确认后写入；调整已有映射时复用引导第 1 步的只读命令查看目标环境实际提供的 provider 与模型（ID 使用返回值），检查 `permissionModes` 和模型的 `supportedReasoningEfforts`，多个候选缺乏选择依据时询问用户。目录能证明可用性，不能证明价格和任务质量。结构以 [config.example.yaml](config.example.yaml) 为准，尖括号值必须替换，不能直接派发；将选择写入任意别名，例如 `primary`，然后配置各难度的默认别名。配置不含凭据，认证由 BB provider 管理。
 
 配置格式为 `version: 2`。迁移时把扁平的 `agents.<别名>.model/reasoning` 移到 `agents.<别名>.routes.<难度>`；同一 provider 的不同模型和难度保留在这个别名下。脚本不接受旧格式。配置服务多个环境时使用 `environments` 覆盖。脚本只读取配置，不安装 provider 或覆盖配置。新配置先运行 `--dry-run` 验证，再派发。模型目录不会自动生成用户的模型偏好。
 
