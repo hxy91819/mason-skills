@@ -73,6 +73,7 @@ environments:
         self.assertEqual(result['selection']['agent'], 'primary')
         prompt = result['argv'][result['argv'].index('--prompt') + 1]
         self.assertTrue(prompt.startswith(self.args().task + '\n\n'))
+        self.assertIn('默认静默推进，不要发送常规进度或阶段结果', prompt)
         self.assertIn('parent', result['argv'])
         self.assertFalse(any(c[:2] == ('thread', 'spawn') for c in self.calls))
 

@@ -249,11 +249,13 @@ def dispatch(args, call=bb):
     if parent.get("id"):
         task += (
             "\n\n## 向父会话回报\n"
-            f"父会话：{parent['id']}。执行期间需要向父会话发送进度、阶段结果或非紧急问题时，"
-            f"使用 `bb thread tell {parent['id']} --mode queue ...`，让父 Agent 先完成当前回合。"
-            f"只有必须立即纠正父 Agent 当前工作时（例如发现它正执行错误方案），才使用 "
+            f"父会话：{parent['id']}。执行期间默认静默推进，不要发送常规进度或阶段结果；"
+            "每次 `bb thread tell` 都会唤醒父会话消耗回合。"
+            f"仅当遇到无法自行裁决的阻塞问题、且必须拿到父会话回复才能继续时，使用 "
+            f"`bb thread tell {parent['id']} --mode queue ...` 提问并等待；"
+            f"只有发现父会话正执行错误方案等必须立即打断的情况，才使用 "
             f"`bb thread tell {parent['id']} --mode steer ...`。"
-            "最终结果写在 final 回复中，由 BB 自动汇报给父会话。\n"
+            "其余所有过程、结论与未完成项一律写在最终回复（final response）中，由 BB 自动汇报给父会话。\n"
         )
     command = ["thread", "spawn", "--project", project, "--environment", environment,
                "--provider", provider, "--model", model,
