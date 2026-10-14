@@ -26,8 +26,10 @@ After setup, the project owns its copy of the rules, script, and release workflo
 | Base | a tag from the upstream release channel, recorded on the `base` line of `.fork/branches` |
 | Tooling branch | `fork-tooling`, based on the base tag; holds `.fork/branches`, `scripts/fork-aggregate`, `docs/fork-maintenance.md`, and the AGENTS section; merged like any other branch |
 | Default branch | `main` on the personal fork; ordinary clones receive the latest aggregate |
-| Aggregate | `scripts/fork-aggregate` builds `aggregate/next` in `.worktrees/aggregate-next`; `--promote` moves the root `main` there and pushes it to `fork` with a lease |
+| Aggregate | `scripts/fork-aggregate` builds a temporary local candidate in `.worktrees/aggregate-next` (`aggregate/next`); `--promote` puts the result on root `main` and publishes `fork/main` with a lease |
 | Worktrees | `.worktrees/<name>`, excluded via `.git/info/exclude` or `.gitignore` |
+
+Use `main` / `fork/main` for ordinary checkouts, clones, deployment, and sharing. `aggregate/next` is only a temporary verification candidate used by the script; it is not a user-facing or published branch.
 
 Upstream issues, comments, and PRs always need the user's confirmation per item. Rewriting fork branches (rebase onto a new tag, rebuilt `main`) uses `--force-with-lease` against the observed remote SHA without asking again; never push to `origin`.
 

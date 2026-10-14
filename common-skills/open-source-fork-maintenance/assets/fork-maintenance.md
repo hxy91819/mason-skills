@@ -24,6 +24,8 @@
 
 个人 fork 的 `main` 是最新聚合入口，`origin/main` 是上游开发主干，两者用途不同。GitHub 默认分支设为 `main`，访客打开仓库或普通 clone 即可拿到最新聚合代码。聚合仍基于稳定 tag，因此 GitHub 与上游主干比较时可能显示落后；是否纳入新代码以基线 tag 和分支清单为准。
 
+日常检出、clone、部署和对外分享统一使用 `main` / `fork/main`。脚本中的 `aggregate/next` 仅是本地临时验证候选，验证后提升到 `main`；它不作为日常使用或对外发布的分支。
+
 ## 1. 开发新功能或修复
 
 从当前基线 tag 拉分支，在独立 worktree 里开发：
@@ -42,7 +44,7 @@ git worktree add .worktrees/<name> -b feature/<name> "$base"   # 修复用 fix/<
 ## 2. 聚合打包
 
 ```bash
-scripts/fork-aggregate            # 生成 .worktrees/aggregate-next 上的 aggregate/next
+scripts/fork-aggregate            # 生成 .worktrees/aggregate-next 中的本地临时验证候选
 scripts/fork-aggregate --promote  # 成功后移动根目录 main 并推送到 fork
 ```
 
