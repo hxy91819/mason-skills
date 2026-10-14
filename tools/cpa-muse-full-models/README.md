@@ -27,7 +27,7 @@ python3 package.py dist/arm64/cpa-muse-full-models.so
 
 `artifacts/linux-arm64/` 保留由本目录源码构建的版本化安装包，供无法回连构建机器的代理下载。Plugin Store 的 direct artifact 必须为 ZIP，根目录只放 `cpa-muse-full-models.so`；裸 `.so` 只能手动复制安装。`package.py` 检查架构及注册版本，生成时间戳固定的 ZIP，并更新 registry 的 SHA-256/size。
 
-已经发布的版本文件不覆盖；更新时同时更新 C 的 `PLUGIN_VERSION` 和 registry 的版本，再构建新版本包。历史 v0.1.0 裸库保留为构建快照，当前可通过 Store 安装的版本为 v0.1.1 ZIP。安装包不含凭证。临时下载源只在安装期间启用，安装后移除。若使用 HTTP 临时源，CLIProxy 要求匹配该地址的 `store-auth` 规则：`type: none`、`apply-to: [registry, artifact]`、`allow-insecure: true`；安装后同时删除该临时规则。
+已经发布的版本文件不覆盖；更新时同时更新 C 的 `PLUGIN_VERSION` 和 registry 的版本，再构建新版本包。历史 v0.1.0 裸库和 v0.1.1 ZIP 保留为构建快照，当前版本为 v0.1.2 ZIP。v0.1.2 补齐运行时 `validPlugin` 要求的 `GitHubRepository` 元数据，ABI 测试同时检查四个必填注册字段；v0.1.1 虽可安装，但运行时会拒绝注册。安装包不含凭证。临时下载源只在安装期间启用，安装后移除。若使用 HTTP 临时源，CLIProxy 要求匹配该地址的 `store-auth` 规则：`type: none`、`apply-to: [registry, artifact]`、`allow-insecure: true`；安装后同时删除该临时规则。
 
 验收必须同时核对客户端 `/v1/models`、原有 Meta 模型仍可列举、Full 两版的 Responses 请求（返回的模型 ID 一致），以及 BB 的 `provider models pi`。如上游目录正式收录 Full，可禁用并删除这个扩展，保留 BB 中的模型 ID；无需改登录凭证。
 

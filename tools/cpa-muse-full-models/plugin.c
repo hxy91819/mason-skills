@@ -7,7 +7,7 @@
 #include <string.h>
 
 #define EXPORT __attribute__((visibility("default")))
-#define PLUGIN_VERSION "0.1.1"
+#define PLUGIN_VERSION "0.1.2"
 
 typedef struct { void *ptr; size_t len; } buffer;
 typedef struct {
@@ -26,7 +26,9 @@ typedef struct {
 static const char registration[] =
     "{\"ok\":true,\"result\":{\"schema_version\":1,"
     "\"metadata\":{\"Name\":\"cpa-muse-full-models\",\"Version\":\"" PLUGIN_VERSION "\","
-    "\"Author\":\"hxy91819\",\"ConfigFields\":[]},"
+    "\"Author\":\"hxy91819\","
+    "\"GitHubRepository\":\"https://github.com/hxy91819/mason-skills\","
+    "\"ConfigFields\":[]},"
     "\"capabilities\":{\"model_registrar\":true}}}";
 
 /* Full uses the Muse family context/output limits and named reasoning controls.

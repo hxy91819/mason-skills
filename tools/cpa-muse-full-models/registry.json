@@ -6,7 +6,7 @@
       "name": "Muse Wonder Full models",
       "description": "Add exact Muse Wonder Full model IDs to the native Meta provider.",
       "author": "hxy91819",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "repository": "https://github.com/hxy91819/mason-skills",
       "license": "MIT",
       "tags": [
@@ -18,9 +18,9 @@
           {
             "goos": "linux",
             "goarch": "arm64",
-            "url": "https://raw.githubusercontent.com/hxy91819/mason-skills/main/tools/cpa-muse-full-models/artifacts/linux-arm64/cpa-muse-full-models-v0.1.1-linux-arm64.zip",
-            "sha256": "2f02d9f65ecea866363b26470d4f9b6461b18064385afe71b7ebd687e6fad11e",
-            "size": 3424
+            "url": "https://raw.githubusercontent.com/hxy91819/mason-skills/main/tools/cpa-muse-full-models/artifacts/linux-arm64/cpa-muse-full-models-v0.1.2-linux-arm64.zip",
+            "sha256": "a132c237d77d4c8ca30fdfcf47a761ef7301f782e6c355fa47bf9a49d9e314c9",
+            "size": 3468
           }
         ]
       }

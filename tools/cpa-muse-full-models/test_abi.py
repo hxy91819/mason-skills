@@ -54,6 +54,10 @@ class NativeABI(unittest.TestCase):
         initial = self.request(b"plugin.register")
         self.assertEqual(initial, self.request(b"plugin.reconfigure"))
         self.assertTrue(initial["ok"])
+        # The real host rejects registration if any required metadata is empty.
+        metadata = initial["result"]["metadata"]
+        for field in ("Name", "Version", "Author", "GitHubRepository"):
+            self.assertTrue(metadata.get(field, "").strip(), field)
         registry = json.loads((pathlib.Path(__file__).parent / "registry.json").read_text())
         self.assertEqual(initial["result"]["metadata"]["Version"], registry["plugins"][0]["version"])
         # Registrar metadata is additive. ModelProvider would replace OAuth discovery.
