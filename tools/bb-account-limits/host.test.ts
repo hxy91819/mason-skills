@@ -88,6 +88,39 @@ test("Cliproxy snapshot keeps failed accounts alongside healthy ones", async () 
   }
 });
 
+test("Antigravity plan labels survive the management read and panel wire contract", async () => {
+  const originalFetch = globalThis.fetch;
+  const tiers: Record<string, { paidTier?: { name: string }; currentTier?: { name: string } }> = {
+    ultra: { paidTier: { name: "Google AI Ultra" }, currentTier: { name: "Antigravity" } },
+    pro: { paidTier: { name: "Google AI Pro" } },
+    free: { currentTier: { name: "Antigravity" } },
+    unknown: {},
+  };
+  globalThis.fetch = async (input, init) => {
+    if (String(input).endsWith("/auth-files")) return new Response(JSON.stringify({
+      files: Object.keys(tiers).map(auth_index => ({ provider: "antigravity", auth_index })),
+    }));
+    const body = JSON.parse(String(init?.body));
+    const result = String(body.url).endsWith(":loadCodeAssist")
+      ? { ...tiers[body.auth_index], cloudaicompanionProject: "test-project" }
+      : { groups: [{ displayName: "Gemini Models", buckets: [{ window: "weekly", remainingFraction: 0.8 }] }] };
+    return new Response(JSON.stringify({ status_code: 200, body: JSON.stringify(result) }));
+  };
+  try {
+    const accounts = Object.keys(tiers).map(authIndex => ({ provider: "antigravity", authIndex, label: `Account ${authIndex}` }));
+    const snapshot = await readCliproxyUsageSnapshot(new Map([["antigravity", accounts]]), {
+      managementKey: "test",
+      managementBaseUrl: "http://cliproxy.test/v0/management",
+    });
+    assert.deepEqual(snapshot.providers[0]!.accounts.map(account => {
+      assert.equal(account.usage.status, "ok");
+      return account.usage.status === "ok" ? account.usage.planLabel : null;
+    }), ["Google AI Ultra", "Google AI Pro", "Antigravity", "Account unknown"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("provider bridge passes SDK conformance with an offline ACP agent", { timeout: 25000 }, async () => {
   const { stdout } = await promisify(execFile)(process.execPath, ["--import", "tsx", "./fixtures/conformance.mjs"], { timeout: 22000, maxBuffer: 1024 * 1024 });
   const report = JSON.parse(stdout);

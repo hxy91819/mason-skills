@@ -6,6 +6,7 @@ import { act } from "react";
 import { within } from "@testing-library/react";
 import { installTestPluginRuntime, loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import type { AccountLimitsPanelSnapshot } from "./contract.js";
+import { normalizeAntigravityUsage } from "./usage.js";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost" });
 Object.assign(globalThis, {
@@ -17,6 +18,38 @@ Object.assign(globalThis, {
   IS_REACT_ACT_ENVIRONMENT: true,
 });
 Object.defineProperty(globalThis, "navigator", { configurable: true, value: dom.window.navigator });
+
+test("Antigravity 面板显示实际套餐，周额度耗尽时不显示停用的 5h 余量", async t => {
+  installTestPluginRuntime();
+  dom.window.localStorage.clear();
+  const app = await loadPluginApp(() => import("./app.js"));
+  const accounts = ["Ultra", "Pro"].map(tier => {
+    const usage = normalizeAntigravityUsage({ groups: [
+      { displayName: "Gemini Models", buckets: [{ window: "5h", remainingFraction: 1 }] },
+      { displayName: "Claude and GPT models", buckets: [
+        { window: "weekly", remainingFraction: tier === "Pro" ? 0 : 1 },
+        { window: "5h", remainingFraction: 1, disabled: tier === "Pro" },
+      ] },
+    ] }, { provider: "antigravity", authIndex: tier }, `Google AI ${tier}`);
+    assert.ok(usage.supported && usage.usage.status === "ok");
+    return { key: tier, label: `${tier} account`, weight: 1,
+      usage: { status: "ok" as const, planLabel: usage.usage.planLabel, windows: usage.usage.windows } };
+  });
+  const snapshot: AccountLimitsPanelSnapshot = { machines: [{
+    id: "test-host", source: "cliproxy", displayName: "本机", status: "connected", error: null,
+    providers: [{ id: "cliproxy-antigravity", displayName: "Gemini · Antigravity", updatedAt: null,
+      usage: { status: "ok", planLabel: null, windows: [] }, accounts }],
+  }] };
+  const slot = renderSlot(app.navPanels[0]!, { subPath: "" }, { rpc: { readAccountLimits: () => snapshot } });
+  t.after(() => { slot.lifecycle.unmount(); dom.window.localStorage.clear(); });
+  await slot.findByText("Google AI Ultra");
+  await slot.findByText("Google AI Pro");
+  const pro = within(slot.getByRole("region", { name: "Pro account 的额度" }));
+  assert.equal(pro.queryByRole("progressbar", { name: "Claude and GPT models: 5-hour limit 剩余额度" }), null);
+  assert.equal(pro.getByRole("progressbar", { name: "Claude and GPT models: Weekly limit 剩余额度" }).getAttribute("aria-valuenow"), "0");
+  const ultra = within(slot.getByRole("region", { name: "Ultra account 的额度" }));
+  assert.equal(ultra.getByRole("progressbar", { name: "Claude and GPT models: 5-hour limit 剩余额度" }).getAttribute("aria-valuenow"), "100");
+});
 
 test("Claude 池视图把没有全模型周额度的账号单独合并，两种来源共用分组", async t => {
   installTestPluginRuntime();

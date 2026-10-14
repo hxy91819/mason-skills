@@ -50,6 +50,8 @@ Codex ACP provider 会声明 BB Goal 能力；在 composer 中可使用 Goal 操
 
 Cliproxy 配额以**账户**为单位发现、以**上游供应商**为单位显示。启用 `cliproxy-<provider>` 后，插件会读取 Cliproxy `/auth-files` 里该供应商的全部凭证，不再要求在 local JSON 里逐个登记。相同 `provider` 的账户会聚合成“账户额度”侧边栏页面中的一张卡：每个额度行带账号标签，不会把不同账号或不同限额池相加。`cliproxy-<provider>` 只控制这组账号是否出现；不注册为 BB Provider，因此不会出现在模型选择器，但它会作为 Provider Usage 来源进入官方 Usage 卡片（见下节）。`accounts` 仍可选：用来覆盖显示名、给未内置查询的供应商补 `cachedWindows`、设 `poolWeight`，或设 `enabled: false` 隐藏某个账号。
 
+Antigravity 账号的套餐名称取自同次 `loadCodeAssist` 返回的 `paidTier.name`，没有付费套餐时使用 `currentTier.name`；上游未给名称时保留账号标签。`retrieveUserQuotaSummary` 中标为 `disabled: true` 的窗口不显示、不参与池聚合，避免周额度耗尽时把不适用的 5h 窗口显示为剩余 100%。仅展示接口实际报告的额度，不根据模型目录推算 Gemini 4 等型号的独立额度。
+
 ```json
 {
   "enabledProviders": ["acp-codexl", "cliproxy-codex", "cliproxy-claude", "cliproxy-xai", "cliproxy-antigravity", "cliproxy-kimi"],

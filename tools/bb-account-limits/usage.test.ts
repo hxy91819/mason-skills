@@ -136,6 +136,23 @@ test("Antigravity converts each authoritative quota bucket from remaining to use
   }
 });
 
+test("Antigravity disabled quota windows never appear as available capacity", () => {
+  const result = normalizeAntigravityUsage({ groups: [
+    { displayName: "Gemini Models", buckets: [
+      { window: "5h", remainingFraction: 0.8, disabled: false },
+    ] },
+    { displayName: "Claude and GPT models", buckets: [
+      { window: "weekly", remainingFraction: 0 },
+      { window: "5h", remainingFraction: 1, disabled: true },
+    ] },
+  ] }, { provider: "antigravity", authIndex: "account-pro" });
+  assert.ok(result.supported && result.usage.status === "ok");
+  assert.deepEqual(result.usage.windows, [
+    { label: "Gemini Models: 5-hour limit", usedPercent: 20, resetsAt: null },
+    { label: "Claude and GPT models: Weekly limit", usedPercent: 100, resetsAt: null },
+  ]);
+});
+
 test("Kimi converts its weekly and rolling-window token quotas into percentages", () => {
   const result = normalizeKimiUsage({
     subType: "kimi-code-pro",

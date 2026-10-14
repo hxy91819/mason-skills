@@ -410,12 +410,14 @@ function antigravityBucketLabel(group: JsonRecord, bucket: JsonRecord): string {
   return `${groupLabel}: ${limitLabel}`;
 }
 
-export function normalizeAntigravityUsage(raw: unknown, account: CliproxyUsageAccount): ProviderUsageResult {
+export function normalizeAntigravityUsage(raw: unknown, account: CliproxyUsageAccount, planLabel: string | null = null): ProviderUsageResult {
   const response = asRecord(raw);
   const groups = response && Array.isArray(response.groups) ? response.groups.map(asRecord).filter((value): value is JsonRecord => value !== null) : [];
   const windows = groups.flatMap(group => {
     const buckets = Array.isArray(group.buckets) ? group.buckets.map(asRecord).filter((value): value is JsonRecord => value !== null) : [];
     return buckets.flatMap(bucket => {
+      // 上游标为停用的窗口不适用于当前账号，不能把 remainingFraction=1 当作可用额度。
+      if (bucket.disabled === true) return [];
       const remainingFraction = Number(bucket.remainingFraction);
       if (!Number.isFinite(remainingFraction) || remainingFraction < 0 || remainingFraction > 1) return [];
       return [{
@@ -426,7 +428,7 @@ export function normalizeAntigravityUsage(raw: unknown, account: CliproxyUsageAc
     });
   });
   if (!windows.length) return usageError("Cliproxy returned an unrecognized Antigravity quota response.");
-  return { supported: true, usage: { status: "ok", accountEmail: null, planLabel: usageLabel(account), windows: orderQuotaWindows(windows) } };
+  return { supported: true, usage: { status: "ok", accountEmail: null, planLabel: planLabel ?? usageLabel(account), windows: orderQuotaWindows(windows) } };
 }
 
 function positiveNumber(value: unknown): number | null {
@@ -687,7 +689,7 @@ async function readAntigravityUsageThroughCliproxy(
   authIndex: string,
   signal: AbortSignal | undefined,
   timeoutMs: number,
-): Promise<{ status: number; body: unknown }> {
+): Promise<{ status: number; body: unknown; planLabel: string | null }> {
   const header = { Authorization: "Bearer $TOKEN$", Accept: "*/*", "Content-Type": "application/json", "User-Agent": "antigravity" };
   const load = await callCliproxyApi(managementBaseUrl, managementKey, authIndex, {
     method: "POST",
@@ -695,14 +697,17 @@ async function readAntigravityUsageThroughCliproxy(
     header,
     data: JSON.stringify({ metadata: { ideType: "ANTIGRAVITY" } }),
   }, signal, timeoutMs);
-  const project = asString(asRecord(load.body)?.cloudaicompanionProject);
-  if (load.status < 200 || load.status >= 300 || !project) return { status: load.status, body: null };
-  return callCliproxyApi(managementBaseUrl, managementKey, authIndex, {
+  const loadBody = asRecord(load.body);
+  const project = asString(loadBody?.cloudaicompanionProject);
+  if (load.status < 200 || load.status >= 300 || !project) return { status: load.status, body: null, planLabel: null };
+  const planLabel = asString(asRecord(loadBody?.paidTier)?.name) ?? asString(asRecord(loadBody?.currentTier)?.name);
+  const quota = await callCliproxyApi(managementBaseUrl, managementKey, authIndex, {
     method: "POST",
     url: "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
     header,
     data: JSON.stringify({ project }),
   }, signal, timeoutMs);
+  return { ...quota, planLabel };
 }
 
 async function readKimiUsageThroughCliproxy(
@@ -768,7 +773,7 @@ async function readCliproxyAccountUsage(
   if (account.provider.toLowerCase() === "antigravity" && authIndex) {
     const upstream = await readAntigravityUsageThroughCliproxy(managementBaseUrl, options.managementKey, authIndex, options.signal, timeoutMs);
     if (upstream.status >= 200 && upstream.status < 300) {
-      const normalized = normalizeAntigravityUsage(upstream.body, account);
+      const normalized = normalizeAntigravityUsage(upstream.body, account, upstream.planLabel);
       if (hasOkUsage(normalized)) return normalized;
     }
     const cached = normalizeCliproxyCachedUsage(selected, account);
