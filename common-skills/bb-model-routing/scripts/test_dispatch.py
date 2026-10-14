@@ -83,8 +83,8 @@ environments:
         result = m.dispatch(self.args('--dry-run'), self.fake)
         self.assertEqual(result['selection']['agent'], 'primary')
         prompt = result['argv'][result['argv'].index('--prompt') + 1]
-        self.assertTrue(prompt.startswith(self.args().task + '\n\n'))
-        self.assertIn('不要对父会话调用 `bb thread tell` 发送常规进度或阶段结果', prompt)
+        self.assertEqual(prompt, self.args().task)
+        self.assertIn('--parent-thread', result['argv'])
         self.assertIn('parent', result['argv'])
         self.assertFalse(any(c[:2] == ('thread', 'spawn') for c in self.calls))
 

@@ -551,13 +551,6 @@ def dispatch(args, call=bb, now=None):
     elif project != current_project:
         parent = {}
     task = args.task
-    if parent.get("id"):
-        task += (
-            "\n\n## 向父会话回报\n"
-            f"父会话：{parent['id']}。遵循 BB 规则：不要对父会话调用 `bb thread tell` 发送常规进度或阶段结果；"
-            "最终结果、阶段结论或需要父会话裁决的阻塞问题，一律写在最终回复（final response）中并结束当前回合，由 BB 自动汇报给父会话。"
-            "若确需向其他会话发消息，显式传 `--mode queue` 避免默认 `steer` 打断对方；仅在必须立即纠正对方当前错误工作时才用 `--mode steer`。\n"
-        )
     command = ["thread", "spawn", "--project", project, "--environment", environment,
                "--provider", provider, "--model", model,
                "--permission-mode", permission, "--prompt", task]
