@@ -83,10 +83,26 @@ environments:
         result = m.dispatch(self.args('--dry-run'), self.fake)
         self.assertEqual(result['selection']['agent'], 'primary')
         prompt = result['argv'][result['argv'].index('--prompt') + 1]
-        self.assertEqual(prompt, self.args().task)
+        self.assertTrue(prompt.startswith(self.args().task + m.REPORT_PROTOCOL_ANCHOR))
         self.assertIn('--parent-thread', result['argv'])
         self.assertIn('parent', result['argv'])
         self.assertFalse(any(c[:2] == ('thread', 'spawn') for c in self.calls))
+
+    def test_linked_child_gets_report_protocol_once_and_copied_task_redispatches_identically(self):
+        self.load_balance_config()
+
+        def prompt(result):
+            return result['argv'][result['argv'].index('--prompt') + 1]
+
+        for index in range(8):
+            task = f'linked task {index}'
+            first = m.dispatch(self.args('--task', task, '--dry-run'), self.fake)
+            self.assertEqual(prompt(first), task + m.REPORT_PROTOCOL_ANCHOR + m.REPORT_PROTOCOL)
+            # 续派时从子线程首条消息复制任务文本：不重复附加，候选顺序与标题不变。
+            copied = m.dispatch(self.args('--task', prompt(first), '--dry-run'), self.fake)
+            self.assertEqual(prompt(copied), prompt(first))
+            self.assertEqual(copied['selection']['candidates'], first['selection']['candidates'])
+            self.assertEqual(copied['selection']['title'], first['selection']['title'])
 
     def test_kind_option_is_removed(self):
         import contextlib
