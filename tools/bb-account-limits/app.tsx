@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { definePluginApp, useRpc } from "@get-bb/plugin-sdk/app";
 import { accountLimitsPanelRpcContract, type AccountLimitsPanelSnapshot, type CliproxyUsageSnapshot } from "./contract.js";
 import { aggregateCliproxyPool, groupAccountPools, normalizeCliproxyWindow, orderQuotaWindows, type PoolWindow } from "./pool.js";
 import { AntigravityIcon, GrokIcon } from "./provider-icons.js";
+import { panelStyles } from "./panel-styles.js";
 
 function compactReset(value: string | null, now: number): string {
   const resetAt = value ? Date.parse(value) : NaN;
@@ -57,6 +58,7 @@ function shortWindowLabel(label: string): string {
     .replaceAll("Claude and GPT models: ", "C/GPT ")
     .replaceAll("5-hour limit", "5h")
     .replaceAll("Weekly limit", "周")
+    .replace(/\b7d\b/gu, "周")
     .replace(/(\d+)-minute limit/u, "$1m");
 }
 
@@ -77,21 +79,39 @@ function remainingPercent(usedPercent: number): number {
 
 type MeterWindow = QuotaWindow & { detail?: string; displayLabel?: string };
 
+function PanelIcon({ name, spinning = false }: { name: "refresh" | "accounts" | "pool" | "info" | "layers"; spinning?: boolean }) {
+  const paths = {
+    refresh: <><path d="M20 7v5h-5M4 17v-5h5" /><path d="M6.1 7a7 7 0 0 1 11.6-2L20 8M4 16l2.3 3A7 7 0 0 0 17.9 17" /></>,
+    accounts: <><circle cx="9" cy="8" r="3" /><path d="M3 21v-3a6 6 0 0 1 12 0v3M16 5a3 3 0 0 1 0 6M18 15a5 5 0 0 1 3 4v2" /></>,
+    pool: <><path d="m12 3 9 5-9 5-9-5 9-5ZM3 12l9 5 9-5M3 16l9 5 9-5" /></>,
+    info: <><circle cx="12" cy="12" r="9" /><path d="M12 11v6M12 7h.01" /></>,
+    layers: <><rect x="3" y="3" width="7" height="7" rx="2" /><rect x="14" y="3" width="7" height="7" rx="2" /><rect x="3" y="14" width="7" height="7" rx="2" /><path d="M14 17.5h7M17.5 14v7" /></>,
+  };
+  return <svg className={`limits-icon${spinning ? " limits-icon--spin" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
+}
+
+function ProviderMark({ id, name }: { id: string; name: string }) {
+  if (id.includes("antigravity")) return <AntigravityIcon className="limits-mark-icon" />;
+  if (id.includes("xai")) return <GrokIcon className="limits-mark-icon" />;
+  if (id.includes("claude")) return <svg className="limits-mark-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M12 2v20M2 12h20M5 5l14 14M5 19 19 5M3 8l18 8M8 3l8 18M3 16l18-8M8 21 16 3" /></svg>;
+  return <span className="limits-mark-letter" aria-hidden="true">{id.includes("codex") ? "⌘" : name.slice(0, 1).toUpperCase()}</span>;
+}
+
 function WindowMeter({ window, now, mode }: { window: MeterWindow; now: number; mode: DisplayMode }) {
   const label = displayWindowLabel(window);
   const remaining = remainingPercent(window.usedPercent);
   const percent = mode === "used" ? 100 - remaining : remaining;
   const reset = compactReset(window.resetsAt, now);
   const depleted = remaining <= 10;
-  return <li className="min-w-0">
-    <div className="flex items-baseline justify-between gap-2 text-xs">
-      <span className="truncate text-muted-foreground">{window.displayLabel ?? shortWindowLabel(label)}</span>
-      <span className={`shrink-0 tabular-nums ${depleted ? "text-destructive" : ""}`}>{`${Math.round(percent)}%`}</span>
+  return <li className="limits-meter" data-depleted={depleted || undefined}>
+    <div className="limits-meter-heading">
+      <span className="limits-meter-label" title={window.displayLabel ?? shortWindowLabel(label)}>{window.displayLabel ?? shortWindowLabel(label)}</span>
+      <span className="limits-meter-number">{`${Math.round(percent)}%`}</span>
     </div>
-    <div className="mt-0.5 h-1 overflow-hidden rounded-full bg-muted" role="progressbar" aria-label={`${label} ${mode === "used" ? "已用" : "剩余"}额度`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent} title={reset ? `${label} · ${reset}` : label}>
-      <div className={`h-full rounded-full ${depleted ? "bg-destructive" : "bg-primary"}`} style={{ width: `${percent}%` }} />
+    <div className="limits-meter-track" role="progressbar" aria-label={`${label} ${mode === "used" ? "已用" : "剩余"}额度`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent} title={`${label} · ${reset}`}>
+      <div className="limits-meter-fill" style={{ width: `${percent}%` }} />
     </div>
-    <p className="mt-1 text-xs text-muted-foreground tabular-nums">{window.detail ? `${reset} · ${window.detail}` : reset}</p>
+    <p className="limits-reset">{window.detail ? `${reset} · ${window.detail}` : reset}</p>
   </li>;
 }
 
@@ -102,9 +122,27 @@ function modelWeeklyName(label: string): string | null {
 }
 
 function MeterList({ windows, now, mode }: { windows: readonly MeterWindow[]; now: number; mode: DisplayMode }) {
-  return <ul className="grid min-w-0 gap-x-3 gap-y-1" style={{ gridTemplateColumns: `repeat(${Math.min(Math.max(windows.length, 1), 4)}, minmax(0, 1fr))` }}>
+  const columns = Math.min(Math.max(windows.length, 1), 4);
+  return <ul className="limits-meters" data-columns={columns} style={{ "--quota-columns": columns } as CSSProperties}>
     {windows.map((window, index) => <WindowMeter key={`${window.label}-${index}`} window={window} now={now} mode={mode} />)}
   </ul>;
+}
+
+function ModelCap({ window, now, mode }: { window: MeterWindow; now: number; mode: DisplayMode }) {
+  const remaining = remainingPercent(window.usedPercent);
+  const percent = mode === "used" ? 100 - remaining : remaining;
+  const reset = compactReset(window.resetsAt, now);
+  return <li className="limits-cap">
+    <div className="limits-cap-heading">
+      <span className="limits-cap-label">{modelWeeklyName(window.label)} 周上限</span>
+      <span className="limits-cap-value" data-depleted={remaining <= 10 || undefined} role="progressbar"
+        aria-label={`${window.label} ${mode === "used" ? "已用" : "剩余"}额度`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}
+        aria-valuetext={`${mode === "used" ? "已用" : "剩余"} ${Math.round(percent)}%，以 ${modelWeeklyName(window.label)} 自身周上限计算`}>
+        <span className="limits-cap-mode">{mode === "used" ? "已用" : "剩余"}</span> {Math.round(percent)}%
+      </span>
+    </div>
+    <p className="limits-reset">{window.detail ? `${reset} · ${window.detail}` : reset}</p>
+  </li>;
 }
 
 /** Model limits constrain the same weekly usage; their percentages have separate denominators. */
@@ -118,21 +156,16 @@ function QuotaWindows({ providerId, windows, now, mode }: {
   const totalWindows = ordered.filter(window => normalizeCliproxyWindow(window.label).id === "7d");
   const otherWindows = ordered.filter(window => !totalWindows.includes(window) && !modelWindows.includes(window));
   const exhausted = totalWindows.some(window => window.usedPercent >= 100);
-  return <div className={`grid min-w-0 gap-3 ${otherWindows.length ? "sm:grid-cols-[minmax(6rem,1fr)_minmax(0,2fr)]" : ""}`}>
+  return <div className={`limits-quotas${otherWindows.length ? " limits-quotas--weekly" : ""}`}>
     {otherWindows.length > 0 && <MeterList windows={otherWindows} now={now} mode={mode} />}
-    <div role="group" aria-label="周额度" className="min-w-0 space-y-2 rounded border border-border px-2 py-1.5">
-      <div className="flex flex-wrap items-baseline justify-between gap-x-2 text-xs">
-        <span className="font-medium">周额度</span>
-        {exhausted && <span className="text-destructive">总周额度已用尽</span>}
-        {totalWindows.length === 0 && <span className="text-muted-foreground">总周额度未返回</span>}
+    <div role="group" aria-label="周额度" className="limits-weekly">
+      {totalWindows.length > 0
+        ? <MeterList windows={totalWindows.map(window => ({ ...window, displayLabel: "总周额度" }))} now={now} mode={mode} />
+        : <div className="limits-weekly-unknown"><span>总周额度</span><span className="limits-unknown-value">—</span><span className="limits-reset">总周额度未返回</span></div>}
+      {exhausted && <p className="limits-exhausted">总周额度已用尽</p>}
+      <div role="group" aria-label="模型周上限" className="limits-caps">
+        <ul>{modelWindows.map((window, index) => <ModelCap key={`${window.label}-${index}`} window={window} now={now} mode={mode} />)}</ul>
       </div>
-      {totalWindows.length > 0 && <MeterList windows={totalWindows.map(window => ({ ...window, displayLabel: "全部模型" }))} now={now} mode={mode} />}
-      <div role="group" aria-label="模型周上限" className="min-w-0 border-l-2 border-border pl-3">
-        <MeterList windows={modelWindows.map(window => ({ ...window, displayLabel: `${modelWeeklyName(window.label)} 周上限` }))} now={now} mode={mode} />
-      </div>
-      <p className="text-xs text-muted-foreground">{totalWindows.length > 0
-        ? "模型使用同时计入总周额度；百分比分别计算，不可相加。"
-        : "仅显示模型自身上限，无法据此判断总周余量。"}</p>
     </div>
   </div>;
 }
@@ -143,10 +176,11 @@ function poolWindowDetail(window: PoolWindow, totalAccounts: number): string {
 }
 
 function PoolUsage({ provider, now, mode }: { provider: PanelProvider; now: number; mode: DisplayMode }) {
-  return <div className="space-y-2">
+  return <div className="limits-pools">
     {groupAccountPools(provider.id, provider.accounts).map(group => <section key={group.id}
+      className="limits-pool"
       aria-label={group.label ? `${group.label} 的池额度` : undefined}>
-      {group.label && <h3 className="mb-1 text-xs font-medium">{group.label}</h3>}
+      {group.label && <h3 className="limits-pool-label"><PanelIcon name="pool" />{group.label}</h3>}
       <PoolGroupUsage providerId={provider.id} accounts={group.accounts} providerUsage={provider.usage} now={now} mode={mode} />
     </section>)}
   </div>;
@@ -160,9 +194,9 @@ function PoolGroupUsage({ providerId, accounts, providerUsage, now, mode }: {
   const pool = aggregateCliproxyPool(accounts);
   if (pool.status !== "ok") {
     const message = accounts.length === 0 && providerUsage.status === "error" ? providerUsage.message : pool.message;
-    return <p className="text-xs text-destructive">{message}</p>;
+    return <p className="limits-message limits-message--error">{message}</p>;
   }
-  if (pool.windows.length === 0) return <p className="text-xs text-muted-foreground">未报告额度窗口。</p>;
+  if (pool.windows.length === 0) return <p className="limits-message">未报告额度窗口。</p>;
   return <QuotaWindows providerId={providerId} windows={pool.windows.map(window => ({
     accountLabel: null, label: window.label, usedPercent: window.usedPercent, resetsAt: window.resetsAt,
     detail: poolWindowDetail(window, pool.totalAccounts),
@@ -171,9 +205,10 @@ function PoolGroupUsage({ providerId, accounts, providerUsage, now, mode }: {
 
 function Usage({ providerId, usage, now, mode }: { providerId: string; usage: CliproxyUsageSnapshot["providers"][number]["usage"]; now: number; mode: DisplayMode }) {
   if (usage.status === "ok") {
-    return <div className="space-y-1.5">
-      {groupWindowsByAccount(usage.windows).map(([accountLabel, windows]) => <section key={accountLabel} aria-label={`${accountLabel} 的额度`} className="grid items-center gap-x-3 gap-y-1 sm:grid-cols-[minmax(8rem,14rem)_1fr]">
-        <h3 className="truncate text-xs font-medium" title={accountLabel}>{accountLabel}</h3>
+    if (usage.windows.length === 0) return <p className="limits-message">未报告额度窗口。</p>;
+    return <div className="limits-accounts">
+      {groupWindowsByAccount(usage.windows).map(([accountLabel, windows]) => <section key={accountLabel} aria-label={`${accountLabel} 的额度`} className="limits-account">
+        <h3 className="limits-account-name" title={accountLabel}>{accountLabel}</h3>
         <QuotaWindows providerId={providerId} windows={windows} now={now} mode={mode} />
       </section>)}
     </div>;
@@ -183,22 +218,27 @@ function Usage({ providerId, usage, now, mode }: { providerId: string; usage: Cl
     expired: "账号登录已过期。",
     not_installed: "查询组件尚未安装。",
   };
-  return <p className="text-xs text-destructive">{usage.status === "error" ? usage.message : messages[usage.status]}</p>;
+  return <p className="limits-message limits-message--error">{usage.status === "error" ? usage.message : messages[usage.status]}</p>;
 }
 
 function AccountUsage({ provider, now, mode }: { provider: PanelProvider; now: number; mode: DisplayMode }) {
   if (provider.accounts.length === 0) return <Usage providerId={provider.id} usage={provider.usage} now={now} mode={mode} />;
-  return <div className="space-y-1.5">
-    {provider.accounts.map(account => <section key={account.key} aria-label={`${account.label} 的额度`}
-      className="grid items-center gap-x-3 gap-y-1 sm:grid-cols-[minmax(8rem,14rem)_1fr]">
-      <div className="min-w-0">
-        <h3 className="truncate text-xs font-medium" title={account.label}>{account.label}</h3>
-        {account.usage.status === "ok" && account.usage.planLabel && <p className="text-xs text-muted-foreground">{account.usage.planLabel}</p>}
-        {account.updatedAt !== undefined && <p className="text-xs text-muted-foreground">{updatedLabel(account.updatedAt)}</p>}
+  return <div className="limits-accounts">
+    {provider.accounts.map((account, index) => <section key={account.key} aria-label={`${account.label} 的额度`}
+      className="limits-account">
+      <div className="limits-identity">
+        <span className="limits-account-index" aria-hidden="true">{String(index + 1).padStart(2, "0")}</span>
+        <div className="limits-identity-text">
+          <h3 className="limits-account-name" title={account.label}>{account.label}</h3>
+          <div className="limits-account-meta">
+            {account.usage.status === "ok" && account.usage.planLabel && account.usage.planLabel.trim() !== account.label.trim() && <span className="limits-plan">{account.usage.planLabel}</span>}
+            {account.updatedAt !== undefined && <span>{updatedLabel(account.updatedAt)}</span>}
+          </div>
+        </div>
       </div>
       {account.usage.status === "ok"
         ? account.usage.windows.length === 0
-          ? <p className="text-xs text-muted-foreground">未报告额度窗口。</p>
+          ? <p className="limits-message">未报告额度窗口。</p>
           : <QuotaWindows providerId={provider.id} windows={account.usage.windows.map(window => ({ ...window, accountLabel: null }))} now={now} mode={mode} />
         : <Usage providerId={provider.id} usage={account.usage} now={now} mode={mode} />}
     </section>)}
@@ -208,6 +248,15 @@ function AccountUsage({ provider, now, mode }: { provider: PanelProvider; now: n
 function accountCountLabel(planLabel: string | null): string | null {
   const match = planLabel?.match(/(\d+\/\d+)\s+accounts$/u);
   return match?.[1] ?? planLabel;
+}
+
+function ModelLimitNote({ provider }: { provider: PanelProvider }) {
+  if (!["claude", "cliproxy-claude", "account-pool:claude-code"].includes(provider.id)) return null;
+  const windows = provider.accounts.length > 0
+    ? provider.accounts.flatMap(account => account.usage.status === "ok" ? account.usage.windows.map(window => ({ ...window, accountLabel: null })) : [])
+    : provider.usage.status === "ok" ? provider.usage.windows : [];
+  if (!windows.some(window => modelWeeklyName(displayWindowLabel(window)) !== null)) return null;
+  return <p className="limits-footnote"><PanelIcon name="info" /><span>模型上限不是额外额度：订阅内使用同时计入总周，百分比分别计算，不可相加。总周缺失时，总余量未知。</span></p>;
 }
 
 function AccountLimitsPanel() {
@@ -278,41 +327,64 @@ function AccountLimitsPanel() {
   }, [rpc]);
 
   const showMachineName = (snapshot?.machines.length ?? 0) > 1;
-  return <main className="h-full overflow-auto p-3">
-    <div className="mx-auto max-w-6xl space-y-2">
-      <div className="flex justify-end gap-3">
-        <button type="button" className="rounded border border-border px-2 py-1 text-xs hover:bg-accent disabled:opacity-60"
-          disabled={loading || refreshingProviderIds.size > 0} onClick={() => void load(true)}>{loading && snapshot ? "刷新中" : "刷新全部"}</button>
-        <div className="flex gap-1" role="group" aria-label="额度视图">
-          {(["accounts", "pool"] as const).map(value => <button key={value} type="button" aria-pressed={view === value}
-            className={`rounded border border-border px-2 py-1 text-xs ${view === value ? "bg-accent font-medium" : "text-muted-foreground hover:bg-accent"}`}
-            onClick={() => changeView(value)}>{value === "pool" ? "池" : "账号"}</button>)}
+  const providers = snapshot?.machines.flatMap(machine => machine.providers) ?? [];
+  const accountCount = providers.reduce((count, provider) => count + (provider.accounts.length ||
+    (provider.usage.status === "ok" ? groupWindowsByAccount(provider.usage.windows).length : 0)), 0);
+  return <main className="limits-panel">
+    <style>{panelStyles}</style>
+    <div className="limits-shell">
+      <header className="limits-hero">
+        <div className="limits-title-wrap">
+          <div className="limits-emblem"><PanelIcon name="layers" /></div>
+          <div><h1 className="limits-title">账户额度</h1><p className="limits-subtitle">订阅窗口与模型上限，一处查看。</p></div>
         </div>
-        <div className="flex gap-1" role="group" aria-label="额度显示模式">
-          {(["remaining", "used"] as const).map(value => <button key={value} type="button" aria-pressed={mode === value}
-            className={`rounded border border-border px-2 py-1 text-xs ${mode === value ? "bg-accent font-medium" : "text-muted-foreground hover:bg-accent"}`}
-            onClick={() => changeMode(value)}>{value === "used" ? "已用（Used）" : "剩余"}</button>)}
+        <div className="limits-overview" aria-label="额度记录概览">
+          <div className="limits-stat"><span className="limits-stat-number">{snapshot ? providers.length : "—"}</span><span className="limits-stat-label">接入服务</span></div>
+          <div className="limits-stat" title="按展示的账号行计数，不代表独立订阅或额度池。"><span className="limits-stat-number">{snapshot ? accountCount : "—"}</span><span className="limits-stat-label">账号记录</span></div>
+        </div>
+      </header>
+      <div className="limits-toolbar">
+        <div className="limits-segments" role="group" aria-label="额度视图">
+          {(["accounts", "pool"] as const).map(value => <button key={value} type="button" aria-pressed={view === value}
+            className="limits-segment"
+            onClick={() => changeView(value)}><PanelIcon name={value === "pool" ? "pool" : "accounts"} />{value === "pool" ? "池" : "账号"}</button>)}
+        </div>
+        <div className="limits-toolbar-end">
+          <div className="limits-segments" role="group" aria-label="额度显示模式">
+            {(["remaining", "used"] as const).map(value => <button key={value} type="button" aria-pressed={mode === value}
+              className="limits-segment" aria-label={value === "used" ? "已用（Used）" : "剩余"}
+              onClick={() => changeMode(value)}>{value === "used" ? "已用" : "剩余"}</button>)}
+          </div>
+          <button type="button" className="limits-button"
+            disabled={loading || refreshingProviderIds.size > 0} onClick={() => void load(true)}><PanelIcon name="refresh" spinning={loading} />{loading && snapshot ? "刷新中" : "刷新全部"}</button>
         </div>
       </div>
-      {error && <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">{error}</p>}
-      {!snapshot && loading && <p className="text-xs text-muted-foreground">正在读取账户额度…</p>}
-      {snapshot?.machines.map(machine => <section key={machine.id} className="space-y-2" aria-label={`${machine.displayName} 的账户额度`}>
-        {showMachineName && <h2 className="text-xs font-medium text-muted-foreground">{machine.displayName}</h2>}
-        {machine.status === "disconnected" && <p className="rounded-md border border-border px-2 py-1.5 text-xs text-muted-foreground">此机器未连接，无法读取额度。</p>}
-        {machine.status === "error" && <p className="rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">{machine.error ?? "读取此机器的额度失败。"}</p>}
-        {machine.status === "connected" && machine.error && <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">{machine.error}</p>}
-        {machine.status === "connected" && machine.providers.length === 0 && <p className="rounded-md border border-border px-2 py-1.5 text-xs text-muted-foreground">{machine.source === "account-pool" ? "Account Pooler 尚未添加账号。" : "没有启用的 Cliproxy 账户额度。"}</p>}
-        {machine.status === "connected" && machine.providers.map(provider => <article key={provider.id} className="rounded-md border border-border bg-card px-3 py-2">
-          <div className="mb-1.5 flex items-center gap-2">
-            <h2 className="text-sm font-medium">{provider.displayName}</h2>
-            <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">{machine.source === "account-pool" ? "Account Pooler" : "Cliproxy"}</span>
-            {provider.usage.status === "ok" && accountCountLabel(provider.usage.planLabel) && <span className="text-xs text-muted-foreground">{accountCountLabel(provider.usage.planLabel)}</span>}
-            <span className="ml-auto text-xs text-muted-foreground">{updatedLabel(provider.updatedAt)}</span>
-            <button type="button" aria-label={`刷新 ${machine.source === "account-pool" ? "Account Pooler " : ""}${provider.displayName} 额度`} className="rounded border border-border px-1.5 py-0.5 text-xs hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60" onClick={() => void refreshProvider(provider.id, machine.source ?? "cliproxy")} disabled={loading || refreshingProviderIds.has(provider.id)}>
-              {refreshingProviderIds.has(provider.id) ? "刷新中" : "刷新"}
-            </button>
-          </div>
-          {view === "pool" ? <PoolUsage provider={provider} now={now} mode={mode} /> : <AccountUsage provider={provider} now={now} mode={mode} />}
+      {error && <p role="alert" className="limits-alert">{error}</p>}
+      {!snapshot && loading && <p className="limits-loading" role="status"><PanelIcon name="refresh" spinning />正在读取账户额度…</p>}
+      {snapshot && snapshot.machines.length === 0 && <p className="limits-empty">暂无可显示的账户额度。</p>}
+      {snapshot?.machines.map(machine => <section key={machine.id} className="limits-source-section" aria-label={`${machine.displayName} 的账户额度`}>
+        {showMachineName && <h2 className="limits-source-label">{machine.displayName}</h2>}
+        {machine.status === "disconnected" && <p className="limits-empty">此机器未连接，无法读取额度。</p>}
+        {machine.status === "error" && <p className="limits-alert">{machine.error ?? "读取此机器的额度失败。"}</p>}
+        {machine.status === "connected" && machine.error && <p role="alert" className="limits-alert">{machine.error}</p>}
+        {machine.status === "connected" && machine.providers.length === 0 && <p className="limits-empty">{machine.source === "account-pool" ? "Account Pooler 尚未添加账号。" : "没有启用的 Cliproxy 账户额度。"}</p>}
+        {machine.status === "connected" && machine.providers.map(provider => <article key={provider.id} className="limits-provider" aria-label={`${provider.displayName} · ${machine.source === "account-pool" ? "Account Pooler" : "Cliproxy"}`}>
+          <header className="limits-provider-head">
+            <div className={`limits-provider-mark${provider.id.includes("claude") ? " limits-provider-mark--claude" : provider.id.includes("codex") ? " limits-provider-mark--codex" : ""}`}><ProviderMark id={provider.id} name={provider.displayName} /></div>
+            <div className="limits-provider-title">
+              <h2 className="limits-provider-name">{provider.displayName}</h2>
+              <span className="limits-source-badge">{machine.source === "account-pool" ? "Account Pooler" : "Cliproxy"}</span>
+              {provider.usage.status === "ok" && accountCountLabel(provider.usage.planLabel) && <span className="limits-provider-count">{accountCountLabel(provider.usage.planLabel)}</span>}
+            </div>
+            <div className="limits-provider-actions">
+              <span className="limits-updated">{updatedLabel(provider.updatedAt)}</span>
+              <button type="button" aria-label={`刷新 ${machine.source === "account-pool" ? "Account Pooler " : ""}${provider.displayName} 额度`} title="刷新此服务" className="limits-button limits-refresh" onClick={() => void refreshProvider(provider.id, machine.source ?? "cliproxy")} disabled={loading || refreshingProviderIds.has(provider.id)}>
+                <PanelIcon name="refresh" spinning={refreshingProviderIds.has(provider.id)} />
+              </button>
+            </div>
+          </header>
+          <div className="limits-provider-body">{view === "pool" ? <PoolUsage provider={provider} now={now} mode={mode} /> : <AccountUsage provider={provider} now={now} mode={mode} />}</div>
+          <ModelLimitNote provider={provider} />
         </article>)}
       </section>)}
     </div>

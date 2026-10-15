@@ -19,6 +19,67 @@ Object.assign(globalThis, {
 });
 Object.defineProperty(globalThis, "navigator", { configurable: true, value: dom.window.navigator });
 
+test("概览统计账号记录、去掉重复身份标签，并保留多个模型各自的上限与重置时间", async t => {
+  installTestPluginRuntime();
+  dom.window.localStorage.clear();
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-10-15T00:00:00Z") });
+  const app = await loadPluginApp(() => import("./app.js"));
+  const snapshot: AccountLimitsPanelSnapshot = { machines: [{ id: "local", source: "cliproxy", displayName: "本机", status: "connected", error: null,
+    providers: [
+      { id: "cliproxy-claude", displayName: "Claude", updatedAt: null, usage: { status: "ok", planLabel: null, windows: [] }, accounts: [
+        { key: "work", label: "工作账号", weight: 1, usage: { status: "ok", planLabel: "工作账号", windows: [
+          { label: "Weekly limit", usedPercent: 100, resetsAt: "2026-10-16T00:00:00Z" },
+          { label: "Weekly scoped limit", usedPercent: 70, resetsAt: "2026-10-17T00:00:00Z" },
+          { label: "Weekly Opus limit", usedPercent: 20, resetsAt: "2026-10-18T00:00:00Z" },
+        ] } },
+        { key: "other", label: "备用账号", weight: 1, usage: { status: "ok", planLabel: "Team Premium", windows: [] } },
+        { key: "expired", label: "过期账号", weight: 1, usage: { status: "expired" } },
+      ] },
+      { id: "cliproxy-codex", displayName: "Codex", updatedAt: null, accounts: [], usage: { status: "ok", planLabel: null,
+        windows: [{ accountLabel: "旧版账号", label: "Weekly limit", usedPercent: 25, resetsAt: null }] } },
+    ] }] };
+  const slot = renderSlot(app.navPanels[0]!, { subPath: "" }, { rpc: { readAccountLimits: () => snapshot } });
+  t.after(() => { slot.lifecycle.unmount(); dom.window.localStorage.clear(); });
+  await slot.findByText("Claude");
+  assert.ok(slot.getByRole("heading", { level: 1, name: "账户额度" }));
+  const overview = within(slot.getByLabelText("额度记录概览"));
+  assert.ok(overview.getByText("2"));
+  assert.ok(overview.getByText("4"));
+  const work = within(slot.getByRole("region", { name: "工作账号 的额度" }));
+  assert.equal(work.getAllByText("工作账号").length, 1);
+  assert.ok(slot.getByText("Team Premium"));
+  assert.ok(slot.getByText("账号登录已过期。"));
+  const caps = within(work.getByRole("group", { name: "模型周上限" }));
+  assert.equal(caps.getByRole("progressbar", { name: "Weekly scoped limit 剩余额度" }).getAttribute("aria-valuenow"), "30");
+  assert.equal(caps.getByRole("progressbar", { name: "Weekly Opus limit 剩余额度" }).getAttribute("aria-valuenow"), "80");
+  assert.ok(caps.getByText("还剩 2 天 0 小时重置"));
+  assert.ok(caps.getByText("还剩 3 天 0 小时重置"));
+  assert.equal(slot.getAllByText(/不可相加/).length, 1);
+  assert.ok(slot.getByRole("region", { name: "旧版账号 的额度" }));
+});
+
+test("初次读取有加载状态，空数据可刷新，刷新失败保留页面并恢复操作", async t => {
+  installTestPluginRuntime();
+  dom.window.localStorage.clear();
+  const app = await loadPluginApp(() => import("./app.js"));
+  let resolveInitial!: (snapshot: AccountLimitsPanelSnapshot) => void;
+  const initial = new Promise<AccountLimitsPanelSnapshot>(resolve => { resolveInitial = resolve; });
+  const slot = renderSlot(app.navPanels[0]!, { subPath: "" }, { rpc: { readAccountLimits: (input: unknown) => {
+    if ((input as { force?: boolean }).force) throw new Error("暂时无法刷新");
+    return initial;
+  } } });
+  t.after(() => { slot.lifecycle.unmount(); dom.window.localStorage.clear(); });
+  assert.ok(slot.getByRole("status").textContent?.includes("正在读取账户额度"));
+  assert.equal((slot.getByRole("button", { name: "刷新全部" }) as HTMLButtonElement).disabled, true);
+  await act(async () => { resolveInitial({ machines: [] }); });
+  assert.ok(await slot.findByText("暂无可显示的账户额度。"));
+  await act(async () => { slot.getByRole("button", { name: "刷新全部" }).click(); });
+  assert.equal(slot.getByRole("alert").textContent, "暂时无法刷新");
+  assert.ok(slot.getByText("暂无可显示的账户额度。"));
+  assert.equal((slot.getByRole("button", { name: "刷新全部" }) as HTMLButtonElement).disabled, false);
+  assert.deepEqual(slot.inspection.rpcCalls.map(call => call.input), [{}, { force: true }]);
+});
+
 test("Claude 将模型周上限置于总周额度之下，两种来源及账号和池视图都保持原始百分比", async t => {
   installTestPluginRuntime();
   const app = await loadPluginApp(() => import("./app.js"));
@@ -44,13 +105,14 @@ test("Claude 将模型周上限置于总周额度之下，两种来源及账号�
     await slot.findByText("Claude");
     const regular = within(slot.getByRole("region", { name: "总周已耗尽 的额度" }));
     const weekly = within(regular.getByRole("group", { name: "周额度" }));
-    assert.ok(weekly.getByText("全部模型"));
+    assert.ok(weekly.getByText("总周额度"));
     assert.ok(weekly.getByText("总周额度已用尽"));
-    assert.ok(weekly.getByText(/不可相加/));
+    assert.equal(slot.getAllByText(/不可相加/).length, 1);
     assert.equal(weekly.getByRole("progressbar", { name: "Weekly limit 剩余额度" }).getAttribute("aria-valuenow"), "0");
     const scoped = within(weekly.getByRole("group", { name: "模型周上限" }));
     assert.ok(scoped.getByText("Fable 周上限"));
     assert.equal(scoped.getByRole("progressbar").getAttribute("aria-valuenow"), "73");
+    assert.match(scoped.getByRole("progressbar").getAttribute("aria-valuetext")!, /以 Fable 自身周上限计算/);
     assert.ok(scoped.getByText(/重置/));
     const missing = within(slot.getByRole("region", { name: "未报总周 的额度" }));
     assert.ok(missing.getByText("总周额度未返回"));
@@ -62,7 +124,7 @@ test("Claude 将模型周上限置于总周额度之下，两种来源及账号�
     await act(async () => { slot.getByRole("button", { name: "池" }).click(); });
     const regularPool = within(slot.getByRole("region", { name: "含全模型周额度 的池额度" }));
     const poolWeekly = within(regularPool.getByRole("group", { name: "周额度" }));
-    assert.ok(poolWeekly.getByText(/不可相加/));
+    assert.equal(slot.getAllByText(/不可相加/).length, 1);
     assert.equal(within(poolWeekly.getByRole("group", { name: "模型周上限" })).getByRole("progressbar").getAttribute("aria-valuenow"), "27");
     assert.ok(within(slot.getByRole("region", { name: "未报告全模型周额度 的池额度" })).getByText("总周额度未返回"));
     slot.lifecycle.unmount();
