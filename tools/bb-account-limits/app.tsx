@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { definePluginApp, useRpc } from "@get-bb/plugin-sdk/app";
 import { accountLimitsPanelRpcContract, type AccountLimitsPanelSnapshot, type CliproxyUsageSnapshot } from "./contract.js";
-import { aggregateCliproxyPool, groupAccountPools, orderQuotaWindows, type PoolWindow } from "./pool.js";
+import { aggregateCliproxyPool, groupAccountPools, normalizeCliproxyWindow, orderQuotaWindows, type PoolWindow } from "./pool.js";
 import { AntigravityIcon, GrokIcon } from "./provider-icons.js";
 
 function compactReset(value: string | null, now: number): string {
@@ -75,7 +75,9 @@ function remainingPercent(usedPercent: number): number {
   return Math.max(0, Math.min(100, 100 - usedPercent));
 }
 
-function WindowMeter({ window, now, mode, detail }: { window: QuotaWindow; now: number; mode: DisplayMode; detail?: string }) {
+type MeterWindow = QuotaWindow & { detail?: string; displayLabel?: string };
+
+function WindowMeter({ window, now, mode }: { window: MeterWindow; now: number; mode: DisplayMode }) {
   const label = displayWindowLabel(window);
   const remaining = remainingPercent(window.usedPercent);
   const percent = mode === "used" ? 100 - remaining : remaining;
@@ -83,14 +85,56 @@ function WindowMeter({ window, now, mode, detail }: { window: QuotaWindow; now: 
   const depleted = remaining <= 10;
   return <li className="min-w-0">
     <div className="flex items-baseline justify-between gap-2 text-xs">
-      <span className="truncate text-muted-foreground">{shortWindowLabel(label)}</span>
+      <span className="truncate text-muted-foreground">{window.displayLabel ?? shortWindowLabel(label)}</span>
       <span className={`shrink-0 tabular-nums ${depleted ? "text-destructive" : ""}`}>{`${Math.round(percent)}%`}</span>
     </div>
     <div className="mt-0.5 h-1 overflow-hidden rounded-full bg-muted" role="progressbar" aria-label={`${label} ${mode === "used" ? "已用" : "剩余"}额度`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent} title={reset ? `${label} · ${reset}` : label}>
       <div className={`h-full rounded-full ${depleted ? "bg-destructive" : "bg-primary"}`} style={{ width: `${percent}%` }} />
     </div>
-    <p className="mt-1 text-xs text-muted-foreground tabular-nums">{detail ? `${reset} · ${detail}` : reset}</p>
+    <p className="mt-1 text-xs text-muted-foreground tabular-nums">{window.detail ? `${reset} · ${window.detail}` : reset}</p>
   </li>;
+}
+
+function modelWeeklyName(label: string): string | null {
+  if (/^(weekly scoped limit|scoped)$/iu.test(label)) return "Fable";
+  const model = /\b(fable|opus|sonnet|haiku)\b/iu.exec(label)?.[1];
+  return model && /\b(weekly|7d)\b/iu.test(label) ? model[0].toUpperCase() + model.slice(1).toLowerCase() : null;
+}
+
+function MeterList({ windows, now, mode }: { windows: readonly MeterWindow[]; now: number; mode: DisplayMode }) {
+  return <ul className="grid min-w-0 gap-x-3 gap-y-1" style={{ gridTemplateColumns: `repeat(${Math.min(Math.max(windows.length, 1), 4)}, minmax(0, 1fr))` }}>
+    {windows.map((window, index) => <WindowMeter key={`${window.label}-${index}`} window={window} now={now} mode={mode} />)}
+  </ul>;
+}
+
+/** Model limits constrain the same weekly usage; their percentages have separate denominators. */
+function QuotaWindows({ providerId, windows, now, mode }: {
+  providerId: string; windows: readonly MeterWindow[]; now: number; mode: DisplayMode;
+}) {
+  const ordered = orderQuotaWindows(windows).map(window => ({ ...window, label: displayWindowLabel(window), accountLabel: null }));
+  const claude = ["claude", "cliproxy-claude", "account-pool:claude-code"].includes(providerId);
+  const modelWindows = claude ? ordered.filter(window => modelWeeklyName(window.label) !== null) : [];
+  if (modelWindows.length === 0) return <MeterList windows={ordered} now={now} mode={mode} />;
+  const totalWindows = ordered.filter(window => normalizeCliproxyWindow(window.label).id === "7d");
+  const otherWindows = ordered.filter(window => !totalWindows.includes(window) && !modelWindows.includes(window));
+  const exhausted = totalWindows.some(window => window.usedPercent >= 100);
+  return <div className={`grid min-w-0 gap-3 ${otherWindows.length ? "sm:grid-cols-[minmax(6rem,1fr)_minmax(0,2fr)]" : ""}`}>
+    {otherWindows.length > 0 && <MeterList windows={otherWindows} now={now} mode={mode} />}
+    <div role="group" aria-label="周额度" className="min-w-0 space-y-2 rounded border border-border px-2 py-1.5">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-2 text-xs">
+        <span className="font-medium">周额度</span>
+        {exhausted && <span className="text-destructive">总周额度已用尽</span>}
+        {totalWindows.length === 0 && <span className="text-muted-foreground">总周额度未返回</span>}
+      </div>
+      {totalWindows.length > 0 && <MeterList windows={totalWindows.map(window => ({ ...window, displayLabel: "全部模型" }))} now={now} mode={mode} />}
+      <div role="group" aria-label="模型周上限" className="min-w-0 border-l-2 border-border pl-3">
+        <MeterList windows={modelWindows.map(window => ({ ...window, displayLabel: `${modelWeeklyName(window.label)} 周上限` }))} now={now} mode={mode} />
+      </div>
+      <p className="text-xs text-muted-foreground">{totalWindows.length > 0
+        ? "模型使用同时计入总周额度；百分比分别计算，不可相加。"
+        : "仅显示模型自身上限，无法据此判断总周余量。"}</p>
+    </div>
+  </div>;
 }
 
 function poolWindowDetail(window: PoolWindow, totalAccounts: number): string {
@@ -103,12 +147,13 @@ function PoolUsage({ provider, now, mode }: { provider: PanelProvider; now: numb
     {groupAccountPools(provider.id, provider.accounts).map(group => <section key={group.id}
       aria-label={group.label ? `${group.label} 的池额度` : undefined}>
       {group.label && <h3 className="mb-1 text-xs font-medium">{group.label}</h3>}
-      <PoolGroupUsage accounts={group.accounts} providerUsage={provider.usage} now={now} mode={mode} />
+      <PoolGroupUsage providerId={provider.id} accounts={group.accounts} providerUsage={provider.usage} now={now} mode={mode} />
     </section>)}
   </div>;
 }
 
-function PoolGroupUsage({ accounts, providerUsage, now, mode }: {
+function PoolGroupUsage({ providerId, accounts, providerUsage, now, mode }: {
+  providerId: string;
   accounts: readonly PanelProvider["accounts"][number][];
   providerUsage: PanelProvider["usage"]; now: number; mode: DisplayMode;
 }) {
@@ -118,27 +163,18 @@ function PoolGroupUsage({ accounts, providerUsage, now, mode }: {
     return <p className="text-xs text-destructive">{message}</p>;
   }
   if (pool.windows.length === 0) return <p className="text-xs text-muted-foreground">未报告额度窗口。</p>;
-  const columns = Math.min(Math.max(pool.windows.length, 1), 4);
-  return <ul className="grid min-w-0 gap-x-3 gap-y-1" style={{ gridTemplateColumns: `repeat(${columns}, minmax(4.5rem, 1fr))` }}>
-    {pool.windows.map(window => <WindowMeter
-      key={window.id}
-      window={{ accountLabel: null, label: window.label, usedPercent: window.usedPercent, resetsAt: window.resetsAt }}
-      now={now}
-      mode={mode}
-      detail={poolWindowDetail(window, pool.totalAccounts)}
-    />)}
-  </ul>;
+  return <QuotaWindows providerId={providerId} windows={pool.windows.map(window => ({
+    accountLabel: null, label: window.label, usedPercent: window.usedPercent, resetsAt: window.resetsAt,
+    detail: poolWindowDetail(window, pool.totalAccounts),
+  }))} now={now} mode={mode} />;
 }
 
-function Usage({ usage, now, mode }: { usage: CliproxyUsageSnapshot["providers"][number]["usage"]; now: number; mode: DisplayMode }) {
+function Usage({ providerId, usage, now, mode }: { providerId: string; usage: CliproxyUsageSnapshot["providers"][number]["usage"]; now: number; mode: DisplayMode }) {
   if (usage.status === "ok") {
-    const columns = Math.max(...groupWindowsByAccount(usage.windows).map(([, windows]) => windows.length), 1);
     return <div className="space-y-1.5">
       {groupWindowsByAccount(usage.windows).map(([accountLabel, windows]) => <section key={accountLabel} aria-label={`${accountLabel} 的额度`} className="grid items-center gap-x-3 gap-y-1 sm:grid-cols-[minmax(8rem,14rem)_1fr]">
         <h3 className="truncate text-xs font-medium" title={accountLabel}>{accountLabel}</h3>
-        <ul className="grid min-w-0 gap-x-3 gap-y-1" style={{ gridTemplateColumns: `repeat(${Math.min(columns, 4)}, minmax(4.5rem, 1fr))` }}>
-          {orderQuotaWindows(windows).map((window, index) => <WindowMeter key={`${window.label}-${index}`} window={window} now={now} mode={mode} />)}
-        </ul>
+        <QuotaWindows providerId={providerId} windows={windows} now={now} mode={mode} />
       </section>)}
     </div>;
   }
@@ -151,7 +187,7 @@ function Usage({ usage, now, mode }: { usage: CliproxyUsageSnapshot["providers"]
 }
 
 function AccountUsage({ provider, now, mode }: { provider: PanelProvider; now: number; mode: DisplayMode }) {
-  if (provider.accounts.length === 0) return <Usage usage={provider.usage} now={now} mode={mode} />;
+  if (provider.accounts.length === 0) return <Usage providerId={provider.id} usage={provider.usage} now={now} mode={mode} />;
   return <div className="space-y-1.5">
     {provider.accounts.map(account => <section key={account.key} aria-label={`${account.label} 的额度`}
       className="grid items-center gap-x-3 gap-y-1 sm:grid-cols-[minmax(8rem,14rem)_1fr]">
@@ -163,10 +199,8 @@ function AccountUsage({ provider, now, mode }: { provider: PanelProvider; now: n
       {account.usage.status === "ok"
         ? account.usage.windows.length === 0
           ? <p className="text-xs text-muted-foreground">未报告额度窗口。</p>
-          : <ul className="grid min-w-0 gap-x-3 gap-y-1" style={{ gridTemplateColumns: `repeat(${Math.min(account.usage.windows.length, 4)}, minmax(4.5rem, 1fr))` }}>
-            {orderQuotaWindows(account.usage.windows).map((window, index) => <WindowMeter key={window.id ?? `${window.label}-${index}`} window={{ ...window, accountLabel: null }} now={now} mode={mode} />)}
-          </ul>
-        : <Usage usage={account.usage} now={now} mode={mode} />}
+          : <QuotaWindows providerId={provider.id} windows={account.usage.windows.map(window => ({ ...window, accountLabel: null }))} now={now} mode={mode} />
+        : <Usage providerId={provider.id} usage={account.usage} now={now} mode={mode} />}
     </section>)}
   </div>;
 }

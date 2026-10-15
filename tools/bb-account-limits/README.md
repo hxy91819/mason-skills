@@ -52,6 +52,10 @@ Cliproxy 配额以**账户**为单位发现、以**上游供应商**为单位显
 
 Antigravity 账号的套餐名称取自同次 `loadCodeAssist` 返回的 `paidTier.name`，没有付费套餐时使用 `currentTier.name`；上游未给名称时保留账号标签。`retrieveUserQuotaSummary` 中标为 `disabled: true` 的窗口不显示、不参与池聚合，避免周额度耗尽时把不适用的 5h 窗口显示为剩余 100%。仅展示接口实际报告的额度，不根据模型目录推算 Gemini 4 等型号的独立额度。
 
+Claude 的账号及池视图将模型周上限缩进到“周额度”分组：全模型总周额度在上，Fable 等模型自身上限在下，原始百分比和重置时间分别保留，不相加、不换算成额外容量。总周额度耗尽时明确提示；接口未返回总周额度时标注缺失，不能据此认定无限或推断套餐。两种来源（Cliproxy、Account Pooler）共用此展示。
+
+[Anthropic 官方说明](https://support.claude.com/en/articles/15424964-claude-fable-models-on-your-plan)规定，Max、Team Premium 及按席位计费的 Enterprise Premium 中，Fable 消耗常规总周额度，同时受自身上限约束；Pro 和标准席位使用另行计费的 usage credits。界面只解释实际报告的额度关系，不从模型名称推断套餐，也不承诺启用 credits 后仍不可使用模型。
+
 ```json
 {
   "enabledProviders": ["acp-codexl", "cliproxy-codex", "cliproxy-claude", "cliproxy-xai", "cliproxy-antigravity", "cliproxy-kimi"],
