@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { definePluginApp, useRpc } from "@get-bb/plugin-sdk/app";
-import { accountLimitsPanelRpcContract, type AccountLimitsPanelSnapshot, type CliproxyUsageSnapshot } from "./contract.js";
+import { accountLimitsPanelRpcContract, type AccountLimitsPanelSnapshot, type CliproxyAccountUsageEntry, type CliproxyUsageSnapshot } from "./contract.js";
 import { aggregateCliproxyPool, groupAccountPools, normalizeCliproxyWindow, orderQuotaWindows, type PoolWindow } from "./pool.js";
 import { AntigravityIcon, GrokIcon } from "./provider-icons.js";
 import { panelStyles } from "./panel-styles.js";
 import { buildPoolRecovery, type PoolRecovery } from "./pool-recovery.js";
+import { buildWeeklyPace, isWeeklyBudget, type WeeklyPace } from "./weekly-pace.js";
 
 function compactReset(value: string | null, now: number): string {
   const resetAt = value ? Date.parse(value) : NaN;
@@ -78,7 +79,14 @@ function remainingPercent(usedPercent: number): number {
   return Math.max(0, Math.min(100, 100 - usedPercent));
 }
 
-type MeterWindow = QuotaWindow & { detail?: string; displayLabel?: string; recovery?: PoolRecovery | null };
+type MeterWindow = QuotaWindow & { detail?: string; displayLabel?: string; recovery?: PoolRecovery | null; pace?: WeeklyPace | null };
+
+function accountWindows(account: CliproxyAccountUsageEntry, now: number, updatedAt: string | null): MeterWindow[] {
+  if (account.usage.status !== "ok") return [];
+  return account.usage.windows.map(window => ({ ...window, accountLabel: null,
+    pace: isWeeklyBudget(window.label) ? buildWeeklyPace([account], window.id ?? normalizeCliproxyWindow(window.label).id, now, updatedAt) : null,
+  }));
+}
 
 function recoveryNumber(value: number): string {
   return value > 0 && value < 0.1 ? "<0.1" : new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 1 }).format(value);
@@ -129,7 +137,11 @@ function WindowMeter({ window, now, mode }: { window: MeterWindow; now: number; 
   const depleted = remaining <= 10;
   return <li className="limits-meter" data-depleted={depleted || undefined}>
     <div className="limits-meter-heading">
-      <span className="limits-meter-label" title={window.displayLabel ?? shortWindowLabel(label)}>{window.displayLabel ?? shortWindowLabel(label)}</span>
+      <div className="limits-meter-title">
+        <span className="limits-meter-label" title={window.displayLabel ?? shortWindowLabel(label)}>{window.displayLabel ?? shortWindowLabel(label)}</span>
+        {window.pace && <span className="limits-pace" data-level={window.pace.level} role="note"
+          aria-label={`周额度建议：${window.pace.label}。${window.pace.reason}`} title={window.pace.reason}>{window.pace.label}</span>}
+      </div>
       <span className="limits-meter-number">{`${Math.round(percent)}%`}</span>
     </div>
     <div className={`limits-meter-track${window.recovery && window.recovery.usedPercent > 0 ? " limits-meter-track--recovery" : ""}`} role="progressbar" aria-label={`${label} ${mode === "used" ? "已用" : "剩余"}额度`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent} title={`${label} · ${reset}`}>
@@ -205,15 +217,15 @@ function PoolUsage({ provider, now, mode }: { provider: PanelProvider; now: numb
       className="limits-pool"
       aria-label={group.label ? `${group.label} 的池额度` : undefined}>
       {group.label && <h3 className="limits-pool-label"><PanelIcon name="pool" />{group.label}</h3>}
-      <PoolGroupUsage providerId={provider.id} accounts={group.accounts} providerUsage={provider.usage} now={now} mode={mode} />
+      <PoolGroupUsage providerId={provider.id} accounts={group.accounts} providerUsage={provider.usage} updatedAt={provider.updatedAt} now={now} mode={mode} />
     </section>)}
   </div>;
 }
 
-function PoolGroupUsage({ providerId, accounts, providerUsage, now, mode }: {
+function PoolGroupUsage({ providerId, accounts, providerUsage, updatedAt, now, mode }: {
   providerId: string;
   accounts: readonly PanelProvider["accounts"][number][];
-  providerUsage: PanelProvider["usage"]; now: number; mode: DisplayMode;
+  providerUsage: PanelProvider["usage"]; updatedAt: string | null; now: number; mode: DisplayMode;
 }) {
   const pool = aggregateCliproxyPool(accounts);
   if (pool.status !== "ok") {
@@ -225,16 +237,18 @@ function PoolGroupUsage({ providerId, accounts, providerUsage, now, mode }: {
     accountLabel: null, label: window.label, usedPercent: window.usedPercent, resetsAt: window.resetsAt,
     detail: poolWindowDetail(window, pool.totalAccounts),
     recovery: buildPoolRecovery(accounts, window.id, now),
+    pace: isWeeklyBudget(window.label) ? buildWeeklyPace(accounts, window.id, now, updatedAt) : null,
   }))} now={now} mode={mode} />;
 }
 
-function Usage({ providerId, usage, now, mode }: { providerId: string; usage: CliproxyUsageSnapshot["providers"][number]["usage"]; now: number; mode: DisplayMode }) {
+function Usage({ providerId, usage, now, mode, updatedAt = null }: { providerId: string; usage: CliproxyUsageSnapshot["providers"][number]["usage"]; now: number; mode: DisplayMode; updatedAt?: string | null }) {
   if (usage.status === "ok") {
     if (usage.windows.length === 0) return <p className="limits-message">未报告额度窗口。</p>;
     return <div className="limits-accounts">
       {groupWindowsByAccount(usage.windows).map(([accountLabel, windows]) => <section key={accountLabel} aria-label={`${accountLabel} 的额度`} className="limits-account">
         <h3 className="limits-account-name" title={accountLabel}>{accountLabel}</h3>
-        <QuotaWindows providerId={providerId} windows={windows} now={now} mode={mode} />
+        <QuotaWindows providerId={providerId} windows={accountWindows({ key: accountLabel, label: accountLabel, weight: 1,
+          usage: { status: "ok", planLabel: usage.planLabel, windows: windows.map(window => ({ ...window, label: displayWindowLabel(window) })) } }, now, updatedAt)} now={now} mode={mode} />
       </section>)}
     </div>;
   }
@@ -247,7 +261,7 @@ function Usage({ providerId, usage, now, mode }: { providerId: string; usage: Cl
 }
 
 function AccountUsage({ provider, now, mode }: { provider: PanelProvider; now: number; mode: DisplayMode }) {
-  if (provider.accounts.length === 0) return <Usage providerId={provider.id} usage={provider.usage} now={now} mode={mode} />;
+  if (provider.accounts.length === 0) return <Usage providerId={provider.id} usage={provider.usage} now={now} mode={mode} updatedAt={provider.updatedAt} />;
   return <div className="limits-accounts">
     {provider.accounts.map((account, index) => <section key={account.key} aria-label={`${account.label} 的额度`}
       className="limits-account">
@@ -264,7 +278,7 @@ function AccountUsage({ provider, now, mode }: { provider: PanelProvider; now: n
       {account.usage.status === "ok"
         ? account.usage.windows.length === 0
           ? <p className="limits-message">未报告额度窗口。</p>
-          : <QuotaWindows providerId={provider.id} windows={account.usage.windows.map(window => ({ ...window, accountLabel: null }))} now={now} mode={mode} />
+          : <QuotaWindows providerId={provider.id} windows={accountWindows(account, now, provider.updatedAt)} now={now} mode={mode} />
         : <Usage providerId={provider.id} usage={account.usage} now={now} mode={mode} />}
     </section>)}
   </div>;

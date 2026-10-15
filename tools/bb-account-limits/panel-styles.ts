@@ -68,7 +68,12 @@ export const panelStyles = `
 .limits-panel .limits-meters { display: grid; grid-template-columns: repeat(var(--quota-columns), minmax(0, 1fr)); gap: 12px 24px; min-width: 0; }
 .limits-panel .limits-meter { min-width: 0; }
 .limits-panel .limits-meter-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 7px; }
+.limits-panel .limits-meter-title { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 7px; min-width: 0; }
 .limits-panel .limits-meter-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--muted-foreground); }
+.limits-panel .limits-pace { display: inline-flex; flex-shrink: 0; padding: 1px 5px; border-radius: 4px; border: 1px solid var(--limits-line); color: var(--muted-foreground); background: var(--limits-soft); font-size: 10px; line-height: 1.5; font-weight: 500; }
+.limits-panel .limits-pace[data-level=generous] { color: color-mix(in srgb, var(--primary) 60%, var(--foreground)); border-color: color-mix(in srgb, var(--primary) 20%, var(--card)); background: color-mix(in srgb, var(--primary) 7%, var(--card)); }
+.limits-panel .limits-pace[data-level=conserve], .limits-panel .limits-pace[data-level=exhausted] { color: var(--limits-danger-text); border-color: color-mix(in srgb, var(--destructive) 20%, var(--card)); background: color-mix(in srgb, var(--destructive) 5%, var(--card)); }
+.limits-panel .limits-pace[data-level=unknown] { border-style: dashed; background: transparent; }
 .limits-panel .limits-meter-number { font-size: 17px; font-weight: 550; letter-spacing: -.04em; line-height: 1.1; font-variant-numeric: tabular-nums; flex-shrink: 0; }
 .limits-panel .limits-meter-track { height: 4px; overflow: hidden; border-radius: 9px; background: color-mix(in srgb, var(--muted) 70%, var(--card)); }
 .limits-panel .limits-meter-fill { height: 100%; border-radius: inherit; background: var(--limits-fill); transition: width .3s ease; }

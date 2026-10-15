@@ -19,6 +19,51 @@ Object.assign(globalThis, {
 });
 Object.defineProperty(globalThis, "navigator", { configurable: true, value: dom.window.navigator });
 
+test("周额度建议覆盖两种来源和账号/池视图，模型上限与缺总周池不冒充总周建议", async t => {
+  installTestPluginRuntime();
+  t.mock.timers.enable({ apis: ["Date", "setInterval"], now: new Date("2026-10-15T00:00:00Z") });
+  const app = await loadPluginApp(() => import("./app.js"));
+  for (const source of ["cliproxy", "account-pool"] as const) {
+    dom.window.localStorage.clear();
+    const at = (hours: number) => new Date(Date.now() + hours * 3_600_000).toISOString();
+    const make = (key: string, remaining: number | null, hours: number) => ({ key, label: key, weight: 1, updatedAt: at(0),
+      usage: { status: "ok" as const, planLabel: null, windows: [
+        { label: "5-hour limit", usedPercent: 20, resetsAt: at(1) },
+        ...(remaining === null ? [] : [{ ...(source === "account-pool" ? { id: "weekly-all" } : {}), label: "Weekly limit", usedPercent: 100 - remaining, resetsAt: at(hours) }]),
+        { label: "Weekly scoped limit", usedPercent: 100, resetsAt: at(24) },
+      ] } });
+    const snapshot: AccountLimitsPanelSnapshot = { machines: [{ id: source, source, displayName: source, status: "connected", error: null,
+      providers: [{ id: source === "cliproxy" ? "cliproxy-claude" : "account-pool:claude-code", displayName: "Claude", updatedAt: at(0),
+        usage: { status: "ok", planLabel: null, windows: [] }, accounts: [
+          make("宽裕", 50, 24), make("正常", 80, 144), make("紧张", 20, 144), make("缺总周", null, 24),
+        ] }, { id: "cliproxy-codex", displayName: "Codex", updatedAt: at(0), accounts: [],
+          usage: { status: "ok", planLabel: null, windows: [
+            { accountLabel: "旧版账号", label: "旧版账号 · Weekly limit", usedPercent: 50, resetsAt: at(24) },
+          ] } }],
+    }] };
+    const slot = renderSlot(app.navPanels[0]!, { subPath: "" }, { rpc: { readAccountLimits: () => snapshot } });
+    t.after(() => { slot.lifecycle.unmount(); dom.window.localStorage.clear(); });
+    await slot.findByText("Claude");
+    for (const [name, advice] of [["宽裕", "可多用"], ["正常", "正常用"], ["紧张", "节约用"]]) {
+      const account = within(slot.getByRole("region", { name: `${name} 的额度` }));
+      assert.ok(account.getByRole("note", { name: new RegExp(`^周额度建议：${advice}`, "u") }));
+      assert.equal(account.getAllByRole("note").length, 1);
+    }
+    assert.equal(within(slot.getByRole("region", { name: "缺总周 的额度" })).queryByRole("note"), null);
+    assert.ok(within(slot.getByRole("region", { name: "旧版账号 的额度" })).getByRole("note", { name: /^周额度建议：可多用/u }));
+    await act(async () => { slot.getByRole("button", { name: "池" }).click(); });
+    const pool = within(slot.getByRole("region", { name: "含全模型周额度 的池额度" }));
+    assert.ok(pool.getByRole("note", { name: /^周额度建议：正常用/u }));
+    assert.equal(within(slot.getByRole("region", { name: "未报告全模型周额度 的池额度" })).queryByRole("note"), null);
+    await act(async () => { slot.getByRole("button", { name: "已用（Used）" }).click(); });
+    assert.ok(pool.getByRole("note", { name: /^周额度建议：正常用/u }));
+    await act(async () => { t.mock.timers.tick(61 * 60_000); });
+    assert.ok(pool.getByRole("note", { name: /^周额度建议：暂不判断/u }));
+    assert.equal(slot.inspection.rpcCalls.length, 1);
+    slot.lifecycle.unmount();
+  }
+});
+
 test("两种来源的池恢复分段以悬停提示展示，切换模式或跨过重置时间不增加实际余量和请求", async t => {
   installTestPluginRuntime();
   t.mock.timers.enable({ apis: ["Date", "setInterval"], now: new Date("2026-10-15T00:00:00Z") });
