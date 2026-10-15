@@ -19,6 +19,52 @@ Object.assign(globalThis, {
 });
 Object.defineProperty(globalThis, "navigator", { configurable: true, value: dom.window.navigator });
 
+test("两种来源的池恢复计划分别按窗口和分池预测，切换模式或跨过重置时间不增加实际余量和请求", async t => {
+  installTestPluginRuntime();
+  t.mock.timers.enable({ apis: ["Date", "setInterval"], now: new Date("2026-10-15T00:00:00Z") });
+  const app = await loadPluginApp(() => import("./app.js"));
+  for (const source of ["cliproxy", "account-pool"] as const) {
+    dom.window.localStorage.clear();
+    const at = (ms: number) => new Date(Date.now() + ms).toISOString();
+    const make = (key: string, weight: number, weekly: number | null, reset: string) => ({ key, label: key, weight,
+      usage: { status: "ok" as const, planLabel: null, windows: [
+        { ...(source === "account-pool" ? { id: "session" } : {}), label: "5-hour limit", usedPercent: 50, resetsAt: at(3_600_000) },
+        ...(weekly === null ? [] : [{ ...(source === "account-pool" ? { id: "weekly-all" } : {}), label: "Weekly limit", usedPercent: weekly, resetsAt: reset }]),
+        { ...(source === "account-pool" ? { id: "model-fable" } : {}), label: "Weekly scoped limit", usedPercent: 50, resetsAt: at(7_200_000) },
+      ] } });
+    const snapshot: AccountLimitsPanelSnapshot = { machines: [{ id: source, source, displayName: source, status: "connected", error: null,
+      providers: [{ id: source === "cliproxy" ? "cliproxy-claude" : "account-pool:claude-code", displayName: "Claude", updatedAt: null,
+        usage: { status: "ok", planLabel: null, windows: [] }, accounts: [
+          make("soon", 2, 100, at(30_000)), make("later", 1, 40, at(10_800_000)), make("separate", 100, null, at(999_999)),
+        ] }],
+    }] };
+    const slot = renderSlot(app.navPanels[0]!, { subPath: "" }, { rpc: { readAccountLimits: () => snapshot } });
+    t.after(() => { slot.lifecycle.unmount(); dom.window.localStorage.clear(); });
+    await slot.findByText("Claude");
+    assert.equal(slot.queryByRole("button", { name: /恢复计划/u }), null);
+    await act(async () => { slot.getByRole("button", { name: "池" }).click(); });
+    const group = within(slot.getByRole("region", { name: "含全模型周额度 的池额度" }));
+    const weekly = () => group.getByRole("progressbar", { name: /^(7d) (剩余|已用)额度$/u });
+    assert.equal(weekly().getAttribute("aria-valuenow"), "20");
+    const trigger = group.getByRole("button", { name: "查看 总周额度 恢复计划" });
+    assert.equal(trigger.getAttribute("aria-haspopup"), "dialog");
+    const plan = within(group.getByRole("dialog", { name: "总周额度 恢复计划", hidden: true }));
+    assert.ok(plan.getByText(/预计剩余 86.7%/u));
+    assert.ok(plan.getByText(/预计剩余 100%/u));
+    assert.ok(group.getByTitle(/预计恢复 66.7 个百分点 · 预计剩余 86.7%/u));
+    assert.ok(group.getByText(/使用仍受总周额度约束/u));
+    await act(async () => { slot.getByRole("button", { name: "已用（Used）" }).click(); });
+    assert.equal(weekly().getAttribute("aria-valuenow"), "80");
+    assert.ok(plan.getByText("20%"));
+    await act(async () => { t.mock.timers.tick(60_000); });
+    assert.equal(weekly().getAttribute("aria-valuenow"), "80");
+    assert.ok(plan.getByText(/待刷新：66.7 个百分点/u));
+    assert.ok(plan.getByText(/预计剩余 33.3%/u));
+    assert.equal(slot.inspection.rpcCalls.length, 1);
+    slot.lifecycle.unmount();
+  }
+});
+
 test("概览统计账号记录、去掉重复身份标签，并保留多个模型各自的上限与重置时间", async t => {
   installTestPluginRuntime();
   dom.window.localStorage.clear();

@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useId, useState, type CSSProperties } from "react";
 import { definePluginApp, useRpc } from "@get-bb/plugin-sdk/app";
 import { accountLimitsPanelRpcContract, type AccountLimitsPanelSnapshot, type CliproxyUsageSnapshot } from "./contract.js";
 import { aggregateCliproxyPool, groupAccountPools, normalizeCliproxyWindow, orderQuotaWindows, type PoolWindow } from "./pool.js";
 import { AntigravityIcon, GrokIcon } from "./provider-icons.js";
 import { panelStyles } from "./panel-styles.js";
+import { buildPoolRecovery, type PoolRecovery } from "./pool-recovery.js";
 
 function compactReset(value: string | null, now: number): string {
   const resetAt = value ? Date.parse(value) : NaN;
@@ -77,7 +78,55 @@ function remainingPercent(usedPercent: number): number {
   return Math.max(0, Math.min(100, 100 - usedPercent));
 }
 
-type MeterWindow = QuotaWindow & { detail?: string; displayLabel?: string };
+type MeterWindow = QuotaWindow & { detail?: string; displayLabel?: string; recovery?: PoolRecovery | null };
+
+function recoveryNumber(value: number): string {
+  return value > 0 && value < 0.1 ? "<0.1" : new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 1 }).format(value);
+}
+
+function recoveryStrength(index: number, count: number): number {
+  return 100 - 60 * index / Math.max(1, count - 1);
+}
+
+function RecoverySegments({ recovery, mode, now }: { recovery: PoolRecovery; mode: DisplayMode; now: number }) {
+  const segments = [
+    ...(mode === "remaining" ? [{ key: "remaining", percent: recovery.remainingPercent, kind: "current", strength: 100, title: `当前剩余 ${recoveryNumber(recovery.remainingPercent)}%` }] : []),
+    { key: "overdue", percent: recovery.overduePercent, kind: "unresolved", strength: 40, title: `已到重置时间，待刷新 · ${recoveryNumber(recovery.overduePercent)} 个百分点` },
+    ...recovery.steps.map((step, index) => ({ key: step.resetsAt, percent: step.gainPercent, kind: "future",
+      strength: recoveryStrength(index, recovery.steps.length) * (mode === "remaining" ? 0.45 : 1),
+      title: `${compactReset(step.resetsAt, now)} · 预计恢复 ${recoveryNumber(step.gainPercent)} 个百分点 · 预计剩余 ${recoveryNumber(step.remainingPercent)}%`,
+    })),
+    { key: "unknown", percent: recovery.unknownPercent, kind: "unresolved", strength: 40, title: `重置时间未知 · ${recoveryNumber(recovery.unknownPercent)} 个百分点，未计入定时预测` },
+  ];
+  return <>{segments.filter(segment => segment.percent > 0).map(segment => <span key={segment.key}
+    className={`limits-recovery-segment limits-recovery-segment--${segment.kind}`} aria-hidden="true" title={segment.title}
+    style={{ width: `${segment.percent}%`, "--recovery-strength": `${segment.strength}%` } as CSSProperties} />)}</>;
+}
+
+function RecoveryPlan({ recovery, label, now, modelCap = false }: { recovery: PoolRecovery; label: string; now: number; modelCap?: boolean }) {
+  const id = useId();
+  if (recovery.usedPercent <= 0) return null;
+  return <>
+    <button type="button" className="limits-recovery-trigger" popoverTarget={id} aria-haspopup="dialog" aria-label={`查看 ${label} 恢复计划`}>恢复计划 <span aria-hidden="true">↗</span></button>
+    <div id={id} popover="auto" className="limits-recovery-popover" role="dialog" aria-label={`${label} 恢复计划`}>
+      <header className="limits-recovery-head"><div><p className="limits-recovery-eyebrow">{modelCap ? "模型自身上限" : "池额度预测"}</p><h3>{label} · 恢复计划</h3></div>
+        <button type="button" popoverTarget={id} popoverTargetAction="hide" className="limits-recovery-close" aria-label="关闭恢复计划">×</button>
+      </header>
+      <div className="limits-recovery-current"><span>当前剩余</span><strong>{recoveryNumber(recovery.remainingPercent)}%</strong></div>
+      <ol className="limits-recovery-steps">
+        {recovery.steps.map((step, index) => <li key={step.resetsAt}>
+          <span className="limits-recovery-dot" style={{ "--recovery-strength": `${recoveryStrength(index, recovery.steps.length)}%` } as CSSProperties} aria-hidden="true" />
+          <div className="limits-recovery-time"><time dateTime={step.resetsAt}>{compactReset(step.resetsAt, now).replace(/^还剩 /u, "").replace(/重置$/u, "后")}</time>
+            <span>{new Date(step.resetsAt).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false })} · {step.accounts} 个账号</span></div>
+          <div className="limits-recovery-amount"><strong>{step.gainPercent < 0.1 ? "恢复 " : "+"}{recoveryNumber(step.gainPercent)} <small>个百分点</small></strong><span>预计剩余 {recoveryNumber(step.remainingPercent)}%</span></div>
+        </li>)}
+      </ol>
+      {recovery.overduePercent > 0 && <p className="limits-recovery-unresolved">待刷新：{recoveryNumber(recovery.overduePercent)} 个百分点已到重置时间，尚未确认恢复。</p>}
+      {recovery.unknownPercent > 0 && <p className="limits-recovery-unresolved">时间未知：{recoveryNumber(recovery.unknownPercent)} 个百分点未计入定时预测。</p>}
+      <p className="limits-recovery-assumption">按当前用量和池权重估算，假设期间没有新增消耗。{modelCap ? "此处只表示模型自身上限的余量，使用仍受总周额度约束。" : "各窗口分别计算。"}</p>
+    </div>
+  </>;
+}
 
 function PanelIcon({ name, spinning = false }: { name: "refresh" | "accounts" | "pool" | "info" | "layers"; spinning?: boolean }) {
   const paths = {
@@ -108,10 +157,11 @@ function WindowMeter({ window, now, mode }: { window: MeterWindow; now: number; 
       <span className="limits-meter-label" title={window.displayLabel ?? shortWindowLabel(label)}>{window.displayLabel ?? shortWindowLabel(label)}</span>
       <span className="limits-meter-number">{`${Math.round(percent)}%`}</span>
     </div>
-    <div className="limits-meter-track" role="progressbar" aria-label={`${label} ${mode === "used" ? "已用" : "剩余"}额度`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent} title={`${label} · ${reset}`}>
-      <div className="limits-meter-fill" style={{ width: `${percent}%` }} />
+    <div className={`limits-meter-track${window.recovery && window.recovery.usedPercent > 0 ? " limits-meter-track--recovery" : ""}`} role="progressbar" aria-label={`${label} ${mode === "used" ? "已用" : "剩余"}额度`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent} title={`${label} · ${reset}`}>
+      {window.recovery && window.recovery.usedPercent > 0 ? <RecoverySegments recovery={window.recovery} mode={mode} now={now} /> : <div className="limits-meter-fill" style={{ width: `${percent}%` }} />}
     </div>
     <p className="limits-reset">{window.detail ? `${reset} · ${window.detail}` : reset}</p>
+    {window.recovery && <RecoveryPlan recovery={window.recovery} label={window.displayLabel ?? shortWindowLabel(label)} now={now} />}
   </li>;
 }
 
@@ -142,6 +192,7 @@ function ModelCap({ window, now, mode }: { window: MeterWindow; now: number; mod
       </span>
     </div>
     <p className="limits-reset">{window.detail ? `${reset} · ${window.detail}` : reset}</p>
+    {window.recovery && <RecoveryPlan recovery={window.recovery} label={`${modelWeeklyName(window.label)} 周上限`} now={now} modelCap />}
   </li>;
 }
 
@@ -200,6 +251,7 @@ function PoolGroupUsage({ providerId, accounts, providerUsage, now, mode }: {
   return <QuotaWindows providerId={providerId} windows={pool.windows.map(window => ({
     accountLabel: null, label: window.label, usedPercent: window.usedPercent, resetsAt: window.resetsAt,
     detail: poolWindowDetail(window, pool.totalAccounts),
+    recovery: buildPoolRecovery(accounts, window.id, now),
   }))} now={now} mode={mode} />;
 }
 
@@ -359,6 +411,9 @@ function AccountLimitsPanel() {
             disabled={loading || refreshingProviderIds.size > 0} onClick={() => void load(true)}><PanelIcon name="refresh" spinning={loading} />{loading && snapshot ? "刷新中" : "刷新全部"}</button>
         </div>
       </div>
+      {view === "pool" && providers.length > 0 && <p className="limits-recovery-legend"><span className="limits-recovery-key" aria-hidden="true" />{mode === "used"
+        ? "已用部分按预计恢复批次分段，深色较近、浅色较远；斜纹为时间未知或待刷新。"
+        : "实色为当前剩余，浅色分段为预计恢复（由近到远）；斜纹为时间未知或待刷新。"}</p>}
       {error && <p role="alert" className="limits-alert">{error}</p>}
       {!snapshot && loading && <p className="limits-loading" role="status"><PanelIcon name="refresh" spinning />正在读取账户额度…</p>}
       {snapshot && snapshot.machines.length === 0 && <p className="limits-empty">暂无可显示的账户额度。</p>}
