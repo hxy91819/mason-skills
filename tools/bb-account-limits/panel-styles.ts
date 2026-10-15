@@ -74,6 +74,12 @@ export const panelStyles = `
 .limits-panel .limits-meter-fill { height: 100%; border-radius: inherit; background: var(--limits-fill); transition: width .3s ease; }
 .limits-panel .limits-meter[data-depleted] .limits-meter-number { color: var(--limits-danger-text); }
 .limits-panel .limits-meter[data-depleted] .limits-meter-fill { background: var(--destructive); }
+.limits-panel .limits-meter-track--recovery { display: flex; height: 6px; }
+.limits-panel .limits-recovery-segment { display: block; flex: none; height: 100%; box-shadow: inset -1px 0 var(--card); background: color-mix(in srgb, var(--limits-fill) var(--recovery-strength), var(--card)); }
+.limits-panel .limits-recovery-segment--unresolved { background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--limits-fill) 40%, var(--card)) 0 3px, color-mix(in srgb, var(--limits-fill) 12%, var(--card)) 3px 6px); }
+.limits-panel .limits-meter[data-depleted] .limits-meter-track--recovery { --limits-fill: var(--destructive); }
+.limits-panel .limits-recovery-legend { display: flex; align-items: start; gap: 8px; color: var(--muted-foreground); font-size: 11px; line-height: 1.6; margin: -2px 0 16px; }
+.limits-panel .limits-recovery-key { width: 32px; height: 5px; border-radius: 3px; margin-top: 6px; flex-shrink: 0; background: linear-gradient(90deg, var(--limits-fill), color-mix(in srgb, var(--limits-fill) 25%, var(--card))); }
 .limits-panel .limits-reset { color: var(--muted-foreground); font-size: 11px; line-height: 1.6; font-variant-numeric: tabular-nums; margin-top: 5px; overflow-wrap: anywhere; }
 .limits-panel .limits-quotas { min-width: 0; }
 .limits-panel .limits-quotas--weekly { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; }
