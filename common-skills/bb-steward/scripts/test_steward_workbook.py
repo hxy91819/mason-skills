@@ -1,8 +1,10 @@
 """验证 BB 管家工作簿门禁与提交节流逻辑。"""
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import steward_workbook as sw
 
 VALID_WORKBOOK = """# 项目介绍与 demo 的持续完善

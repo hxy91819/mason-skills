@@ -552,9 +552,15 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> int:
+_PARSER: argparse.ArgumentParser | None = None
+
+
+def main(argv: list[str] | None = None) -> int:
+    global _PARSER
     try:
-        args = build_parser().parse_args()
+        if _PARSER is None:
+            _PARSER = build_parser()
+        args = _PARSER.parse_args(argv)
         return int(args.handler(args))
     except (ReportError, OSError, json.JSONDecodeError) as error:
         print(f"ERROR: {error}", file=sys.stderr)

@@ -23,4 +23,4 @@ bb-dispatch --difficulty simple --task '<仓库、Git 审查范围、原始需�
 
 主 Agent 逐条核实发现，阅读相关代码与必要的依赖契约。接受当前任务范围内真实、可操作的缺陷；说明拒绝项理由。修复后运行相关验证，必要时对新差异再派发一次增量复审（同一交付任务内独立审查最多 **2 轮**：首轮审查 + 一次修复后复审；修复后复审边界已闭合时用 `simple`）。第 2 轮复审后若无新的 P0/P1，或仅剩主 Agent 可直接核实的小修，主 Agent 自行修完并验证通过即可收尾，不再继续循环派发第 3 轮及以上的审查线程。超出原任务的产品或接口决策交给用户决定。
 
-最终报告列出审查范围、线程 ID、验证结果，以及发现的处理结果。用 `bb thread show <线程ID>` 回看派发与审查记录；当前没有跨线程的自动裁决统计。
+最终报告列出审查范围、线程 ID、验证结果，以及发现的处理结果。审查结束后通过 `bb-dispatch --record-decision <线程ID> --outcome completed --decision accepted|rejected` 回写裁决；用 `bb thread show <线程ID>` 回看单次审查记录，用 `bb-dispatch --history-summary` 查看跨线程统计。

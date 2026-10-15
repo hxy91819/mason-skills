@@ -37,7 +37,7 @@ Agent 自行决定使用 subagent，或用户只要求“用 subagent 检查一�
 
 脚本内置两项确定性分档门禁：
 - 传入 `--closed-scope` 声明边界已闭合时，强制要求 `--difficulty simple`（除非同时提供 `--escalate-from <前序线程ID>` 并通过存在性校验）。
-- 传入 `--difficulty medium|complex` 且未提供 `--escalate-from` 时，有效任务指导长度（自动剥离 `# Review agent 提示词` 固定审查标准）默认不得超过 `--max-task-chars 2500` 字符；超限说明父线程已完成细化，应改用 `simple` 或精简任务书。
+- 传入 `--difficulty medium|complex` 且未提供 `--escalate-from` 时，有效任务指导长度（自动剥离 `autoreview` 审查标准、`ask-oracle` 证据块与 `large-task-orchestrator` 执行包/报告协议块）默认不得超过 `--max-task-chars 2500` 字符；超限说明父线程已完成细化，应改用 `simple` 或精简任务书。
 
 同一个“验证”或“审查”按边界归类：按既有用例、固定清单执行的独立验收，以及需求与验收条件明确的闭合边界代码审查、修复后增量补审是 `simple`；跨模块状态机/并发边界未闭合的深度审查，或判断某个方案能否跑通的 POC 验证是 `medium`。
 

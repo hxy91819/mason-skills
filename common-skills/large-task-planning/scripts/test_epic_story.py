@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import subprocess
 import sys
@@ -9,8 +11,9 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-
 SCRIPT = Path(__file__).with_name("epic_story.py")
+sys.path.insert(0, str(SCRIPT.parent))
+import epic_story as epic_story_module
 
 
 def plan_data(*, final_story: str = "STORY-02") -> dict[str, Any]:
@@ -137,12 +140,13 @@ class EpicStoryCliTest(unittest.TestCase):
         path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     def run_cli(self, *arguments: str, expected: int = 0) -> subprocess.CompletedProcess[str]:
-        result = subprocess.run(
-            [sys.executable, str(SCRIPT), *arguments],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                rc = int(epic_story_module.main(list(arguments)) or 0)
+            except SystemExit as exc:
+                rc = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
+        result = subprocess.CompletedProcess([sys.executable, str(SCRIPT), *arguments], rc, out.getvalue(), err.getvalue())
         self.assertEqual(result.returncode, expected, result.stderr or result.stdout)
         return result
 
@@ -497,9 +501,13 @@ intent_version: 1
         self.temporary.cleanup()
 
     def run_cli(self, *arguments: str, expected: int = 0) -> subprocess.CompletedProcess[str]:
-        result = subprocess.run(
-            [sys.executable, str(SCRIPT), *arguments], capture_output=True, text=True, check=False
-        )
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                rc = int(epic_story_module.main(list(arguments)) or 0)
+            except SystemExit as exc:
+                rc = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
+        result = subprocess.CompletedProcess([sys.executable, str(SCRIPT), *arguments], rc, out.getvalue(), err.getvalue())
         self.assertEqual(result.returncode, expected, result.stderr or result.stdout)
         return result
 

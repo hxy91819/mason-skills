@@ -1428,9 +1428,14 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+_PARSER: argparse.ArgumentParser | None = None
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
+    global _PARSER
+    if _PARSER is None:
+        _PARSER = build_parser()
+    args = _PARSER.parse_args(argv)
     try:
         if getattr(args, "at", None):
             date.fromisoformat(args.at)

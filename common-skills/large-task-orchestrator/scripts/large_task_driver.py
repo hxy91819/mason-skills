@@ -13,7 +13,10 @@ Validator 多轮 FAIL、线程出错、待处理交互）才启用该 Story 的 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
+import importlib.util
+import io
 import json
 import os
 import re
@@ -26,10 +29,62 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
+from types import ModuleType
 from typing import Any, Callable, Sequence
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_REPORT_SCRIPT = SKILL_DIR / "scripts" / "large_task_report.py"
+DEFAULT_PLANNING_SCRIPT = (SKILL_DIR.parent / "large-task-planning" / "scripts" / "epic_story.py").resolve()
+_MODULE_CACHE: dict[tuple[Path, int], ModuleType | None] = {}
+
+
+def _load_local_module(path: Path, name_prefix: str) -> ModuleType | None:
+    resolved = path.resolve()
+    try:
+        mtime_ns = resolved.stat().st_mtime_ns
+    except OSError:
+        return None
+    cache_key = (resolved, mtime_ns)
+    if cache_key in _MODULE_CACHE:
+        return _MODULE_CACHE[cache_key]
+    try:
+        text = resolved.read_text(encoding="utf-8")
+        if resolved.suffix != ".py" or ("#!" in text[:128] and "def main(" not in text):
+            _MODULE_CACHE[cache_key] = None
+            return None
+        spec = importlib.util.spec_from_file_location(f"{name_prefix}_{abs(hash(cache_key))}", resolved)
+        if spec is None or spec.loader is None:
+            _MODULE_CACHE[cache_key] = None
+            return None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        _MODULE_CACHE[cache_key] = module
+        return module
+    except Exception:
+        _MODULE_CACHE[cache_key] = None
+        return None
+
+
+def _run_module_main(script_path: Path, argv: Sequence[str], *, name_prefix: str) -> subprocess.CompletedProcess[str] | None:
+    module = _load_local_module(script_path, name_prefix)
+    main_fn = getattr(module, "main", None) if module is not None else None
+    if not callable(main_fn):
+        return None
+    stdout_buf = io.StringIO()
+    stderr_buf = io.StringIO()
+    with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
+        try:
+            returncode = int(main_fn(list(argv)))
+        except SystemExit as exc:
+            code = exc.code
+            returncode = int(code) if isinstance(code, int) else (0 if code is None else 1)
+    return subprocess.CompletedProcess(
+        [sys.executable, str(script_path), *argv],
+        returncode,
+        stdout_buf.getvalue(),
+        stderr_buf.getvalue(),
+    )
 STATE_ROOT_RELATIVE = Path(".local/large-task-orchestrator")
 STATE_FILENAME = "state.json"
 LOG_FILENAME = "log.jsonl"
@@ -426,7 +481,8 @@ class Driver:
         print(f"[{record['at']}] {event} " + " ".join(f"{k}={v}" for k, v in facts.items() if k != "text"))
 
     def planning(self, *arguments: str, expected: int = 0) -> subprocess.CompletedProcess[str]:
-        result = run([sys.executable, str(self.planning_script), *arguments], check=False)
+        inproc = _run_module_main(self.planning_script, arguments, name_prefix="epic_story")
+        result = inproc if inproc is not None else run([sys.executable, str(self.planning_script), *arguments], check=False)
         if result.returncode != expected:
             raise DriverError(f"epic_story.py {arguments[0]} 失败 ({result.returncode}):\n{result.stderr.strip()}")
         return result
@@ -515,7 +571,20 @@ class Driver:
         return paths
 
     def head(self, repo: Path | None = None) -> str:
-        return self.git("rev-parse", "HEAD", repo=repo).stdout.strip()
+        target = repo or self.repository
+        head_file = target / ".git" / "HEAD"
+        if head_file.is_file():
+            raw = head_file.read_text(encoding="utf-8").strip()
+            if not raw.startswith("ref: "):
+                if len(raw) == 40:
+                    return raw
+            else:
+                ref_file = target / ".git" / raw[5:].strip()
+                if ref_file.is_file():
+                    commit = ref_file.read_text(encoding="utf-8").strip()
+                    if len(commit) == 40:
+                        return commit
+        return self.git("rev-parse", "HEAD", repo=target).stdout.strip()
 
     def story_repo_entries(self, story: dict[str, Any]) -> list[tuple[Path, str]]:
         """返回 (仓库根, 报告路径前缀)。缺省为计划所在仓；其他仓的路径用 `<仓库根>/<仓库相对路径>`。"""
@@ -624,10 +693,14 @@ class Driver:
         label = next((entry for candidate, entry in self.story_repo_entries(story) if candidate == repo), "")
         return f"{label}/{rel}" if label else rel
 
-    def attribution_error(self, story_id: str, state: StoryState, paths: list[str]) -> str:
+    def attribution_error(
+        self, story_id: str, state: StoryState, paths: list[str], *, repo_dirty: dict[Path, set[str]] | None = None,
+    ) -> str:
         story = self.read_story(story_id)
         entries = self.story_repo_entries(story)
-        repo_dirty = {repo: set(self.dirty_paths(repo)) for repo, _ in entries}
+        dirty_by_repo = (
+            repo_dirty if repo_dirty is not None else {repo: set(self.dirty_paths(repo)) for repo, _ in entries}
+        )
         errors: list[str] = []
         for raw in paths:
             matches: set[tuple[Path, str]] = set()
@@ -637,7 +710,7 @@ class Driver:
                     if not raw.startswith(label + "/"):
                         continue
                     rel = raw[len(label) + 1:]
-                if rel in repo_dirty[repo]:
+                if rel in dirty_by_repo[repo]:
                     matches.add((repo, rel))
             if len(matches) > 1:
                 errors.append(f"{raw}: 同时匹配多个仓库的 dirty 文件，需加仓库根前缀消歧")
@@ -658,7 +731,9 @@ class Driver:
                 errors.append(f"{raw}: 属于 Driver 管理路径")
         return "；".join(errors)
 
-    def checkpoint(self, story_id: str, state: StoryState) -> dict[str, str]:
+    def checkpoint(
+        self, story_id: str, state: StoryState, *, repo_dirty: dict[Path, set[str]] | None = None,
+    ) -> dict[str, str]:
         """在 Story 声明的每个仓分别提交 Validator 确认的路径；返回 仓库根 -> commit。"""
         story = self.read_story(story_id)
         entries = self.story_repo_entries(story)
@@ -667,7 +742,9 @@ class Driver:
             if state.last_validator
             else state.last_worker.get("Paths", [])
         )
-        repo_dirty = {repo: set(self.dirty_paths(repo)) for repo, _ in entries}
+        dirty_by_repo = (
+            repo_dirty if repo_dirty is not None else {repo: set(self.dirty_paths(repo)) for repo, _ in entries}
+        )
         located: dict[Path, list[str]] = {}
         for raw in worker_paths:
             matches: set[tuple[Path, str]] = set()
@@ -677,7 +754,7 @@ class Driver:
                     continue
                 if label:
                     rel = raw[len(label) + 1:]
-                if rel in repo_dirty[repo]:
+                if rel in dirty_by_repo[repo]:
                     matches.add((repo, rel))
             if len(matches) != 1:
                 raise DriverError(f"{story_id}: checkpoint 前无法唯一定位 Worker 路径: {raw}")
@@ -698,13 +775,16 @@ class Driver:
                 commits[str(repo)] = self.head(repo)
                 continue
             self.git("add", "--", *targets, repo=repo)
-            staged = self.git("diff", "--cached", "--quiet", "--", *targets, repo=repo, check=False)
-            if staged.returncode == 0:
-                commits[str(repo)] = self.head(repo)
-                continue
-            # --only keeps another agent's pre-existing index entries out of this checkpoint.
-            self.git("commit", "-q", "--only", "-m", f"checkpoint({story_id}): {story['title']}",
-                     "--", *targets, repo=repo)
+            commit_res = self.git(
+                "commit", "-q", "--only", "-m", f"checkpoint({story_id}): {story['title']}",
+                "--", *targets, repo=repo, check=False,
+            )
+            if commit_res.returncode != 0:
+                staged = self.git("diff", "--cached", "--quiet", "--", *targets, repo=repo, check=False)
+                if staged.returncode != 0:
+                    raise DriverError(
+                        f"git commit 失败 ({commit_res.returncode}): {commit_res.stderr.strip() or commit_res.stdout.strip()}"
+                    )
             commits[str(repo)] = self.head(repo)
         return commits
 
@@ -738,6 +818,8 @@ class Driver:
 
     def wait_thread(self, thread_id: str) -> str:
         """阻塞到线程 idle / error / 有待处理交互；返回 idle | error | interaction | busy。"""
+        if self.stop_requested:
+            return "busy"
         started = time.monotonic()
         timeout = min(self.args.poll_seconds, self.args.wait_timeout)
         if timeout <= 0:
@@ -760,10 +842,14 @@ class Driver:
             self.bb("thread", "stop", thread_id, check=False)
             self.log("thread.stalled", thread=thread_id, stall_minutes=self.args.stall_minutes)
             return "stalled"
+        if self.stop_requested:
+            return "busy"
         # BB 在 timeout 时以退出码 2 返回；补足过快返回的间隔，使主循环不会忙等。
         remaining = timeout - (time.monotonic() - started)
-        if remaining > 0:
-            time.sleep(remaining)
+        while remaining > 0 and not self.stop_requested:
+            step = min(remaining, 0.05)
+            time.sleep(step)
+            remaining = timeout - (time.monotonic() - started)
         return "busy"
 
     def tell_thread(self, thread_id: str, message: str) -> None:
@@ -816,12 +902,13 @@ JSON
         path = self.worker_report_path(story_id, state.attempts)
         if not path.is_file():
             return None, f"未找到结构化报告：{path}"
-        command = [
-            sys.executable, str(self.report_script), "read-worker", "--file", str(path),
+        report_args = [
+            "read-worker", "--file", str(path),
             "--story-id", story_id, "--attempt", str(state.attempts),
             "--intent-version", str(story["intent_version"]),
         ]
-        result = run(command, cwd=self.repository, check=False)
+        inproc = _run_module_main(self.report_script, report_args, name_prefix="large_task_report")
+        result = inproc if inproc is not None else run([sys.executable, str(self.report_script), *report_args], cwd=self.repository, check=False)
         if result.returncode != 0:
             return None, result.stderr.strip() or f"报告校验失败，退出码 {result.returncode}"
         try:
@@ -895,15 +982,16 @@ gaps 为空；FAIL 必须至少有一项 missing 或 gap。脚本返回 0 且打
         path = self.validator_report_path(story_id, state.attempts, state.validator_rounds)
         if not path.is_file():
             return None, f"未找到 Validator 结构化报告：{path}"
-        command = [
-            sys.executable, str(self.report_script), "read-validator", "--file", str(path),
+        report_args = [
+            "read-validator", "--file", str(path),
             "--story-id", story_id, "--attempt", str(state.attempts),
             "--intent-version", str(story["intent_version"]),
             "--validation-round", str(state.validator_rounds),
         ]
         for item in story["acceptance"]:
-            command += ["--acceptance-id", str(item["id"])]
-        result = run(command, cwd=self.repository, check=False)
+            report_args += ["--acceptance-id", str(item["id"])]
+        inproc = _run_module_main(self.report_script, report_args, name_prefix="large_task_report")
+        result = inproc if inproc is not None else run([sys.executable, str(self.report_script), *report_args], cwd=self.repository, check=False)
         if result.returncode != 0:
             return None, result.stderr.strip() or f"Validator 报告校验失败，退出码 {result.returncode}"
         try:
@@ -960,12 +1048,13 @@ JSON
         path = self.judge_report_path(story_id, state.attempts, judge_round)
         if not path.is_file():
             return None, f"未找到 Judge 结构化报告：{path}"
-        command = [
-            sys.executable, str(self.report_script), "read-judge", "--file", str(path),
+        report_args = [
+            "read-judge", "--file", str(path),
             "--story-id", story_id, "--attempt", str(state.attempts),
             "--intent-version", str(story["intent_version"]), "--judge-round", str(judge_round),
         ]
-        result = run(command, cwd=self.repository, check=False)
+        inproc = _run_module_main(self.report_script, report_args, name_prefix="large_task_report")
+        result = inproc if inproc is not None else run([sys.executable, str(self.report_script), *report_args], cwd=self.repository, check=False)
         if result.returncode != 0:
             return None, result.stderr.strip() or f"Judge 报告校验失败，退出码 {result.returncode}"
         try:
@@ -1194,12 +1283,14 @@ Validator 报告：{validator}
 
     def complete_story(self, story_id: str, state: StoryState) -> None:
         story = self.read_story(story_id)
+        entries = self.story_repo_entries(story)
+        repo_dirty = {repo: set(self.dirty_paths(repo)) for repo, _ in entries}
         worker = state.last_worker
         validator = state.last_validator
         worker_paths = (
             validator.get("worker_paths", []) if validator else worker.get("Paths", [])
         )
-        attribution_error = self.attribution_error(story_id, state, worker_paths)
+        attribution_error = self.attribution_error(story_id, state, worker_paths, repo_dirty=repo_dirty)
         if attribution_error:
             raise DriverStop(f"{story_id}: checkpoint 前路径归属已失效：{attribution_error}")
         for item in story["acceptance"]:
@@ -1224,11 +1315,15 @@ Validator 报告：{validator}
             "risks": risks,
             "next": f"{next_text}\n{thread_fact}",
         }
-        story["status"] = "in_progress"
+        story["status"] = "done"
+        story["owner"] = state.worker_thread or "driver"
+        story["blocker"] = None
+        story["updated"] = datetime.now(timezone.utc).date().isoformat()
         self.write_story(story_id, story)
-        self.transition(story_id, "done", expect="in_progress", owner=state.worker_thread or "driver")
+        self.planning("render", *self.project_args())
         self.check()
-        commits = self.checkpoint(story_id, state)
+        repo_dirty.setdefault(self.repository, set()).update(self.management_paths(story_id))
+        commits = self.checkpoint(story_id, state, repo_dirty=repo_dirty)
         if self.args.deliver_command and not self.deliver_story(story_id, state, commits):
             return
         self.note_story_done()
@@ -1991,8 +2086,14 @@ def repair_baseline(args: argparse.Namespace) -> int:
     return 0
 
 
+_PARSER: argparse.ArgumentParser | None = None
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    global _PARSER
+    if _PARSER is None:
+        _PARSER = build_parser()
+    args = _PARSER.parse_args(argv)
     try:
         if args.command == "run":
             return run_foreground(args)

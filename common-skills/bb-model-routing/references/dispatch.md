@@ -52,7 +52,7 @@ defaults:
 
 `--fallback-from <别名>` 把本次候选截取为从该别名起的后缀，用于前次派发失败且确认线程未创建后的同档续派；别名不在候选中时报错。实际派发时使用 `--fallback-from` 会自动将本次链上位于该别名之前的候选记入短期熔断冷却（15 分钟），避免紧邻的下一笔独立任务在负载均衡下再次命中刚故障的候选。负载均衡续派须保持原 route 和完整 `--task` 文本，才能复现返回的 `selection.fallbacks` 顺序；需要补充进展时，续派保留原任务文本，创建成功后通过 `bb thread tell` 向新线程补充进展与位置。
 
-`--closed-scope` 声明任务边界已闭合（目标文件、改法、验证方式均已明确），未配合 `--escalate-from <线程ID>` 时强制要求 `--difficulty simple`。`--max-task-chars`（默认 2500，0 为不限制）对未传 `--escalate-from` 的 `medium`/`complex` 任务检查有效指导长度（剥离 `# Review agent 提示词` 后的字符数），超长时拒绝派发并提示改用 `simple` 或精简任务书。
+`--closed-scope` 声明任务边界已闭合（目标文件、改法、验证方式均已明确），未配合 `--escalate-from <线程ID>` 时强制要求 `--difficulty simple`。`--max-task-chars`（默认 2500，0 为不限制）对未传 `--escalate-from` 的 `medium`/`complex` 任务检查有效指导长度（自动剥离 `autoreview` 审查标准、`ask-oracle` 证据块及 `large-task-orchestrator` 执行包/报告协议块后的字符数），超长时拒绝派发并提示改用 `simple` 或精简任务书。
 
 `--record-decision <线程ID>` 配合 `--outcome {spawned,completed,failed_quota,failed_transient,failed_other}` 与 `--decision {accepted,rejected,reworked,escalated}` 将运行终态与父线程裁决覆盖回写到本地账本（默认 `~/.cache/bb-dispatch/ledger.json`）；`--history-summary`（别名 `--stats`）只读输出按难度与候选的聚合统计、活跃冷却及确定性复盘 hooks。
 

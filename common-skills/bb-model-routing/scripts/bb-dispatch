@@ -34,6 +34,11 @@ COOLDOWN_SECONDS = {"failed_quota": 6 * 3600, "failed_transient": 15 * 60}
 MAX_LIVE_ENTRIES = 200
 DEFAULT_MAX_TASK_CHARS = 2500
 REVIEW_PROMPT_ANCHOR = "# Review agent 提示词"
+DRIVER_PAYLOAD_ANCHORS = (
+    "\n执行包：\n",
+    "\n完成工作后必须提交结构化报告。",
+    "\n完成裁决后必须提交结构化报告。",
+)
 
 
 def bb(*args):
@@ -89,6 +94,18 @@ def thread_title(title, task, difficulty):
 
 def effective_task_chars(task):
     body = task.split(REVIEW_PROMPT_ANCHOR, 1)[0] if REVIEW_PROMPT_ANCHOR in task else task
+    for anchor in DRIVER_PAYLOAD_ANCHORS:
+        if anchor in body:
+            body = body.split(anchor, 1)[0]
+    if "\nWorker 报告：" in body and "\n需要证据时读取对应 BB 线程" in body:
+        before, rest = body.split("\nWorker 报告：", 1)
+        _, after = rest.split("\n需要证据时读取对应 BB 线程", 1)
+        body = before + "\n需要证据时读取对应 BB 线程" + after
+    if "# Verified context" in body and "# Question for the oracle" in body:
+        before, rest = body.split("# Verified context", 1)
+        if "# Question for the oracle" in rest:
+            _, after = rest.split("# Question for the oracle", 1)
+            body = before + "# Question for the oracle" + after
     return len(body.strip())
 
 

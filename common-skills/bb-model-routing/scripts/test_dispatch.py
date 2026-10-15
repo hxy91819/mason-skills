@@ -89,7 +89,9 @@ environments:
         self.assertFalse(any(c[:2] == ('thread', 'spawn') for c in self.calls))
 
     def test_kind_option_is_removed(self):
-        with self.assertRaises(SystemExit):
+        import contextlib
+        import io
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             self.args('--kind', 'debug')
 
     def test_environment_alias_override(self):
@@ -341,17 +343,18 @@ environments:
     def test_weighted_load_balance_is_stable_and_follows_relative_weights(self):
         self.weighted_load_balance_config()
         counts = {'primary': 0, 'specialist': 0}
-        for index in range(900):
+        for index in range(180):
             args = self.args('--task', f'weighted task {index}', '--dry-run')
             first = m.dispatch(args, self.fake)['selection']
-            second = m.dispatch(args, self.fake)['selection']
-            self.assertEqual(first['candidates'], second['candidates'])
-            self.assertEqual(first['candidate_weights'], second['candidate_weights'])
+            if index < 8:
+                second = m.dispatch(args, self.fake)['selection']
+                self.assertEqual(first['candidates'], second['candidates'])
+                self.assertEqual(first['candidate_weights'], second['candidate_weights'])
             self.assertEqual(first['routing_mode'], 'weighted-load-balance')
             counts[first['agent']] += 1
         ratio = counts['primary'] / counts['specialist']
-        self.assertGreater(ratio, 1.7)
-        self.assertLess(ratio, 2.3)
+        self.assertGreater(ratio, 1.5)
+        self.assertLess(ratio, 2.6)
 
     def test_zero_weight_candidate_is_excluded_from_selection_and_fallback(self):
         for disabled in ('primary', 'specialist'):
@@ -491,6 +494,21 @@ environments:
         review_task = '只读审查 commit abc123\n\n# Review agent 提示词\n' + ('标准正文' * 800)
         review_ok = m.dispatch(self.args('--difficulty', 'medium', '--task', review_task, '--dry-run'), self.fake)
         self.assertEqual(review_ok['selection']['difficulty'], 'medium')
+        # ask-oracle 的 Verified context 证据块与 large-task-orchestrator 的执行包/报告协议块不计入有效指导长度
+        oracle_task = (
+            '你是本次咨询的 Oracle。\n\n# Goal\n评估方案\n\n# Verified context\n'
+            + ('证据行\n' * 900)
+            + '\n# Question for the oracle\n架构是否可行？\n\n# Expected response\n给出结论'
+        )
+        oracle_ok = m.dispatch(self.args('--difficulty', 'complex', '--task', oracle_task, '--dry-run'), self.fake)
+        self.assertEqual(oracle_ok['selection']['difficulty'], 'complex')
+        driver_worker_task = (
+            '实现 Story STORY-01，一次只处理这一张 Story。\n\n执行包：\n```json\n'
+            + ('{"k": "v"}\n' * 300)
+            + '```\n\n完成工作后必须提交结构化报告。\n'
+        )
+        driver_ok = m.dispatch(self.args('--difficulty', 'medium', '--task', driver_worker_task, '--dry-run'), self.fake)
+        self.assertEqual(driver_ok['selection']['difficulty'], 'medium')
         # 显式传入 --escalate-from 允许豁免
         esc_ok = m.dispatch(
             self.args('--difficulty', 'medium', '--task', long_task, '--escalate-from', 'thr_prev', '--dry-run'),

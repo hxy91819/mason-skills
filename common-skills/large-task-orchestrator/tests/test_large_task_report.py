@@ -1,6 +1,8 @@
 """验证 Worker、Validator 与 Judge 报告的写入、读取和严格 schema 门禁。"""
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import stat
 import subprocess
@@ -8,9 +10,12 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 REPORTER = Path(__file__).resolve().parent.parent / "scripts" / "large_task_report.py"
+sys.path.insert(0, str(REPORTER.parent))
+import large_task_report as reporter_module
 
 
 def valid_report() -> dict[str, object]:
@@ -52,13 +57,14 @@ class ReportTest(unittest.TestCase):
         self.temporary.cleanup()
 
     def run_reporter(self, *arguments: str, payload: dict[str, object] | None = None) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [sys.executable, str(REPORTER), *arguments],
-            input=json.dumps(payload, ensure_ascii=False) if payload is not None else None,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        stdin = io.StringIO(json.dumps(payload, ensure_ascii=False) if payload is not None else "")
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(sys, "stdin", stdin), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                rc = int(reporter_module.main(list(arguments)) or 0)
+            except SystemExit as exc:
+                rc = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
+        return subprocess.CompletedProcess([sys.executable, str(REPORTER), *arguments], rc, out.getvalue(), err.getvalue())
 
     def submit(self, payload: dict[str, object]) -> subprocess.CompletedProcess[str]:
         return self.run_reporter(
