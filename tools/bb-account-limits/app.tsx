@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { definePluginApp, useRpc } from "@get-bb/plugin-sdk/app";
 import { accountLimitsPanelRpcContract, type AccountLimitsPanelSnapshot, type CliproxyUsageSnapshot } from "./contract.js";
 import { aggregateCliproxyPool, groupAccountPools, normalizeCliproxyWindow, orderQuotaWindows, type PoolWindow } from "./pool.js";
@@ -103,31 +103,6 @@ function RecoverySegments({ recovery, mode, now }: { recovery: PoolRecovery; mod
     style={{ width: `${segment.percent}%`, "--recovery-strength": `${segment.strength}%` } as CSSProperties} />)}</>;
 }
 
-function RecoveryPlan({ recovery, label, now, modelCap = false }: { recovery: PoolRecovery; label: string; now: number; modelCap?: boolean }) {
-  const id = useId();
-  if (recovery.usedPercent <= 0) return null;
-  return <>
-    <button type="button" className="limits-recovery-trigger" popoverTarget={id} aria-haspopup="dialog" aria-label={`查看 ${label} 恢复计划`}>恢复计划 <span aria-hidden="true">↗</span></button>
-    <div id={id} popover="auto" className="limits-recovery-popover" role="dialog" aria-label={`${label} 恢复计划`}>
-      <header className="limits-recovery-head"><div><p className="limits-recovery-eyebrow">{modelCap ? "模型自身上限" : "池额度预测"}</p><h3>{label} · 恢复计划</h3></div>
-        <button type="button" popoverTarget={id} popoverTargetAction="hide" className="limits-recovery-close" aria-label="关闭恢复计划">×</button>
-      </header>
-      <div className="limits-recovery-current"><span>当前剩余</span><strong>{recoveryNumber(recovery.remainingPercent)}%</strong></div>
-      <ol className="limits-recovery-steps">
-        {recovery.steps.map((step, index) => <li key={step.resetsAt}>
-          <span className="limits-recovery-dot" style={{ "--recovery-strength": `${recoveryStrength(index, recovery.steps.length)}%` } as CSSProperties} aria-hidden="true" />
-          <div className="limits-recovery-time"><time dateTime={step.resetsAt}>{compactReset(step.resetsAt, now).replace(/^还剩 /u, "").replace(/重置$/u, "后")}</time>
-            <span>{new Date(step.resetsAt).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false })} · {step.accounts} 个账号</span></div>
-          <div className="limits-recovery-amount"><strong>{step.gainPercent < 0.1 ? "恢复 " : "+"}{recoveryNumber(step.gainPercent)} <small>个百分点</small></strong><span>预计剩余 {recoveryNumber(step.remainingPercent)}%</span></div>
-        </li>)}
-      </ol>
-      {recovery.overduePercent > 0 && <p className="limits-recovery-unresolved">待刷新：{recoveryNumber(recovery.overduePercent)} 个百分点已到重置时间，尚未确认恢复。</p>}
-      {recovery.unknownPercent > 0 && <p className="limits-recovery-unresolved">时间未知：{recoveryNumber(recovery.unknownPercent)} 个百分点未计入定时预测。</p>}
-      <p className="limits-recovery-assumption">按当前用量和池权重估算，假设期间没有新增消耗。{modelCap ? "此处只表示模型自身上限的余量，使用仍受总周额度约束。" : "各窗口分别计算。"}</p>
-    </div>
-  </>;
-}
-
 function PanelIcon({ name, spinning = false }: { name: "refresh" | "accounts" | "pool" | "info" | "layers"; spinning?: boolean }) {
   const paths = {
     refresh: <><path d="M20 7v5h-5M4 17v-5h5" /><path d="M6.1 7a7 7 0 0 1 11.6-2L20 8M4 16l2.3 3A7 7 0 0 0 17.9 17" /></>,
@@ -161,7 +136,6 @@ function WindowMeter({ window, now, mode }: { window: MeterWindow; now: number; 
       {window.recovery && window.recovery.usedPercent > 0 ? <RecoverySegments recovery={window.recovery} mode={mode} now={now} /> : <div className="limits-meter-fill" style={{ width: `${percent}%` }} />}
     </div>
     <p className="limits-reset">{window.detail ? `${reset} · ${window.detail}` : reset}</p>
-    {window.recovery && <RecoveryPlan recovery={window.recovery} label={window.displayLabel ?? shortWindowLabel(label)} now={now} />}
   </li>;
 }
 
@@ -192,7 +166,6 @@ function ModelCap({ window, now, mode }: { window: MeterWindow; now: number; mod
       </span>
     </div>
     <p className="limits-reset">{window.detail ? `${reset} · ${window.detail}` : reset}</p>
-    {window.recovery && <RecoveryPlan recovery={window.recovery} label={`${modelWeeklyName(window.label)} 周上限`} now={now} modelCap />}
   </li>;
 }
 
