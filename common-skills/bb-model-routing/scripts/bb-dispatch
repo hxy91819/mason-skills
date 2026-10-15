@@ -353,10 +353,14 @@ def candidate_chain(args, defaults, route):
             chain, weights = [], {}
             for raw_alias, weight in candidates.items():
                 alias = string(raw_alias, f"defaults.{route} 候选别名")
-                if isinstance(weight, bool) or not isinstance(weight, (int, float)) or not math.isfinite(weight) or weight <= 0:
-                    raise DispatchError(f"defaults.{route}.candidates.{alias} 权重必须是大于 0 的有限数字。")
+                if isinstance(weight, bool) or not isinstance(weight, (int, float)) or not math.isfinite(weight) or weight < 0:
+                    raise DispatchError(f"defaults.{route}.candidates.{alias} 权重必须是大于或等于 0 的有限数字。")
+                if weight == 0:
+                    continue
                 chain.append(alias)
                 weights[alias] = weight
+            if not chain:
+                raise DispatchError(f"defaults.{route}.candidates 至少需要一个权重大于 0 的候选。")
         else:
             if not isinstance(candidates, list) or not candidates:
                 raise DispatchError(f"defaults.{route}.candidates 必须是非空别名列表。")

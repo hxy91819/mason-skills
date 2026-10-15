@@ -56,7 +56,7 @@ bb-dispatch --difficulty complex --task '<已调查证据、待裁决问题与�
 
 所有 provider、模型、推理级别和默认路由均来自用户配置；脚本在创建前完成相应目录校验。父 agent 只负责选择任务难度，不能把路由选择或二次校验职责下放给子 agent。缺少配置时先走 bootstrap，三档 dry-run 通过后再派发。
 
-`defaults.<难度>` 默认使用 fallback：单个别名固定选择，有序别名链按序校验并派发首个可用候选。需要分摊独立任务时配置 `mode: load-balance`；需要按额度比例分摊时配置 `mode: weighted-load-balance`，并把 `candidates` 写成“别名: 正权重”映射。脚本按难度与完整任务文本做稳定散列来排列候选，不维护共享计数，同一任务可复现选择与 fallback 顺序。每个候选只按本次难度或显式 `default` 解析自己的 `routes`；缺少两者时跳过该候选。候选全部不可用时汇总各候选错误报告；spawn 发出后不重试，确认线程未创建后用 `--fallback-from <候选别名>` 续派。具体格式和负载均衡续派约束见[配置与派发](references/dispatch.md)。
+`defaults.<难度>` 默认使用 fallback：单个别名固定选择，有序别名链按序校验并派发首个可用候选。需要分摊独立任务时配置 `mode: load-balance`；需要按额度比例分摊时配置 `mode: weighted-load-balance`，并把 `candidates` 写成“别名: 非负权重”映射，`0` 表示暂停该候选，抽选与 fallback 均跳过；至少保留一个正权重候选。脚本按难度与完整任务文本做稳定散列来排列候选，不维护共享计数，同一任务可复现选择与 fallback 顺序。每个候选只按本次难度或显式 `default` 解析自己的 `routes`；缺少两者时跳过该候选。候选全部不可用时汇总各候选错误报告；spawn 发出后不重试，确认线程未创建后用 `--fallback-from <候选别名>` 续派。具体格式和负载均衡续派约束见[配置与派发](references/dispatch.md)。
 
 每次派发本来就是独立 BB 会话，负载均衡不会拆分会话上下文。不要额外规避前缀缓存；但不同 provider 或模型之间也不假定共享缓存。
 

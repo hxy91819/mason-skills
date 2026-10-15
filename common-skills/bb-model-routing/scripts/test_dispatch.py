@@ -353,6 +353,48 @@ environments:
         self.assertGreater(ratio, 1.7)
         self.assertLess(ratio, 2.3)
 
+    def test_zero_weight_candidate_is_excluded_from_selection_and_fallback(self):
+        for disabled in ('primary', 'specialist'):
+            active = 'specialist' if disabled == 'primary' else 'primary'
+            self.chain_config({'mode': 'weighted-load-balance',
+                               'candidates': {disabled: 0, active: 1}})
+            for index in range(8):
+                self.calls.clear()
+                result = m.dispatch(self.args('--task', f'paused task {index}', '--dry-run'), self.fake)['selection']
+                self.assertEqual(result['agent'], active)
+                self.assertEqual(result['candidates'], [active])
+                self.assertEqual(result['candidate_weights'], {active: 1})
+                self.assertEqual(result['fallbacks'], [])
+                self.assertFalse(any(c[:3] == ('provider', 'models', disabled) for c in self.calls))
+            with self.assertRaises(m.DispatchError):
+                m.dispatch(self.args('--fallback-from', disabled, '--dry-run'), self.fake)
+
+    def test_zero_weight_candidate_is_not_used_when_active_candidate_fails(self):
+        self.chain_config({'mode': 'weighted-load-balance',
+                           'candidates': {'primary': 1, 'specialist': 0}})
+        self.providers[0]['available'] = False
+        with self.assertRaises(m.DispatchError):
+            m.dispatch(self.args(), self.fake)
+        self.assertFalse(any(c[:3] == ('provider', 'models', 'specialist') for c in self.calls))
+        self.assertFalse(any(c[:2] == ('thread', 'spawn') for c in self.calls))
+
+    def test_all_zero_weights_fail_before_provider_validation(self):
+        self.chain_config({'mode': 'weighted-load-balance',
+                           'candidates': {'primary': 0, 'specialist': 0.0}})
+        with self.assertRaisesRegex(m.DispatchError, '至少需要一个权重大于 0'):
+            m.dispatch(self.args(), self.fake)
+        self.assertFalse(any(c[:2] in (('provider', 'list'), ('thread', 'spawn')) for c in self.calls))
+
+    def test_paused_candidate_can_be_restored_with_positive_weight(self):
+        self.chain_config({'mode': 'weighted-load-balance',
+                           'candidates': {'primary': 0, 'specialist': 1}})
+        paused = m.dispatch(self.args('--dry-run'), self.fake)['selection']
+        self.assertEqual(paused['candidates'], ['specialist'])
+        self.weighted_load_balance_config()
+        restored = m.dispatch(self.args('--dry-run'), self.fake)['selection']
+        self.assertEqual(set(restored['candidates']), {'primary', 'specialist'})
+        self.assertEqual(restored['candidate_weights'], {'primary': 2, 'specialist': 1})
+
     def test_candidate_without_matching_route_counts_as_failed(self):
         self.chain_config(['primary', 'missing', 'specialist'])
         original = self.fake
@@ -381,6 +423,9 @@ environments:
                       {'mode': 'load-balance', 'candidates': []},
                       {'mode': 'weighted-load-balance', 'candidates': []},
                       {'mode': 'weighted-load-balance', 'candidates': {'primary': 0}},
+                      {'mode': 'weighted-load-balance', 'candidates': {'primary': -1}},
+                      {'mode': 'weighted-load-balance', 'candidates': {'primary': float('nan')}},
+                      {'mode': 'weighted-load-balance', 'candidates': {'primary': float('inf')}},
                       {'mode': 'weighted-load-balance', 'candidates': {'primary': True}},
                       {'mode': 'weighted-load-balance', 'candidates': {'primary': '.nan'}}):
             with self.subTest(value=value):

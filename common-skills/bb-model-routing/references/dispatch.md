@@ -39,9 +39,10 @@ defaults:
     candidates:
       weekly-quota: 2
       monthly-quota: 1
+      paused-quota: 0  # 额度恢复后改回正权重
 ```
 
-`weighted-load-balance` 的长期选择概率与正权重成比例；权重只表达相对比例，不代表并发上限。两种负载模式都不维护计数器，不同任务会分散，同一任务的选择和 fallback 顺序保持稳定。所有模式均在首选项校验失败时继续同档候选。每个 `agents.<别名>` 只写一次 `provider`，并在 `routes.<难度>` 或 `routes.default` 中写 `model` 与可选的 `reasoning`；缺少两者时跳过该候选，切换候选不改变难度。同一 provider 因而可按难度选择不同模型，且无需为模型组合创建别名。显式 reasoning 仍须通过模型目录校验；省略或设为 null 时使用 provider 默认值。
+`weighted-load-balance` 接受非负有限数字，`0` 表示暂停该候选：抽选、fallback 和 `--fallback-from` 均不会使用它，也不校验其 provider 或模型。每档至少需要一个正权重候选，全为 `0` 时明确报错。长期选择概率与正权重成比例；权重只表达相对比例，不代表并发上限。两种负载模式都不维护计数器，不同任务会分散，同一任务的选择和 fallback 顺序保持稳定。所有模式均在首选项校验失败时继续同档候选。每个 `agents.<别名>` 只写一次 `provider`，并在 `routes.<难度>` 或 `routes.default` 中写 `model` 与可选的 `reasoning`；缺少两者时跳过该候选，切换候选不改变难度。同一 provider 因而可按难度选择不同模型，且无需为模型组合创建别名。显式 reasoning 仍须通过模型目录校验；省略或设为 null 时使用 provider 默认值。
 
 每次派发都会创建独立 BB 会话，负载均衡不会拆分或迁移同一会话的上下文。provider 的前缀缓存是否跨独立会话命中由 provider、账号和模型决定；候选落到不同 provider 或模型时不假定它们共享缓存。
 
