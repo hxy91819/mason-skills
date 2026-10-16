@@ -4,4 +4,4 @@ interface:
   default_prompt: "Use $ask-oracle to investigate this question, consult the configured Oracle through BB, and return its technical judgment."
 
 policy:
-  allow_implicit_invocation: true
+  allow_implicit_invocation: false

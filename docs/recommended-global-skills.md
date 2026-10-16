@@ -51,8 +51,9 @@ user 级 prompt 正文不在此清单范围内：由 [`config/user-agents.md`](.
 | 16 | `submit-pr-mr` | 提交 PR / MR 的标准前置检查与推送流程 | 显式调用 (`$submit-pr-mr`) |
 | 17 | `use-worktree` | 在隔离的 Git worktree 中安全开展并发任务 | 显式调用 (`$use-worktree`) |
 | 18 | `dev-html-preview` | 将生成的静态 HTML 发布为带认证和有效期的浏览器链接 | 允许隐式触发（窄条件） |
-| 19 | `ask-oracle` | 调查具体的高影响技术疑点，并经 BB Oracle 路由取得独立专家判断 | 允许隐式触发（窄条件），也可显式调用 (`$ask-oracle`) |
+| 19 | `ask-oracle` | 经 BB Oracle 路由取得独立专家技术判断 | 仅手动触发 (`$ask-oracle` 或明确要求 Oracle 咨询) |
 | 20 | `prompt-audit` | 审计 prompt、skill、tool 描述与 agent 配置中为旧模型留下的过时指令，输出 file:line 报告与建议 diff（需按 sources 约定提供 `anthropics-skills`） | 显式调用 (`$prompt-audit`) |
+| 21 | `ask-gpt-pro` | 直接调查后仍有高影响技术疑点时，经已登录的 ChatGPT 浏览器咨询 GPT Pro | 允许隐式触发（窄条件），也可显式调用 (`$ask-gpt-pro`) |
 
 ---
 

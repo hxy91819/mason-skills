@@ -163,9 +163,9 @@ python3 common-skills/skill-manifest-sync/scripts/sync_skill_symlinks.py --mode 
 
 ### ask-oracle
 
-A narrowly discovered skill that investigates a focused, high-impact technical question, then uses
-the `bb-model-routing` oracle route to obtain and return an independent expert judgment. It also runs
-when explicitly invoked with `$ask-oracle`.
+A manually invoked skill that investigates a focused technical question, then uses
+the `bb-model-routing` oracle route to obtain and return an independent expert judgment. Invoke it
+with `$ask-oracle` or an explicit request for Oracle consultation; it does not trigger automatically.
 
 ### article-polish
 

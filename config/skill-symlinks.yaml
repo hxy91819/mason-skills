@@ -20,12 +20,12 @@ skills:
 - name: anti-ai-slop
   note: 检查刚改的 diff 或 commit 里的 AI slop
 - name: ask-gpt-pro
-  note: 通过已登录 ChatGPT 浏览器咨询 GPT Pro
+  note: 窄条件自动咨询：直接调查后仍有高影响技术疑点时，经已登录 ChatGPT 浏览器咨询 GPT Pro
 - name: ask-matt
   source: mattpocock-skills
   note: 路由：问哪个 skill 或流程适合当前处境
 - name: ask-oracle
-  note: 窄触发的独立专家咨询：经 BB Oracle 路由返回技术判断
+  note: 仅手动触发的独立专家咨询：经 BB Oracle 路由返回技术判断
 - name: auditing-mobile-product-ux
   note: 移动端产品体验审计：真实浏览器探索并输出截图 HTML 报告
 - name: autoreview

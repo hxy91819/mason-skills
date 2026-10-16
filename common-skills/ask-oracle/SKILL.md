@@ -1,11 +1,14 @@
 ---
 name: ask-oracle
-description: 主 Agent 在用户显式调用 $ask-oracle、要求 Oracle 审查，或直接调查后仍有足以改变高影响技术决策的具体疑点时，咨询独立专家。正在回答咨询的 Oracle、技能维护、普通复查、一般复杂任务、代码检索和宽泛第二意见不触发。
+description: 用户手动调用的独立专家咨询：经 BB 派发 Oracle，取得并交付技术判断。
+disable-model-invocation: true
+triggers:
+  - user
 ---
 
 # Ask Oracle
 
-通过 BB 派发专家线程，取得独立技术判断后返回结果。用户显式调用 `$ask-oracle` 时直接执行；自动触发只用于已完成直接调查后仍未解决的具体高影响问题。
+通过 BB 派发专家线程，取得独立技术判断后返回结果。仅在用户显式调用 `$ask-oracle` 或明确要求 Oracle 审查、咨询时启动；启动后继续完成同一次咨询，无需重复调用。
 
 ## 咨询门槛
 
