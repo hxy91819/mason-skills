@@ -17,6 +17,8 @@ triggers:
 3. 在 subagent 上下文之外记录可观察的成功标准、工作区基线、安全边界和允许的副作用。
 4. 为生成物准备临时目录、隔离夹具、mock 或只读环境。测试任务需要额外授权且无法安全等价时，报告受阻。
 
+仓库自带的测试夹具保存在 [`tests/fixtures/`](tests/fixtures/)，所有文件都以 `.fixture` 后缀模板存放（如 `echo-skill/SKILL.md.fixture`），避免被宿主的技能发现机制当作日常技能加载。需要夹具时先用 [`scripts/materialize_fixture.py`](scripts/materialize_fixture.py) 的 `materialize` 把模板物化到临时目录，向 subagent 只提供物化后的绝对路径；取证结束后用同一脚本的 `clean` 删除物化目录，并在汇报中说明清理结果。
+
 待测 skill、原始任务、成功标准、基线和隔离方式均明确后再派生 subagent。
 
 ## 选择 subagent 和模型
