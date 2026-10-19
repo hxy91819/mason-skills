@@ -1,10 +1,12 @@
 """离线验证派发行为；假 BB 边界不创建真实线程。"""
 import importlib.machinery
 import importlib.util
+import json
 import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 path = Path(__file__).with_name('bb-dispatch')
 loader = importlib.machinery.SourceFileLoader('dispatch', str(path))
@@ -47,7 +49,8 @@ environments:
         self.threads = []
         self.pending_retries = {}
         self.retry_diagnostics = {}
-        self.retry_fails = False
+        self.retry_error = None
+        self.turns = {}
         self.providers =[{'id': name, 'available': True, 'capabilities': {'permissionModes': ['accept-edits']}} for name in ['primary', 'specialist', 'remote-provider']]
 
     def fake(self, *args):
@@ -57,17 +60,27 @@ environments:
         if args[:2] == ('environment', 'show'):
             return {'id': args[2], 'projectId': 'proj'}
         if args[:2] == ('thread', 'show'):
+            # 真实 show 只给排队数，queuedWork 与 hasPendingInteraction 只在 list 里有。
             known = next((t for t in self.threads if t.get('id') == args[2]), {})
-            return {'thread': {'id': args[2], 'projectId': 'proj', 'status': 'error', **known}}
+            return {'thread': {'id': args[2], 'projectId': 'proj', 'status': known.get('status', 'error'),
+                               'queuedMessageCount': int(known.get('queuedWork') == 'waiting'),
+                               'updatedAt': known.get('updatedAt')}}
         if args == ('thread', 'list'):
             return self.threads
+        if args[:2] == ('thread', 'log'):
+            events = []
+            for at, status in self.turns.get(args[2], []):
+                events.append({'seq': len(events) + 1, 'type': 'turn/started', 'createdAt': at * 1000 - 500, 'data': {}})
+                events.append({'seq': len(events) + 1, 'type': 'turn/completed', 'createdAt': at * 1000,
+                               'data': {'status': status}})
+            return events
         if args[:2] == ('provider-retry', 'status'):
             return {'retries': self.pending_retries.get(args[2], [])}
         if args[:2] == ('provider-retry', 'explain'):
             return {'threadId': args[2], 'diagnostic': self.retry_diagnostics.get(args[2])}
         if args[:2] == ('thread', 'retry'):
-            if self.retry_fails:
-                raise m.DispatchError('no failed turn to retry')
+            if self.retry_error is not None:
+                raise self.retry_error
             return {'ok': True}
         if args[:2] == ('provider', 'list'):
             return self.providers
@@ -552,6 +565,7 @@ environments:
         tid = res['result']['thread']['id']
         raw_ledger = self.ledger.read_text()
         self.assertNotIn('SENSITIVE_SECRET_TOKEN_123', raw_ledger)
+        self.assertNotIn('SENSITIVE_SECRET_TOKEN_123', m.events_path(self.ledger).read_text())
         # 未知 ID 拒绝
         with self.assertRaisesRegex(m.DispatchError, '拒绝回写未知 ID'):
             m.record_decision_command(
@@ -622,27 +636,76 @@ environments:
         return m.on_failure_command(
             m.parser().parse_args(['--ledger', str(self.ledger), '--on-failure', tid, *extra]), self.fake, now=now)
 
+    def turn_ended(self, tid, at, status='failed'):
+        """线程在 at 秒结束一个回合：日志多一条结束事件，线程停在 error 或空闲。"""
+        self.turns.setdefault(tid, []).append((at, status))
+        thread = next((t for t in self.threads if t['id'] == tid), None)
+        if thread is None:
+            thread = {'id': tid, 'queuedWork': 'none'}
+            self.threads.append(thread)
+        thread.update(status='error' if status == 'failed' else 'idle', updatedAt=at * 1000)
+
+    def ledger_entry(self, tid):
+        return next(e for e in m.load_ledger(self.ledger, strict=True)['entries'] if e['id'] == tid)
+
+    def logged(self, kind):
+        lines = m.events_path(self.ledger).read_text().splitlines()
+        return [event for event in map(json.loads, lines) if event['event'] == kind]
+
     def test_on_failure_retries_in_session_then_cools_provider_and_model(self):
         config = m.yaml.safe_load(self.config.read_text())
         config['defaults']['medium'] = ['specialist', 'primary']
         config['defaults']['simple'] = ['specialist', 'primary']
         self.config.write_text(m.yaml.safe_dump(config))
         tid = m.dispatch(self.args('--difficulty', 'medium'), self.fake, now=1000)['result']['thread']['id']
-        self.threads = [{'id': tid, 'status': 'error', 'queuedWork': 'none', 'updatedAt': 1100 * 1000}]
-        # 报错先在原会话退避重试，期间不影响新派发。
-        delays = [self.on_failure(tid, now=1100 + i)['delay_seconds'] for i in range(m.SESSION_RETRY_LIMIT)]
+        self.turn_ended(tid, 1095)
+        # 报错先在原会话退避重试，期间不影响新派发；每次重试执行后又失败，才安排下一次。
+        at, delays = 1100, []
+        for _ in range(m.SESSION_RETRY_LIMIT):
+            delays.append(self.on_failure(tid, now=at)['delay_seconds'])
+            at += delays[-1] + 10
+            self.turn_ended(tid, at - 5)
         self.assertEqual(delays, [60, 120, 240])
         sent = [c[c.index('--send-at') + 1] for c in self.calls if c[:2] == ('thread', 'retry')]
         self.assertEqual(sent, ['60s', '120s', '240s'])
         self.assertEqual(m.dispatch(self.args('--task', 'other', '--dry-run'), self.fake, now=1200)['selection']['agent'], 'specialist')
         # 重试用尽才记失败；冷却按 provider 与模型计，别的档位同样跳过。
-        cooled = self.on_failure(tid, now=1500)
+        cooled = self.on_failure(tid, now=at)
         self.assertEqual(cooled['action'], 'cooled')
         self.assertEqual((cooled['cooldown']['provider'], cooled['cooldown']['level']), ('specialist', 1))
-        self.assertEqual(m.dispatch(self.args('--task', 'other', '--dry-run'), self.fake, now=1600)['selection']['agent'], 'primary')
-        self.assertEqual(m.dispatch(self.args('--difficulty', 'medium', '--dry-run'), self.fake, now=1600)['selection']['agent'], 'primary')
-        later = m.dispatch(self.args('--task', 'other', '--dry-run'), self.fake, now=1500 + m.BACKOFF_BASE_SECONDS + 1)
+        self.assertEqual(m.dispatch(self.args('--task', 'other', '--dry-run'), self.fake, now=at + 100)['selection']['agent'], 'primary')
+        self.assertEqual(m.dispatch(self.args('--difficulty', 'medium', '--dry-run'), self.fake, now=at + 100)['selection']['agent'], 'primary')
+        later = m.dispatch(self.args('--task', 'other', '--dry-run'), self.fake, now=at + m.BACKOFF_BASE_SECONDS + 1)
         self.assertEqual(later['selection']['agent'], 'specialist')
+
+    def test_on_failure_waits_while_a_retry_is_queued_but_not_for_deferred_messages(self):
+        tid = m.dispatch(self.args(), self.fake, now=1000)['result']['thread']['id']
+        # 父线程的消息排在报错线程上，要等线程被重试才送出，不算已有重试。
+        self.threads = [{'id': tid, 'status': 'error', 'queuedWork': 'waiting', 'updatedAt': 1095 * 1000}]
+        at = 1100
+        for attempt in range(1, m.SESSION_RETRY_LIMIT + 1):
+            self.assertEqual(self.on_failure(tid, now=at)['attempt'], attempt)
+            # 重复调用时上次安排的重试还没执行：只等待，不再安排，用到第 3 次也不冷却。
+            self.assertEqual(self.on_failure(tid, now=at + 5)['action'], 'waiting')
+            at += 60 * 2 ** (attempt - 1) + 10
+            self.turn_ended(tid, at - 5)
+        self.assertEqual(len([c for c in self.calls if c[:2] == ('thread', 'retry')]), m.SESSION_RETRY_LIMIT)
+        self.assertEqual((self.ledger_entry(tid)['outcome'], self.ledger_entry(tid)['retries']), ('spawned', 3))
+        # BB 回复这个回合已有排队的重试（例如用户在界面上点了重试）：同样等待，不冷却。
+        other = m.dispatch(self.args('--task', 'other'), self.fake, now=1000)['result']['thread']['id']
+        self.turn_ended(other, 1095)
+        self.retry_error = m.DispatchError('bb thread retry 失败：retry_already_queued：', code='retry_already_queued')
+        self.assertEqual(self.on_failure(other, now=1100)['action'], 'waiting')
+        self.assertEqual((self.ledger_entry(other)['outcome'], self.ledger_entry(other).get('retries')), ('spawned', None))
+
+    def test_bb_json_error_code_reaches_the_caller(self):
+        envelope = '{"ok": false, "error": {"code": "retry_already_queued", "message": "turn already has a retry queued"}}'
+        failed = m.subprocess.CompletedProcess([], 1, stdout=envelope, stderr='')
+        with mock.patch.object(m.subprocess, 'run', return_value=failed):
+            with self.assertRaises(m.DispatchError) as caught:
+                m.bb('thread', 'retry', 'thr_x')
+        self.assertEqual(caught.exception.code, 'retry_already_queued')
+        self.assertIn('turn already has a retry queued', str(caught.exception))
 
     def test_on_failure_defers_to_bb_retry_and_skips_retries_bb_gave_up_on(self):
         tid = m.dispatch(self.args(), self.fake, now=1000)['result']['thread']['id']
@@ -662,17 +725,83 @@ environments:
 
     def test_on_failure_restarts_count_after_recovery_and_cools_when_retry_is_impossible(self):
         tid = m.dispatch(self.args(), self.fake, now=1000)['result']['thread']['id']
-        self.threads = [{'id': tid, 'status': 'error', 'queuedWork': 'none'}]
+        self.turn_ended(tid, 1095)
         self.assertEqual(self.on_failure(tid, now=1100)['attempt'], 1)
-        # 原会话重试成功：派发时补记完成，不留冷却。
-        self.threads = [{'id': tid, 'status': 'idle', 'queuedWork': 'none', 'updatedAt': 1200 * 1000}]
-        m.dispatch(self.args('--task', 'other'), self.fake, now=1300)
-        self.assertEqual(m.summarize_ledger(m.load_ledger(self.ledger, strict=True), now=1300)['active_cooldowns'], [])
-        # 之后再报错是新的一次故障，从第 1 次重试算起；原会话无法重试时直接冷却。
-        self.threads = [{'id': tid, 'status': 'error', 'queuedWork': 'none'}]
-        self.assertEqual(self.on_failure(tid, now=1400)['attempt'], 1)
-        self.retry_fails = True
-        self.assertEqual(self.on_failure(tid, now=1500)['action'], 'cooled')
+        # 原会话重试成功，其间没有别的派发补记完成；之后再报错仍是新的一次故障，从第 1 次算起。
+        self.turn_ended(tid, 1170, 'completed')
+        self.turn_ended(tid, 1295)
+        self.assertEqual(self.on_failure(tid, now=1300)['attempt'], 1)
+        self.assertEqual([(e['thread'], e['retries']) for e in self.logged('recovered')], [(tid, 1)])
+        # 原会话无法重试时直接冷却。
+        self.turn_ended(tid, 1395)
+        self.retry_error = m.DispatchError('bb thread retry 失败：thread_not_failed：', code='thread_not_failed')
+        self.assertEqual(self.on_failure(tid, now=1400)['action'], 'cooled')
+        self.assertEqual([e['reason'] for e in self.logged('cooled')], ['retry-impossible'])
+
+    def test_retrying_a_reused_thread_keeps_its_earlier_success(self):
+        self.chain_config(['primary', 'specialist'])
+        failed = m.dispatch(self.args('--task', 'failed'), self.fake, now=1000)['result']['thread']['id']
+        reused = m.dispatch(self.args('--task', 'reused'), self.fake, now=1000)['result']['thread']['id']
+        m.record_decision_command(
+            m.parser().parse_args(['--ledger', str(self.ledger), '--record-decision', failed, '--outcome', 'failed']),
+            now=1010,
+        )
+        self.threads = [{'id': reused, 'status': 'idle', 'queuedWork': 'none', 'updatedAt': 1050 * 1000}]
+        # 之后的一次成功清零了 primary 的冷却。
+        self.assertEqual(m.dispatch(self.args('--task', 'next'), self.fake, now=1060)['selection']['agent'], 'primary')
+        # 做完的线程续用后报错：原会话重试期间终态不动，那次成功照样算数，旧失败不复活冷却。
+        self.turn_ended(reused, 1095)
+        self.assertEqual(self.on_failure(reused, now=1100)['action'], 'retry-scheduled')
+        self.assertEqual(m.dispatch(self.args('--task', 'later', '--dry-run'), self.fake, now=1150)['selection']['agent'], 'primary')
+        # 重试成功后，下一次派发补记恢复并把重试次数清零。
+        self.turn_ended(reused, 1170, 'completed')
+        m.dispatch(self.args('--task', 'more'), self.fake, now=1300)
+        self.assertEqual((self.ledger_entry(reused)['outcome'], self.ledger_entry(reused).get('retries')), ('completed', None))
+        self.assertEqual([(e['thread'], e['retries']) for e in self.logged('recovered')], [(reused, 1)])
+
+    def test_review_log_shows_retries_recoveries_and_cooldowns(self):
+        self.chain_config(['primary', 'specialist'])
+        flaky, broken, given_up, hopeless = (
+            m.dispatch(self.args('--task', task), self.fake, now=1000)['result']['thread']['id']
+            for task in ('flaky', 'broken', 'given up', 'hopeless'))
+        self.turn_ended(flaky, 1095)
+        self.turn_ended(broken, 1095)
+        # flaky 在原会话第 2 次重试后恢复；broken 随后重试用尽、冷却。
+        self.on_failure(flaky, now=1100)
+        self.turn_ended(flaky, 1102)
+        self.on_failure(flaky, now=1104)
+        self.turn_ended(flaky, 1106, 'completed')
+        for index in range(m.SESSION_RETRY_LIMIT):
+            self.on_failure(broken, now=1110 + 10 * index)
+            self.turn_ended(broken, 1115 + 10 * index)
+        self.on_failure(broken, now=1110 + 10 * m.SESSION_RETRY_LIMIT)
+        # 原会话重试过一次后 BB 放弃的也算重试没救回来；一上来 BB 就放弃的不算原会话重试的收场。
+        self.turn_ended(given_up, 1145)
+        self.on_failure(given_up, now=1150)
+        self.turn_ended(given_up, 1155)
+        self.turn_ended(hopeless, 1155)
+        for tid in (given_up, hopeless):
+            self.retry_diagnostics[tid] = {'decision': {'kind': 'decline', 'reason': 'attempts-exhausted'}}
+            self.on_failure(tid, now=1160)
+        self.assertEqual(m.dispatch(self.args('--task', 'next'), self.fake, now=1400)['selection']['agent'], 'specialist')
+        m.dispatch(self.args('--task', 'preview', '--dry-run'), self.fake, now=1500)
+        review = m.summarize_events(self.ledger, now=1500)
+        self.assertEqual((review['dispatches'], review['diverted_dispatches'], review['retries']), (5, 1, 6))
+        self.assertEqual((review['recovered'], review['recovered_by_attempt']), (1, {'2': 1}))
+        self.assertEqual((review['cooled'], review['cooled_by_reason']), (3, {'exhausted': 1, 'bb-gave-up': 2}))
+        self.assertEqual((review['retried_then_cooled'], review['retry_recovery_rate']), (2, round(1 / 3, 4)))
+        self.assertEqual(review['by_target']['primary|fast-model']['max_level'], 1)
+        self.assertEqual(sum(day['retries'] for day in review['daily']), 6)
+
+    def test_review_log_stays_bounded_and_keeps_the_newest_events(self):
+        with mock.patch.object(m, 'EVENTS_MAX_BYTES', 2000):
+            for index in range(200):
+                m.append_events(self.ledger, [{'ts': index, 'event': 'retry', 'thread': f't{index}'}])
+        log = m.events_path(self.ledger)
+        self.assertLessEqual(log.stat().st_size, 2000)
+        threads = [json.loads(line)['thread'] for line in log.read_text().splitlines()]
+        self.assertEqual(threads[-1], 't199')
+        self.assertNotIn('t0', threads)
 
     def test_reconcile_records_only_finished_threads_as_completed(self):
         base = 10 ** 6

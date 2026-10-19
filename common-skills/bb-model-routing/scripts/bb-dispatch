@@ -32,7 +32,10 @@ except ImportError:  # Windows 没有 fcntl，账本退回无锁写入。
 
 
 class DispatchError(Exception):
-    pass
+    def __init__(self, message, code=None):
+        super().__init__(message)
+        # BB --json 失败时 stdout 错误信封里的 error.code，例如 retry_already_queued；其他错误为 None。
+        self.code = code
 
 
 ROUTE_KEYS = frozenset(("simple", "medium", "complex", "default"))
@@ -54,6 +57,8 @@ BB_RETRY_GAVE_UP = ("attempts-exhausted", "beyond-maximum-wait")
 RECENT_WINDOW_SECONDS = 48 * 3600
 LEDGER_LOCK_WAIT_SECONDS = 5
 MAX_LIVE_ENTRIES = 200
+# 复盘日志超过上限时丢掉较早的一半；汇总只看近 7 天，正常用量下仍留得下几十天。
+EVENTS_MAX_BYTES = 4 * 1024 * 1024
 DEFAULT_MAX_TASK_CHARS = 2500
 REVIEW_PROMPT_ANCHOR = "# Review agent 提示词"
 DRIVER_PAYLOAD_ANCHORS = (
@@ -79,7 +84,14 @@ def bb(*args):
         raise DispatchError(f"BB 调用失败：{exc}.{suffix}") from exc
     if result.returncode:
         suffix = " 请先查询线程确认是否已创建，勿直接重试。" if creating else ""
-        raise DispatchError(f"bb {' '.join(args[:2])} 失败：{result.stderr.strip()[:1000]}{suffix}")
+        try:
+            error = json.loads(result.stdout).get("error")
+        except (ValueError, AttributeError):
+            error = None
+        error = error if isinstance(error, dict) else {}
+        code = error.get("code")
+        detail = "：".join(str(part) for part in (code, error.get("message")) if part) or result.stderr.strip()
+        raise DispatchError(f"bb {' '.join(args[:2])} 失败：{detail[:1000]}{suffix}", code=code)
     try:
         return json.loads(result.stdout)
     except ValueError as exc:
@@ -207,12 +219,36 @@ def ledger_lock(path):
             handle.close()
 
 
+def events_path(ledger_path):
+    """复盘日志与账本同目录，只追加：ledger.json 对应 ledger.events.jsonl。"""
+    return ledger_path.with_name(ledger_path.stem + ".events.jsonl")
+
+
+def append_events(ledger_path, events):
+    """每行一个 JSON 事件；调用方持有账本锁，写入失败只告警，不挡派发。"""
+    if not events:
+        return
+    try:
+        target = events_path(ledger_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a") as handle:
+            handle.writelines(json.dumps(event, ensure_ascii=False) + "\n" for event in events)
+        if target.stat().st_size > EVENTS_MAX_BYTES:
+            lines = target.read_text().splitlines(keepends=True)
+            tmp = target.with_suffix(target.suffix + ".tmp")
+            tmp.write_text("".join(lines[len(lines) // 2:]))
+            tmp.replace(target)
+    except Exception as exc:
+        print(f"warning: 复盘日志写入失败（已旁路忽略）：{exc}", file=sys.stderr)
+
+
 def update_ledger(path, mutate, strict=False):
-    """加锁后重读账本再改写，并发的派发与回写互不覆盖。"""
+    """加锁后重读账本再改写，并发的派发与回写互不覆盖；mutate 返回的复盘事件随后追加进日志。"""
     with ledger_lock(path):
         ledger = load_ledger(path, strict=strict)
-        mutate(ledger)
+        events = mutate(ledger)
         save_ledger(path, ledger, strict=strict)
+        append_events(path, events)
     return ledger
 
 
@@ -348,13 +384,19 @@ def health_cooldowns(ledger, now):
 
 
 def thread_completed(thread):
-    """只看 BB 的结构化线程状态：空闲、没有排队消息、没有待处理交互才算做完。"""
+    """只看 bb thread list 的结构化线程状态：空闲、没有排队消息、没有待处理交互才算做完。"""
     return (thread.get("status") == "idle" and thread.get("queuedWork", "none") == "none"
             and not thread.get("hasPendingInteraction"))
 
 
+def awaiting_outcome(entry):
+    """还在等结果的条目：从未结束，或成功过之后又报错、正在原会话重试。"""
+    outcome = entry.get("outcome") or "spawned"
+    return outcome == "spawned" or (int(entry.get("retries") or 0) > 0 and outcome not in FAILED_OUTCOMES)
+
+
 def reconcile_outcomes(ledger, call, now):
-    """把账本里近期仍为 spawned、已经做完的线程改记为 completed。
+    """把账本里近期还在等结果、已经做完的线程改记为 completed。
 
     报错不在这里记失败：单次报错先由 --on-failure 在原会话重试，重试用尽才记失败。
     只改传入的账本并返回改动；读不到线程状态时告警后返回空列表，不挡派发。
@@ -362,8 +404,7 @@ def reconcile_outcomes(ledger, call, now):
     try:
         pending = {
             entry["id"]: entry for entry in ledger.get("entries") or []
-            if isinstance(entry, dict) and entry.get("id")
-            and (entry.get("outcome") or "spawned") == "spawned"
+            if isinstance(entry, dict) and entry.get("id") and awaiting_outcome(entry)
             and int(entry.get("ts") or 0) >= now - RECENT_WINDOW_SECONDS
         }
         if not pending:
@@ -400,22 +441,51 @@ def record_decision_command(args, now=None):
                         if isinstance(entry, dict) and entry.get("id") == target_id), None)
         if matched is None:
             raise DispatchError(f"账本 live 窗口中未找到线程 {target_id!r}，拒绝回写未知 ID。")
+        events = []
         # 终态时间只随终态变化；单独回写裁决不能把失败或成功挪到现在。
         if args.outcome and args.outcome != (matched.get("outcome") or "spawned"):
             matched["outcome"], matched["outcome_ts"] = args.outcome, now
+            if args.outcome in FAILED_OUTCOMES:
+                events.append(cooled_event(ledger, matched, "manual", now, int(matched.get("retries") or 0)))
         if args.decision:
             matched["decision"] = args.decision
         matched["updated_ts"] = now
         recorded.update(matched)
+        return events
 
     update_ledger(ledger_path_from(args), apply, strict=True)
     return {"recorded": True, "entry": recorded}
 
 
+def cooled_event(ledger, entry, reason, now, retries):
+    """记失败后的复盘事件：这次冷却的等级与结束时间，以及这次故障在原会话重试过几次。"""
+    cooldown = health_cooldowns(ledger, now).get(health_key(entry.get("provider"), entry.get("model"))) or {}
+    return {"ts": now, "event": "cooled", "thread": entry.get("id"), "provider": entry.get("provider"),
+            "model": entry.get("model"), "reason": reason, "retries": retries,
+            "level": cooldown.get("level"), "until": cooldown.get("until")}
+
+
+def recovered_event(entry, retries, now):
+    """原会话重试后线程成功过的复盘事件；retries 是这次故障安排过的重试次数。"""
+    return {"ts": now, "event": "recovered", "thread": entry.get("id"), "provider": entry.get("provider"),
+            "model": entry.get("model"), "retries": retries}
+
+
+def turns_ended_since(call, thread_id, since):
+    """线程日志里 since（秒）之后结束的回合状态，按先后排列。"""
+    events = call("thread", "log", thread_id, "--all")
+    if not isinstance(events, list):
+        raise DispatchError("bb thread log 返回格式未知")
+    return [(event.get("data") or {}).get("status") for event in events
+            if isinstance(event, dict) and event.get("type") == "turn/completed"
+            and int(event.get("createdAt") or 0) >= since * 1000]
+
+
 def on_failure_command(args, call=bb, now=None):
     """子线程报错后由父线程调用：先在原会话按退避重试，重试用尽才记失败、冷却该 provider 与模型。
 
-    只看 BB 的结构化信息：线程状态、排队情况和 BB 自动重试的结论，不读报错文字。
+    只看 BB 的结构化信息：线程状态、BB 自动重试的结论和线程日志里回合的结束状态，不读报错文字。
+    报错线程上的排队消息要等线程被重试才送出，所以排队数不当作"已有重试"。
     """
     target_id = string(args.on_failure, "--on-failure")
     now = int(time.time() if now is None else now)
@@ -436,6 +506,9 @@ def on_failure_command(args, call=bb, now=None):
             return {}
         return value if isinstance(value, dict) else {}
 
+    def waiting(why):
+        return {"action": "waiting", "message": f"{why}，结束回合等通知。"}
+
     ledger = load_ledger(lpath, strict=True)
     entry = find(ledger)
     target = f"{entry.get('provider')}/{entry.get('model')}"
@@ -443,8 +516,12 @@ def on_failure_command(args, call=bb, now=None):
     thread = shown.get("thread") if isinstance(shown.get("thread"), dict) else shown
     if thread.get("status") != "error":
         return {"action": "not-failed", "status": thread.get("status"), "message": "线程不在报错状态，照常等待通知。"}
-    if thread.get("queuedWork") == "waiting" or optional("provider-retry", "status", target_id).get("retries"):
-        return {"action": "waiting", "message": "已有排队的重试（BB 自动重试或上一次安排的原会话重试），结束回合等通知。"}
+    if optional("provider-retry", "status", target_id).get("retries"):
+        if not args.dry_run:
+            with ledger_lock(lpath):
+                append_events(lpath, [{"ts": now, "event": "deferred", "thread": target_id,
+                                       "provider": entry.get("provider"), "model": entry.get("model")}])
+        return waiting("BB 自动重试已排队")
 
     def cooled(reason, data):
         result = {"action": "cooled", "reason": reason,
@@ -456,15 +533,23 @@ def on_failure_command(args, call=bb, now=None):
 
     if (entry.get("outcome") or "spawned") in FAILED_OUTCOMES:
         return cooled("该线程已记为失败", ledger)
+    retries = int(entry.get("retries") or 0)
+    recovered = False
+    if retries:
+        # 重试最早 1 分钟后才执行，本机与 BB 服务的时钟差不会把安排之前的回合算进来。
+        ended = turns_ended_since(call, target_id, int(entry.get("retry_ts") or 0))
+        if ended == []:
+            return waiting("上次安排的原会话重试还没执行")
+        # 上次安排重试之后成功过：那次故障已恢复，这是新的一次故障，从头计。
+        recovered = "completed" in ended
+    attempt = 1 if recovered else retries + 1
+    events = [recovered_event(entry, retries, now)] if recovered else []
     diagnostic = optional("provider-retry", "explain", target_id).get("diagnostic")
     decision = diagnostic.get("decision") if isinstance(diagnostic, dict) else None
-    # 线程成功过又报错，是新的一次故障，重试次数重新计。
-    recovered = entry.get("outcome") == "completed"
-    attempt = 1 if recovered else int(entry.get("retries") or 0) + 1
     if isinstance(decision, dict) and decision.get("kind") == "decline" and decision.get("reason") in BB_RETRY_GAVE_UP:
-        reason = "BB 已在原会话重试到上限，或判定额度短期回不来"
+        code, reason = "bb-gave-up", "BB 已在原会话重试到上限，或判定额度短期回不来"
     elif attempt > SESSION_RETRY_LIMIT:
-        reason = f"原会话重试 {SESSION_RETRY_LIMIT} 次仍失败"
+        code, reason = "exhausted", f"原会话重试 {SESSION_RETRY_LIMIT} 次仍失败"
     else:
         delay = SESSION_RETRY_BASE_SECONDS * 2 ** (attempt - 1)
         result = {"action": "retry-scheduled", "attempt": attempt, "limit": SESSION_RETRY_LIMIT, "delay_seconds": delay,
@@ -475,14 +560,16 @@ def on_failure_command(args, call=bb, now=None):
             call("thread", "retry", target_id, "--send-at", f"{delay}s",
                  "--reason", f"bb-dispatch 原会话重试 {attempt}/{SESSION_RETRY_LIMIT}")
         except DispatchError as exc:
-            reason = f"无法在原会话重试（{exc}）"
+            if exc.code == "retry_already_queued":
+                return waiting("这个回合已有排队的重试")
+            code, reason = "retry-impossible", f"无法在原会话重试（{exc}）"
         else:
             def mark_retry(data):
                 matched = find(data)
-                if recovered:
-                    matched["outcome"] = "spawned"
-                    matched.pop("outcome_ts", None)
-                matched["retries"], matched["updated_ts"] = attempt, now
+                # 终态不动：成功过的线程保留那次成功，冷却照旧按它清零。
+                matched["retries"], matched["retry_ts"], matched["updated_ts"] = attempt, now, now
+                return [*events, {"ts": now, "event": "retry", "thread": target_id, "provider": matched.get("provider"),
+                                  "model": matched.get("model"), "attempt": attempt, "delay": delay}]
             update_ledger(lpath, mark_retry, strict=True)
             return result
     if args.dry_run:
@@ -491,6 +578,8 @@ def on_failure_command(args, call=bb, now=None):
     def mark_failed(data):
         matched = find(data)
         matched["outcome"], matched["outcome_ts"], matched["updated_ts"] = "failed", now, now
+        matched["retries"] = attempt - 1
+        return [*events, cooled_event(data, matched, code, now, attempt - 1)]
     return cooled(reason, update_ledger(lpath, mark_failed, strict=True))
 
 
@@ -611,6 +700,50 @@ def summarize_ledger(ledger, now=None):
         "active_cooldowns": active_cooldowns,
         "review_hooks": hooks,
     }
+
+
+def summarize_events(ledger_path, now, days=7):
+    """按复盘日志汇总近几天的派发、原会话重试与冷却：重试是否奏效、冷却是否频繁、走势是否正常。"""
+    counters = {"dispatch": "dispatches", "deferred": "deferred_to_bb", "retry": "retries",
+                "recovered": "recovered", "cooled": "cooled"}
+    totals = dict.fromkeys(("dispatches", "diverted_dispatches", "deferred_to_bb", "retries", "recovered", "cooled",
+                            "retried_then_cooled"), 0)
+    recovered_by_attempt, cooled_by_reason, by_target, daily = {}, {}, {}, {}
+    try:
+        lines = events_path(ledger_path).read_text().splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        key = counters.get(event.get("event")) if isinstance(event, dict) else None
+        if key is None or int(event.get("ts") or 0) < now - days * 86400:
+            continue
+        day = daily.setdefault(time.strftime("%Y-%m-%d", time.localtime(int(event["ts"]))), dict.fromkeys(totals, 0))
+        target = by_target.setdefault(f"{event.get('provider')}|{event.get('model')}",
+                                      {**dict.fromkeys(counters.values(), 0), "max_level": 0})
+        for bucket in (totals, day, target):
+            bucket[key] += 1
+        if event.get("diverted"):
+            totals["diverted_dispatches"] += 1
+            day["diverted_dispatches"] += 1
+        if key == "recovered":
+            attempt = str(event.get("retries"))
+            recovered_by_attempt[attempt] = recovered_by_attempt.get(attempt, 0) + 1
+        if key == "cooled":
+            reason = str(event.get("reason"))
+            cooled_by_reason[reason] = cooled_by_reason.get(reason, 0) + 1
+            target["max_level"] = max(target["max_level"], int(event.get("level") or 0))
+            if int(event.get("retries") or 0) > 0:
+                totals["retried_then_cooled"] += 1
+    # 原会话重试过的故障只有两种收场：恢复，或最终冷却。
+    ended = totals["recovered"] + totals["retried_then_cooled"]
+    return {"window_days": days, **totals,
+            "retry_recovery_rate": round(totals["recovered"] / ended, 4) if ended else None,
+            "recovered_by_attempt": recovered_by_attempt, "cooled_by_reason": cooled_by_reason,
+            "by_target": by_target, "daily": [{"date": date, **counts} for date, counts in sorted(daily.items())]}
 
 
 def candidate_chain(args, defaults, route):
@@ -804,12 +937,14 @@ def dispatch(args, call=bb, now=None):
     # 优先跳过熔断冷却中的候选；若所有候选均在冷却中，则保底降级尝试，避免单候选链死锁。
     all_cooled = all(cooldown_for(alias) for alias in chain)
     attempts = []
+    diverted = []
     catalogs = {}
     choice = None
     for index, alias in enumerate(chain):
         try:
             cd = None if all_cooled else cooldown_for(alias)
             if cd:
+                diverted.append(alias)
                 rem = int(cd["until"]) - now
                 raise DispatchError(f"候选 {alias} 处于熔断冷却中（原因：{cd.get('reason')}，剩余 {rem}s）。")
             agent = mapping(agents.get(alias), f"agents.{alias}")
@@ -877,21 +1012,33 @@ def dispatch(args, call=bb, now=None):
         return {"dry_run": True, "selection": plan, "argv": ["bb", *command, "--json"]}
 
     def persist(extra_cooldowns=(), entry=None):
-        """把本次识别的终态、冷却和新条目合并进最新账本；写入失败只告警。"""
+        """把本次识别的终态、冷却和新条目合并进最新账本并记复盘事件；写入失败只告警。"""
         def apply(fresh):
+            events = []
             entries = {item.get("id"): item for item in fresh.get("entries", []) if isinstance(item, dict)}
             for update in reconciled:
                 target = entries.get(update["id"])
                 # 并发期间别处已回写的终态优先。
-                if target is not None and (target.get("outcome") or "spawned") == "spawned":
+                if target is not None and awaiting_outcome(target):
                     target.update(outcome=update["outcome"], outcome_ts=update["outcome_ts"])
+                    # 这次故障已恢复，重试次数清零，下次报错从头计。
+                    retries = int(target.pop("retries", 0) or 0)
+                    target.pop("retry_ts", None)
+                    if retries:
+                        events.append(recovered_event(target, retries, now))
             for target_provider, target_model, reason in (*explicit, *extra_cooldowns):
                 set_explicit_cooldown(fresh, target_provider, target_model, reason, now)
+                events.append({"ts": now, "event": "cooled", "provider": target_provider,
+                               "model": target_model, "reason": reason})
             table = fresh.setdefault("cooldowns", {})
             for key in [k for k, cd in table.items() if not isinstance(cd, dict) or int(cd.get("until") or 0) <= now]:
                 del table[key]
             if entry is not None:
                 append_ledger_entry(fresh, entry, now=now)
+                events.append({"ts": now, "event": "dispatch", "thread": entry["id"], "difficulty": entry["difficulty"],
+                               "agent": entry["agent"], "provider": entry["provider"], "model": entry["model"],
+                               **({"diverted": diverted} if diverted else {})})
+            return events
         try:
             return update_ledger(lpath, apply, strict=False)
         except Exception as exc:
@@ -953,7 +1100,7 @@ def parser():
     p.add_argument("--title", help="可选标题正文；按难度自动加 🟢/🟡/🔴 前缀，省略时从任务文本截取")
     p.add_argument("--dry-run", action="store_true", help="只读校验并输出启动参数，不创建线程；配合 --on-failure 只给出动作，不安排重试、不写账本")
     p.add_argument("--on-failure", metavar="线程ID", help="子线程报错后调用：先在原会话按 1、2、4 分钟退避重试，用尽才记失败并冷却该 provider 与模型")
-    p.add_argument("--history-summary", "--stats", dest="history_summary", action="store_true", help="只读输出运行账本的聚合统计、当前冷却与确定性复盘 hooks")
+    p.add_argument("--history-summary", "--stats", dest="history_summary", action="store_true", help="只读输出运行账本的聚合统计、当前冷却、确定性复盘 hooks，以及复盘日志近 7 天的重试与冷却汇总")
     p.add_argument("--record-decision", metavar="线程ID", help="按稳定线程 ID 回写父线程裁决或改正运行终态（覆盖而非追加）")
     p.add_argument("--outcome", choices=list(OUTCOME_KEYS), help="配合 --record-decision 改正运行终态；completed 按线程状态自动记录，failed 由 --on-failure 在重试用尽后记录，放弃任务也可手动记；各 failed* 取值都计入连续失败")
     p.add_argument("--decision", choices=list(DECISION_KEYS), help="配合 --record-decision 回写父线程裁决")
@@ -964,10 +1111,13 @@ def main():
     args = parser().parse_args()
     try:
         if args.history_summary:
-            ledger = load_ledger(ledger_path_from(args), strict=False)
+            lpath, now = ledger_path_from(args), int(time.time())
+            ledger = load_ledger(lpath, strict=False)
             # 只在内存里补齐终态，保持统计只读。
-            reconcile_outcomes(ledger, bb, int(time.time()))
-            print(json.dumps(summarize_ledger(ledger), ensure_ascii=False, indent=2))
+            reconcile_outcomes(ledger, bb, now)
+            summary = summarize_ledger(ledger, now)
+            summary["retry_review"] = summarize_events(lpath, now)
+            print(json.dumps(summary, ensure_ascii=False, indent=2))
             return 0
         if args.on_failure is not None:
             print(json.dumps(on_failure_command(args), ensure_ascii=False, indent=2))

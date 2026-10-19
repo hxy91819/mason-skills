@@ -68,4 +68,4 @@ python3 scripts/steward_workbook.py --mode should-commit --file <工作簿路径
 
 ## 回看
 
-运行事实在 BB 线程记录与 `bb-dispatch` 本地账本里：`bb thread show <线程ID>` 看单次派发结果，`bb thread list` 看本会话派出的线程，`bb-dispatch --history-summary` 看难度分布、候选成功率/接受率与复盘提示，`scripts/steward_workbook.py --mode check --file <工作簿路径>` 检查工作簿健康度。工作簿不存线程 ID 以外的运行细节；需要时在路线行末附最近一个线程 ID。
+运行事实在 BB 线程记录与 `bb-dispatch` 本地账本里：`bb thread show <线程ID>` 看单次派发结果，`bb thread list` 看本会话派出的线程，`bb-dispatch --history-summary` 看难度分布、候选成功率/接受率、原会话重试与冷却走势和复盘提示，`scripts/steward_workbook.py --mode check --file <工作簿路径>` 检查工作簿健康度。工作簿不存线程 ID 以外的运行细节；需要时在路线行末附最近一个线程 ID。
