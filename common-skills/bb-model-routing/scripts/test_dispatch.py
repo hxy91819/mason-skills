@@ -45,7 +45,10 @@ environments:
         self.calls = []
         self.spawn_counter = 0
         self.threads = []
-        self.providers = [{'id': name, 'available': True, 'capabilities': {'permissionModes': ['accept-edits']}} for name in ['primary', 'specialist', 'remote-provider']]
+        self.pending_retries = {}
+        self.retry_diagnostics = {}
+        self.retry_fails = False
+        self.providers =[{'id': name, 'available': True, 'capabilities': {'permissionModes': ['accept-edits']}} for name in ['primary', 'specialist', 'remote-provider']]
 
     def fake(self, *args):
         self.calls.append(args)
@@ -54,9 +57,18 @@ environments:
         if args[:2] == ('environment', 'show'):
             return {'id': args[2], 'projectId': 'proj'}
         if args[:2] == ('thread', 'show'):
-            return {'thread': {'id': args[2], 'projectId': 'proj', 'status': 'error'}}
+            known = next((t for t in self.threads if t.get('id') == args[2]), {})
+            return {'thread': {'id': args[2], 'projectId': 'proj', 'status': 'error', **known}}
         if args == ('thread', 'list'):
             return self.threads
+        if args[:2] == ('provider-retry', 'status'):
+            return {'retries': self.pending_retries.get(args[2], [])}
+        if args[:2] == ('provider-retry', 'explain'):
+            return {'threadId': args[2], 'diagnostic': self.retry_diagnostics.get(args[2])}
+        if args[:2] == ('thread', 'retry'):
+            if self.retry_fails:
+                raise m.DispatchError('no failed turn to retry')
+            return {'ok': True}
         if args[:2] == ('provider', 'list'):
             return self.providers
         if args[:2] == ('provider', 'models'):
@@ -606,22 +618,63 @@ environments:
         third = m.dispatch(self.args('--dry-run'), self.fake, now=1010 + m.BACKOFF_BASE_SECONDS + 1)
         self.assertEqual(third['selection']['agent'], 'primary')
 
-    def test_thread_status_failure_cools_provider_and_model_across_routes(self):
+    def on_failure(self, tid, *extra, now):
+        return m.on_failure_command(
+            m.parser().parse_args(['--ledger', str(self.ledger), '--on-failure', tid, *extra]), self.fake, now=now)
+
+    def test_on_failure_retries_in_session_then_cools_provider_and_model(self):
         config = m.yaml.safe_load(self.config.read_text())
         config['defaults']['medium'] = ['specialist', 'primary']
+        config['defaults']['simple'] = ['specialist', 'primary']
         self.config.write_text(m.yaml.safe_dump(config))
-        tid = m.dispatch(self.args('--difficulty', 'complex'), self.fake, now=1000)['result']['thread']['id']
-        self.threads = [{'id': tid, 'status': 'error', 'queuedWork': 'none', 'updatedAt': 1200 * 1000}]
-        # 父线程没有回写；另一档用到同一 provider 与模型时同样跳过。
-        second = m.dispatch(self.args('--difficulty', 'medium', '--dry-run'), self.fake, now=1300)
-        self.assertEqual(second['selection']['agent'], 'primary')
-        self.assertIn('熔断冷却中', second['selection']['attempts'][0]['error'])
-        self.assertEqual(second['selection']['reconciled'], [{'id': tid, 'outcome': 'failed', 'outcome_ts': 1200}])
-        self.assertEqual(m.load_ledger(self.ledger, strict=True)['entries'][0]['outcome'], 'spawned')
-        third = m.dispatch(self.args('--difficulty', 'medium', '--dry-run'), self.fake, now=1200 + m.BACKOFF_BASE_SECONDS + 1)
-        self.assertEqual(third['selection']['agent'], 'specialist')
+        tid = m.dispatch(self.args('--difficulty', 'medium'), self.fake, now=1000)['result']['thread']['id']
+        self.threads = [{'id': tid, 'status': 'error', 'queuedWork': 'none', 'updatedAt': 1100 * 1000}]
+        # 报错先在原会话退避重试，期间不影响新派发。
+        delays = [self.on_failure(tid, now=1100 + i)['delay_seconds'] for i in range(m.SESSION_RETRY_LIMIT)]
+        self.assertEqual(delays, [60, 120, 240])
+        sent = [c[c.index('--send-at') + 1] for c in self.calls if c[:2] == ('thread', 'retry')]
+        self.assertEqual(sent, ['60s', '120s', '240s'])
+        self.assertEqual(m.dispatch(self.args('--task', 'other', '--dry-run'), self.fake, now=1200)['selection']['agent'], 'specialist')
+        # 重试用尽才记失败；冷却按 provider 与模型计，别的档位同样跳过。
+        cooled = self.on_failure(tid, now=1500)
+        self.assertEqual(cooled['action'], 'cooled')
+        self.assertEqual((cooled['cooldown']['provider'], cooled['cooldown']['level']), ('specialist', 1))
+        self.assertEqual(m.dispatch(self.args('--task', 'other', '--dry-run'), self.fake, now=1600)['selection']['agent'], 'primary')
+        self.assertEqual(m.dispatch(self.args('--difficulty', 'medium', '--dry-run'), self.fake, now=1600)['selection']['agent'], 'primary')
+        later = m.dispatch(self.args('--task', 'other', '--dry-run'), self.fake, now=1500 + m.BACKOFF_BASE_SECONDS + 1)
+        self.assertEqual(later['selection']['agent'], 'specialist')
 
-    def test_reconcile_records_only_terminal_thread_states(self):
+    def test_on_failure_defers_to_bb_retry_and_skips_retries_bb_gave_up_on(self):
+        tid = m.dispatch(self.args(), self.fake, now=1000)['result']['thread']['id']
+        self.threads = [{'id': tid, 'status': 'active', 'queuedWork': 'none'}]
+        self.assertEqual(self.on_failure(tid, now=1100)['action'], 'not-failed')
+        self.threads = [{'id': tid, 'status': 'error', 'queuedWork': 'none'}]
+        self.pending_retries[tid] = [{'threadId': tid}]
+        self.assertEqual(self.on_failure(tid, now=1100)['action'], 'waiting')
+        self.pending_retries.clear()
+        # BB 已在原会话重试到上限：不再重试，直接冷却。
+        self.retry_diagnostics[tid] = {'decision': {'kind': 'decline', 'reason': 'attempts-exhausted'}}
+        preview = self.on_failure(tid, '--dry-run', now=1200)
+        self.assertEqual((preview['dry_run'], preview['action']), (True, 'cooled'))
+        self.assertEqual(m.load_ledger(self.ledger, strict=True)['entries'][0]['outcome'], 'spawned')
+        self.assertEqual(self.on_failure(tid, now=1200)['action'], 'cooled')
+        self.assertFalse([c for c in self.calls if c[:2] == ('thread', 'retry')])
+
+    def test_on_failure_restarts_count_after_recovery_and_cools_when_retry_is_impossible(self):
+        tid = m.dispatch(self.args(), self.fake, now=1000)['result']['thread']['id']
+        self.threads = [{'id': tid, 'status': 'error', 'queuedWork': 'none'}]
+        self.assertEqual(self.on_failure(tid, now=1100)['attempt'], 1)
+        # 原会话重试成功：派发时补记完成，不留冷却。
+        self.threads = [{'id': tid, 'status': 'idle', 'queuedWork': 'none', 'updatedAt': 1200 * 1000}]
+        m.dispatch(self.args('--task', 'other'), self.fake, now=1300)
+        self.assertEqual(m.summarize_ledger(m.load_ledger(self.ledger, strict=True), now=1300)['active_cooldowns'], [])
+        # 之后再报错是新的一次故障，从第 1 次重试算起；原会话无法重试时直接冷却。
+        self.threads = [{'id': tid, 'status': 'error', 'queuedWork': 'none'}]
+        self.assertEqual(self.on_failure(tid, now=1400)['attempt'], 1)
+        self.retry_fails = True
+        self.assertEqual(self.on_failure(tid, now=1500)['action'], 'cooled')
+
+    def test_reconcile_records_only_finished_threads_as_completed(self):
         base = 10 ** 6
         ids = [m.dispatch(self.args('--task', f'task {i}'), self.fake, now=base)['result']['thread']['id'] for i in range(5)]
         stale = m.dispatch(self.args('--task', 'stale task'), self.fake,
@@ -638,74 +691,56 @@ environments:
         m.dispatch(self.args('--task', 'next task'), self.fake, now=base + 200)
         outcomes = {e['id']: e['outcome'] for e in m.load_ledger(self.ledger, strict=True)['entries']}
         self.assertEqual(outcomes[ids[0]], 'completed')
-        self.assertEqual([outcomes[tid] for tid in ids[1:4]], ['spawned'] * 3)
-        self.assertEqual(outcomes[ids[4]], 'failed')
+        # 报错留给 --on-failure 处理，这里不记失败。
+        self.assertEqual([outcomes[tid] for tid in ids[1:]], ['spawned'] * 4)
         self.assertEqual(outcomes[stale], 'spawned')
 
-    def test_burst_failures_extend_once_and_later_probe_failures_escalate(self):
-        def entry(tid, spawned, outcome, at):
-            return {'id': tid, 'ts': spawned, 'provider': 'p', 'model': 'm', 'outcome': outcome, 'outcome_ts': at}
+    def test_failures_during_cooldown_extend_it_and_later_failures_escalate(self):
+        def entry(tid, outcome, at):
+            return {'id': tid, 'ts': at - 50, 'provider': 'p', 'model': 'm', 'outcome': outcome, 'outcome_ts': at}
 
         base = m.BACKOFF_BASE_SECONDS
-        # 同一批已在跑的线程接连失败只算一次，冷却从最后一次失败起算。
-        ledger = {'entries': [entry('a', 0, 'failed', 100), entry('b', 0, 'failed', 200),
-                              entry('c', 10, 'failed', 300)], 'cooldowns': {}}
+        # 冷却期内接连失败只算一次，冷却从最后一次失败起算。
+        ledger = {'entries': [entry('a', 'failed', 100), entry('b', 'failed', 200), entry('c', 'failed', 300)],
+                  'cooldowns': {}}
         cooled = m.health_cooldowns(ledger, now=301)['p|m']
         self.assertEqual((cooled['level'], cooled['until']), (1, 300 + base))
-        # 冷却结束后才派出的线程又失败，时长翻倍。
-        probe = 300 + base
-        ledger['entries'].append(entry('d', probe, 'failed', probe + 60))
-        cooled = m.health_cooldowns(ledger, now=probe + 61)['p|m']
-        self.assertEqual((cooled['level'], cooled['until']), (2, probe + 60 + 2 * base))
+        # 冷却结束后再失败，时长翻倍。
+        after = 300 + base
+        ledger['entries'].append(entry('d', 'failed', after + 60))
+        cooled = m.health_cooldowns(ledger, now=after + 61)['p|m']
+        self.assertEqual((cooled['level'], cooled['until']), (2, after + 60 + 2 * base))
         # 一次成功清零。
-        ledger['entries'].append(entry('e', probe + 70, 'completed', probe + 80))
-        self.assertEqual(m.health_cooldowns(ledger, now=probe + 81), {})
-        # 旧批线程在探针派出后才失败，只顺延冷却，不吞掉探针的升级。
-        late = {'entries': [entry('f', 0, 'failed', 100), entry('late', 0, 'failed', 100 + base + 50),
-                            entry('probe', 100 + base, 'failed', 100 + base + 100)], 'cooldowns': {}}
-        cooled = m.health_cooldowns(late, now=100 + base + 101)['p|m']
-        self.assertEqual((cooled['level'], cooled['until']), (2, 100 + base + 100 + 2 * base))
+        ledger['entries'].append(entry('e', 'completed', after + 80))
+        self.assertEqual(m.health_cooldowns(ledger, now=after + 81), {})
         # 近期窗口之前的失败不再计入等级。
         old = 10 ** 6
         fresh = old + base + m.RECENT_WINDOW_SECONDS + 100
-        stale = {'entries': [entry('o1', old, 'failed', old + 1), entry('o2', old + 1 + base, 'failed', old + 2 + base),
-                             entry('n', fresh, 'failed', fresh + 60)], 'cooldowns': {}}
-        cooled = m.health_cooldowns(stale, now=fresh + 61)['p|m']
-        self.assertEqual((cooled['level'], cooled['until']), (1, fresh + 60 + base))
+        stale = {'entries': [entry('o1', 'failed', old), entry('o2', 'failed', old + base + 1),
+                             entry('n', 'failed', fresh)], 'cooldowns': {}}
+        cooled = m.health_cooldowns(stale, now=fresh + 1)['p|m']
+        self.assertEqual((cooled['level'], cooled['until']), (1, fresh + base))
         # 持续失败时封顶 6 小时。
-        spawned, entries = 10 ** 6, []
+        at, entries = 10 ** 6, []
         for index in range(8):
-            entries.append(entry(f'x{index}', spawned, 'failed', spawned + 1))
-            cooled = m.health_cooldowns({'entries': entries, 'cooldowns': {}}, now=spawned + 2)['p|m']
-            spawned = cooled['until']
+            entries.append(entry(f'x{index}', 'failed', at))
+            cooled = m.health_cooldowns({'entries': entries, 'cooldowns': {}}, now=at + 1)['p|m']
+            at = cooled['until']
         self.assertEqual(cooled['level'], 8)
         self.assertEqual(cooled['until'] - entries[-1]['outcome_ts'], m.BACKOFF_MAX_SECONDS)
 
     def test_decision_only_record_keeps_failure_time(self):
         self.chain_config(['primary', 'specialist'])
         tid = m.dispatch(self.args(), self.fake, now=1000)['result']['thread']['id']
-        self.threads = [{'id': tid, 'status': 'error', 'queuedWork': 'none', 'updatedAt': 1100 * 1000}]
-        m.dispatch(self.args('--task', 'second task'), self.fake, now=1200)
+        m.record_decision_command(
+            m.parser().parse_args(['--ledger', str(self.ledger), '--record-decision', tid, '--outcome', 'failed']),
+            now=1100,
+        )
         m.record_decision_command(
             m.parser().parse_args(['--ledger', str(self.ledger), '--record-decision', tid, '--decision', 'rejected']),
             now=1900,
         )
         later = m.dispatch(self.args('--dry-run'), self.fake, now=1100 + m.BACKOFF_BASE_SECONDS + 1)
-        self.assertEqual(later['selection']['agent'], 'primary')
-
-    def test_decision_only_record_keeps_legacy_failure_time(self):
-        self.chain_config(['primary', 'specialist'])
-        ledger = m.empty_ledger()
-        # 升级前手动回写的失败没有 outcome_ts，失败时间记在 updated_ts。
-        ledger['entries'].append({'id': 'legacy', 'ts': 900, 'provider': 'primary', 'model': 'fast-model',
-                                  'outcome': 'failed_transient', 'decision': None, 'updated_ts': 1000})
-        m.save_ledger(self.ledger, ledger)
-        expired = 1000 + m.BACKOFF_BASE_SECONDS
-        m.record_decision_command(
-            m.parser().parse_args(['--ledger', str(self.ledger), '--record-decision', 'legacy', '--decision', 'rejected']),
-            now=expired + 10,
-        )
-        later = m.dispatch(self.args('--dry-run'), self.fake, now=expired + 20)
         self.assertEqual(later['selection']['agent'], 'primary')
 
     def test_thread_list_failure_is_bypassed(self):
@@ -791,15 +826,6 @@ environments:
         self.assertEqual(m.summarize_ledger(after, now=now)['rolled_up_entries'], 1)
         later = m.dispatch(self.args('--dry-run'), self.fake, now=now + 60)
         self.assertEqual(later['selection']['agent'], 'specialist')
-
-    def test_legacy_route_alias_cooldown_is_honored_until_expiry(self):
-        self.chain_config(['primary', 'specialist'])
-        ledger = m.empty_ledger()
-        ledger['cooldowns']['simple|primary'] = {'difficulty': 'simple', 'agent': 'primary',
-                                                 'reason': 'failed_transient', 'until': 2000, 'thread_id': None}
-        m.save_ledger(self.ledger, ledger)
-        self.assertEqual(m.dispatch(self.args('--dry-run'), self.fake, now=1500)['selection']['agent'], 'specialist')
-        self.assertEqual(m.dispatch(self.args('--dry-run'), self.fake, now=2001)['selection']['agent'], 'primary')
 
     def test_fallback_from_automatically_cools_down_skipped_candidate(self):
         self.chain_config(['primary', 'specialist'])

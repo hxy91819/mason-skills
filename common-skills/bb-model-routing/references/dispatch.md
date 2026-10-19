@@ -50,11 +50,13 @@ defaults:
 
 优先级：命令行覆盖 > 环境配置 > 顶层配置。候选始终由 defaults 决定，脚本不提供 `--agent` 覆盖入口。`environments.<精确环境 ID>` 可覆盖 defaults、agents、permission_mode；同名 agent 整体替换，必须写出 provider 和 routes。目录路径模式尚无环境 ID，不应用 `environments.<id>` 覆盖，只使用顶层配置。模型的明确要求通过配置调整表达，思考深度的明确要求用 `--reasoning` 表达，缺失配置时先补齐，不静默替换。
 
-`--fallback-from <别名>` 把本次候选截取为从该别名起的后缀，供需要点名续派候选的调用方使用；别名不在候选中时报错，点名的别名本身不按冷却跳过。实际派发时链上位于该别名之前的候选按 provider 与模型冷却 15 分钟。一般改派不必传它：失败的候选已按线程状态或 spawn 失败自动冷却，重跑同一命令就会跳过。负载均衡续派须保持原 route 和完整 `--task` 文本，才能复现候选顺序；需要补充进展时，续派保留原任务文本，创建成功后通过 `bb thread tell` 向新线程补充进展与位置。
+`--fallback-from <别名>` 把本次候选截取为从该别名起的后缀，供需要点名续派候选的调用方使用；别名不在候选中时报错，点名的别名本身不按冷却跳过。实际派发时链上位于该别名之前的候选按 provider 与模型冷却 15 分钟。一般改派不必传它：`--on-failure` 记下失败或 spawn 失败后，该候选已冷却，重跑同一命令就会跳过。负载均衡续派须保持原 route 和完整 `--task` 文本，才能复现候选顺序；需要补充进展时，续派保留原任务文本，创建成功后通过 `bb thread tell` 向新线程补充进展与位置。
 
 `--closed-scope` 声明任务边界已闭合（目标文件、改法、验证方式均已明确），未配合 `--escalate-from <线程ID>` 时强制要求 `--difficulty simple`。`--max-task-chars`（默认 2500，0 为不限制）对未传 `--escalate-from` 的 `medium`/`complex` 任务检查有效指导长度（自动剥离 `autoreview` 审查标准、`ask-oracle` 证据块及 `large-task-orchestrator` 执行包/报告协议块后的字符数），超长时拒绝派发并提示改用 `simple` 或精简任务书。
 
-`--record-decision <线程ID>` 配合 `--decision {accepted,rejected,reworked,escalated}` 把父线程裁决覆盖回写到本地账本（默认 `~/.cache/bb-dispatch/ledger.json`）。运行终态由脚本按 BB 线程状态自动记为 `completed` 或 `failed`，识别有误时才配合 `--outcome` 改正；旧值 `failed_quota`、`failed_transient`、`failed_other` 仍可写，与 `failed` 一样计入连续失败。只回写裁决不改终态时间，冷却不会因此顺延。`--history-summary`（别名 `--stats`）只读输出按难度与候选的聚合统计、活跃冷却及确定性复盘 hooks。
+`--on-failure <线程ID>` 处理报错的子线程，只看 BB 的结构化信息：线程不在 `error` 状态返回 `not-failed`；线程有排队消息，或 `bb provider-retry status` 列出 BB 自动重试时返回 `waiting`；`bb provider-retry explain` 的结论是 `attempts-exhausted`（BB 已在原会话重试到上限）或 `beyond-maximum-wait`（额度重置超过它的最长等待）时不再重试；否则用 `bb thread retry --send-at` 在原会话安排下一次重试（1、2、4 分钟），返回 `retry-scheduled`，次数记在账本 `retries`，线程成功过又报错时从头计。重试用尽或无法重试时记 `failed`，返回 `cooled` 与当前冷却。只处理账本里的线程；配合 `--dry-run` 只给出动作，不安排重试、不写账本。
+
+`--record-decision <线程ID>` 配合 `--decision {accepted,rejected,reworked,escalated}` 把父线程裁决覆盖回写到本地账本（默认 `~/.cache/bb-dispatch/ledger.json`）。`completed` 由脚本按 BB 线程状态自动记录，`failed` 由 `--on-failure` 在重试用尽后记录；识别有误或放弃任务时配合 `--outcome` 改正；旧值 `failed_quota`、`failed_transient`、`failed_other` 仍可写，与 `failed` 一样计入连续失败。只回写裁决不改终态时间，冷却不会因此顺延。`--history-summary`（别名 `--stats`）只读输出按难度与候选的聚合统计、活跃冷却及确定性复盘 hooks。
 
 默认从 `bb status` 解析环境，项目使用该环境的所属项目。`--environment` 接受现有环境 ID 或本机已存在的目录路径：ID 模式下 `--project` 与环境所属项目必须匹配；路径模式下目录会解析为绝对路径并原样交给 BB 创建 project-checkout 附着环境，项目取 `--project` 或当前 `bb status`，两者都没有时须显式提供 `--project`。同项目时关联当前父线程，跨环境也保留关联；跨项目不关联。
 
@@ -64,7 +66,7 @@ defaults:
 
 ## 路由不可用
 
-候选切换只覆盖派发前校验：provider 不存在或不可用、权限不兼容、模型或 reasoning 不在目录时，记录该候选错误并试下一个；全部失败时汇总各候选错误。spawn 一旦发出即不重试，失败的候选随即冷却：失败或结果不明时先 `bb thread list`/`bb thread show` 确认是否已创建，确认未创建后保持难度与任务文本重跑同一命令。线程运行期失败（额度耗尽、provider 中断、会话错误）按 SKILL.md「等待与并发」处理：先排除 BB 自动重试，再用 `bb thread retry` 在原会话重试一次，仍失败才改派，脚本从线程状态识别失败并换候选；确定性调用方（如编排 driver）也可持久化 `selection.fallbacks`，用 `--fallback-from` 自行点名。继续已有线程前，确认原回合结束并核对已完成工作，按该 provider 支持的续接方式操作；不要以重新创建整个任务冒充续接。
+候选切换只覆盖派发前校验：provider 不存在或不可用、权限不兼容、模型或 reasoning 不在目录时，记录该候选错误并试下一个；全部失败时汇总各候选错误。spawn 一旦发出即不重试，失败的候选随即冷却：失败或结果不明时先 `bb thread list`/`bb thread show` 确认是否已创建，确认未创建后保持难度与任务文本重跑同一命令。线程运行期报错（额度耗尽、provider 中断、会话错误）按 SKILL.md「等待与并发」运行 `--on-failure`：原会话退避重试用尽才记失败、冷却该候选，再重跑同一命令换候选；确定性调用方（如编排 driver）也可持久化 `selection.fallbacks`，用 `--fallback-from` 自行点名。继续已有线程前，确认原回合结束并核对已完成工作，按该 provider 支持的续接方式操作；不要以重新创建整个任务冒充续接。
 
 ## 会话标题
 

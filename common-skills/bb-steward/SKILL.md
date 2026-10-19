@@ -62,7 +62,7 @@ python3 scripts/steward_workbook.py --mode should-commit --file <工作簿路径
 
 1. 按 `$bb-model-routing` 的任务模板与分档标准构造并派发下一步任务，“先读”包含工作簿路径；管家不在主会话预查具体代码行或代拉大段数据落盘。派发后结束回合，等 BB 通知。
 2. 收到完成通知或阻塞求裁决通知后，只读通知摘要、子线程最终回复和它的 git 改动，不读子线程全文；强模型会话的上下文留给判断，不装子线程产物。
-3. 逐条处理“自行引入的决定”：进工作簿、接受但不记、退回重做三选一；通过 `bb-dispatch --record-decision <线程ID> --decision ...` 回写裁决（终态由脚本按线程状态自动记录，有误时再加 `--outcome` 改正）。
+3. 逐条处理“自行引入的决定”：进工作簿、接受但不记、退回重做三选一；通过 `bb-dispatch --record-decision <线程ID> --decision ...` 回写裁决（终态由脚本自动记录，有误时再加 `--outcome` 改正）。
 4. 阶段收口、决策变更或新冒出用户待办时，更新工作簿，运行 `scripts/steward_workbook.py --mode should-commit --file <工作簿路径>` 通过且确认 `should_commit: true` 后提交。
 5. 阶段完成且下一步依赖用户时停下，列编号选项。
 
