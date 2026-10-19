@@ -28,7 +28,7 @@ bb-dispatch --difficulty simple --task '<仓库、Git 审查范围、原始需�
 最终报告列出审查范围、线程 ID、验证结果，以及发现的处理结果。每个审查线程处理完后回写裁决并归档：
 
 ```bash
-bb-dispatch --record-decision <线程ID> --outcome completed --decision accepted|rejected
+bb-dispatch --record-decision <线程ID> --decision accepted|rejected
 bb thread archive <线程ID>
 ```
 
