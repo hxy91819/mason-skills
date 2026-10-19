@@ -99,8 +99,8 @@ driver 只传任务文本、难度与已有环境，路由仍由本配置决定�
 
 脚本在本地 Git-ignored 路径 `~/.cache/bb-dispatch/ledger.json`（可通过 `--ledger` 或 `BB_DISPATCH_LEDGER_PATH` 覆盖）维护运行账本与熔断冷却表，读写异常旁路告警、绝不阻塞主派发：
 
-1. **最小事实与滚动折算**：每次派发仅记录 `id`、`ts`、`difficulty`、`agent`、`provider`、`model`、`reasoning`、`task_chars`、`outcome`、`outcome_ts`、`decision`，不存任务正文、diff 或日志。live 窗口保留最近 200 条，超出部分自动折算进固定维度 `rollups`，live 与 rollup 不重复计数。账本读改写加文件锁，写入前重读合并，并行派发与回写互不覆盖。
-2. **自动熔断冷却与决策回环（Circuit Breaker）**：每次派发先读一次 `bb thread list`，把 48 小时内仍记为 `spawned` 的线程按 BB 状态改记：`error` 记 `failed`，空闲且没有排队消息和待处理交互记 `completed`；读不到时告警跳过。冷却按 provider 与模型计，不读报错文字、不分失败类型：首次失败冷却 15 分钟，冷却结束后再失败则翻倍，最长 6 小时，成功一次清零；冷却开始前已在跑的同批线程接连失败只顺延、不升级。spawn 失败和被 `--fallback-from` 跳过的候选另冷却 15 分钟。冷却中的候选优先跳过，全部冷却时仍挑一个试，避免死锁。父 agent 用稳定线程 ID 回写裁决（未知 ID 拒绝报错，重复回写覆盖）；自动记下的终态有误时才加 `--outcome` 改正：
+1. **最小事实与滚动折算**：每次派发仅记录 `id`、`ts`、`difficulty`、`agent`、`provider`、`model`、`reasoning`、`task_chars`、`outcome`、`outcome_ts`、`decision`，不存任务正文、diff 或日志。live 窗口保留最近 200 条，48 小时内的条目还要识别终态、计算冷却，超出也照留；更早的超出部分自动折算进固定维度 `rollups`，live 与 rollup 不重复计数。账本读改写加文件锁，写入前重读合并，并行派发与回写互不覆盖。
+2. **自动熔断冷却与决策回环（Circuit Breaker）**：每次派发先读一次 `bb thread list`，把 48 小时内仍记为 `spawned` 的线程按 BB 状态改记：`error` 记 `failed`，空闲且没有排队消息和待处理交互记 `completed`；读不到时告警跳过。冷却按 provider 与模型计，只看 48 小时内的终态，不读报错文字、不分失败类型：首次失败冷却 15 分钟，冷却原定结束后才派出的线程再失败则翻倍，最长 6 小时，成功一次清零；原定结束前已派出的同批线程接连失败只顺延、不升级。spawn 失败和被 `--fallback-from` 跳过的候选另冷却 15 分钟。冷却中的候选优先跳过，全部冷却时仍挑一个试，避免死锁。父 agent 用稳定线程 ID 回写裁决（未知 ID 拒绝报错，重复回写覆盖）；自动记下的终态有误时才加 `--outcome` 改正：
    ```bash
    bb-dispatch --record-decision <线程ID> --decision accepted
    bb-dispatch --record-decision <线程ID> --outcome completed --decision accepted

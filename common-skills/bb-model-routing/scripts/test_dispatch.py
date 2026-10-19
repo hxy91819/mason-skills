@@ -625,7 +625,7 @@ environments:
         base = 10 ** 6
         ids = [m.dispatch(self.args('--task', f'task {i}'), self.fake, now=base)['result']['thread']['id'] for i in range(5)]
         stale = m.dispatch(self.args('--task', 'stale task'), self.fake,
-                           now=base - m.RECONCILE_WINDOW_SECONDS - 1)['result']['thread']['id']
+                           now=base - m.RECENT_WINDOW_SECONDS - 1)['result']['thread']['id']
         at = (base + 100) * 1000
         self.threads = [
             {'id': ids[0], 'status': 'idle', 'queuedWork': 'none', 'updatedAt': at},
@@ -660,6 +660,18 @@ environments:
         # 一次成功清零。
         ledger['entries'].append(entry('e', probe + 70, 'completed', probe + 80))
         self.assertEqual(m.health_cooldowns(ledger, now=probe + 81), {})
+        # 旧批线程在探针派出后才失败，只顺延冷却，不吞掉探针的升级。
+        late = {'entries': [entry('f', 0, 'failed', 100), entry('late', 0, 'failed', 100 + base + 50),
+                            entry('probe', 100 + base, 'failed', 100 + base + 100)], 'cooldowns': {}}
+        cooled = m.health_cooldowns(late, now=100 + base + 101)['p|m']
+        self.assertEqual((cooled['level'], cooled['until']), (2, 100 + base + 100 + 2 * base))
+        # 近期窗口之前的失败不再计入等级。
+        old = 10 ** 6
+        fresh = old + base + m.RECENT_WINDOW_SECONDS + 100
+        stale = {'entries': [entry('o1', old, 'failed', old + 1), entry('o2', old + 1 + base, 'failed', old + 2 + base),
+                             entry('n', fresh, 'failed', fresh + 60)], 'cooldowns': {}}
+        cooled = m.health_cooldowns(stale, now=fresh + 61)['p|m']
+        self.assertEqual((cooled['level'], cooled['until']), (1, fresh + 60 + base))
         # 持续失败时封顶 6 小时。
         spawned, entries = 10 ** 6, []
         for index in range(8):
@@ -679,6 +691,21 @@ environments:
             now=1900,
         )
         later = m.dispatch(self.args('--dry-run'), self.fake, now=1100 + m.BACKOFF_BASE_SECONDS + 1)
+        self.assertEqual(later['selection']['agent'], 'primary')
+
+    def test_decision_only_record_keeps_legacy_failure_time(self):
+        self.chain_config(['primary', 'specialist'])
+        ledger = m.empty_ledger()
+        # 升级前手动回写的失败没有 outcome_ts，失败时间记在 updated_ts。
+        ledger['entries'].append({'id': 'legacy', 'ts': 900, 'provider': 'primary', 'model': 'fast-model',
+                                  'outcome': 'failed_transient', 'decision': None, 'updated_ts': 1000})
+        m.save_ledger(self.ledger, ledger)
+        expired = 1000 + m.BACKOFF_BASE_SECONDS
+        m.record_decision_command(
+            m.parser().parse_args(['--ledger', str(self.ledger), '--record-decision', 'legacy', '--decision', 'rejected']),
+            now=expired + 10,
+        )
+        later = m.dispatch(self.args('--dry-run'), self.fake, now=expired + 20)
         self.assertEqual(later['selection']['agent'], 'primary')
 
     def test_thread_list_failure_is_bypassed(self):
@@ -723,6 +750,47 @@ environments:
         result = m.dispatch(self.args(), racing, now=1000)
         ids = {e['id'] for e in m.load_ledger(self.ledger, strict=True)['entries']}
         self.assertEqual(ids, {'other_session', result['result']['thread']['id']})
+
+    def test_concurrent_spawn_failure_keeps_later_cooldown(self):
+        self.chain_config(['primary', 'specialist'])
+
+        def racing(*a):
+            if a[:2] == ('thread', 'spawn'):
+                # 另一会话在本次 spawn 期间更晚地记下同一 provider 与模型的 spawn 失败。
+                other = m.load_ledger(self.ledger, strict=True)
+                other['cooldowns']['primary|fast-model'] = {
+                    'provider': 'primary', 'model': 'fast-model', 'reason': 'spawn-failed',
+                    'since': 1100, 'until': 1100 + m.SPAWN_COOLDOWN_SECONDS,
+                }
+                m.save_ledger(self.ledger, other, strict=True)
+                raise m.DispatchError('spawn failed')
+            return self.fake(*a)
+
+        with self.assertRaisesRegex(m.DispatchError, '该候选已冷却'):
+            m.dispatch(self.args(), racing, now=1000)
+        later = m.dispatch(self.args('--dry-run'), self.fake, now=1000 + m.SPAWN_COOLDOWN_SECONDS + 50)
+        self.assertEqual(later['selection']['agent'], 'specialist')
+
+    def test_cooldown_survives_a_full_window_of_other_dispatches(self):
+        self.chain_config(['primary', 'specialist'])
+        now = 10 ** 6
+        ledger = m.empty_ledger()
+        ledger['entries'].append({'id': 'ancient', 'ts': now - m.RECENT_WINDOW_SECONDS - 100,
+                                  'provider': 'other', 'model': 'x', 'outcome': 'completed'})
+        # 长任务最早派出、刚刚失败；其后又有一整窗别的派发。
+        ledger['entries'].append({'id': 'long', 'ts': now - 7200, 'provider': 'primary', 'model': 'fast-model',
+                                  'outcome': 'failed', 'outcome_ts': now - 60})
+        ledger['entries'] += [{'id': f'busy{i}', 'ts': now - 3600, 'provider': 'other', 'model': 'x',
+                               'outcome': 'completed', 'outcome_ts': now - 3000} for i in range(m.MAX_LIVE_ENTRIES)]
+        m.save_ledger(self.ledger, ledger)
+        m.dispatch(self.args('--task', 'another task'), self.fake, now=now)
+        after = m.load_ledger(self.ledger, strict=True)
+        ids = {e['id'] for e in after['entries']}
+        self.assertNotIn('ancient', ids)
+        self.assertIn('long', ids)
+        self.assertEqual(m.summarize_ledger(after, now=now)['rolled_up_entries'], 1)
+        later = m.dispatch(self.args('--dry-run'), self.fake, now=now + 60)
+        self.assertEqual(later['selection']['agent'], 'specialist')
 
     def test_legacy_route_alias_cooldown_is_honored_until_expiry(self):
         self.chain_config(['primary', 'specialist'])

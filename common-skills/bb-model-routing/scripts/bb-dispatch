@@ -44,7 +44,8 @@ DECISION_KEYS = ("accepted", "rejected", "reworked", "escalated")
 BACKOFF_BASE_SECONDS = 15 * 60
 BACKOFF_MAX_SECONDS = 6 * 3600
 SPAWN_COOLDOWN_SECONDS = 15 * 60
-RECONCILE_WINDOW_SECONDS = 48 * 3600
+# 识别终态、计算冷却和保留账本条目共用的近期窗口。
+RECENT_WINDOW_SECONDS = 48 * 3600
 LEDGER_LOCK_WAIT_SECONDS = 5
 MAX_LIVE_ENTRIES = 200
 DEFAULT_MAX_TASK_CHARS = 2500
@@ -232,7 +233,12 @@ def rollup_entry(rollups, entry):
         bucket["decisions"][decision] = int(bucket["decisions"].get(decision, 0)) + 1
 
 
-def append_ledger_entry(ledger, entry, max_live=MAX_LIVE_ENTRIES):
+def outcome_time(entry):
+    """条目的终态时间：取 outcome_ts；旧版条目没有它，取旧版回写时记下的 updated_ts；都没有时取派发时间。"""
+    return int(entry.get("outcome_ts") or entry.get("updated_ts") or entry.get("ts") or 0)
+
+
+def append_ledger_entry(ledger, entry, max_live=MAX_LIVE_ENTRIES, now=None):
     entries = ledger.setdefault("entries", [])
     rollups = ledger.setdefault("rollups", {})
     # 同一稳定 ID 若已存在则原地覆盖，避免重复计数。
@@ -241,10 +247,20 @@ def append_ledger_entry(ledger, entry, max_live=MAX_LIVE_ENTRIES):
             entries[idx] = entry
             return
     entries.append(entry)
-    while len(entries) > max_live:
-        oldest = entries.pop(0)
-        if isinstance(oldest, dict):
-            rollup_entry(rollups, oldest)
+    excess = len(entries) - max_live
+    if excess <= 0:
+        return
+    # 近期窗口内的条目还要识别终态、参与冷却计算，超出上限也先留着，只折算更早的条目。
+    horizon = int(time.time() if now is None else now) - RECENT_WINDOW_SECONDS
+    kept = []
+    for item in entries:
+        if excess > 0 and (not isinstance(item, dict) or outcome_time(item) < horizon):
+            if isinstance(item, dict):
+                rollup_entry(rollups, item)
+            excess -= 1
+        else:
+            kept.append(item)
+    entries[:] = kept
 
 
 def health_key(provider, model):
@@ -257,7 +273,13 @@ def backoff_seconds(level):
 
 def set_explicit_cooldown(ledger, provider, model, reason, now):
     """spawn 失败或被 --fallback-from 跳过的候选没有线程状态可读，单独冷却固定时长。"""
-    ledger.setdefault("cooldowns", {})[health_key(provider, model)] = {
+    table = ledger.setdefault("cooldowns", {})
+    key = health_key(provider, model)
+    current = table.get(key)
+    # 并发时别处可能已记下结束更晚的冷却，不缩短它。
+    if isinstance(current, dict) and int(current.get("until") or 0) >= now + SPAWN_COOLDOWN_SECONDS:
+        return
+    table[key] = {
         "provider": provider,
         "model": model,
         "reason": reason,
@@ -267,12 +289,13 @@ def set_explicit_cooldown(ledger, provider, model, reason, now):
 
 
 def health_cooldowns(ledger, now):
-    """按 provider 与模型计算当前冷却，不区分失败类型。
+    """按 provider 与模型计算当前冷却，不区分失败类型，只看近期窗口内的终态。
 
     连续失败从 BACKOFF_BASE_SECONDS 起翻倍，封顶 BACKOFF_MAX_SECONDS，成功一次清零。
-    冷却开始前就已派出的线程接连失败属于同一次故障，只把冷却顺延到最后一次失败之后；
-    冷却结束后才派出的线程再失败，冷却才升级。
+    本级冷却原定结束前就已派出的线程再失败，属于同一次故障，只把冷却顺延到这次失败之后；
+    原定结束后才派出的线程再失败，冷却才升级。
     """
+    horizon = now - RECENT_WINDOW_SECONDS
     events = {}
     for entry in ledger.get("entries") or []:
         if not isinstance(entry, dict) or not entry.get("provider") or not entry.get("model"):
@@ -280,21 +303,24 @@ def health_cooldowns(ledger, now):
         outcome = entry.get("outcome")
         if outcome != "completed" and outcome not in FAILED_OUTCOMES:
             continue
-        spawned = int(entry.get("ts") or 0)
-        at = int(entry.get("outcome_ts") or entry.get("updated_ts") or spawned)
+        at = outcome_time(entry)
+        if at < horizon:
+            continue
         key = health_key(entry["provider"], entry["model"])
-        events.setdefault(key, []).append((at, str(entry.get("id") or ""), outcome, spawned))
+        events.setdefault(key, []).append((at, str(entry.get("id") or ""), outcome, int(entry.get("ts") or 0)))
     state = {}
     for key, items in events.items():
-        level = until = last_success = 0
+        level = until = level_until = last_success = 0
         thread_id = None
         for at, thread, outcome, spawned in sorted(items):
             if outcome == "completed":
-                level = until = 0
+                level = until = level_until = 0
                 last_success = at
                 continue
-            if level == 0 or spawned >= until:
+            # 判据用本级原定的结束时间：同批线程晚到的失败会顺延 until，但不能把之后派出的探针并进旧批。
+            if spawned >= level_until:
                 level += 1
+                level_until = at + backoff_seconds(level)
             until = max(until, at + backoff_seconds(level))
             thread_id = thread
         state[key] = {"until": until, "level": level, "reason": f"连续失败 {level} 次",
@@ -339,7 +365,7 @@ def reconcile_outcomes(ledger, call, now):
             entry["id"]: entry for entry in ledger.get("entries") or []
             if isinstance(entry, dict) and entry.get("id")
             and (entry.get("outcome") or "spawned") == "spawned"
-            and int(entry.get("ts") or 0) >= now - RECONCILE_WINDOW_SECONDS
+            and int(entry.get("ts") or 0) >= now - RECENT_WINDOW_SECONDS
         }
         if not pending:
             return []
@@ -377,7 +403,11 @@ def record_decision_command(args, now=None):
         if matched is None:
             raise DispatchError(f"账本 live 窗口中未找到线程 {target_id!r}，拒绝回写未知 ID。")
         # 终态时间只随终态变化；单独回写裁决不能把失败或成功挪到现在。
-        if args.outcome and args.outcome != matched.get("outcome"):
+        # 旧版条目没有 outcome_ts，先把旧版回写时的 updated_ts 固定为终态时间，再改 updated_ts。
+        current = matched.get("outcome") or "spawned"
+        if current != "spawned" and not matched.get("outcome_ts"):
+            matched["outcome_ts"] = outcome_time(matched)
+        if args.outcome and args.outcome != current:
             matched["outcome"], matched["outcome_ts"] = args.outcome, now
         if args.decision:
             matched["decision"] = args.decision
@@ -794,7 +824,7 @@ def dispatch(args, call=bb, now=None):
             for key in [k for k, cd in table.items() if not isinstance(cd, dict) or int(cd.get("until") or 0) <= now]:
                 del table[key]
             if entry is not None:
-                append_ledger_entry(fresh, entry)
+                append_ledger_entry(fresh, entry, now=now)
         try:
             return update_ledger(lpath, apply, strict=False)
         except Exception as exc:
