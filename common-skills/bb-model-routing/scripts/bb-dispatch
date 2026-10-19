@@ -3,13 +3,16 @@
 
 defaults.<路由> 可为有序 fallback 链，也可配置 load-balance 候选。脚本只在
 spawn 前校验候选（provider 可用性、权限、模型目录与熔断冷却），首个通过者派发；
-spawn 发出后任何失败都中止，由调用方确认后用 --fallback-from 续派。
+spawn 发出后任何失败都中止并冷却该候选，由调用方确认线程未创建后重跑。
+熔断冷却不读报错文字：每次派发先按 BB 线程状态把账本里未结的线程记为 completed
+或 failed，再按 provider 与模型的连续失败次数退避。
 关联父线程时在任务末尾附加固定的回报方式，让子线程把回报留到回合结束。
 
 参数见 --help。stdout 为 JSON；stderr 为错误；退出码 0 成功、2 失败。
 依赖 Python 3.10+、PyYAML 和 PATH 上的 bb。
 """
 import argparse
+import contextlib
 import hashlib
 import json
 import math
@@ -21,6 +24,11 @@ import time
 
 import yaml
 
+try:
+    import fcntl
+except ImportError:  # Windows 没有 fcntl，账本退回无锁写入。
+    fcntl = None
+
 
 class DispatchError(Exception):
     pass
@@ -29,9 +37,15 @@ class DispatchError(Exception):
 ROUTE_KEYS = frozenset(("simple", "medium", "complex", "default"))
 DIFFICULTIES = ("simple", "medium", "complex")
 TITLE_PREFIXES = {"simple": "🟢", "medium": "🟡", "complex": "🔴"}
-OUTCOME_KEYS = ("spawned", "completed", "failed_quota", "failed_transient", "failed_other")
+OUTCOME_KEYS = ("spawned", "completed", "failed", "failed_quota", "failed_transient", "failed_other")
+# failed 由线程状态自动识别；其余 failed_* 是旧版手动回写的取值，冷却时一视同仁。
+FAILED_OUTCOMES = ("failed", "failed_quota", "failed_transient", "failed_other")
 DECISION_KEYS = ("accepted", "rejected", "reworked", "escalated")
-COOLDOWN_SECONDS = {"failed_quota": 6 * 3600, "failed_transient": 15 * 60}
+BACKOFF_BASE_SECONDS = 15 * 60
+BACKOFF_MAX_SECONDS = 6 * 3600
+SPAWN_COOLDOWN_SECONDS = 15 * 60
+RECONCILE_WINDOW_SECONDS = 48 * 3600
+LEDGER_LOCK_WAIT_SECONDS = 5
 MAX_LIVE_ENTRIES = 200
 DEFAULT_MAX_TASK_CHARS = 2500
 REVIEW_PROMPT_ANCHOR = "# Review agent 提示词"
@@ -157,6 +171,44 @@ def save_ledger(path, data, strict=False):
         print(f"warning: 账本写入失败（已旁路忽略）：{exc}", file=sys.stderr)
 
 
+@contextlib.contextmanager
+def ledger_lock(path):
+    """跨进程串行化账本读改写；等不到锁只告警，不挡派发。"""
+    handle = None
+    if fcntl is not None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            handle = open(path.with_name(path.name + ".lock"), "a")
+            deadline = time.monotonic() + LEDGER_LOCK_WAIT_SECONDS
+            while True:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(f"等待超过 {LEDGER_LOCK_WAIT_SECONDS}s")
+                    time.sleep(0.05)
+        except Exception as exc:
+            print(f"warning: 账本加锁失败（已旁路继续）：{exc}", file=sys.stderr)
+            if handle is not None:
+                handle.close()
+                handle = None
+    try:
+        yield
+    finally:
+        if handle is not None:
+            handle.close()
+
+
+def update_ledger(path, mutate, strict=False):
+    """加锁后重读账本再改写，并发的派发与回写互不覆盖。"""
+    with ledger_lock(path):
+        ledger = load_ledger(path, strict=strict)
+        mutate(ledger)
+        save_ledger(path, ledger, strict=strict)
+    return ledger
+
+
 def rollup_entry(rollups, entry):
     key = f"{entry.get('difficulty')}|{entry.get('agent')}|{entry.get('provider')}|{entry.get('model')}"
     bucket = rollups.get(key)
@@ -173,7 +225,7 @@ def rollup_entry(rollups, entry):
         rollups[key] = bucket
     bucket["total"] = int(bucket.get("total", 0)) + 1
     outcome = entry.get("outcome") or "spawned"
-    if outcome in bucket["outcomes"]:
+    if outcome in OUTCOME_KEYS:
         bucket["outcomes"][outcome] = int(bucket["outcomes"].get(outcome, 0)) + 1
     decision = entry.get("decision")
     if decision in bucket["decisions"]:
@@ -195,43 +247,145 @@ def append_ledger_entry(ledger, entry, max_live=MAX_LIVE_ENTRIES):
             rollup_entry(rollups, oldest)
 
 
-def apply_cooldown(ledger, difficulty, agent, outcome, thread_id=None, now=None):
-    now = int(time.time() if now is None else now)
-    cooldowns = ledger.setdefault("cooldowns", {})
-    key = f"{difficulty}|{agent}"
-    if outcome in COOLDOWN_SECONDS:
-        cooldowns[key] = {
-            "difficulty": difficulty,
-            "agent": agent,
-            "reason": outcome,
-            "until": now + COOLDOWN_SECONDS[outcome],
-            "thread_id": thread_id,
+def health_key(provider, model):
+    return f"{provider}|{model}"
+
+
+def backoff_seconds(level):
+    return min(BACKOFF_MAX_SECONDS, BACKOFF_BASE_SECONDS * 2 ** (level - 1))
+
+
+def set_explicit_cooldown(ledger, provider, model, reason, now):
+    """spawn 失败或被 --fallback-from 跳过的候选没有线程状态可读，单独冷却固定时长。"""
+    ledger.setdefault("cooldowns", {})[health_key(provider, model)] = {
+        "provider": provider,
+        "model": model,
+        "reason": reason,
+        "since": now,
+        "until": now + SPAWN_COOLDOWN_SECONDS,
+    }
+
+
+def health_cooldowns(ledger, now):
+    """按 provider 与模型计算当前冷却，不区分失败类型。
+
+    连续失败从 BACKOFF_BASE_SECONDS 起翻倍，封顶 BACKOFF_MAX_SECONDS，成功一次清零。
+    冷却开始前就已派出的线程接连失败属于同一次故障，只把冷却顺延到最后一次失败之后；
+    冷却结束后才派出的线程再失败，冷却才升级。
+    """
+    events = {}
+    for entry in ledger.get("entries") or []:
+        if not isinstance(entry, dict) or not entry.get("provider") or not entry.get("model"):
+            continue
+        outcome = entry.get("outcome")
+        if outcome != "completed" and outcome not in FAILED_OUTCOMES:
+            continue
+        spawned = int(entry.get("ts") or 0)
+        at = int(entry.get("outcome_ts") or entry.get("updated_ts") or spawned)
+        key = health_key(entry["provider"], entry["model"])
+        events.setdefault(key, []).append((at, str(entry.get("id") or ""), outcome, spawned))
+    state = {}
+    for key, items in events.items():
+        level = until = last_success = 0
+        thread_id = None
+        for at, thread, outcome, spawned in sorted(items):
+            if outcome == "completed":
+                level = until = 0
+                last_success = at
+                continue
+            if level == 0 or spawned >= until:
+                level += 1
+            until = max(until, at + backoff_seconds(level))
+            thread_id = thread
+        state[key] = {"until": until, "level": level, "reason": f"连续失败 {level} 次",
+                      "thread_id": thread_id, "last_success": last_success}
+    for key, cd in (ledger.get("cooldowns") or {}).items():
+        # 旧版按 路由|别名 记的冷却没有 provider 字段，由派发循环按别名兼容到期。
+        if not isinstance(cd, dict) or "provider" not in cd:
+            continue
+        current = state.setdefault(key, {"until": 0, "level": 0, "reason": None, "thread_id": None, "last_success": 0})
+        # 冷却记下之后又有成功，说明已恢复。
+        if current["last_success"] > int(cd.get("since") or 0):
+            continue
+        if int(cd.get("until") or 0) > current["until"]:
+            current.update(until=int(cd["until"]), reason=cd.get("reason"), thread_id=None)
+    cooled = {}
+    for key, value in state.items():
+        if value["until"] > now:
+            provider, model = key.split("|", 1)
+            cooled[key] = {"provider": provider, "model": model, "reason": value["reason"],
+                           "level": value["level"], "until": value["until"], "thread_id": value["thread_id"]}
+    return cooled
+
+
+def thread_outcome(thread):
+    """只看 BB 的结构化线程状态，不读报错文字。"""
+    status = thread.get("status")
+    if status == "error":
+        return "failed"
+    if status == "idle" and thread.get("queuedWork", "none") == "none" and not thread.get("hasPendingInteraction"):
+        return "completed"
+    return None
+
+
+def reconcile_outcomes(ledger, call, now):
+    """把账本里近期仍为 spawned 的线程按 BB 线程状态改记为 completed 或 failed。
+
+    只改传入的账本并返回改动；读不到线程状态时告警后返回空列表，不挡派发。
+    首次观察到的终态即定论，之后续跑的回合不再改写，识别有误由 --record-decision 改正。
+    """
+    try:
+        pending = {
+            entry["id"]: entry for entry in ledger.get("entries") or []
+            if isinstance(entry, dict) and entry.get("id")
+            and (entry.get("outcome") or "spawned") == "spawned"
+            and int(entry.get("ts") or 0) >= now - RECONCILE_WINDOW_SECONDS
         }
-    elif outcome == "completed":
-        cooldowns.pop(key, None)
+        if not pending:
+            return []
+        threads = call("thread", "list")
+        if not isinstance(threads, list):
+            raise DispatchError("bb thread list 返回格式未知")
+        updates = []
+        for thread in threads:
+            entry = pending.get(thread.get("id")) if isinstance(thread, dict) else None
+            outcome = thread_outcome(thread) if entry is not None else None
+            if outcome is None:
+                continue
+            # updatedAt 不早于这次结束；归档等操作会再推后它，冷却因此只会偏保守。
+            updated = thread.get("updatedAt")
+            at = min(now, int(updated) // 1000) if isinstance(updated, (int, float)) else now
+            updates.append({"id": entry["id"], "outcome": outcome, "outcome_ts": at})
+    except Exception as exc:
+        print(f"warning: 读取线程状态失败，本次不自动识别失败（已旁路继续）：{exc}", file=sys.stderr)
+        return []
+    for update in updates:
+        pending[update["id"]].update(outcome=update["outcome"], outcome_ts=update["outcome_ts"])
+    return updates
 
 
 def record_decision_command(args, now=None):
     if not args.decision and not args.outcome:
         raise DispatchError("--record-decision 必须至少配合 --decision 或 --outcome 之一。")
-    path = ledger_path_from(args)
-    ledger = load_ledger(path, strict=True)
     target_id = string(args.record_decision, "--record-decision")
-    matched = None
-    for entry in ledger.get("entries", []):
-        if isinstance(entry, dict) and entry.get("id") == target_id:
-            matched = entry
-            break
-    if matched is None:
-        raise DispatchError(f"账本 live 窗口中未找到线程 {target_id!r}，拒绝回写未知 ID。")
-    if args.outcome:
-        matched["outcome"] = args.outcome
-        apply_cooldown(ledger, matched.get("difficulty"), matched.get("agent"), args.outcome, target_id, now=now)
-    if args.decision:
-        matched["decision"] = args.decision
-    matched["updated_ts"] = int(time.time() if now is None else now)
-    save_ledger(path, ledger, strict=True)
-    return {"recorded": True, "entry": matched}
+    now = int(time.time() if now is None else now)
+    recorded = {}
+
+    def apply(ledger):
+        matched = next((entry for entry in ledger.get("entries", [])
+                        if isinstance(entry, dict) and entry.get("id") == target_id), None)
+        if matched is None:
+            raise DispatchError(f"账本 live 窗口中未找到线程 {target_id!r}，拒绝回写未知 ID。")
+        # 终态时间只随终态变化；单独回写裁决不能把失败或成功挪到现在。
+        if args.outcome and args.outcome != matched.get("outcome"):
+            matched["outcome"], matched["outcome_ts"] = args.outcome, now
+        if args.decision:
+            matched["decision"] = args.decision
+        matched["updated_ts"] = now
+        recorded.update(matched)
+
+    update_ledger(ledger_path_from(args), apply, strict=True)
+    return {"recorded": True, "entry": recorded}
 
 
 def summarize_ledger(ledger, now=None):
@@ -261,7 +415,7 @@ def summarize_ledger(ledger, now=None):
         agent = bucket.get("agent") or "unknown"
         outcomes = bucket.get("outcomes") or {}
         decisions = bucket.get("decisions") or {}
-        failed = sum(int(outcomes.get(k, 0)) for k in ("failed_quota", "failed_transient", "failed_other"))
+        failed = sum(int(outcomes.get(k, 0)) for k in FAILED_OUTCOMES)
         decided = sum(int(decisions.get(k, 0)) for k in DECISION_KEYS)
         accepted = int(decisions.get("accepted", 0))
         if diff in by_difficulty:
@@ -282,7 +436,7 @@ def summarize_ledger(ledger, now=None):
         agent = entry.get("agent") or "unknown"
         outcome = entry.get("outcome") or "spawned"
         decision = entry.get("decision")
-        is_failed = 1 if outcome in ("failed_quota", "failed_transient", "failed_other") else 0
+        is_failed = 1 if outcome in FAILED_OUTCOMES else 0
         is_decided = 1 if decision in DECISION_KEYS else 0
         is_accepted = 1 if decision == "accepted" else 0
         if diff in by_difficulty:
@@ -312,7 +466,7 @@ def summarize_ledger(ledger, now=None):
 
     for agent, ag in sorted(by_agent.items()):
         total = ag["total"]
-        failed = sum(ag["outcomes"][k] for k in ("failed_quota", "failed_transient", "failed_other"))
+        failed = sum(ag["outcomes"][k] for k in FAILED_OUTCOMES)
         decided = sum(ag["decisions"][k] for k in DECISION_KEYS)
         accepted = ag["decisions"]["accepted"]
         ag["failed"] = failed
@@ -337,13 +491,13 @@ def summarize_ledger(ledger, now=None):
                 "message": f"候选 {agent} 接受率 {accepted}/{decided} (<50%)，请复盘其绑定模型与路由难度是否匹配。",
             })
 
-    active_cooldowns = []
+    active_cooldowns = [
+        {**cd, "remaining_seconds": cd["until"] - now}
+        for _, cd in sorted(health_cooldowns(ledger, now).items())
+    ]
     for key, cd in sorted((ledger.get("cooldowns") or {}).items()):
-        if isinstance(cd, dict) and int(cd.get("until", 0)) > now:
-            active_cooldowns.append({
-                **cd,
-                "remaining_seconds": int(cd["until"]) - now,
-            })
+        if isinstance(cd, dict) and "provider" not in cd and int(cd.get("until", 0)) > now:
+            active_cooldowns.append({**cd, "remaining_seconds": int(cd["until"]) - now})
 
     return {
         "total_dispatches": total_dispatches,
@@ -514,30 +668,51 @@ def dispatch(args, call=bb, now=None):
         raise DispatchError("permission_mode 必须是 accept-edits、auto 或 full。")
     chain, routing_mode, candidate_weights, full_chain = candidate_chain(args, defaults, route)
 
+    def route_target(alias):
+        """别名在本次路由下解析到的 (provider, model)；配置有误时返回 None，留给校验循环报错。"""
+        try:
+            agent = mapping(agents.get(alias), f"agents.{alias}")
+            return string(agent.get("provider"), f"agents.{alias}.provider"), model_and_reasoning(agent, alias, route)[0]
+        except DispatchError:
+            return None
+
     lpath = ledger_path_from(args)
     ledger = load_ledger(lpath, strict=False)
+    reconciled = reconcile_outcomes(ledger, call, now)
+    explicit = []
     if args.fallback_from is not None and not args.dry_run:
-        start_idx = full_chain.index(args.fallback_from)
-        for skipped_alias in full_chain[:start_idx]:
-            apply_cooldown(ledger, route, skipped_alias, "failed_transient", now=now)
+        for skipped_alias in full_chain[:full_chain.index(args.fallback_from)]:
+            target = route_target(skipped_alias)
+            if target is not None:
+                explicit.append((*target, "fallback-from"))
+    for target_provider, target_model, reason in explicit:
+        set_explicit_cooldown(ledger, target_provider, target_model, reason, now)
+    health = health_cooldowns(ledger, now)
+    cooldowns = ledger.get("cooldowns") or {}
+
+    def cooldown_for(alias):
+        # 调用方点名从该别名续派时不按冷却跳过它。
+        if args.fallback_from == alias:
+            return None
+        target = route_target(alias)
+        if target is not None and health_key(*target) in health:
+            return health[health_key(*target)]
+        legacy = cooldowns.get(f"{route}|{alias}")
+        if isinstance(legacy, dict) and "provider" not in legacy and int(legacy.get("until", 0)) > now:
+            return legacy
+        return None
 
     providers = call("provider", "list", "--environment", validation_environment)
     # 同档 fallback：每个候选按本次路由项解析自己的 routes，首个通过校验者派发。
     # 优先跳过熔断冷却中的候选；若所有候选均在冷却中，则保底降级尝试，避免单候选链死锁。
-    cooldowns = ledger.get("cooldowns") or {}
-
-    def is_cooled_down(alias):
-        cd = cooldowns.get(f"{route}|{alias}")
-        return isinstance(cd, dict) and int(cd.get("until", 0)) > now and args.fallback_from != alias
-
-    all_cooled = all(is_cooled_down(alias) for alias in chain)
+    all_cooled = all(cooldown_for(alias) for alias in chain)
     attempts = []
     catalogs = {}
     choice = None
     for index, alias in enumerate(chain):
         try:
-            if not all_cooled and is_cooled_down(alias):
-                cd = cooldowns[f"{route}|{alias}"]
+            cd = None if all_cooled else cooldown_for(alias)
+            if cd:
                 rem = int(cd["until"]) - now
                 raise DispatchError(f"候选 {alias} 处于熔断冷却中（原因：{cd.get('reason')}，剩余 {rem}s）。")
             agent = mapping(agents.get(alias), f"agents.{alias}")
@@ -599,20 +774,48 @@ def dispatch(args, call=bb, now=None):
                 candidates=chain, fallbacks=fallbacks, attempts=attempts)
     if escalate_from:
         plan["escalated_from"] = escalate_from
+    if reconciled:
+        plan["reconciled"] = reconciled
     if args.dry_run:
         return {"dry_run": True, "selection": plan, "argv": ["bb", *command, "--json"]}
+
+    def persist(extra_cooldowns=(), entry=None):
+        """把本次识别的终态、冷却和新条目合并进最新账本；写入失败只告警。"""
+        def apply(fresh):
+            entries = {item.get("id"): item for item in fresh.get("entries", []) if isinstance(item, dict)}
+            for update in reconciled:
+                target = entries.get(update["id"])
+                # 并发期间别处已回写的终态优先。
+                if target is not None and (target.get("outcome") or "spawned") == "spawned":
+                    target.update(outcome=update["outcome"], outcome_ts=update["outcome_ts"])
+            for target_provider, target_model, reason in (*explicit, *extra_cooldowns):
+                set_explicit_cooldown(fresh, target_provider, target_model, reason, now)
+            table = fresh.setdefault("cooldowns", {})
+            for key in [k for k, cd in table.items() if not isinstance(cd, dict) or int(cd.get("until") or 0) <= now]:
+                del table[key]
+            if entry is not None:
+                append_ledger_entry(fresh, entry)
+        try:
+            return update_ledger(lpath, apply, strict=False)
+        except Exception as exc:
+            print(f"warning: 账本写入失败（已旁路忽略）：{exc}", file=sys.stderr)
+            return None
+
     try:
         result = call(*command)
     except DispatchError as exc:
+        persist(extra_cooldowns=[(provider, model, "spawn-failed")])
         if fallbacks:
             raise DispatchError(
-                f"{exc} 同档候选 {fallbacks} 未尝试；确认线程未创建后可用 --fallback-from {fallbacks[0]} 续派。"
+                f"{exc} 该候选已冷却；确认线程未创建后重跑同一命令会改用 {fallbacks[0]}"
+                f"（也可用 --fallback-from {fallbacks[0]}）。"
             ) from exc
         raise
     thread_obj = result.get("thread") if isinstance(result, dict) and isinstance(result.get("thread"), dict) else result
     created_id = (thread_obj or {}).get("id") if isinstance(thread_obj, dict) else None
+    entry = None
     if created_id:
-        append_ledger_entry(ledger, {
+        entry = {
             "id": str(created_id),
             "ts": now,
             "project": project,
@@ -625,9 +828,10 @@ def dispatch(args, call=bb, now=None):
             "task_chars": effective_task_chars(args.task),
             "outcome": "spawned",
             "decision": None,
-        })
-        save_ledger(lpath, ledger, strict=False)
-        summary = summarize_ledger(ledger, now=now)
+        }
+    merged = persist(entry=entry)
+    if entry is not None and merged is not None:
+        summary = summarize_ledger(merged, now=now)
         if summary["review_hooks"]:
             plan["warnings"] = [h["message"] for h in summary["review_hooks"]]
     # 返回完整创建回执，包括排队状态；不把创建成功宣称为任务完成。
@@ -636,7 +840,7 @@ def dispatch(args, call=bb, now=None):
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="示例：\n  bb-dispatch --difficulty simple --task '补充 README' --dry-run\n  bb-dispatch --difficulty medium --task '定位登录失败'\n  bb-dispatch --history-summary\n  bb-dispatch --record-decision thr_xxx --outcome failed_quota --decision rejected\n输出：stdout JSON，stderr 错误；退出码 0 成功，2 失败。")
+        epilog="示例：\n  bb-dispatch --difficulty simple --task '补充 README' --dry-run\n  bb-dispatch --difficulty medium --task '定位登录失败'\n  bb-dispatch --history-summary\n  bb-dispatch --record-decision thr_xxx --decision accepted\n输出：stdout JSON，stderr 错误；退出码 0 成功，2 失败。")
     p.add_argument("--config", default=os.environ.get("BB_DISPATCH_CONFIG", str(Path.home() / ".config/bb-dispatch/config.yaml")), help="用户 YAML 配置路径，也可设置 BB_DISPATCH_CONFIG")
     p.add_argument("--ledger", default=os.environ.get("BB_DISPATCH_LEDGER_PATH", str(Path.home() / ".cache/bb-dispatch/ledger.json")), help="运行账本与熔断缓存路径，也可设置 BB_DISPATCH_LEDGER_PATH")
     p.add_argument("--difficulty", choices=["simple", "medium", "complex"], help="任务难度")
@@ -644,16 +848,16 @@ def parser():
     p.add_argument("--closed-scope", action="store_true", help="声明任务边界已闭合（目标文件、改法、验证已定）；未传 --escalate-from 时强制要求 simple")
     p.add_argument("--escalate-from", metavar="线程ID", help="前序失败或返工的低档线程 ID，用作升档或豁免长任务门禁的凭证")
     p.add_argument("--max-task-chars", type=int, default=DEFAULT_MAX_TASK_CHARS, help=f"medium/complex 任务指导的最大字符数（默认 {DEFAULT_MAX_TASK_CHARS}，0 为不限制）")
-    p.add_argument("--fallback-from", metavar="别名", help="从 defaults.<路由> 链中该别名起续派；用于前次派发失败且确认未创建后的同档改派")
+    p.add_argument("--fallback-from", metavar="别名", help="从 defaults.<路由> 链中该别名起续派；链上排在它前面的候选按 provider 与模型冷却 15 分钟")
     p.add_argument("--reasoning", help="覆盖推理级别，仍校验模型目录")
     p.add_argument("--project", help="项目 ID；ID 模式默认环境所属项目，路径模式默认当前项目")
     p.add_argument("--environment", help="现有环境 ID 或本机工作区目录；默认当前 BB 环境")
     p.add_argument("--permission-mode", choices=["accept-edits", "auto", "full"], help="已获授权的权限；默认用户配置或 accept-edits")
     p.add_argument("--title", help="可选标题正文；按难度自动加 🟢/🟡/🔴 前缀，省略时从任务文本截取")
     p.add_argument("--dry-run", action="store_true", help="只读校验并输出启动参数，不创建线程")
-    p.add_argument("--history-summary", "--stats", dest="history_summary", action="store_true", help="只读输出运行账本的聚合统计与确定性复盘 hooks")
-    p.add_argument("--record-decision", metavar="线程ID", help="按稳定线程 ID 回写运行结果或父线程裁决（覆盖而非追加）")
-    p.add_argument("--outcome", choices=list(OUTCOME_KEYS), help="配合 --record-decision 回写子线程运行终态（failed_quota/failed_transient 自动触发冷却）")
+    p.add_argument("--history-summary", "--stats", dest="history_summary", action="store_true", help="只读输出运行账本的聚合统计、当前冷却与确定性复盘 hooks")
+    p.add_argument("--record-decision", metavar="线程ID", help="按稳定线程 ID 回写父线程裁决或改正运行终态（覆盖而非追加）")
+    p.add_argument("--outcome", choices=list(OUTCOME_KEYS), help="配合 --record-decision 改正运行终态；脚本已按 BB 线程状态自动记录 completed/failed，各 failed* 取值同样计入连续失败")
     p.add_argument("--decision", choices=list(DECISION_KEYS), help="配合 --record-decision 回写父线程裁决")
     return p
 
@@ -663,6 +867,8 @@ def main():
     try:
         if args.history_summary:
             ledger = load_ledger(ledger_path_from(args), strict=False)
+            # 只在内存里补齐终态，保持统计只读。
+            reconcile_outcomes(ledger, bb, int(time.time()))
             print(json.dumps(summarize_ledger(ledger), ensure_ascii=False, indent=2))
             return 0
         if args.record_decision is not None:

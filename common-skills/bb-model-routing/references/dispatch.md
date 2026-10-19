@@ -50,21 +50,21 @@ defaults:
 
 优先级：命令行覆盖 > 环境配置 > 顶层配置。候选始终由 defaults 决定，脚本不提供 `--agent` 覆盖入口。`environments.<精确环境 ID>` 可覆盖 defaults、agents、permission_mode；同名 agent 整体替换，必须写出 provider 和 routes。目录路径模式尚无环境 ID，不应用 `environments.<id>` 覆盖，只使用顶层配置。模型的明确要求通过配置调整表达，思考深度的明确要求用 `--reasoning` 表达，缺失配置时先补齐，不静默替换。
 
-`--fallback-from <别名>` 把本次候选截取为从该别名起的后缀，用于前次派发失败且确认线程未创建后的同档续派；别名不在候选中时报错。实际派发时使用 `--fallback-from` 会自动将本次链上位于该别名之前的候选记入短期熔断冷却（15 分钟），避免紧邻的下一笔独立任务在负载均衡下再次命中刚故障的候选。负载均衡续派须保持原 route 和完整 `--task` 文本，才能复现返回的 `selection.fallbacks` 顺序；需要补充进展时，续派保留原任务文本，创建成功后通过 `bb thread tell` 向新线程补充进展与位置。
+`--fallback-from <别名>` 把本次候选截取为从该别名起的后缀，供需要点名续派候选的调用方使用；别名不在候选中时报错，点名的别名本身不按冷却跳过。实际派发时链上位于该别名之前的候选按 provider 与模型冷却 15 分钟。一般改派不必传它：失败的候选已按线程状态或 spawn 失败自动冷却，重跑同一命令就会跳过。负载均衡续派须保持原 route 和完整 `--task` 文本，才能复现候选顺序；需要补充进展时，续派保留原任务文本，创建成功后通过 `bb thread tell` 向新线程补充进展与位置。
 
 `--closed-scope` 声明任务边界已闭合（目标文件、改法、验证方式均已明确），未配合 `--escalate-from <线程ID>` 时强制要求 `--difficulty simple`。`--max-task-chars`（默认 2500，0 为不限制）对未传 `--escalate-from` 的 `medium`/`complex` 任务检查有效指导长度（自动剥离 `autoreview` 审查标准、`ask-oracle` 证据块及 `large-task-orchestrator` 执行包/报告协议块后的字符数），超长时拒绝派发并提示改用 `simple` 或精简任务书。
 
-`--record-decision <线程ID>` 配合 `--outcome {spawned,completed,failed_quota,failed_transient,failed_other}` 与 `--decision {accepted,rejected,reworked,escalated}` 将运行终态与父线程裁决覆盖回写到本地账本（默认 `~/.cache/bb-dispatch/ledger.json`）；`--history-summary`（别名 `--stats`）只读输出按难度与候选的聚合统计、活跃冷却及确定性复盘 hooks。
+`--record-decision <线程ID>` 配合 `--decision {accepted,rejected,reworked,escalated}` 把父线程裁决覆盖回写到本地账本（默认 `~/.cache/bb-dispatch/ledger.json`）。运行终态由脚本按 BB 线程状态自动记为 `completed` 或 `failed`，识别有误时才配合 `--outcome` 改正；旧值 `failed_quota`、`failed_transient`、`failed_other` 仍可写，与 `failed` 一样计入连续失败。只回写裁决不改终态时间，冷却不会因此顺延。`--history-summary`（别名 `--stats`）只读输出按难度与候选的聚合统计、活跃冷却及确定性复盘 hooks。
 
 默认从 `bb status` 解析环境，项目使用该环境的所属项目。`--environment` 接受现有环境 ID 或本机已存在的目录路径：ID 模式下 `--project` 与环境所属项目必须匹配；路径模式下目录会解析为绝对路径并原样交给 BB 创建 project-checkout 附着环境，项目取 `--project` 或当前 `bb status`，两者都没有时须显式提供 `--project`。同项目时关联当前父线程，跨环境也保留关联；跨项目不关联。
 
-每次调用会校验 provider 是否存在且可用、权限是否兼容、模型及 reasoning 是否在目录中。查询模型目录时同时传入配置中的 selected model，使刚发布但尚未进入普通目录的模型仍能由 provider 验证。ID 模式使用目标环境校验；路径模式不调用 `bb environment show`，而使用当前 `bb status` 的环境作为同 host 代理，没有当前环境时须在 BB 线程里运行或先准备可代理环境。返回 JSON 的 `selection.validation_environment` 记录实际校验环境，ID 模式下等于目标环境。`--dry-run` 同样执行只读校验并输出参数数组，不创建线程。实际派发返回 JSON 的 `selection` 和 BB 原始 `result`，每次调用最多发出一次 spawn（fallback 只发生在 spawn 前的校验阶段）；超时或响应异常时先查线程，避免重复创建。`selection.attempts` 记录链上失败候选及原因，`selection.fallbacks` 记录未尝试的同档别名。目录不做持久缓存，防止安装、账号或环境变化后继续使用过期配置。
+每次调用会校验 provider 是否存在且可用、权限是否兼容、模型及 reasoning 是否在目录中。查询模型目录时同时传入配置中的 selected model，使刚发布但尚未进入普通目录的模型仍能由 provider 验证。ID 模式使用目标环境校验；路径模式不调用 `bb environment show`，而使用当前 `bb status` 的环境作为同 host 代理，没有当前环境时须在 BB 线程里运行或先准备可代理环境。返回 JSON 的 `selection.validation_environment` 记录实际校验环境，ID 模式下等于目标环境。`--dry-run` 同样执行只读校验并输出参数数组，不创建线程。实际派发返回 JSON 的 `selection` 和 BB 原始 `result`，每次调用最多发出一次 spawn（fallback 只发生在 spawn 前的校验阶段）；超时或响应异常时先查线程，避免重复创建。`selection.attempts` 记录链上失败候选及原因（含冷却中的候选），`selection.fallbacks` 记录未尝试的同档别名，`selection.reconciled` 列出本次按线程状态改记的终态。目录不做持久缓存，防止安装、账号或环境变化后继续使用过期配置。
 
 验证：`python3 -m unittest discover -s scripts -p 'test_*.py'`（从技能目录运行）。
 
 ## 路由不可用
 
-候选切换只覆盖派发前校验：provider 不存在或不可用、权限不兼容、模型或 reasoning 不在目录时，记录该候选错误并试下一个；全部失败时汇总各候选错误。spawn 一旦发出即不重试：失败或结果不明时先 `bb thread list`/`bb thread show` 确认是否已创建，确认未创建后用 `--fallback-from <候选别名>` 从该候选续派，难度与任务文本保持不变。线程运行期失败（额度耗尽、provider 中断、会话错误）由调用方按同一方式改派 `selection.fallbacks` 中的下一候选；确定性调用方（如编排 driver）可持久化该字段实现自己的重派。继续已有线程前，确认原回合结束并核对已完成工作，按该 provider 支持的续接方式操作；不要以重新创建整个任务冒充续接。
+候选切换只覆盖派发前校验：provider 不存在或不可用、权限不兼容、模型或 reasoning 不在目录时，记录该候选错误并试下一个；全部失败时汇总各候选错误。spawn 一旦发出即不重试，失败的候选随即冷却：失败或结果不明时先 `bb thread list`/`bb thread show` 确认是否已创建，确认未创建后保持难度与任务文本重跑同一命令。线程运行期失败（额度耗尽、provider 中断、会话错误）按 SKILL.md「等待与并发」先排除 BB 自动重试再改派，脚本从线程状态识别失败并换候选；确定性调用方（如编排 driver）也可持久化 `selection.fallbacks`，用 `--fallback-from` 自行点名。继续已有线程前，确认原回合结束并核对已完成工作，按该 provider 支持的续接方式操作；不要以重新创建整个任务冒充续接。
 
 ## 会话标题
 

@@ -60,7 +60,7 @@ bb-dispatch --difficulty complex --task '<已调查证据、待裁决问题与�
 
 所有 provider、模型、推理级别和默认路由均来自用户配置；脚本在创建前完成相应目录校验。父 agent 只负责选择任务难度，不能把路由选择或二次校验职责下放给子 agent。缺少配置时先走 bootstrap，三档 dry-run 通过后再派发。
 
-`defaults.<难度>` 默认使用 fallback：单个别名固定选择，有序别名链按序校验并派发首个可用候选。需要分摊独立任务时配置 `mode: load-balance`；需要按额度比例分摊时配置 `mode: weighted-load-balance`，并把 `candidates` 写成“别名: 非负权重”映射，`0` 表示暂停该候选，抽选与 fallback 均跳过；至少保留一个正权重候选。脚本按难度与完整任务文本做稳定散列来排列候选，不维护共享计数，同一任务可复现选择与 fallback 顺序。每个候选只按本次难度或显式 `default` 解析自己的 `routes`；缺少两者时跳过该候选。候选全部不可用时汇总各候选错误报告；spawn 发出后不重试，确认线程未创建后用 `--fallback-from <候选别名>` 续派。具体格式和负载均衡续派约束见[配置与派发](references/dispatch.md)。
+`defaults.<难度>` 默认使用 fallback：单个别名固定选择，有序别名链按序校验并派发首个可用候选。需要分摊独立任务时配置 `mode: load-balance`；需要按额度比例分摊时配置 `mode: weighted-load-balance`，并把 `candidates` 写成“别名: 非负权重”映射，`0` 表示暂停该候选，抽选与 fallback 均跳过；至少保留一个正权重候选。脚本按难度与完整任务文本做稳定散列来排列候选，不维护共享计数，同一任务可复现选择与 fallback 顺序。每个候选只按本次难度或显式 `default` 解析自己的 `routes`；缺少两者时跳过该候选。候选全部不可用时汇总各候选错误报告；spawn 发出后不重试，spawn 失败的候选随即冷却，确认线程未创建后重跑同一命令就会换下一个候选。具体格式和负载均衡续派约束见[配置与派发](references/dispatch.md)。
 
 每次派发本来就是独立 BB 会话，负载均衡不会拆分会话上下文。不要额外规避前缀缓存；但不同 provider 或模型之间也不假定共享缓存。
 
@@ -76,7 +76,7 @@ bb-dispatch --difficulty complex --task '<已调查证据、待裁决问题与�
 
 子线程每条中途消息都会唤醒或打断父线程，所以关联父线程时脚本在任务末尾附加固定的「回报方式」：进度、阶段发现和新建资源留到回合结束按任务要求一次交代，需要即时留底的写进工作区文件。任务确需中途汇报时在 `--task` 里写明，正文优先；续派时直接复用子线程首条消息也可以，脚本会先去掉这段，候选顺序不变。子线程仍发来只含进度的中途消息（`[bb message from thread:…]`，不是完成通知）时，不回复、不复述，一句话结束回合，其中的事实等最终回复一并处理；同一子线程反复发送时，用 `bb thread tell` 提醒它一次。
 
-子线程因 provider 不可用、额度耗尽或会话错误而失败或中断时，按 `selection.fallbacks` 记录的未尝试链用 `--fallback-from <下一别名>` 改派：沿用原 difficulty 与完整任务文本以复现候选顺序；失败线程已有部分产出时，创建成功后通过 `bb thread tell` 补充进展与位置。这区别于任务被拒、正常完成或待处理交互——那些不是路由失败，不改派。链耗尽后如实报告，不循环改派。
+子线程因 provider 不可用、额度耗尽或会话错误而失败或中断时，先确认 BB 不会自己续上：原线程已回到运行中，或 `bb provider-retry status <线程ID>` 列出排队的自动重试（过载几秒到几分钟后重试，额度窗口等到重置），就不改派；等不及时先 `bb provider-retry cancel <线程ID>` 再改派，免得同一任务做两遍。改派就用原 difficulty 与完整任务文本重跑 `bb-dispatch`：脚本按 BB 线程状态记下这次失败、冷却该 provider 与模型并换候选，父线程不用判断失败类型，也不用先回写或传 `--fallback-from`。失败线程已有部分产出时，创建成功后通过 `bb thread tell` 补充进展与位置。这区别于任务被拒、正常完成或待处理交互——那些不是路由失败，不改派。同一任务换过候选仍失败就如实报告，不循环改派。
 
 并行前按任务性质分流：
 
@@ -99,11 +99,10 @@ driver 只传任务文本、难度与已有环境，路由仍由本配置决定�
 
 脚本在本地 Git-ignored 路径 `~/.cache/bb-dispatch/ledger.json`（可通过 `--ledger` 或 `BB_DISPATCH_LEDGER_PATH` 覆盖）维护运行账本与熔断冷却表，读写异常旁路告警、绝不阻塞主派发：
 
-1. **最小事实与滚动折算**：每次派发仅记录 `id`、`ts`、`difficulty`、`agent`、`provider`、`model`、`reasoning`、`task_chars`、`outcome`、`decision`，不存任务正文、diff 或日志。live 窗口保留最近 200 条，超出部分自动折算进固定维度 `rollups`，live 与 rollup 不重复计数。
-2. **决策回环与自动熔断冷却（Circuit Breaker）**：子线程完成或失败后，父 agent 用稳定线程 ID 覆盖回写结果与裁决（未知 ID 拒绝报错）：
+1. **最小事实与滚动折算**：每次派发仅记录 `id`、`ts`、`difficulty`、`agent`、`provider`、`model`、`reasoning`、`task_chars`、`outcome`、`outcome_ts`、`decision`，不存任务正文、diff 或日志。live 窗口保留最近 200 条，超出部分自动折算进固定维度 `rollups`，live 与 rollup 不重复计数。账本读改写加文件锁，写入前重读合并，并行派发与回写互不覆盖。
+2. **自动熔断冷却与决策回环（Circuit Breaker）**：每次派发先读一次 `bb thread list`，把 48 小时内仍记为 `spawned` 的线程按 BB 状态改记：`error` 记 `failed`，空闲且没有排队消息和待处理交互记 `completed`；读不到时告警跳过。冷却按 provider 与模型计，不读报错文字、不分失败类型：首次失败冷却 15 分钟，冷却结束后再失败则翻倍，最长 6 小时，成功一次清零；冷却开始前已在跑的同批线程接连失败只顺延、不升级。spawn 失败和被 `--fallback-from` 跳过的候选另冷却 15 分钟。冷却中的候选优先跳过，全部冷却时仍挑一个试，避免死锁。父 agent 用稳定线程 ID 回写裁决（未知 ID 拒绝报错，重复回写覆盖）；自动记下的终态有误时才加 `--outcome` 改正：
    ```bash
+   bb-dispatch --record-decision <线程ID> --decision accepted
    bb-dispatch --record-decision <线程ID> --outcome completed --decision accepted
-   bb-dispatch --record-decision <线程ID> --outcome failed_quota --decision rejected
    ```
-   回写 `failed_quota`（如 403 额度耗尽，冷却 6 小时）、`failed_transient`（如 429/503，冷却 15 分钟），或使用 `--fallback-from` 续派跳过的候选，均会自动进入冷却期；冷却期内同档派发优先跳过该候选（若同档全部候选均在冷却则保底降级尝试，避免死锁）。
-3. **聚合复盘与偏斜检测**：运行 `bb-dispatch --history-summary`（或 `--stats`）只读输出按难度占比、各候选失败率/接受率、当前活跃冷却及确定性复盘 hooks（`simple_share_low` 当总派发 $\ge 5$ 且 `simple` 占比 $<20\%$、`high_failure_rate` 当候选失败率 $\ge 30\%$、`low_acceptance_rate` 当候选接受率 $<50\%$）。派发时若触发复盘 hook，返回 JSON 的 `selection.warnings` 会同步携带提醒。
+3. **聚合复盘与偏斜检测**：运行 `bb-dispatch --history-summary`（或 `--stats`）只读输出（同样先按线程状态补齐终态，但不写账本）按难度占比、各候选失败率/接受率、当前活跃冷却及确定性复盘 hooks（`simple_share_low` 当总派发 $\ge 5$ 且 `simple` 占比 $<20\%$、`high_failure_rate` 当候选失败率 $\ge 30\%$、`low_acceptance_rate` 当候选接受率 $<50\%$）。派发时若触发复盘 hook，返回 JSON 的 `selection.warnings` 会同步携带提醒。
