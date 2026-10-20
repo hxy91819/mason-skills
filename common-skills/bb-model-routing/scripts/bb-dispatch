@@ -22,6 +22,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import uuid
 
 import yaml
 
@@ -857,17 +858,163 @@ def validate_contract_gates(args, call):
     return escalate_from
 
 
+# 独立于 --ledger/--config：同一 OS 用户的派发进程共用锁与未决占位。
+CONCURRENCY_PATH = Path.home() / ".cache/bb-dispatch/concurrency.json"
+CONCURRENCY_LOCK_WAIT_SECONDS = 10
+
+
+@contextlib.contextmanager
+def concurrency_lock():
+    """容量控制不能像统计账本一样旁路失败。锁只覆盖一次派发，不等待任务结束。"""
+    if fcntl is None:
+        raise DispatchError("并发限制需要 fcntl 文件锁，当前平台不支持。")
+    handle = None
+    try:
+        CONCURRENCY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(CONCURRENCY_PATH.with_suffix(".lock"), "a")
+        deadline = time.monotonic() + CONCURRENCY_LOCK_WAIT_SECONDS
+        while True:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise DispatchError("并发派发锁繁忙，请稍后重试；本次未创建线程。")
+                time.sleep(0.05)
+        yield
+    except OSError as exc:
+        raise DispatchError(f"并发状态访问失败：{exc}") from exc
+    finally:
+        if handle is not None:
+            handle.close()
+
+
+class ConcurrencySlots:
+    def __init__(self, call, read_only=False):
+        self.call, self.read_only = call, read_only
+        self.threads = None
+        try:
+            data = json.loads(CONCURRENCY_PATH.read_text()) if CONCURRENCY_PATH.exists() else {"version": 1, "reservations": []}
+            self.reservations = data["reservations"]
+            if data.get("version") != 1 or not isinstance(self.reservations, list):
+                raise ValueError("并发状态格式无效")
+            for item in self.reservations:
+                if (not isinstance(item, dict) or not isinstance(item.get("id"), str)
+                        or not isinstance(item.get("provider"), str) or not isinstance(item.get("ts"), int)
+                        or (item.get("thread") is not None and not isinstance(item["thread"], str))):
+                    raise ValueError("并发占位字段无效")
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise DispatchError(f"无法读取并发状态 {CONCURRENCY_PATH}：{exc}") from exc
+
+    def save(self):
+        if self.read_only:
+            return
+        try:
+            tmp = CONCURRENCY_PATH.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"version": 1, "reservations": self.reservations}, ensure_ascii=False, indent=2))
+            tmp.replace(CONCURRENCY_PATH)
+        except OSError as exc:
+            raise DispatchError(f"无法保存并发状态：{exc}") from exc
+
+    @staticmethod
+    def occupied(thread):
+        # error 代表本轮失败；后续重试和 tell 不经过新建入口，不在本限制范围。
+        return not (thread.get("status") in ("idle", "error")
+                    and thread.get("queuedWork") == "none"
+                    and thread.get("hasPendingInteraction") is False)
+
+    def refresh(self):
+        if self.threads is not None:
+            return
+        rows = self.call("thread", "list", "--include-hidden")
+        if not isinstance(rows, list) or any(not isinstance(t, dict) or not t.get("id") for t in rows):
+            raise DispatchError("无法确定并发量：bb thread list 返回格式未知。")
+        self.threads = {t["id"]: t for t in rows}
+        keep = []
+        for item in self.reservations:
+            thread = self.threads.get(item.get("thread"))
+            # 未知创建结果、线程暂未可见，均保持占位。idle 还需结束事件，避免初始 idle 提早释放。
+            if thread is not None and not self.occupied(thread):
+                if turns_ended_since(self.call, thread["id"], item["ts"]):
+                    continue
+            keep.append(item)
+        self.reservations = keep
+
+    def usage(self, provider):
+        self.refresh()
+        active = {t["id"] for t in self.threads.values()
+                  if t.get("providerId") == provider and self.occupied(t)}
+        held = [r for r in self.reservations if r["provider"] == provider]
+        # 已可见的线程与占位只算一次；也计入其他入口创建的活跃线程，避免继续挤占 provider。
+        return len(active | {r["thread"] for r in held if r.get("thread")}) + sum(not r.get("thread") for r in held)
+
+    def reserve(self, provider):
+        item = {"id": uuid.uuid4().hex, "provider": provider, "ts": int(time.time()), "thread": None}
+        self.reservations.append(item)
+        self.save()  # 在 spawn 前落盘，崩溃或超时仍占位。
+        return item
+
+
+def provider_limits(agents):
+    limits = {}
+    for alias, agent in mapping(agents, "agents").items():
+        agent = mapping(agent, f"agents.{alias}")
+        if "max_concurrency" not in agent:
+            continue
+        limit = agent["max_concurrency"]
+        if type(limit) is not int or limit < 1:
+            raise DispatchError(f"agents.{alias}.max_concurrency 必须是正整数；不限制时省略。")
+        provider = string(agent.get("provider"), f"agents.{alias}.provider")
+        limits[provider] = min(limit, limits.get(provider, limit))
+    return limits
+
+
+def concurrency_command(args, call=bb):
+    def run():
+        slots = ConcurrencySlots(call, read_only=not args.release_reservation)
+        if args.release_reservation:
+            matched = [r for r in slots.reservations if r["id"] == args.release_reservation]
+            if not matched:
+                raise DispatchError("未知并发占位 ID，未做修改。")
+            if args.dry_run:
+                return {"would_release": args.release_reservation, "dry_run": True}
+            slots.reservations.remove(matched[0])
+            slots.save()
+            return {"released": args.release_reservation}
+        slots.refresh()
+        providers = sorted({t.get("providerId") for t in slots.threads.values() if t.get("providerId")}
+                           | {r["provider"] for r in slots.reservations})
+        return {"state_path": str(CONCURRENCY_PATH), "usage": {p: slots.usage(p) for p in providers},
+                "reservations": slots.reservations}
+    if args.release_reservation:
+        with concurrency_lock():
+            return run()
+    return run()
+
+
 def dispatch(args, call=bb, now=None):
-    now = int(time.time() if now is None else now)
-    # 从子线程首条消息复制回来的任务先去掉回报方式，续派的候选顺序与标题保持不变。
-    args.task = string(args.task.split(REPORT_PROTOCOL_ANCHOR, 1)[0], "task")
     try:
         config = mapping(yaml.safe_load(Path(args.config).expanduser().read_text()), "config")
     except (OSError, yaml.YAMLError) as exc:
         raise DispatchError(f"无法读取配置 {args.config}：{exc}") from exc
     if config.get("version") != 2:
         raise DispatchError("配置必须包含 version: 2。")
+    # 各环境的限制也决定是否进入锁；实际限额在解析目标环境后计算。
+    configured = bool(provider_limits(config.get("agents", {})))
+    for override in mapping(config.get("environments", {}), "environments").values():
+        configured = bool(provider_limits(mapping(override, "environment config").get("agents", {}))) or configured
+    if not configured:
+        return dispatch_unlocked(args, call, now, config, None)
+    if args.dry_run:
+        return dispatch_unlocked(args, call, now, config, ConcurrencySlots(call, read_only=True))
+    with concurrency_lock():
+        return dispatch_unlocked(args, call, now, config, ConcurrencySlots(call))
 
+
+def dispatch_unlocked(args, call, now, config, slots):
+    now = int(time.time() if now is None else now)
+    # 从子线程首条消息复制回来的任务先去掉回报方式，续派的候选顺序与标题保持不变。
+    args.task = string(args.task.split(REPORT_PROTOCOL_ANCHOR, 1)[0], "task")
     escalate_from = validate_contract_gates(args, call)
 
     environment_path = Path(args.environment).expanduser() if args.environment else None
@@ -898,6 +1045,7 @@ def dispatch(args, call=bb, now=None):
     )
     defaults = {**mapping(config.get("defaults", {}), "defaults"), **mapping(override.get("defaults", {}), "environment defaults")}
     agents = {**mapping(config.get("agents", {}), "agents"), **mapping(override.get("agents", {}), "environment agents")}
+    limits = provider_limits(agents)
     route = args.difficulty
     permission = args.permission_mode or override.get("permission_mode", config.get("permission_mode", "accept-edits"))
     if permission not in ("accept-edits", "auto", "full"):
@@ -953,6 +1101,10 @@ def dispatch(args, call=bb, now=None):
             reasoning = args.reasoning if args.reasoning is not None else reasoning
             if reasoning is not None:
                 reasoning = string(reasoning, "reasoning")
+            if provider in limits:
+                used = slots.usage(provider)
+                if used >= limits[provider]:
+                    raise DispatchError(f"候选 {alias} 并发已满（{provider}: {used}/{limits[provider]}），本次跳过。", code="capacity_full")
             selected = unique(providers, "id", provider, "provider")
             if selected.get("available") is not True:
                 raise DispatchError(f"provider {provider} 在校验环境不可用。")
@@ -1004,6 +1156,8 @@ def dispatch(args, call=bb, now=None):
         plan["escalated_from"] = escalate_from
     if reconciled:
         plan["reconciled"] = reconciled
+    if provider in limits:
+        plan["concurrency"] = {"provider": provider, "limit": limits[provider], "used": slots.usage(provider)}
     if args.dry_run:
         return {"dry_run": True, "selection": plan, "argv": ["bb", *command, "--json"]}
 
@@ -1041,10 +1195,14 @@ def dispatch(args, call=bb, now=None):
             print(f"warning: 账本写入失败（已旁路忽略）：{exc}", file=sys.stderr)
             return None
 
+    reservation = slots.reserve(provider) if provider in limits else None
     try:
         result = call(*command)
     except DispatchError as exc:
         persist(extra_cooldowns=[(provider, model, "spawn-failed")])
+        if reservation is not None:
+            raise DispatchError(f"{exc} 并发占位 {reservation['id']} 已保留；先查询线程确认创建结果，"
+                                "再用 --release-reservation <占位ID> 释放；勿直接重试创建。") from exc
         if fallbacks:
             raise DispatchError(
                 f"{exc} 该候选已冷却；确认线程未创建后重跑同一命令会改用 {fallbacks[0]}"
@@ -1053,6 +1211,11 @@ def dispatch(args, call=bb, now=None):
         raise
     thread_obj = result.get("thread") if isinstance(result, dict) and isinstance(result.get("thread"), dict) else result
     created_id = (thread_obj or {}).get("id") if isinstance(thread_obj, dict) else None
+    if reservation is not None:
+        if not created_id:
+            raise DispatchError(f"创建响应缺少线程 ID，并发占位 {reservation['id']} 已保留；请先查询线程。")
+        reservation["thread"] = str(created_id)
+        slots.save()
     entry = None
     if created_id:
         entry = {
@@ -1095,6 +1258,8 @@ def parser():
     p.add_argument("--permission-mode", choices=["accept-edits", "auto", "full"], help="已获授权的权限；默认用户配置或 accept-edits")
     p.add_argument("--title", help="可选标题正文；按难度自动加 🟢/🟡/🔴 前缀，省略时从任务文本截取")
     p.add_argument("--dry-run", action="store_true", help="只读校验并输出启动参数，不创建线程；配合 --on-failure 只给出动作，不安排重试、不写账本")
+    p.add_argument("--concurrency-status", action="store_true", help="只读查看 provider 当前占用与未决并发占位，不依赖统计账本")
+    p.add_argument("--release-reservation", metavar="占位ID", help="确认创建结果后移除指定占位；活跃线程仍按 BB 实时状态计数")
     p.add_argument("--on-failure", metavar="线程ID", help="子线程报错后调用：先在原会话按 1、2、4 分钟退避重试，用尽才记失败并冷却该 provider 与模型")
     p.add_argument("--history-summary", "--stats", dest="history_summary", action="store_true", help="只读输出运行账本的聚合统计、当前冷却、确定性复盘 hooks，以及复盘日志近 7 天的重试与冷却汇总")
     p.add_argument("--record-decision", metavar="线程ID", help="按稳定线程 ID 回写父线程裁决或改正运行终态（覆盖而非追加）")
@@ -1106,6 +1271,9 @@ def parser():
 def main():
     args = parser().parse_args()
     try:
+        if args.concurrency_status or args.release_reservation:
+            print(json.dumps(concurrency_command(args), ensure_ascii=False, indent=2))
+            return 0
         if args.history_summary:
             lpath, now = ledger_path_from(args), int(time.time())
             ledger = load_ledger(lpath, strict=False)

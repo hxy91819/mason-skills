@@ -64,6 +64,42 @@ defaults:
 
 验证：`python3 -m unittest discover -s scripts -p 'test_*.py'`（从技能目录运行）。
 
+## Provider 并发限制
+
+在 `agents.<别名>` 配置 `max_concurrency: 1`（正整数，省略表示不限制）。例如：
+
+```yaml
+agents:
+  amp:
+    provider: acp-amp
+    max_concurrency: 1
+    routes:
+      simple: {model: grok46, reasoning: medium}
+      medium: {model: medium, reasoning: medium}
+      complex: {model: high, reasoning: medium}
+```
+
+名额按实际 provider ID 共享，不按别名、模型、难度、项目或父线程拆分；同一份有效环境配置中多个别名指向同一 provider 时，取已配置上限的最小值。环境同名别名仍整体替换，需在替换项中保留所需上限。多个调用者应使用一致的限额配置；未配置上限的脚本调用仍按原行为派发。
+
+同一台机器、同一 OS 用户、同一个 BB 服务下的脚本进程，通过固定的 `~/.cache/bb-dispatch/concurrency.lock` 串行完成查询、占位和创建；`--config`、`--ledger` 与 `BB_DISPATCH_LEDGER_PATH` 不改变锁和占位的位置。不同机器或 OS 用户不共享限制。锁只保护一次创建，任务运行期间不持锁；锁繁忙约 10 秒后明确退出且不创建线程，稍后可重试。
+
+派发前读取 `bb thread list --include-hidden` 的实时状态，所有该 provider 的活跃线程都计入占用（包括其他入口创建的线程）。排队、待处理交互、未知状态均占名额；`idle` 或 `error` 且明确没有排队消息、没有待处理交互才视为本轮结束。脚本新建线程额外保留占位，直到日志中出现派发后的 `turn/completed`，避免创建后的初始 `idle` 被误判为完成。中断若没有结束事件，仍保留占位，由下述恢复命令处理。对活跃线程和对应占位去重计数。
+
+候选满额时记录 `selection.attempts` 并尝试同档下一个候选；全部满额时明确报错，不等待、不创建队列、不计失败或熔断冷却。全部候选处于冷却、或用 `--fallback-from` 点名，也不能绕过容量限制。`selection.concurrency` 返回选中 provider 的 `limit` 和派发前 `used`。`--dry-run` 只读检查容量，不占位、不改并发状态，结果只是当时快照。
+
+并发占位保存在同目录的 `concurrency.json`，独立于可旁路失败的统计账本，只保存占位 ID、provider、时间和线程 ID。占位文件损坏、无法加锁或保存时明确失败；查不到实时线程状态时跳过受限候选。不会因为统计账本失败而取消限制。spawn 前先写占位，超时、异常或进程崩溃后不自动释放未知创建结果，避免重复派发：
+
+```bash
+bb-dispatch --concurrency-status
+bb thread list --include-hidden --json
+bb thread show <线程ID> --json
+bb-dispatch --release-reservation <占位ID>
+```
+
+`--concurrency-status` 只读输出实时占用与仍在占用的最小事实，不写状态。确认该次创建未成功，或对应回合已经结束后，用稳定占位 ID 释放；未知 ID 拒绝，重复释放不会误删其他占位；配合 `--dry-run` 只预览。释放占位不会停止线程，仍活跃的线程继续由 BB 状态计数。正常结束的占位在后续派发时自动清理，未决占位持续保留供恢复，不按时间强制过期。
+
+限制覆盖脚本的新建派发入口。旧线程继续对话、`--on-failure` 的原会话重试、BB 自动重试、直接创建线程不会先申请名额，仍可能与已派任务重叠；它们处于活跃状态时会影响下一次脚本派发。BB 已持久化线程状态、回合日志和父线程通知，可用 `bb thread show` / `bb thread log <线程ID> --all --json` 回看。此处只提供当前容量及恢复查询，不另建历史账本；并发等待时间与满额跳过次数暂不聚合，历史派发与质量裁决继续使用原有 `--history-summary`。
+
 ## 路由不可用
 
 候选切换只覆盖派发前校验：provider 不存在或不可用、权限不兼容、模型或 reasoning 不在目录时，记录该候选错误并试下一个；全部失败时汇总各候选错误。spawn 一旦发出即不重试，失败的候选随即冷却：失败或结果不明时先 `bb thread list`/`bb thread show` 确认是否已创建，确认未创建后保持难度与任务文本重跑同一命令。线程运行期报错（额度耗尽、provider 中断、会话错误）按 SKILL.md「等待与并发」运行 `--on-failure`：原会话退避重试用尽才记失败、冷却该候选，再重跑同一命令换候选；确定性调用方（如编排 driver）也可持久化 `selection.fallbacks`，用 `--fallback-from` 自行点名。继续已有线程前，确认原回合结束并核对已完成工作，按该 provider 支持的续接方式操作；不要以重新创建整个任务冒充续接。
