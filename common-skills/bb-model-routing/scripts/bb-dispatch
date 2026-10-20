@@ -980,15 +980,11 @@ def dispatch(args, call=bb, now=None):
     index, alias, provider, model, reasoning = choice
     fallbacks = chain[index + 1:]
     title = thread_title(args.title, args.task, args.difficulty)
-    # 当前线程属于目标项目时自动关联；跨项目派发不能误继承父线程。
+    # 父子关系不要求同项目：BB 的 --parent-thread 允许父线程在另一个项目，完成通知照常回到父线程。
     parent = context.get("thread") or {}
     if not parent and os.environ.get("BB_THREAD_ID"):
         parent = (call("thread", "show", os.environ["BB_THREAD_ID"]).get("thread") or {})
-        if parent.get("projectId") != project:
-            parent = {}
-    elif project != current_project:
-        parent = {}
-    # 跨项目派发没有父线程，也就没有完成通知可等，不附加回报方式。
+    # 只要关联了父线程就附加回报方式，跨项目也一样。
     task = args.task + REPORT_PROTOCOL_ANCHOR + REPORT_PROTOCOL if parent.get("id") else args.task
     command = ["thread", "spawn", "--project", project, "--environment", environment,
                "--provider", provider, "--model", model,

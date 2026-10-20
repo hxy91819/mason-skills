@@ -58,7 +58,7 @@ defaults:
 
 `--record-decision <线程ID>` 配合 `--decision {accepted,rejected,reworked,escalated}` 把父线程裁决覆盖回写到本地账本（默认 `~/.cache/bb-dispatch/ledger.json`）。`completed` 由脚本按 BB 线程状态自动记录，`failed` 由 `--on-failure` 在重试用尽后记录；识别有误或放弃任务时配合 `--outcome` 改正；旧值 `failed_quota`、`failed_transient`、`failed_other` 仍可写，与 `failed` 一样计入连续失败。只回写裁决不改终态时间，冷却不会因此顺延。`--history-summary`（别名 `--stats`）只读输出按难度与候选的聚合统计、活跃冷却、确定性复盘 hooks，以及复盘日志 `ledger.events.jsonl` 近 7 天的重试与冷却汇总 `retry_review`（字段见 SKILL.md「可观测性」）。
 
-默认从 `bb status` 解析环境，项目使用该环境的所属项目。`--environment` 接受现有环境 ID 或本机已存在的目录路径：ID 模式下 `--project` 与环境所属项目必须匹配；路径模式下目录会解析为绝对路径并原样交给 BB 创建 project-checkout 附着环境，项目取 `--project` 或当前 `bb status`，两者都没有时须显式提供 `--project`。同项目时关联当前父线程，跨环境也保留关联；跨项目不关联。
+默认从 `bb status` 解析环境，项目使用该环境的所属项目。`--environment` 接受现有环境 ID 或本机已存在的目录路径：ID 模式下 `--project` 与环境所属项目必须匹配；路径模式下目录会解析为绝对路径并原样交给 BB 创建 project-checkout 附着环境，项目取 `--project` 或当前 `bb status`，两者都没有时须显式提供 `--project`。在 BB 线程里派发时关联当前父线程，跨环境、跨项目都保留关联。
 
 每次调用会校验 provider 是否存在且可用、权限是否兼容、模型及 reasoning 是否在目录中。查询模型目录时同时传入配置中的 selected model，使刚发布但尚未进入普通目录的模型仍能由 provider 验证。ID 模式使用目标环境校验；路径模式不调用 `bb environment show`，而使用当前 `bb status` 的环境作为同 host 代理，没有当前环境时须在 BB 线程里运行或先准备可代理环境。返回 JSON 的 `selection.validation_environment` 记录实际校验环境，ID 模式下等于目标环境。`--dry-run` 同样执行只读校验并输出参数数组，不创建线程。实际派发返回 JSON 的 `selection` 和 BB 原始 `result`，每次调用最多发出一次 spawn（fallback 只发生在 spawn 前的校验阶段）；超时或响应异常时先查线程，避免重复创建。`selection.attempts` 记录链上失败候选及原因（含冷却中的候选），`selection.fallbacks` 记录未尝试的同档别名，`selection.reconciled` 列出本次按线程状态改记的终态。目录不做持久缓存，防止安装、账号或环境变化后继续使用过期配置。
 

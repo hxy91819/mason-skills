@@ -201,12 +201,28 @@ environments:
             m.dispatch(self.args('--environment', str(workspace), '--dry-run'), status_without_environment)
         self.assertFalse(any(c[:2] == ('provider', 'list') for c in self.calls))
 
-    def test_workspace_path_in_another_project_does_not_link_parent(self):
+    def test_workspace_path_in_another_project_keeps_parent_and_report_protocol(self):
         workspace = Path(self.temp.name) / 'workspace'
         workspace.mkdir()
         result = m.dispatch(self.args('--project', 'other', '--environment', str(workspace), '--dry-run'), self.fake)
-        self.assertNotIn('--parent-thread', result['argv'])
-        self.assertEqual(result['argv'][result['argv'].index('--prompt') + 1], self.args().task)
+        self.assertEqual(result['argv'][result['argv'].index('--parent-thread') + 1], 'parent')
+        self.assertEqual(result['argv'][result['argv'].index('--prompt') + 1],
+                         self.args().task + m.REPORT_PROTOCOL_ANCHOR + m.REPORT_PROTOCOL)
+
+    def test_environment_in_another_project_keeps_parent_and_report_protocol(self):
+        def other_project(*args):
+            if args[:2] == ('environment', 'show'):
+                return {'id': args[2], 'projectId': 'other'}
+            return self.fake(*args)
+
+        with mock.patch.dict(os.environ, {'BB_THREAD_ID': 'parent'}):
+            result = m.dispatch(
+                self.args('--project', 'other', '--environment', 'env_other', '--dry-run'), other_project
+            )
+        self.assertEqual(result['selection']['project'], 'other')
+        self.assertEqual(result['argv'][result['argv'].index('--parent-thread') + 1], 'parent')
+        self.assertEqual(result['argv'][result['argv'].index('--prompt') + 1],
+                         self.args().task + m.REPORT_PROTOCOL_ANCHOR + m.REPORT_PROTOCOL)
 
     def test_agent_override_is_rejected_before_calling_bb(self):
         import contextlib
