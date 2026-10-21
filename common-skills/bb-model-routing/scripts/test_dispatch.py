@@ -261,6 +261,61 @@ environments:
         result = m.dispatch(self.args('--permission-mode', 'full', '--dry-run'), self.fake)
         self.assertEqual(result['selection']['permission_mode'], 'full')
 
+    def enable_fast_catalog(self, model_tiers=None):
+        for provider in self.providers:
+            provider['serviceTiers'] = [{'id': 'default'}, {'id': 'fast'}]
+        original = self.fake
+
+        def with_tiers(*args):
+            if args[:2] == ('provider', 'models'):
+                models = original(*args)
+                for model in models:
+                    if model_tiers is not None:
+                        model['supportedServiceTiers'] = [{'id': tier} for tier in model_tiers]
+                return models
+            return original(*args)
+
+        return with_tiers
+
+    def test_fast_defaults_on_and_is_omitted_when_unsupported(self):
+        result = m.dispatch(self.args('--dry-run'), self.fake)
+        self.assertIsNone(result['selection']['service_tier'])
+        self.assertNotIn('--service-tier', result['argv'])
+        enabled = m.dispatch(self.args('--dry-run'), self.enable_fast_catalog())
+        self.assertEqual(enabled['selection']['service_tier'], 'fast')
+        self.assertEqual(enabled['argv'][enabled['argv'].index('--service-tier') + 1], 'fast')
+
+    def test_fast_false_never_passes_service_tier(self):
+        config = m.yaml.safe_load(self.config.read_text())
+        config['fast'] = False
+        self.config.write_text(m.yaml.safe_dump(config))
+        result = m.dispatch(self.args('--dry-run'), self.enable_fast_catalog())
+        self.assertIsNone(result['selection']['service_tier'])
+        self.assertNotIn('--service-tier', result['argv'])
+
+    def test_fast_skips_models_that_omit_the_tier(self):
+        result = m.dispatch(self.args('--dry-run'), self.enable_fast_catalog(model_tiers=['default']))
+        self.assertIsNone(result['selection']['service_tier'])
+        self.assertNotIn('--service-tier', result['argv'])
+
+    def test_environment_fast_override_and_invalid_value(self):
+        config = m.yaml.safe_load(self.config.read_text())
+        config['fast'] = True
+        config['environments']['env'] = {'fast': False}
+        self.config.write_text(m.yaml.safe_dump(config))
+        result = m.dispatch(self.args('--environment', 'env', '--dry-run'), self.enable_fast_catalog())
+        self.assertIsNone(result['selection']['service_tier'])
+        config['environments']['env']['fast'] = 'yes'
+        self.config.write_text(m.yaml.safe_dump(config))
+        with self.assertRaises(m.DispatchError):
+            m.dispatch(self.args('--environment', 'env', '--dry-run'), self.enable_fast_catalog())
+
+    def test_fast_cli_is_rejected(self):
+        import contextlib
+        import io
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self.args('--fast')
+
     def test_invalid_model_reasoning_and_project_do_not_spawn(self):
         for extra in [('--reasoning', 'ultra'), ('--project', 'wrong')]:
             with self.assertRaises(m.DispatchError):

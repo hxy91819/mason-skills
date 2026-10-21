@@ -33,6 +33,7 @@ bb provider models <provider-id> --environment <env> --json   # 对每个 availa
 
 - 主 provider：当前会话正在用的那个；它不是候选或不在 BB 线程里时，选目录带文字描述且模型最多的候选。
 - 权限模式：原派发显式传了 `--permission-mode` 就以它为准，主 provider 必须支持它；否则主 provider 支持 `accept-edits` 就用 `accept-edits`，不支持时改用它支持的模式，并说明这意味着子线程获得的权限（`full` 为完全自主执行）。
+- Fast：建议配置写 `fast: true`。这是人手改文件的消耗开关，省略时脚本同样默认打开；不按当前会话或模型目录推断。
 - `simple` 模型：description 含 fast、affordable、flash、lite、mini；其次 id 含这些字样；再其次 `isDefault`；都没有则按自己对模型档位的了解选。
 - `medium` 模型：description 含 latest workhorse；其次含 workhorse 或 everyday；再其次 `isDefault`；都没有同上。命中的模型与 `simple` 相同而目录还有别的模型时，顺延到下一条规则。
 - `complex` 模型：description 含 frontier、most capable、most demanding；其次 id 含 pro、opus、max；都没有同上。

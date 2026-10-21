@@ -120,6 +120,33 @@ def unique(items, key, value, label):
     return matches[0]
 
 
+def configured_bool(override, config, key, default, where):
+    if key in override:
+        source, label = override, f"environment {where}"
+    elif key in config:
+        source, label = config, where
+    else:
+        return default
+    value = source[key]
+    if not isinstance(value, bool):
+        raise DispatchError(f"{label} 必须是 true 或 false。")
+    return value
+
+
+def tier_ids(entries):
+    if not isinstance(entries, list):
+        return None
+    return [item.get("id") for item in entries if isinstance(item, dict) and item.get("id")]
+
+
+def supports_service_tier(provider, model, tier):
+    provider_ids = tier_ids(provider.get("serviceTiers"))
+    if provider_ids is None or tier not in provider_ids:
+        return False
+    model_ids = tier_ids(model.get("supportedServiceTiers"))
+    return True if model_ids is None else tier in model_ids
+
+
 def thread_title(title, task, difficulty):
     text = " ".join((title or "").split()) or " ".join(task.split())
     prefixes = ("[Agent]", *TITLE_PREFIXES.values())
@@ -1050,6 +1077,7 @@ def dispatch_unlocked(args, call, now, config, slots):
     permission = args.permission_mode or override.get("permission_mode", config.get("permission_mode", "accept-edits"))
     if permission not in ("accept-edits", "auto", "full"):
         raise DispatchError("permission_mode 必须是 accept-edits、auto 或 full。")
+    fast = configured_bool(override, config, "fast", True, "fast")
     chain, routing_mode, candidate_weights, full_chain = candidate_chain(args, defaults, route)
 
     def route_target(alias):
@@ -1121,15 +1149,16 @@ def dispatch_unlocked(args, call, now, config, slots):
             levels = [entry.get("reasoningEffort") for entry in (selected_model.get("supportedReasoningEfforts") or [])]
             if reasoning is not None and reasoning not in levels:
                 raise DispatchError(f"模型 {model} 不支持 reasoning={reasoning}；可用值：{levels}。")
+            service_tier = "fast" if fast and supports_service_tier(selected, selected_model, "fast") else None
         except DispatchError as exc:
             attempts.append({"agent": alias, "error": str(exc)})
             continue
-        choice = (index, alias, provider, model, reasoning)
+        choice = (index, alias, provider, model, reasoning, service_tier)
         break
     if choice is None:
         detail = "；".join(f"{item['agent']}: {item['error']}" for item in attempts)
         raise DispatchError(f"defaults.{route} 候选链 {chain} 均不可用：{detail}")
-    index, alias, provider, model, reasoning = choice
+    index, alias, provider, model, reasoning, service_tier = choice
     fallbacks = chain[index + 1:]
     title = thread_title(args.title, args.task, args.difficulty)
     # 父子关系不要求同项目：BB 的 --parent-thread 允许父线程在另一个项目，完成通知照常回到父线程。
@@ -1143,12 +1172,15 @@ def dispatch_unlocked(args, call, now, config, slots):
                "--permission-mode", permission, "--prompt", task]
     if reasoning is not None:
         command += ["--reasoning-level", reasoning]
+    if service_tier is not None:
+        command += ["--service-tier", service_tier]
     command += ["--title", title]
     if parent.get("id"):
         command += ["--parent-thread", parent["id"]]
     plan = dict(project=project, environment=environment, validation_environment=validation_environment,
                 agent=alias, provider=provider,
                 model=model, reasoning=reasoning, permission_mode=permission,
+                service_tier=service_tier,
                 difficulty=args.difficulty, title=title,
                 routing_mode=routing_mode, candidate_weights=candidate_weights,
                 candidates=chain, fallbacks=fallbacks, attempts=attempts)

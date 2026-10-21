@@ -56,11 +56,11 @@ bb-dispatch --difficulty complex --task '<已调查证据、待裁决问题与�
 
 `--task` 依 [派发任务模板](references/task-template.md) 填：目标、先读、开工前对齐远端、授权范围与根因位置、自行引入的决定必须单列、交付与验证、回复格式。`--task` 只写任务目标、范围、输入和验收要求。provider、模型、推理级别和可用性检查是派发元数据：由 `bb-dispatch` 根据配置和目录决定，不写入子线程 prompt，也不要求子 agent 在开始前重新查询或确认。用户明确要求改变 provider 或模型时，调整用户配置后再派发，仍不把路由要求带入 `--task`。
 
-每次派发按 `defaults.<难度>` 选择候选；父 agent 只选择任务难度，provider 和模型由用户配置决定。脚本不接受 `--agent`，已有工具上下文也不构成绕过配置的例外。只有用户明确指定推理级别时才传 `--reasoning`；其余由脚本读取配置。配置未指定时省略该参数，使用 provider 默认值。命令未安装时直接执行本技能的 `scripts/bb-dispatch`。需要预览用 `--dry-run`，脚本已完成的环境与模型校验无需重复查询。
+每次派发按 `defaults.<难度>` 选择候选；父 agent 只选择任务难度，provider 和模型由用户配置决定。脚本不接受 `--agent`，已有工具上下文也不构成绕过配置的例外。只有用户明确指定推理级别时才传 `--reasoning`；其余由脚本读取配置。配置未指定时省略该参数，使用 provider 默认值。`fast` 只看用户配置（省略默认 `true`），人手改文件即可开关 Fast service tier；脚本不提供命令行覆盖。命令未安装时直接执行本技能的 `scripts/bb-dispatch`。需要预览用 `--dry-run`，脚本已完成的环境与模型校验无需重复查询。
 
 ## 派发边界
 
-所有 provider、模型、推理级别和默认路由均来自用户配置；脚本在创建前完成相应目录校验。父 agent 只负责选择任务难度，不能把路由选择或二次校验职责下放给子 agent。缺少配置时先走 bootstrap，三档 dry-run 通过后再派发。
+所有 provider、模型、推理级别、Fast service tier 和默认路由均来自用户配置；脚本在创建前完成相应目录校验。父 agent 只负责选择任务难度，不能把路由选择或二次校验职责下放给子 agent。缺少配置时先走 bootstrap，三档 dry-run 通过后再派发。
 
 `defaults.<难度>` 默认使用 fallback：单个别名固定选择，有序别名链按序校验并派发首个可用候选。需要分摊独立任务时配置 `mode: load-balance`；需要按额度比例分摊时配置 `mode: weighted-load-balance`，并把 `candidates` 写成“别名: 非负权重”映射，`0` 表示暂停该候选，抽选与 fallback 均跳过；至少保留一个正权重候选。脚本按难度与完整任务文本做稳定散列来排列候选，不维护共享计数，同一任务可复现选择与 fallback 顺序。每个候选只按本次难度或显式 `default` 解析自己的 `routes`；缺少两者时跳过该候选。候选全部不可用时汇总各候选错误报告；spawn 发出后不重试，spawn 失败的候选随即冷却，确认线程未创建后重跑同一命令就会换下一个候选。具体格式和负载均衡续派约束见[配置与派发](references/dispatch.md)。
 
