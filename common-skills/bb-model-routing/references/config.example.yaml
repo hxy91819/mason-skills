@@ -20,6 +20,8 @@ agents:
     provider: <provider-id>
     # 可选：此 provider 跨模型、难度和派发进程共享的并发上限；省略则不限制。
     # max_concurrency: 1
+    # 可选：只让列出的模型合计共用上限；列表外模型不限制。需同时配置 max_concurrency。
+    # concurrency_models: [<medium-model-id>, <complex-model-id>]
     routes:
       simple:
         model: <simple-model-id>

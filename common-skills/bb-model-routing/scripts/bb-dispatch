@@ -928,7 +928,8 @@ class ConcurrencySlots:
             for item in self.reservations:
                 if (not isinstance(item, dict) or not isinstance(item.get("id"), str)
                         or not isinstance(item.get("provider"), str) or not isinstance(item.get("ts"), int)
-                        or (item.get("thread") is not None and not isinstance(item["thread"], str))):
+                        or (item.get("thread") is not None and not isinstance(item["thread"], str))
+                        or (item.get("model") is not None and not isinstance(item["model"], str))):
                     raise ValueError("并发占位字段无效")
         except (OSError, ValueError, KeyError, TypeError) as exc:
             raise DispatchError(f"无法读取并发状态 {CONCURRENCY_PATH}：{exc}") from exc
@@ -967,16 +968,25 @@ class ConcurrencySlots:
             keep.append(item)
         self.reservations = keep
 
-    def usage(self, provider):
+    def usage(self, provider, models=None):
         self.refresh()
+        known = {r["thread"]: r.get("model") for r in self.reservations
+                 if r["provider"] == provider and r.get("thread")}
+
+        def included(model):
+            # BB 列表不带模型；新派发在占位中登记。旧占位/其他入口未知模型仍保守计数。
+            return models is None or model is None or model in models
+
         active = {t["id"] for t in self.threads.values()
-                  if t.get("providerId") == provider and self.occupied(t)}
-        held = [r for r in self.reservations if r["provider"] == provider]
+                  if t.get("providerId") == provider and self.occupied(t) and included(known.get(t["id"]))}
+        held = [r for r in self.reservations if r["provider"] == provider and included(r.get("model"))]
         # 已可见的线程与占位只算一次；也计入其他入口创建的活跃线程，避免继续挤占 provider。
         return len(active | {r["thread"] for r in held if r.get("thread")}) + sum(not r.get("thread") for r in held)
 
-    def reserve(self, provider):
-        item = {"id": uuid.uuid4().hex, "provider": provider, "ts": int(time.time()), "thread": None}
+    def reserve(self, provider, model):
+        self.refresh()
+        item = {"id": uuid.uuid4().hex, "provider": provider, "model": model,
+                "ts": int(time.time()), "thread": None}
         self.reservations.append(item)
         self.save()  # 在 spawn 前落盘，崩溃或超时仍占位。
         return item
@@ -994,6 +1004,31 @@ def provider_limits(agents):
         provider = string(agent.get("provider"), f"agents.{alias}.provider")
         limits[provider] = min(limit, limits.get(provider, limit))
     return limits
+
+
+def provider_model_scopes(agents):
+    """同 provider 的受限模型合并成一个池；任一上限未限定模型则覆盖全部模型。"""
+    scopes = {}
+    for alias, agent in mapping(agents, "agents").items():
+        agent = mapping(agent, f"agents.{alias}")
+        if "concurrency_models" in agent and "max_concurrency" not in agent:
+            raise DispatchError(f"agents.{alias}.concurrency_models 需要同时配置 max_concurrency。")
+        if "max_concurrency" not in agent:
+            continue
+        models = agent.get("concurrency_models")
+        if "concurrency_models" in agent:
+            if (not isinstance(models, list) or not models
+                    or any(not isinstance(v, str) or not v.strip() or v != v.strip() for v in models)):
+                raise DispatchError(f"agents.{alias}.concurrency_models 必须是非空模型 ID 列表。")
+            models = set(models)
+        provider = string(agent.get("provider"), f"agents.{alias}.provider")
+        if provider not in scopes:
+            scopes[provider] = models
+        elif scopes[provider] is None or models is None:
+            scopes[provider] = None
+        else:
+            scopes[provider].update(models)
+    return scopes
 
 
 def concurrency_command(args, call=bb):
@@ -1028,8 +1063,10 @@ def dispatch(args, call=bb, now=None):
         raise DispatchError("配置必须包含 version: 2。")
     # 各环境的限制也决定是否进入锁；实际限额在解析目标环境后计算。
     configured = bool(provider_limits(config.get("agents", {})))
+    provider_model_scopes(config.get("agents", {}))
     for override in mapping(config.get("environments", {}), "environments").values():
         configured = bool(provider_limits(mapping(override, "environment config").get("agents", {}))) or configured
+        provider_model_scopes(mapping(override, "environment config").get("agents", {}))
     if not configured:
         return dispatch_unlocked(args, call, now, config, None)
     if args.dry_run:
@@ -1073,6 +1110,11 @@ def dispatch_unlocked(args, call, now, config, slots):
     defaults = {**mapping(config.get("defaults", {}), "defaults"), **mapping(override.get("defaults", {}), "environment defaults")}
     agents = {**mapping(config.get("agents", {}), "agents"), **mapping(override.get("agents", {}), "environment agents")}
     limits = provider_limits(agents)
+    scopes = provider_model_scopes(agents)
+
+    def limited(provider, model):
+        return provider in limits and (scopes[provider] is None or model in scopes[provider])
+
     route = args.difficulty
     permission = args.permission_mode or override.get("permission_mode", config.get("permission_mode", "accept-edits"))
     if permission not in ("accept-edits", "auto", "full"):
@@ -1129,8 +1171,8 @@ def dispatch_unlocked(args, call, now, config, slots):
             reasoning = args.reasoning if args.reasoning is not None else reasoning
             if reasoning is not None:
                 reasoning = string(reasoning, "reasoning")
-            if provider in limits:
-                used = slots.usage(provider)
+            if limited(provider, model):
+                used = slots.usage(provider, scopes[provider])
                 if used >= limits[provider]:
                     raise DispatchError(f"候选 {alias} 并发已满（{provider}: {used}/{limits[provider]}），本次跳过。", code="capacity_full")
             selected = unique(providers, "id", provider, "provider")
@@ -1188,8 +1230,11 @@ def dispatch_unlocked(args, call, now, config, slots):
         plan["escalated_from"] = escalate_from
     if reconciled:
         plan["reconciled"] = reconciled
-    if provider in limits:
-        plan["concurrency"] = {"provider": provider, "limit": limits[provider], "used": slots.usage(provider)}
+    if limited(provider, model):
+        plan["concurrency"] = {"provider": provider, "limit": limits[provider],
+                               "used": slots.usage(provider, scopes[provider])}
+        if scopes[provider] is not None:
+            plan["concurrency"]["models"] = sorted(scopes[provider])
     if args.dry_run:
         return {"dry_run": True, "selection": plan, "argv": ["bb", *command, "--json"]}
 
@@ -1227,7 +1272,8 @@ def dispatch_unlocked(args, call, now, config, slots):
             print(f"warning: 账本写入失败（已旁路忽略）：{exc}", file=sys.stderr)
             return None
 
-    reservation = slots.reserve(provider) if provider in limits else None
+    # 有模型范围时也登记范围外派发，以便之后查询不会把 simple 当成未知模型计入。
+    reservation = slots.reserve(provider, model) if provider in limits else None
     try:
         result = call(*command)
     except DispatchError as exc:

@@ -1,6 +1,7 @@
 """容量控制的行为与真实跨进程互斥；不调用线上 BB。"""
 import json
 import multiprocessing
+import os
 from pathlib import Path
 import time
 import unittest
@@ -12,10 +13,10 @@ m = fixtures.m
 
 
 # 独立进程使用不同账本，唯一共享的是用户级并发状态。
-def dispatch_worker(config, ledger, state, start, results):
+def dispatch_worker(config, ledger, state, start, results, difficulty="simple"):
     m.CONCURRENCY_PATH = Path(state)
     args = m.parser().parse_args(['--config', config, '--ledger', ledger,
-                                  '--difficulty', 'simple', '--task', '并行任务',
+                                  '--difficulty', difficulty, '--task', '并行任务',
                                   '--project', 'proj', '--environment', 'env'])
 
     def bb(*argv):
@@ -24,14 +25,14 @@ def dispatch_worker(config, ledger, state, start, results):
         if argv[:2] == ('provider', 'list'):
             return [{'id': 'amp', 'available': True, 'capabilities': {'permissionModes': ['accept-edits']}}]
         if argv[:2] == ('provider', 'models'):
-            return [{'id': 'model'}]
+            return [{'id': 'model'}, {'id': 'simple-model'}]
         if argv[:2] == ('thread', 'show'):
             return {'thread': {'id': 'parent'}}
         if argv[:2] == ('thread', 'list'):
             return []  # 模拟创建成功后线程尚未出现在列表中。
         if argv[:2] == ('thread', 'spawn'):
             time.sleep(0.15)  # 扩大无锁实现会超发的窗口。
-            return {'id': 'created', 'status': 'active'}
+            return {'id': f'created_{os.getpid()}', 'status': 'active'}
         raise AssertionError(argv)
 
     start.wait(5)
@@ -230,3 +231,113 @@ agents:
             self.assertEqual(worker.exitcode, 0)
         self.assertEqual(outcomes.count('spawned'), 1, outcomes)
         self.assertTrue(all(x == 'spawned' or '并发已满' in x for x in outcomes), outcomes)
+
+
+    def scoped_config(self):
+        config = m.yaml.safe_load(self.config.read_text())
+        config['agents']['primary']['concurrency_models'] = ['medium-model', 'deep-model']
+        config['agents']['primary']['routes']['complex'] = {'model': 'deep-model'}
+        config['defaults']['complex'] = 'primary'
+        self.config.write_text(m.yaml.safe_dump(config))
+        # 同 provider 的 medium/complex 模型目录。
+        def scoped_bb(*args):
+            if args[:3] == ('provider', 'models', 'primary'):
+                return [{'id': name, 'supportedReasoningEfforts': [{'reasoningEffort': 'max'},
+                         {'reasoningEffort': 'high'}]} for name in ['fast-model', 'medium-model', 'deep-model']]
+            return self.fake(*args)
+        return scoped_bb
+
+    def test_scoped_medium_and_complex_share_one_slot_but_simple_is_unlimited(self):
+        bb = self.scoped_config()
+        for _ in range(2):
+            self.assertEqual(m.dispatch(self.args(), bb)['selection']['provider'], 'primary')
+        self.threads = [self.running(), {**self.running(), 'id': 'created_2'}]
+        limited = m.dispatch(self.args('--difficulty', 'medium'), bb)
+        self.assertEqual(limited['selection']['concurrency']['used'], 0)
+        self.threads.append({**self.running(), 'id': 'created_3'})
+        with self.assertRaisesRegex(m.DispatchError, '并发已满'):
+            m.dispatch(self.args('--difficulty', 'complex', '--ledger', str(self.ledger.with_name('other.json'))), bb)
+        simple = m.dispatch(self.args(), bb)
+        self.assertEqual(simple['selection']['provider'], 'primary')
+        self.assertNotIn('concurrency', simple['selection'])
+        self.threads[2]['status'] = 'idle'
+        self.turns['created_3'] = [(int(time.time()) + 1, 'completed')]
+        self.assertEqual(m.dispatch(self.args('--difficulty', 'complex'), bb)['selection']['provider'], 'primary')
+
+    def test_scoped_unknown_spawn_only_blocks_its_own_model_pool(self):
+        bb = self.scoped_config()
+        def broken(*args):
+            if args[:2] == ('thread', 'spawn'):
+                raise m.DispatchError('创建结果未知')
+            return bb(*args)
+        with self.assertRaises(m.DispatchError):
+            m.dispatch(self.args('--difficulty', 'medium'), broken)
+        # 受限 medium 的未知占位不能阻止 simple；禁用统计冷却以隔离容量行为。
+        self.ledger.unlink(missing_ok=True)
+        self.assertEqual(m.dispatch(self.args(), bb)['selection']['provider'], 'primary')
+        with self.assertRaisesRegex(m.DispatchError, '并发已满'):
+            m.dispatch(self.args('--difficulty', 'complex'), bb)
+
+    def test_unknown_legacy_models_and_external_threads_count_conservatively(self):
+        bb = self.scoped_config()
+        self.threads = [self.running()]
+        with self.assertRaisesRegex(m.DispatchError, '并发已满'):
+            m.dispatch(self.args('--difficulty', 'medium'), bb)
+        self.threads = []
+        self.state.write_text(json.dumps({'version': 1, 'reservations': [
+            {'id': 'legacy', 'provider': 'primary', 'ts': int(time.time()), 'thread': None}]}))
+        with self.assertRaisesRegex(m.DispatchError, '并发已满'):
+            m.dispatch(self.args('--difficulty', 'complex'), bb)
+        self.assertEqual(m.dispatch(self.args(), bb)['selection']['provider'], 'primary')
+
+    def test_scope_validation_and_duplicate_aliases_keep_provider_wide_limit(self):
+        config = m.yaml.safe_load(self.config.read_text())
+        for invalid in [None, [], '', 'medium-model', [1], [' '], [' medium-model']]:
+            with self.subTest(invalid=invalid):
+                config['agents']['primary']['concurrency_models'] = invalid
+                self.config.write_text(m.yaml.safe_dump(config))
+                with self.assertRaisesRegex(m.DispatchError, 'concurrency_models'):
+                    m.dispatch(self.args(), self.fake)
+        config['agents']['primary']['concurrency_models'] = ['medium-model']
+        config['agents']['same'] = {'provider': 'primary', 'max_concurrency': 2,
+                                    'routes': {'simple': {'model': 'fast-model'}}}
+        self.config.write_text(m.yaml.safe_dump(config))
+        self.threads = [self.running()]
+        self.assertEqual(m.dispatch(self.args('--dry-run'), self.fake)['selection']['provider'], 'specialist')
+        config['agents']['primary'].pop('max_concurrency')
+        self.config.write_text(m.yaml.safe_dump(config))
+        with self.assertRaisesRegex(m.DispatchError, '需要同时配置'):
+            m.dispatch(self.args(), self.fake)
+
+    def test_scoped_cross_process_dispatch_allows_simple_and_one_shared_limited_task(self):
+        config = Path(self.temp.name) / 'scoped-process.yaml'
+        config.write_text('''version: 2
+fast: false
+defaults: {simple: amp, medium: amp, complex: amp}
+agents:
+  amp:
+    provider: amp
+    max_concurrency: 1
+    concurrency_models: [model]
+    routes:
+      simple: {model: simple-model}
+      medium: {model: model}
+      complex: {model: model}
+''')
+        ctx = multiprocessing.get_context('fork')
+        start = ctx.Event()
+        difficulties = ['simple', 'simple', 'medium', 'complex']
+        queues = [ctx.Queue() for _ in difficulties]
+        workers = [ctx.Process(target=dispatch_worker, args=(str(config),
+                   str(Path(self.temp.name) / f'scoped-ledger-{i}.json'), str(self.state), start, queues[i], difficulty))
+                   for i, difficulty in enumerate(difficulties)]
+        for worker in workers:
+            worker.start()
+        start.set()
+        outcomes = [queue.get(timeout=10) for queue in queues]
+        for worker in workers:
+            worker.join(timeout=5)
+            self.assertEqual(worker.exitcode, 0)
+        self.assertEqual(outcomes[:2], ['spawned', 'spawned'], outcomes)
+        self.assertEqual(outcomes[2:].count('spawned'), 1, outcomes)
+        self.assertTrue(any('并发已满' in result for result in outcomes[2:]), outcomes)

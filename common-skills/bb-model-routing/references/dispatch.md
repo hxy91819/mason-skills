@@ -68,28 +68,29 @@ defaults:
 
 ## Provider 并发限制
 
-在 `agents.<别名>` 配置 `max_concurrency: 1`（正整数，省略表示不限制）。例如：
+在 `agents.<别名>` 配置 `max_concurrency: 1`（正整数，省略表示不限制）。默认限制该 provider 全部模型；可用 `concurrency_models` 指定共享名额的模型 ID。下面只让 amp 的 medium 与 complex 合计最多运行 1 个，simple 使用的 grok46 不限量：
 
 ```yaml
 agents:
   amp:
     provider: acp-amp
     max_concurrency: 1
+    concurrency_models: [medium, high]
     routes:
       simple: {model: grok46, reasoning: medium}
       medium: {model: medium, reasoning: medium}
       complex: {model: high, reasoning: medium}
 ```
 
-名额按实际 provider ID 共享，不按别名、模型、难度、项目或父线程拆分；同一份有效环境配置中多个别名指向同一 provider 时，取已配置上限的最小值。环境同名别名仍整体替换，需在替换项中保留所需上限。多个调用者应使用一致的限额配置；未配置上限的脚本调用仍按原行为派发。
+名额按实际 provider ID 共享，不按别名、难度、项目或父线程拆分。`concurrency_models` 必须是非空模型 ID 列表，需同时配置 `max_concurrency`，列表中的模型合计共用上限，列表外的模型不受容量限制。同一份有效环境配置中多个别名指向同一 provider 时，取已配置上限的最小值、合并受限模型集合；任一配置上限的别名省略模型范围，则限制全部模型。环境同名别名仍整体替换，需在替换项中保留所需上限。多个调用者应使用一致的限额配置；未配置上限的脚本调用仍按原行为派发。
 
 同一台机器、同一 OS 用户、同一个 BB 服务下的脚本进程，通过固定的 `~/.cache/bb-dispatch/concurrency.lock` 串行完成查询、占位和创建；`--config`、`--ledger` 与 `BB_DISPATCH_LEDGER_PATH` 不改变锁和占位的位置。不同机器或 OS 用户不共享限制。锁只保护一次创建，任务运行期间不持锁；锁繁忙约 10 秒后明确退出且不创建线程，稍后可重试。
 
-派发前读取 `bb thread list --include-hidden` 的实时状态，所有该 provider 的活跃线程都计入占用（包括其他入口创建的线程）。排队、待处理交互、未知状态均占名额；`idle` 或 `error` 且明确没有排队消息、没有待处理交互才视为本轮结束。脚本新建线程额外保留占位，直到日志中出现派发后的 `turn/completed`，避免创建后的初始 `idle` 被误判为完成。中断若没有结束事件，仍保留占位，由下述恢复命令处理。对活跃线程和对应占位去重计数。
+派发前读取 `bb thread list --include-hidden` 的实时状态，默认所有该 provider 的活跃线程都计入占用（包括其他入口创建的线程）。配置模型范围时，仅明确登记为范围外模型的线程不计入该池；BB 列表不返回模型，脚本通过占位中的模型 ID 识别自己的派发。旧占位和其他入口的线程缺少模型信息时，仍保守计入受限池，待对应回合结束后释放；范围外新派发本身不做容量检查。排队、待处理交互、未知状态均占名额；`idle` 或 `error` 且明确没有排队消息、没有待处理交互才视为本轮结束。脚本新建线程额外保留占位，直到日志中出现派发后的 `turn/completed`，避免创建后的初始 `idle` 被误判为完成。中断若没有结束事件，仍保留占位，由下述恢复命令处理。对活跃线程和对应占位去重计数。
 
-候选满额时记录 `selection.attempts` 并尝试同档下一个候选；全部满额时明确报错，不等待、不创建队列、不计失败或熔断冷却。全部候选处于冷却、或用 `--fallback-from` 点名，也不能绕过容量限制。`selection.concurrency` 返回选中 provider 的 `limit` 和派发前 `used`。`--dry-run` 只读检查容量，不占位、不改并发状态，结果只是当时快照。
+候选满额时记录 `selection.attempts` 并尝试同档下一个候选；全部满额时明确报错，不等待、不创建队列、不计失败或熔断冷却。全部候选处于冷却、或用 `--fallback-from` 点名，也不能绕过容量限制。`selection.concurrency` 返回选中 provider 的 `limit` 和派发前 `used`，有模型范围时附带 `models`；范围外模型不返回容量限制。`--dry-run` 只读检查容量，不占位、不改并发状态，结果只是当时快照。
 
-并发占位保存在同目录的 `concurrency.json`，独立于可旁路失败的统计账本，只保存占位 ID、provider、时间和线程 ID。占位文件损坏、无法加锁或保存时明确失败；查不到实时线程状态时跳过受限候选。不会因为统计账本失败而取消限制。spawn 前先写占位，超时、异常或进程崩溃后不自动释放未知创建结果，避免重复派发：
+并发占位保存在同目录的 `concurrency.json`，独立于可旁路失败的统计账本，只保存占位 ID、provider、模型 ID、时间和线程 ID。范围外模型也登记占位，以便后续派发明确排除它们；它们不占用受限模型池。占位文件损坏、无法加锁或保存时明确失败；查不到实时线程状态时跳过受限候选。不会因为统计账本失败而取消限制。spawn 前先写占位，超时、异常或进程崩溃后不自动释放未知创建结果，避免重复派发：
 
 ```bash
 bb-dispatch --concurrency-status
@@ -98,7 +99,7 @@ bb thread show <线程ID> --json
 bb-dispatch --release-reservation <占位ID>
 ```
 
-`--concurrency-status` 只读输出实时占用与仍在占用的最小事实，不写状态。确认该次创建未成功，或对应回合已经结束后，用稳定占位 ID 释放；未知 ID 拒绝，重复释放不会误删其他占位；配合 `--dry-run` 只预览。释放占位不会停止线程，仍活跃的线程继续由 BB 状态计数。正常结束的占位在后续派发时自动清理，未决占位持续保留供恢复，不按时间强制过期。
+`--concurrency-status` 只读输出整个 provider 的实时占用与仍在占用的最小事实，不写状态；其中 `usage` 为所有模型的总量，模型范围实际用量以派发时的 `selection.concurrency.used` 为准，登记模型可在 `reservations` 中查看。确认该次创建未成功，或对应回合已经结束后，用稳定占位 ID 释放；未知 ID 拒绝，重复释放不会误删其他占位；配合 `--dry-run` 只预览。释放占位不会停止线程，仍活跃的线程继续由 BB 状态计数。正常结束的占位在后续派发时自动清理，未决占位持续保留供恢复，不按时间强制过期。
 
 限制覆盖脚本的新建派发入口。旧线程继续对话、`--on-failure` 的原会话重试、BB 自动重试、直接创建线程不会先申请名额，仍可能与已派任务重叠；它们处于活跃状态时会影响下一次脚本派发。BB 已持久化线程状态、回合日志和父线程通知，可用 `bb thread show` / `bb thread log <线程ID> --all --json` 回看。此处只提供当前容量及恢复查询，不另建历史账本；并发等待时间与满额跳过次数暂不聚合，历史派发与质量裁决继续使用原有 `--history-summary`。
 
