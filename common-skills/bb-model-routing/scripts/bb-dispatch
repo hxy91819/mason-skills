@@ -143,6 +143,8 @@ def supports_service_tier(provider, model, tier):
     provider_ids = tier_ids(provider.get("serviceTiers"))
     if provider_ids is None or tier not in provider_ids:
         return False
+    if tier == "default":
+        return True
     model_ids = tier_ids(model.get("supportedServiceTiers"))
     return True if model_ids is None else tier in model_ids
 
@@ -1191,7 +1193,12 @@ def dispatch_unlocked(args, call, now, config, slots):
             levels = [entry.get("reasoningEffort") for entry in (selected_model.get("supportedReasoningEfforts") or [])]
             if reasoning is not None and reasoning not in levels:
                 raise DispatchError(f"模型 {model} 不支持 reasoning={reasoning}；可用值：{levels}。")
-            service_tier = "fast" if fast and supports_service_tier(selected, selected_model, "fast") else None
+            if fast and supports_service_tier(selected, selected_model, "fast"):
+                service_tier = "fast"
+            elif supports_service_tier(selected, selected_model, "default"):
+                service_tier = "default"
+            else:
+                service_tier = None
         except DispatchError as exc:
             attempts.append({"agent": alias, "error": str(exc)})
             continue

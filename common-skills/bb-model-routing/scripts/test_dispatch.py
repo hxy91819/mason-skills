@@ -285,18 +285,21 @@ environments:
         self.assertEqual(enabled['selection']['service_tier'], 'fast')
         self.assertEqual(enabled['argv'][enabled['argv'].index('--service-tier') + 1], 'fast')
 
-    def test_fast_false_never_passes_service_tier(self):
+    def test_fast_false_passes_default_when_supported_and_omits_when_unsupported(self):
         config = m.yaml.safe_load(self.config.read_text())
         config['fast'] = False
         self.config.write_text(m.yaml.safe_dump(config))
-        result = m.dispatch(self.args('--dry-run'), self.enable_fast_catalog())
-        self.assertIsNone(result['selection']['service_tier'])
-        self.assertNotIn('--service-tier', result['argv'])
+        unsupported = m.dispatch(self.args('--dry-run'), self.fake)
+        self.assertIsNone(unsupported['selection']['service_tier'])
+        self.assertNotIn('--service-tier', unsupported['argv'])
+        supported = m.dispatch(self.args('--dry-run'), self.enable_fast_catalog())
+        self.assertEqual(supported['selection']['service_tier'], 'default')
+        self.assertEqual(supported['argv'][supported['argv'].index('--service-tier') + 1], 'default')
 
-    def test_fast_skips_models_that_omit_the_tier(self):
+    def test_fast_passes_default_for_models_that_omit_fast(self):
         result = m.dispatch(self.args('--dry-run'), self.enable_fast_catalog(model_tiers=['default']))
-        self.assertIsNone(result['selection']['service_tier'])
-        self.assertNotIn('--service-tier', result['argv'])
+        self.assertEqual(result['selection']['service_tier'], 'default')
+        self.assertEqual(result['argv'][result['argv'].index('--service-tier') + 1], 'default')
 
     def test_environment_fast_override_and_invalid_value(self):
         config = m.yaml.safe_load(self.config.read_text())
@@ -304,7 +307,8 @@ environments:
         config['environments']['env'] = {'fast': False}
         self.config.write_text(m.yaml.safe_dump(config))
         result = m.dispatch(self.args('--environment', 'env', '--dry-run'), self.enable_fast_catalog())
-        self.assertIsNone(result['selection']['service_tier'])
+        self.assertEqual(result['selection']['service_tier'], 'default')
+        self.assertEqual(result['argv'][result['argv'].index('--service-tier') + 1], 'default')
         config['environments']['env']['fast'] = 'yes'
         self.config.write_text(m.yaml.safe_dump(config))
         with self.assertRaises(m.DispatchError):
