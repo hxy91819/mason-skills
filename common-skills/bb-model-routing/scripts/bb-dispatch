@@ -42,6 +42,25 @@ class DispatchError(Exception):
 ROUTE_KEYS = frozenset(("simple", "medium", "complex", "default"))
 DIFFICULTIES = ("simple", "medium", "complex")
 TITLE_PREFIXES = {"simple": "🟢", "medium": "🟡", "complex": "🔴"}
+SHAPED_TITLE_PREFIXES = {
+    "circle": {"simple": "🟢", "medium": "🟡", "complex": "🔴"},
+    "square": {"simple": "🟩", "medium": "🟨", "complex": "🟥"},
+    "heart": {"simple": "💚", "medium": "💛", "complex": "❤️"},
+}
+AGENT_SHAPES = {
+    "codex": "circle",
+    "codexl": "square",
+    "codex-l": "square",
+    "codexb": "heart",
+    "codex-b": "heart",
+}
+ALL_TITLE_PREFIXES = tuple(
+    dict.fromkeys(
+        ["[Agent]"]
+        + list(TITLE_PREFIXES.values())
+        + [char for s in SHAPED_TITLE_PREFIXES.values() for char in s.values()]
+    )
+)
 OUTCOME_KEYS = ("spawned", "completed", "failed", "failed_quota", "failed_transient", "failed_other")
 # failed 由线程状态自动识别；其余 failed_* 是旧版手动回写的取值，冷却时一视同仁。
 FAILED_OUTCOMES = ("failed", "failed_quota", "failed_transient", "failed_other")
@@ -149,18 +168,19 @@ def supports_service_tier(provider, model, tier):
     return True if model_ids is None else tier in model_ids
 
 
-def thread_title(title, task, difficulty):
+def thread_title(title, task, difficulty, shape="circle"):
     text = " ".join((title or "").split()) or " ".join(task.split())
-    prefixes = ("[Agent]", *TITLE_PREFIXES.values())
     while True:
-        prefix = next((p for p in prefixes if text == p or text.startswith(p + " ")), None)
+        prefix = next((p for p in ALL_TITLE_PREFIXES if text == p or text.startswith(p + " ")), None)
         if prefix is None:
             break
         text = text[len(prefix):].strip()
     text = text or "任务"
     if len(text) > 80:
         text = text[:79] + "…"
-    return TITLE_PREFIXES[difficulty] + " " + text
+    prefix_map = SHAPED_TITLE_PREFIXES.get(shape, TITLE_PREFIXES)
+    prefix_char = prefix_map.get(difficulty, "⚪")
+    return prefix_char + " " + text
 
 
 def effective_task_chars(task):
@@ -1209,7 +1229,9 @@ def dispatch_unlocked(args, call, now, config, slots):
         raise DispatchError(f"defaults.{route} 候选链 {chain} 均不可用：{detail}")
     index, alias, provider, model, reasoning, service_tier = choice
     fallbacks = chain[index + 1:]
-    title = thread_title(args.title, args.task, args.difficulty)
+    agent_cfg = agents.get(alias) if isinstance(agents.get(alias), dict) else {}
+    shape = agent_cfg.get("shape") or AGENT_SHAPES.get(alias) or AGENT_SHAPES.get(provider) or "circle"
+    title = thread_title(args.title, args.task, args.difficulty, shape=shape)
     # 父子关系不要求同项目：BB 的 --parent-thread 允许父线程在另一个项目，完成通知照常回到父线程。
     parent = context.get("thread") or {}
     if not parent and os.environ.get("BB_THREAD_ID"):
@@ -1341,7 +1363,7 @@ def parser():
     p.add_argument("--project", help="项目 ID；ID 模式默认环境所属项目，路径模式默认当前项目")
     p.add_argument("--environment", help="现有环境 ID 或本机工作区目录；默认当前 BB 环境")
     p.add_argument("--permission-mode", choices=["accept-edits", "auto", "full"], help="已获授权的权限；默认用户配置或 accept-edits")
-    p.add_argument("--title", help="可选标题正文；按难度自动加 🟢/🟡/🔴 前缀，省略时从任务文本截取")
+    p.add_argument("--title", help="可选标题正文；按难度和账号自动加颜色形状前缀（圆/方/心），省略时从任务文本截取")
     p.add_argument("--dry-run", action="store_true", help="只读校验并输出启动参数，不创建线程；配合 --on-failure 只给出动作，不安排重试、不写账本")
     p.add_argument("--concurrency-status", action="store_true", help="只读查看 provider 当前占用与未决并发占位，不依赖统计账本")
     p.add_argument("--release-reservation", metavar="占位ID", help="确认创建结果后移除指定占位；活跃线程仍按 BB 实时状态计数")

@@ -379,8 +379,11 @@ environments:
                  ('修复登录', '修复登录'),
                  ('  [Agent] [Agent] 修复\n登录 ', '修复 登录'),
                  ('🟢 🟡 🔴 [Agent] 修复登录', '修复登录'),
+                 ('🟩 🟨 🟥 💚 💛 ❤️ [Agent] 修复登录', '修复登录'),
                  ('[Agent]', '任务'),
                  ('🟢', '任务'),
+                 ('🟨', '任务'),
+                 ('❤️', '任务'),
                  ('文' * 100, '文' * 79 + '…')]
         for supplied, expected in cases:
             for difficulty, prefix in [('simple', '🟢'), ('medium', '🟡'), ('complex', '🔴')]:
@@ -395,6 +398,35 @@ environments:
                         command = result['argv'] if dry_run else self.calls[-1]
                         self.assertEqual(command[command.index('--title') + 1], prefix + ' ' + expected)
                         self.assertEqual(result['selection']['title'], prefix + ' ' + expected)
+
+    def test_shaped_title_prefixes_by_agent_and_shape(self):
+        config = m.yaml.safe_load(self.config.read_text())
+        config['agents']['codexl'] = {
+            'provider': 'primary',
+            'routes': {'medium': {'model': 'medium-model', 'reasoning': 'low'}}
+        }
+        config['agents']['codexb'] = {
+            'provider': 'primary',
+            'routes': {'complex': {'model': 'fast-model', 'reasoning': 'low'}}
+        }
+        config['agents']['custom_agent'] = {
+            'provider': 'primary',
+            'shape': 'heart',
+            'routes': {'simple': {'model': 'fast-model', 'reasoning': 'low'}}
+        }
+        config['defaults']['medium'] = 'codexl'
+        config['defaults']['complex'] = 'codexb'
+        config['defaults']['simple'] = 'custom_agent'
+        self.config.write_text(m.yaml.safe_dump(config))
+
+        res_l = m.dispatch(self.args('--difficulty', 'medium', '--title', '测试任务', '--dry-run'), self.fake)
+        self.assertEqual(res_l['selection']['title'], '🟨 测试任务')
+
+        res_b = m.dispatch(self.args('--difficulty', 'complex', '--title', '测试任务', '--dry-run'), self.fake)
+        self.assertEqual(res_b['selection']['title'], '❤️ 测试任务')
+
+        res_custom = m.dispatch(self.args('--difficulty', 'simple', '--title', '测试任务', '--dry-run'), self.fake)
+        self.assertEqual(res_custom['selection']['title'], '💚 测试任务')
 
     def test_spawn_failure_is_not_retried(self):
         def failing(*args):
