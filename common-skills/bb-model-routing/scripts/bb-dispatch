@@ -968,10 +968,16 @@ class ConcurrencySlots:
 
     @staticmethod
     def occupied(thread):
-        # error 代表本轮失败；后续重试和 tell 不经过新建入口，不在本限制范围。
-        return not (thread.get("status") in ("idle", "error")
-                    and thread.get("queuedWork") == "none"
-                    and thread.get("hasPendingInteraction") is False)
+        # 归档阻止队列继续派发；残留消息和交互不再预留容量。
+        if thread.get("archivedAt") is not None:
+            return False
+        if thread.get("hasPendingInteraction") is not False:
+            return True
+        # error 的普通排队消息等待 retry，不代表正在执行；未知队列状态仍保守计数。
+        # 原会话/自动重试不经过新建入口，启动后由实时状态重新计数。
+        if thread.get("status") == "error":
+            return thread.get("queuedWork") not in ("none", "waiting", "failed")
+        return not (thread.get("status") == "idle" and thread.get("queuedWork") == "none")
 
     def refresh(self):
         if self.threads is not None:
@@ -985,7 +991,9 @@ class ConcurrencySlots:
             thread = self.threads.get(item.get("thread"))
             # 未知创建结果、线程暂未可见，均保持占位。idle 还需结束事件，避免初始 idle 提早释放。
             if thread is not None and not self.occupied(thread):
-                if turns_ended_since(self.call, thread["id"], item["ts"]):
+                # 归档本身足以终止派发资格，不要求存在 turn/completed 日志。
+                if (thread.get("archivedAt") is not None
+                        or turns_ended_since(self.call, thread["id"], item["ts"])):
                     continue
             keep.append(item)
         self.reservations = keep

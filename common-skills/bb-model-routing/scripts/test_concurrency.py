@@ -63,7 +63,7 @@ class ConcurrencyTests(unittest.TestCase):
 
     def running(self, status='active', queued='none', interaction=False):
         return {'id': 'created_1', 'providerId': 'primary', 'status': status,
-                'queuedWork': queued, 'hasPendingInteraction': interaction}
+                'queuedWork': queued, 'hasPendingInteraction': interaction, 'archivedAt': None}
 
     def test_shared_across_difficulties_and_ledgers_then_releases_after_turn(self):
         first = m.dispatch(self.args(), self.fake)
@@ -83,7 +83,8 @@ class ConcurrencyTests(unittest.TestCase):
     def test_live_active_queued_interaction_and_unknown_states_are_occupied(self):
         for status, queued, interaction in [('active', 'none', False), ('idle', 'waiting', False),
                                              ('idle', 'none', True), ('stopping', 'none', False),
-                                             ('error', 'waiting', False)]:
+                                             ('error', 'waiting', True), ('error', 'unknown', False),
+                                             ('error', 'waiting', None), ('unknown', 'none', False)]:
             with self.subTest(status=status, queued=queued, interaction=interaction):
                 self.threads = [self.running(status, queued, interaction)]
                 result = m.dispatch(self.args('--dry-run'), self.fake)
@@ -91,6 +92,42 @@ class ConcurrencyTests(unittest.TestCase):
                 self.assertIn('并发已满', result['selection']['attempts'][0]['error'])
         self.assertFalse(self.state.exists())
         self.assertFalse(any(c[:2] == ('thread', 'spawn') for c in self.calls))
+
+    def test_archived_queued_threads_do_not_occupy_capacity(self):
+        for status in ('idle', 'error', 'active'):
+            with self.subTest(status=status):
+                self.threads = [{**self.running(status, 'waiting', True), 'archivedAt': 1234}]
+                result = m.dispatch(self.args('--dry-run'), self.fake)
+                self.assertEqual(result['selection']['provider'], 'primary')
+                self.assertEqual(result['selection']['concurrency']['used'], 0)
+        self.assertFalse(self.state.exists())
+
+    def test_archived_thread_releases_reservation_without_turn_end(self):
+        m.dispatch(self.args(), self.fake)
+        self.threads = [{**self.running('error', 'waiting'), 'archivedAt': 1234}]
+        before = self.state.read_bytes()
+        status = m.concurrency_command(self.args('--concurrency-status'), self.fake)
+        self.assertEqual(status['usage']['primary'], 0)
+        self.assertEqual(status['reservations'], [])
+        self.assertEqual(self.state.read_bytes(), before)
+        self.assertEqual(m.dispatch(self.args('--dry-run'), self.fake)['selection']['provider'], 'primary')
+
+    def test_error_queued_messages_waiting_for_retry_do_not_occupy_capacity(self):
+        for queued in ('none', 'waiting', 'failed'):
+            with self.subTest(queued=queued):
+                self.threads = [{**self.running('error', queued), 'archivedAt': None}]
+                result = m.dispatch(self.args('--dry-run'), self.fake)
+                self.assertEqual(result['selection']['provider'], 'primary')
+                self.assertEqual(result['selection']['concurrency']['used'], 0)
+        self.assertFalse(self.state.exists())
+
+    def test_error_queued_reservation_releases_after_failed_turn(self):
+        m.dispatch(self.args(), self.fake)
+        self.threads = [self.running('error', 'waiting')]
+        # 没有结束事件的已登记创建仍保守占位。
+        self.assertEqual(m.dispatch(self.args('--dry-run'), self.fake)['selection']['provider'], 'specialist')
+        self.turns['created_1'] = [(int(time.time()) + 1, 'failed')]
+        self.assertEqual(m.dispatch(self.args('--dry-run'), self.fake)['selection']['provider'], 'primary')
 
     def test_capacity_does_not_cool_or_change_ledger_and_cannot_be_bypassed(self):
         self.threads = [self.running()]
