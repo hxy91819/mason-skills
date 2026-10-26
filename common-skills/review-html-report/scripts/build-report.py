@@ -14,6 +14,7 @@ import base64
 import html
 import io
 import json
+import math
 import pathlib
 import sys
 from string import Template
@@ -108,6 +109,9 @@ def box_pct(finding, img_path, fid, problems):
     except (TypeError, ValueError):
         problems.append(f"finding {fid}: boxPct 必须是 [l,t,w,h] 数字，红框已省略")
         return None
+    if not all(math.isfinite(v) for v in (left, top, width, height)):
+        problems.append(f"finding {fid}: 红框坐标必须是有限数字，红框已省略")
+        return None
     # 先钳制到画布内，再检查尺寸：超界框钳制后可能变成零尺寸，同样视为无效。
     left, top = max(0.0, min(left, 100.0)), max(0.0, min(top, 100.0))
     width, height = min(width, 100.0 - left), min(height, 100.0 - top)
@@ -115,6 +119,30 @@ def box_pct(finding, img_path, fid, problems):
         problems.append(f"finding {fid}: 红框必须在截图内且宽高大于 0，红框已省略")
         return None
     return left, top, width, height
+
+
+def comparison_boxes(raw, img_path, fid, problems):
+    """接受单框、多框及带 label 的 {box, label}，复用原有像素换算。"""
+    if raw is None or raw == []:
+        return ""
+    entries = raw if isinstance(raw, list) else [raw]
+    if len(entries) == 4 and all(isinstance(v, (int, float)) for v in entries):
+        entries = [entries]
+    rendered = []
+    for entry in entries:
+        box = entry.get("box") if isinstance(entry, dict) else entry
+        label = entry.get("label", "") if isinstance(entry, dict) else ""
+        geo = box_pct({"box": box}, img_path, fid, problems)
+        if geo is None:
+            if box is None:
+                problems.append(f"finding {fid}: 缺少 box 坐标，红框已省略")
+            continue
+        left, top, width, height = geo
+        tag = f'<span class="rlabel">{esc(label)}</span>' if label else ""
+        below = " below" if top < 8 else ""
+        rendered.append(f'<div class="rbox{below}" style="left:{left:.2f}%;top:{top:.2f}%;'
+                        f'width:{width:.2f}%;height:{height:.2f}%">{tag}</div>')
+    return "".join(rendered)
 
 
 # 对照滑块：图框内竖条切换改前/改后；直接拖图内竖条或下方滑杆都能移动分界。
@@ -125,16 +153,16 @@ COMPARE = Template("""
   </div>
   <div class="compare">
     <div class="wipe">
-      <img class="img-before" src="$before" alt="$pid 改前">
-      <div class="after-clip"><img class="img-after" src="$after" alt="$pid 改后"></div>
+      <div class="before-layer"><img class="img-before" src="$before" alt="$pid 改前">$before_boxes</div>
+      <div class="after-clip"><img class="img-after" src="$after" alt="$pid 改后">$after_boxes</div>
       <span class="tag l">改前</span><span class="tag r">改后</span>
       <div class="handle"></div>
     </div>
     <input type="range" class="slider" aria-label="$pid 改前改后分界" min="0" max="100" value="50">
   </div>
   <div class="sbs">
-    <figure><img class="img-before" src="$before" alt="$pid 改前"><figcaption>改前</figcaption></figure>
-    <figure><img class="img-after" src="$after" alt="$pid 改后"><figcaption>改后</figcaption></figure>
+    <figure><div class="annotation-image"><img class="img-before" src="$before" alt="$pid 改前">$before_boxes</div><figcaption>改前</figcaption></figure>
+    <figure><div class="annotation-image"><img class="img-after" src="$after" alt="$pid 改后">$after_boxes</div><figcaption>改后</figcaption></figure>
   </div>
 """)
 
@@ -228,6 +256,7 @@ DOC = Template("""<!DOCTYPE html>
           touch-action:none; cursor:col-resize; }
   .wipe img { width:100%; display:block; user-select:none; -webkit-user-drag:none; }
   /* 整图保持同位，只裁去左侧；百分比布局在隐藏、恢复和 resize 后仍由浏览器求值。 */
+  .before-layer { position:relative; clip-path:inset(0 calc(100% - var(--split, 50%)) 0 0); }
   .after-clip { position:absolute; inset:0; clip-path:inset(0 0 0 var(--split, 50%)); }
   .after-clip img { height:100%; }
   .handle { position:absolute; top:0; bottom:0; left:50%; width:2px; background:#d61f69; }
@@ -321,7 +350,7 @@ DOC = Template("""<!DOCTYPE html>
     }
     setSplit(cmp, slider.value);
   }
-  for (const card of document.querySelectorAll('.fold')) {
+  for (const card of document.querySelectorAll('.cmp')) {
     card.querySelector('.side')?.addEventListener('change', (e) => card.classList.toggle('is-side', e.target.checked));
 
   }
@@ -492,8 +521,9 @@ def build(data: dict, max_width: int) -> tuple[str, dict]:
         return (f'<figure class="annotated"><div class="annotation-image"><img src="{uri}" alt="{alt}">{box_html}</div>'
                 f'<figcaption>{caption}</figcaption></figure>')
 
-    def compare_block(cid, before_uri, after_uri):
-        body = COMPARE.substitute(pid=cid, before=before_uri, after=after_uri)
+    def compare_block(cid, before_uri, after_uri, before_boxes="", after_boxes=""):
+        body = COMPARE.substitute(pid=cid, before=before_uri, after=after_uri,
+                                  before_boxes=before_boxes, after_boxes=after_boxes)
         return f'<div class="cmp">{body}</div>'
 
     # ---- 问题与修复（主结构）----
@@ -512,16 +542,39 @@ def build(data: dict, max_width: int) -> tuple[str, dict]:
             short = f.get("changeSummary") or f.get("short") or ""
             short_html = (f'<p class="short"><span class="mk">问题：</span>{esc(short)}</p>'
                           if short and short != f.get("title") else "")
-            # 对照图：finding 级 beforeImg/afterImg 优先，缺省回落页级；两图齐全才渲染。
-            fb = f.get("beforeImg") or (page.get("before") if page else None)
-            fa = f.get("afterImg") or (page.get("after") if page else None)
-            fb_uri = img(fb, f"{fid} beforeImg") if fb and resolution == "fixed" else ""
-            fa_uri = img(fa, f"{fid} afterImg") if fa and resolution == "fixed" else ""
             compare = ""
-            if fb_uri and fa_uri and resolution == "fixed" and fb_uri != fa_uri:
-                compare = compare_block(esc_fid, fb_uri, fa_uri)
-            elif resolution == "fixed" and (page or {}).get("evidenceMode", data.get("evidenceMode", "visual")) == "visual" and not (fb_uri and fa_uri):
-                problems.append(f"finding {esc_fid}: 对照图需要改前改后两张真实截图，当前缺少其一，仅显示红框现状")
+            steps = f.get("steps")
+            if steps is not None and (not isinstance(steps, list) or not steps or
+                                      any(not isinstance(step, dict) for step in steps)):
+                raise ValueError(f"finding {fid}: steps 必须是非空对象数组")
+            comparisons = steps if steps is not None else [f]
+            if resolution == "fixed":
+                for index, item in enumerate(comparisons, 1):
+                    cid = f"{fid} 步骤 {index}" if steps is not None else fid
+                    # 步骤图不回落到页级，避免把同一静态页误当操作序列。
+                    fb = item.get("beforeImg") or ((page or {}).get("before") if steps is None else None)
+                    fa = item.get("afterImg") or ((page or {}).get("after") if steps is None else None)
+                    fb_uri = img(fb, f"{cid} beforeImg") if fb else ""
+                    fa_uri = img(fa, f"{cid} afterImg") if fa else ""
+                    visual = (finding_category(f) == "visual" and
+                              (page or {}).get("evidenceMode", data.get("evidenceMode", "visual")) == "visual")
+                    if fb_uri and fa_uri:
+                        before_boxes = comparison_boxes(item.get("beforeBox"), fb, cid + " beforeBox", problems)
+                        after_boxes = comparison_boxes(item.get("afterBox"), fa, cid + " afterBox", problems)
+                        if visual:
+                            for key, rendered in (("beforeBox", before_boxes), ("afterBox", after_boxes)):
+                                if not rendered:
+                                    problems.append(f"finding {cid}: 缺少有效 {key}，前后图都必须红框标注改动点")
+                            before_size, after_size = image_size(pathlib.Path(fb)), image_size(pathlib.Path(fa))
+                            if not before_size or not after_size or before_size != after_size:
+                                problems.append(f"finding {cid}: 前后图尺寸不同或无法读取：{before_size} / {after_size}")
+                        heading = f'<h3>{index}. {esc(item.get("title", ""))}</h3>' if steps is not None else ""
+                        look = f'<p class="look-here">看这里：{esc(item["lookHere"])}</p>' if item.get("lookHere") else ""
+                        compare += heading + look
+                        if fb_uri != fa_uri:
+                            compare += compare_block(esc(cid), fb_uri, fa_uri, before_boxes, after_boxes)
+                    elif visual:
+                        problems.append(f"finding {cid}: 对照图需要改前改后两张真实截图，当前缺少其一，仅显示红框现状")
             delta = ""
             if f.get("before") or f.get("after"):
                 delta = (f"<p class='mono delta'>现状 → 复验结果：{esc(f.get('before'))} → "

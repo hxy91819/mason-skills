@@ -127,6 +127,7 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(json.loads(self.run_report('--check').stdout)['status'], 'incomplete')
         self.data['pages'][0].update(after=str(self.root / 'after.png'))
         self.data['pages'][0]['review']['after'] = 'Evidence is now large enough in the slide.'
+        self.data['findings'][0].update(beforeBox=[64, 90, 200, 100], afterBox=[64, 90, 200, 100])
         self.assertEqual(json.loads(self.run_report('--check').stdout)['status'], 'fixed')
 
     def test_invalid_status_duplicate_pages_and_missing_after_image(self):
@@ -362,7 +363,8 @@ class ReportTests(unittest.TestCase):
         self.data['findings'] = [
             {'id': 'V1', 'category': 'visual', 'kind': 'evidence', 'page': 'p1',
              'severity': 'should', 'title': 'Evidence text too small',
-             'resolution': 'fixed', 'fix': 'Increase font size'},
+             'resolution': 'fixed', 'fix': 'Increase font size',
+             'beforeBox': [64, 90, 200, 100], 'afterBox': [64, 90, 200, 100]},
             {'id': 'C1', 'category': 'content', 'kind': 'evidence', 'page': 'p1',
              'severity': 'should', 'title': 'Survey lacks sample size',
              'resolution': 'open', 'fix': 'Ask author to supply survey scope'}]
@@ -427,6 +429,89 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout)['pending'], 1)
         source = json.loads((self.root / 'input.json').read_text())
         self.assertEqual(source['commands'][0]['cmd'], 'INTERNAL_COMMAND')
+
+    def repair(self):
+        self.covered()
+        self.data['mode'] = 'fix'
+        self.data['pages'][0].update(after=str(self.root / 'after.png'))
+        self.data['pages'][0]['review']['after'] = 'Verified changed state.'
+        f = {'id': 'V1', 'page': 'p1', 'severity': 'should', 'resolution': 'fixed',
+             'fix': 'spacing', 'beforeBox': [64, 90, 512, 180],
+             'afterBox': [64, 90, 512, 180], 'lookHere': 'Compare the outlined region.'}
+        self.data['findings'] = [f]
+        return f
+
+    def test_comparison_boxes_pixel_conversion_and_multiple_labels(self):
+        f = self.repair()
+        f['beforeBox'] = [[64, 90, 128, 90], {'box': [320, 180, 128, 90], 'label': '<second>'}]
+        f['afterBox'] = {'box': [64, 90, 512, 180], 'label': 'changed'}
+        result = self.run_report('--max-width', '320')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['status'], 'fixed')
+        html = (self.root / 'report.html').read_text()
+        self.assertIn('left:10.00%;top:25.00%;width:20.00%;height:25.00%', html)
+        self.assertIn('left:50.00%;top:50.00%;width:20.00%;height:25.00%', html)
+        self.assertEqual(html.count('&lt;second&gt;'), 2)
+        self.assertIn('看这里：Compare the outlined region.', html)
+
+    def test_missing_or_invalid_comparison_boxes_limit_check(self):
+        for key in ('beforeBox', 'afterBox'):
+            for value in (None, [], [0, 0, 0, 10], [0, 0, float('nan'), 10]):
+                with self.subTest(key=key, value=value):
+                    f = self.repair()
+                    f[key] = value
+                    summary = json.loads(self.run_report('--check').stdout)
+                    self.assertEqual(summary['status'], 'incomplete')
+                    self.assertTrue(any(key in limit for limit in summary['limits']))
+
+    def test_different_comparison_dimensions_limit_check(self):
+        f = self.repair()
+        Image.new('RGB', (640, 400), 'white').save(self.root / 'tall.png')
+        f['afterImg'] = str(self.root / 'tall.png')
+        summary = json.loads(self.run_report('--check').stdout)
+        self.assertEqual(summary['status'], 'incomplete')
+        self.assertTrue(any('尺寸不同' in limit for limit in summary['limits']))
+
+    def test_steps_render_and_each_step_is_checked(self):
+        f = self.repair()
+        f['steps'] = [dict(title=title, beforeImg=str(self.root / 'before.png'),
+                           afterImg=str(self.root / 'after.png'), beforeBox=f['beforeBox'],
+                           afterBox=f['afterBox'], lookHere='Outcome ' + title)
+                      for title in ('Open editor', 'Other login', 'Save result')]
+        result = self.run_report()
+        self.assertEqual(json.loads(result.stdout)['status'], 'fixed')
+        html = (self.root / 'report.html').read_text()
+        self.assertEqual(html.count('class="slider"'), 3)
+        for step in f['steps']:
+            self.assertIn(step['title'], html)
+            self.assertIn(step['lookHere'], html)
+        observations, _ = self.browser()
+        self.assertEqual(observations['sideStates'], [True, False, False])
+        f['steps'][1].pop('afterBox')
+        summary = json.loads(self.run_report('--check').stdout)
+        self.assertEqual(summary['status'], 'incomplete')
+        self.assertTrue(any('步骤 2' in limit and 'afterBox' in limit for limit in summary['limits']))
+        f['steps'][1].pop('beforeImg')
+        self.assertIn('缺少其一', self.run_report('--check').stdout)
+
+    def test_browser_comparison_annotations_are_clipped(self):
+        f = self.repair()
+        f["afterBox"] = [128, 90, 384, 180]
+        self.assertEqual(self.run_report().returncode, 0)
+        observations, shots = self.browser()
+        self.assertEqual(observations['sideBoxCounts'], [1, 1])
+        for name in ('middle', 'hidden-resize-middle', 'resize'):
+            img = Image.open(shots / (name + '.png')).convert('RGB')
+            # 四条边可区分两层：改前 .1/.9，改后 .2/.8。
+            for x, expected in ((.1, True), (.9, False), (.2, False), (.8, True)):
+                px = img.getpixel((1 + int((img.width - 2) * x) + (1 if x < .5 else -1), 1 + int((img.height - 2) * .4)))
+                is_red = max(abs(a-b) for a,b in zip(px, RED)) < 35
+                self.assertEqual(is_red, expected, (name, x, px))
+        side = Image.open(shots / 'side.png').convert('RGB')
+        for box, x in zip(observations['sideImages'], (.1, .2)):
+            px = side.getpixel((int(box['x'] - observations['sideBox']['x'] + box['width']*x)+1,
+                                int(box['y'] - observations['sideBox']['y'] + box['height']*.4)))
+            self.assertLess(max(abs(a-b) for a,b in zip(px, RED)), 35, px)
 
     def test_browser_comparison_pixels(self):
         self.data['findings'] = [{'id': 'V1', 'page': 'p1', 'severity': 'should', 'resolution': 'fixed', 'fix': 'spacing'}]

@@ -64,9 +64,11 @@ if (process.argv.includes('--help') || process.argv.includes('-h')) {
       await shot('drag');
       const side = page.locator('.side').first();
       await side.check();
-      result.sideLabels = await page.locator('.sbs figcaption').allTextContents();
+      result.sideBoxCounts = await page.locator('.sbs').first().locator('.annotation-image').evaluateAll(nodes => nodes.map(node => node.querySelectorAll('.rbox').length));
+      result.sideStates = await page.locator('.cmp').evaluateAll(nodes => nodes.map(node => node.classList.contains('is-side')));
+      result.sideLabels = await page.locator('.sbs').first().locator('figcaption').allTextContents();
       const sideBox = await page.locator('.sbs').first().boundingBox();
-      const sideImages = await page.locator('.sbs img').evaluateAll(imgs => imgs.map(img => {
+      const sideImages = await page.locator('.sbs').first().locator('img').evaluateAll(imgs => imgs.map(img => {
         const r = img.getBoundingClientRect(); return { x:r.x, y:r.y, width:r.width, height:r.height };
       }));
       await page.locator('.sbs').first().screenshot({ path: path.join(out, 'side.png') });
@@ -85,7 +87,7 @@ if (process.argv.includes('--help') || process.argv.includes('-h')) {
       result.sideBox = sideBox;
       result.sideImages = sideImages;
     }
-    const rbox = page.locator('.rbox').first();
+    const rbox = page.locator('.annotated .rbox').first();
     if (await rbox.count()) {
       const figure = page.locator('.annotated').first();
       const imgBox = await figure.locator('img').boundingBox();

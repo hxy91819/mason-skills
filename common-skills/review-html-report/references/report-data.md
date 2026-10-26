@@ -43,9 +43,38 @@
 | `annotatedImg` | 已画红框的真实局部图，适合只读 spec-leak finding；渲染器直接内嵌，不再二次画框 |
 | `img/box/boxPct/label` | 已修项的原始证据图与红框。box 为该图像素 `[x,y,w,h]`，boxPct 为百分比；label 是短标签 |
 | `beforeImg/afterImg` | 实际修复前后图；省略时回落到关联页的 before/after，仅 fixed 项显示滑块 |
+| `beforeBox/afterBox` | 各自对应 beforeImg/afterImg 的截图像素框 `[x,y,w,h]`；支持多框 `[[x,y,w,h], ...]`，带标签用 `{"box": [x,y,w,h], "label": "改动点"}`，可单独使用或混入多框数组。与现有 `.rbox` 同样式，滑块两层分别裁切，并排两图分别画框 |
+| `lookHere` | 一句「看哪里」的提示，指出两框中的具体变化 |
+| `steps` | 行为修补的有序操作序列，非空数组；每步为 `{title, beforeImg, afterImg, beforeBox, afterBox, lookHere}`。提供时替代 finding 级单组对照，步骤图片不回落页级，避免重复静态图冒充操作证据 |
 | `before/after` | 可选，现状与复验结果的文字说明，不是图片路径 |
 
 HTML 的采纳/讨论/驳回是审阅反馈，不会把 `resolution` 改为已修复。只有上游实际修改并复验后才能写 fixed。
+
+## 前后图采集与标注
+
+前后图必须同一画面、同视口、同滚动位置；以改动元素滚入视窗为锚，固定截图范围后分别采集。两张都画红框，并用 `lookHere` 说明框内发生什么变化；新增元素的 `beforeBox` 标在它应出现的位置。`box` 是原始证据图的旧字段，不能代替两张对照图各自的框。
+
+`category: visual` 且视觉证据模式、`resolution: fixed` 的项，每组双图缺 `beforeBox` 或 `afterBox`（含无有效框）、或图片原始像素尺寸不同／无法读取，均记入 `limits`；报告状态为 incomplete，`--check` 输出具体 finding／步骤与原因，即使两张图片相同也检查。`--check` 保持现有退出码语义：一致性缺口在 JSON 中报告，图片读取失败仍退出非零。是否同画面与同滚动位置由采集者确认，尺寸检查不能证明这一点。
+
+坐标建议由 Playwright 的 `locator.boundingBox()` 获取。它返回视口 CSS 像素；视口截图按截图像素与 CSS 视口比例缩放；整页截图的 y 还要加 `scrollY`；局部截图先减去裁切区域原点再缩放。以最终原图像素填写，不按报告内缩放后的图片重算。
+
+```json
+{
+  "id": "V05", "page": "editor", "severity": "should", "category": "visual",
+  "resolution": "fixed", "fix": "保存时正确处理另一账号登录后的状态",
+  "steps": [
+    {
+      "title": "打开编辑页，再由另一账号登录后保存",
+      "beforeImg": "/artifacts/save-before.png", "afterImg": "/artifacts/save-after.png",
+      "beforeBox": {"box": [80, 160, 400, 100], "label": "保存报错"},
+      "afterBox": [[80, 160, 400, 100], [500, 160, 120, 40]],
+      "lookHere": "看保存结果：改前报错，改后显示保存成功。"
+    }
+  ]
+}
+```
+
+行为修补按真实操作顺序添加多步，分别呈现打开编辑页、另一账号登录、保存结果等关键状态，每步都提供双图、双框和一句提示。静态最终页不能证明操作序列；准备尚未完成时保留上游未复验状态。
 
 ## PPT 映射
 
