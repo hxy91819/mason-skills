@@ -1,4 +1,5 @@
-"""验证 BB 管家工作簿门禁与提交节流逻辑。"""
+"""验证 BB 管家工作簿门禁、提交节流与收尾对账逻辑。"""
+from datetime import datetime
 from pathlib import Path
 import sys
 import tempfile
@@ -6,6 +7,43 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import steward_workbook as sw
+
+NOW = datetime(2026, 10, 26, 18, 0)
+
+RECONCILED_WORKBOOK = """# 把维护教训落到新仓库
+
+更新：2026-10-26
+
+## 路线
+
+- [x] 阶段 1：盘点仓库
+- [ ] 阶段 2：布局整理 ← 进行中 thr_aaaaaa1111
+- [ ] 阶段 3：真机验收 ← 等用户
+- [ ] 阶段 4：主服切换窗口 ← 定时 10-26 22:10 打开窗口
+- [ ] 阶段 5：发布镜像 ← 排在 阶段 4 后：用窗口切换后的新版本
+
+## 关键决策
+
+- 2026-10-26 环境名只用 test/prod。原因：避免撞名。影响：部署。
+
+## 用户待办
+
+| 状态 | 事项 | 为什么只能用户做 | 挡住 | 提出 |
+| --- | --- | --- | --- | --- |
+| 待办 | iPad 打开更新页验收 | 真机线下：只有用户有设备 | 阶段 3 | 2026-10-26 |
+| 待办 | 轮换令牌 | 凭据账号：令牌归用户 | 不挡 | 2026-10-26 |
+"""
+
+
+def thread(tid, status="idle", idle_minutes=120, **flags):
+    info = {"id": tid, "status": status, "archived": False, "queued": False, "interaction": False,
+            "background": False, "updated_at": NOW.timestamp() - idle_minutes * 60, "parent": None}
+    info.update(flags)
+    return info
+
+
+def kinds(result):
+    return [(p["kind"], p["severity"]) for p in result["problems"]]
 
 VALID_WORKBOOK = """# 项目介绍与 demo 的持续完善
 
@@ -102,6 +140,141 @@ class StewardWorkbookTests(unittest.TestCase):
             self.assertTrue(r_todo["ok"])
             self.assertTrue(r_todo["should_commit"])
             self.assertIn("用户待办", r_todo["changed_sections"])
+
+    def test_should_commit_tracks_state_changes_but_not_thread_ids(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "workbook.md"
+            check_args = {
+                "max_nonempty_lines": sw.DEFAULT_MAX_NONEMPTY_LINES,
+                "max_line_chars": sw.DEFAULT_MAX_LINE_CHARS,
+                "max_route_items": sw.DEFAULT_MAX_ROUTE_ITEMS,
+                "max_decisions": sw.DEFAULT_MAX_DECISIONS,
+            }
+            cases = [
+                ("thr_aaaaaa1111", "thr_bbbbbb2222", False),
+                ("阶段 3：真机验收 ← 等用户", "阶段 3：真机验收 ← 进行中 thr_cccccc3333", True),
+                ("定时 10-26 22:10 打开窗口", "定时 10-27 08:00 打开窗口", True),
+            ]
+            for old, new, expected in cases:
+                p.write_text(RECONCILED_WORKBOOK.replace(old, new))
+                res = sw.should_commit_workbook(p, check_args, baseline_text=RECONCILED_WORKBOOK)
+                self.assertEqual(res["should_commit"], expected, (old, new))
+
+
+class ReconcileTests(unittest.TestCase):
+    def test_running_references_exclude_completed_and_other_states(self):
+        text = RECONCILED_WORKBOOK.replace("- [x] 阶段 1：盘点仓库", "- [x] 阶段 1：盘点仓库 ← 进行中 thr_done000001")
+        text = text.replace("← 等用户", "← 等用户 thr_wait000001")
+        self.assertEqual(sw.running_thread_ids(text), ["thr_aaaaaa1111"])
+        self.assertIn("thr_done000001", sw.reconcile_workbook(text)["referenced_threads"])
+
+    def test_every_open_row_in_a_valid_state_passes(self):
+        res = sw.reconcile_workbook(RECONCILED_WORKBOOK, now=NOW)
+        self.assertTrue(res["ok"], res["problems"])
+        self.assertEqual(res["problems"], [])
+        self.assertEqual(res["stats"]["open_rows"], 4)
+        self.assertEqual(res["referenced_threads"], ["thr_aaaaaa1111"])
+
+    def test_rows_without_a_concrete_state_are_flagged(self):
+        broken = (RECONCILED_WORKBOOK
+                  .replace("← 进行中 thr_aaaaaa1111", "← 进行中")
+                  .replace("← 等用户", "← 随后")
+                  .replace("定时 10-26 22:10 打开窗口", "定时 今晚")
+                  .replace("：用窗口切换后的新版本", "")
+                  .replace("- [x] 阶段 1：盘点仓库", "- [x] 阶段 1：盘点仓库\n- [ ] 阶段 6：远景规划"))
+        res = sw.reconcile_workbook(broken, now=NOW)
+        self.assertFalse(res["ok"])
+        details = {p["label"]: p["detail"] for p in res["problems"] if p["kind"] == "no_state"}
+        self.assertEqual(details["阶段 2"], "进行中但没写线程 ID")
+        self.assertIn("不在四种之内", details["阶段 3"])
+        self.assertEqual(details["阶段 4"], "定时没写 MM-DD HH:MM")
+        self.assertEqual(details["阶段 5"], "排在…后 没写依赖的产出")
+        self.assertEqual(details["阶段 6"], "缺状态")
+
+    def test_passed_schedule_is_flagged_after_grace(self):
+        res = sw.reconcile_workbook(RECONCILED_WORKBOOK, now=datetime(2026, 10, 26, 22, 30))
+        self.assertTrue(res["ok"])
+        late = sw.reconcile_workbook(RECONCILED_WORKBOOK, now=datetime(2026, 10, 26, 22, 41))
+        self.assertIn(("schedule_passed", "nudge"), kinds(late))
+
+    def test_waiting_on_user_needs_an_open_todo_that_blocks_that_row(self):
+        unbacked = RECONCILED_WORKBOOK.replace("| 待办 | iPad", "| 已完成 | iPad")
+        self.assertIn(("user_wait_unbacked", "nudge"), kinds(sw.reconcile_workbook(unbacked, now=NOW)))
+
+        # 另一行也标等用户，但唯一的待办只挡阶段 3：只有新行被点名。
+        two_waits = RECONCILED_WORKBOOK.replace("- [ ] 阶段 3：真机验收 ← 等用户",
+                                                "- [ ] 阶段 3：真机验收 ← 等用户\n- [ ] 阶段 6：灰度 ← 等用户")
+        res = sw.reconcile_workbook(two_waits, now=NOW)
+        self.assertEqual([(p["kind"], p["label"]) for p in res["problems"]], [("user_wait_unbacked", "阶段 6")])
+
+        ranged = two_waits.replace("| 真机线下：只有用户有设备 | 阶段 3 |", "| 真机线下：只有用户有设备 | 阶段 3–6 |")
+        self.assertTrue(sw.reconcile_workbook(ranged, now=NOW)["ok"])
+
+        by_title = (RECONCILED_WORKBOOK.replace("- [ ] 阶段 3：真机验收 ← 等用户", "- [ ] 团队试用反馈：等 #90 ← 等用户")
+                    .replace("| 阶段 3 | 2026-10-26 |", "| 团队试用反馈 | 2026-10-26 |"))
+        self.assertTrue(sw.reconcile_workbook(by_title, now=NOW)["ok"])
+
+    def test_queued_row_must_move_once_its_dependency_is_done(self):
+        self.assertTrue(sw.reconcile_workbook(RECONCILED_WORKBOOK, now=NOW)["ok"])
+        done = RECONCILED_WORKBOOK.replace("- [ ] 阶段 4：主服切换窗口 ← 定时 10-26 22:10 打开窗口", "- [x] 阶段 4：主服切换窗口")
+        self.assertIn(("dependency_done", "nudge"), kinds(sw.reconcile_workbook(done, now=NOW)))
+
+        merged = (RECONCILED_WORKBOOK.replace("- [ ] 阶段 4：主服切换窗口 ← 定时 10-26 22:10 打开窗口\n", "")
+                  .replace("- [x] 阶段 1：盘点仓库", "- [x] 阶段1–4、9：均已交付"))
+        merged = merged.replace("- [ ] 阶段 2：布局整理 ← 进行中 thr_aaaaaa1111\n", "").replace(
+            "- [ ] 阶段 3：真机验收 ← 等用户", "- [ ] 阶段 7：真机验收 ← 等用户").replace("| 阶段 3 |", "| 阶段 7 |")
+        self.assertEqual(kinds(sw.reconcile_workbook(merged, now=NOW)), [("dependency_done", "nudge")])
+
+        external = RECONCILED_WORKBOOK.replace("排在 阶段 4 后：用窗口切换后的新版本", "排在 上游 MR 合入后：用合入后的版本")
+        self.assertTrue(sw.reconcile_workbook(external, now=NOW)["ok"])
+
+    def test_bb_queue_and_status_fields_map_to_liveness(self):
+        tid = "thr_aaaaaa1111"
+        waiting = sw.normalize_thread({"id": tid, "status": "idle", "queuedWork": "waiting", "updatedAt": 0})
+        failed = sw.normalize_thread({"id": tid, "status": "error", "queuedWork": "failed", "updatedAt": 0})
+        self.assertTrue(waiting["queued"])
+        self.assertFalse(failed["queued"])
+        self.assertEqual(sw.thread_state(failed, NOW.timestamp(), 1800), "failed")
+        for status in ("pending", "starting", "stopping"):
+            self.assertEqual(sw.thread_state(thread(tid, status=status), NOW.timestamp(), 1800), "alive", status)
+
+    def test_todo_reason_needs_a_category_and_only_blocking_ones_fail(self):
+        blocking = RECONCILED_WORKBOOK.replace("真机线下：只有用户有设备", "只有用户有设备")
+        self.assertIn(("todo_category_missing", "nudge"), kinds(sw.reconcile_workbook(blocking, now=NOW)))
+        idle = RECONCILED_WORKBOOK.replace("凭据账号：令牌归用户", "令牌归用户")
+        res = sw.reconcile_workbook(idle, now=NOW)
+        self.assertTrue(res["ok"])
+        self.assertEqual(kinds(res), [("todo_category_missing", "minor")])
+
+    def test_live_check_flags_running_rows_whose_threads_stopped(self):
+        tid = "thr_aaaaaa1111"
+        alive_cases = [
+            thread(tid, status="active"),
+            thread(tid, queued=True),
+            thread(tid, background=True),
+            thread(tid, idle_minutes=10),
+        ]
+        for info in alive_cases:
+            res = sw.reconcile_workbook(RECONCILED_WORKBOOK, now=NOW, threads={tid: info})
+            self.assertTrue(res["ok"], (info, res["problems"]))
+
+        stopped_cases = {
+            "已空闲": thread(tid, idle_minutes=120),
+            "失败": thread(tid, status="error"),
+            "已归档": thread(tid, archived=True),
+            "找不到": None,
+        }
+        for word, info in stopped_cases.items():
+            res = sw.reconcile_workbook(RECONCILED_WORKBOOK, now=NOW, threads={} if info is None else {tid: info})
+            self.assertEqual(kinds(res), [("stale_running", "nudge")])
+            self.assertIn(word, res["problems"][0]["detail"])
+
+        waiting = sw.reconcile_workbook(RECONCILED_WORKBOOK, now=NOW, threads={tid: thread(tid, interaction=True)})
+        self.assertEqual(kinds(waiting), [("child_waiting", "nudge")])
+
+        lenient = sw.reconcile_workbook(RECONCILED_WORKBOOK, now=NOW, threads={tid: thread(tid)}, unlisted_alive=1)
+        self.assertTrue(lenient["ok"])
+        self.assertEqual(kinds(lenient), [("stale_running", "minor")])
 
 
 if __name__ == "__main__":
