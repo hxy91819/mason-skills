@@ -444,6 +444,29 @@ class WatchTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {"CLAUDE_CONFIG_DIR": str(root)}):
             self.assertEqual(watch.claude_model("session"), "real")
 
+    def test_non_claude_steward_skips_session_lookup_and_change_message_is_readable(self):
+        self.bb.set(status="active", provider="pi")
+        def requested(seq, reasoning):
+            return {"seq": seq, "type": "client/turn/requested", "data": {"execution": {"model": "opus", "reasoningLevel": reasoning}}}
+        self.bb.logs = [requested(1, "high")]
+        with mock.patch.object(watch, "claude_model") as reader:
+            self.tick(NOW)
+            self.bb.logs.append(requested(2, "low"))
+            self.tick(NOW + 60)
+        reader.assert_not_called()
+        self.assertFalse(any(e["event"] == "warning" for e in watch.read_events(self.state_path)))
+        self.assertEqual(len(self.bb.tells), 1)
+        self.assertIn("opus（high） 变为 opus（low）", self.bb.tells[0][1])
+        self.assertIn("新开线程接任", self.bb.tells[0][1])
+
+    def test_cancel_retry_without_pending_retry_counts_as_done(self):
+        bb = watch.Bb()
+        with mock.patch.object(bb, "_run", side_effect=watch.WatchError('bb provider-retry 失败：{"code": "no_pending_retry"}')):
+            bb.cancel_retry(TID)
+        with mock.patch.object(bb, "_run", side_effect=watch.WatchError("bb provider-retry 失败：plugin missing")):
+            with self.assertRaises(watch.WatchError):
+                bb.cancel_retry(TID)
+
     def test_user_relay_for_second_nudge_and_escalated_recovery(self):
         self.tick(NOW)
         self.tick(NOW + 2 * HOUR)

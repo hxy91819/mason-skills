@@ -292,6 +292,7 @@ def normalize_thread(raw: dict) -> dict:
         "background": any((activity.get(k) or 0) > 0 for k in ALIVE_ACTIVITY_KEYS),
         "updated_at": (raw.get("updatedAt") or 0) / 1000,
         "parent": raw.get("parentThreadId"),
+        "provider": raw.get("providerId"),
     }
 
 

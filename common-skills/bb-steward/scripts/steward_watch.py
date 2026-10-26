@@ -3,7 +3,8 @@
 
 对每个登记的管家：
 - 线程归档或已删除：移除登记。
-- 每轮增量读取 BB 请求模型与 Claude Code 实际模型，首次记基线；新偏离值仅提醒一次，回到基线只记事件。
+- 每轮增量读取 BB 请求模型，Claude Code 管家另读会话记录里的实际模型；首次记基线，新偏离值仅提醒一次，
+  回到基线只记事件。
 - 在跑、有排队消息、等待交互或有后台活动：跳过对账与重试。
 - 回合失败且没有排队的重试：`bb thread retry`，间隔 0/30/60/120/240/240 分钟，最多 6 次；
   失败满 60 分钟记为需要用户看一眼。恢复后发一次提醒，让管家核对失败期间到达的通知。
@@ -20,8 +21,8 @@
 
 登记与运行状态在 ${XDG_STATE_HOME:-~/.local/state}/bb-steward/watch.json（可用 BB_STEWARD_WATCH_STATE
 或 --state 改），事件日志在同目录 watch.events.jsonl，超过 2 MB 丢掉较早的一半。首次登记会在当前项目
-创建脚本 automation（不创建摘要 automation）。模型变化、催满两次、升级过的中断恢复由管家回复转告用户。
-同工作簿跨线程登记即接任，先保存新登记，再独立尝试迁移子线程、取消旧重试及交接通知。run 无事可报时不输出，automation 记为静默跳过。
+创建脚本 automation。模型变化、催满两次、升级过的中断恢复由管家回复转告用户。同工作簿跨线程登记即接任，
+先保存新登记，再独立尝试迁移子线程、取消旧重试及交接通知。run 无事可报时不输出，automation 记为静默跳过。
 """
 import argparse
 from collections import Counter, defaultdict
@@ -103,7 +104,12 @@ class Bb:
         self._run(["thread", "update", thread, *(["--parent-thread", parent] if parent else ["--clear-parent-thread"])])
 
     def cancel_retry(self, thread):
-        self._run(["provider-retry", "cancel", thread])
+        try:
+            self._run(["provider-retry", "cancel", thread])
+        except WatchError as exc:
+            # 没有排着的重试正是想要的结果，不算接任步骤失败。
+            if "no_pending_retry" not in str(exc):
+                raise
 
     def retry(self, thread, reason):
         self._run(["thread", "retry", thread, "--reason", reason])
@@ -276,8 +282,8 @@ def claude_model(provider_thread_id):
     raise WatchError("Claude 会话没有真实 assistant model")
 
 
-def read_models(bb, tid, previous):
-    """大页增量扫描；只返回最小事实，不把事件正文存入状态。"""
+def read_models(bb, tid, previous, claude=True):
+    """大页增量扫描；只返回最小事实，不把事件正文存入状态。claude=False 时不找 Claude Code 会话记录。"""
     observed = dict(previous)
     after = observed.get("seq", 0)
     warnings = []
@@ -311,11 +317,22 @@ def read_models(bb, tid, previous):
         values["requested"] = observed["requested"]
     else:
         warnings.append("BB 请求模型不可读")
-    try:
-        values["actual"] = claude_model(observed.get("providerThreadId"))
-    except (OSError, WatchError) as exc:
-        warnings.append(str(exc))
+    if claude:
+        try:
+            values["actual"] = claude_model(observed.get("providerThreadId"))
+        except (OSError, WatchError) as exc:
+            warnings.append(str(exc))
     return observed, values, warnings
+
+
+MODEL_SOURCES = {"requested": "BB 请求模型", "actual": "Claude Code 实际模型"}
+
+
+def model_text(value):
+    if isinstance(value, dict):
+        level = value.get("reasoningLevel")
+        return f"{value.get('model')}（{level}）" if level else str(value.get("model"))
+    return str(value)
 
 
 # ---------- 检查一个管家 ----------
@@ -374,7 +391,7 @@ class Checker:
             reason = "线程已删除" if info is None else "线程已归档"
             self.events.append(event(self.now, tid, "unregister", reason=reason))
             return {"result": "unregistered", "remove": True, "report": f"{name}：{reason}，已移除登记"}
-        self.check_models(tid, entry)
+        self.check_models(tid, entry, info)
         busy = (info["status"] not in sw.SETTLED_STATUSES or info["queued"]
                 or info["interaction"] or info["background"])
         if busy:
@@ -389,9 +406,11 @@ class Checker:
             return {"result": "settling"}
         return self.reconcile(tid, entry, name)
 
-    def check_models(self, tid, entry):
+    def check_models(self, tid, entry, info):
+        # 实际模型只有 Claude Code 的会话记录能读到；其他 provider 只看 BB 请求的模型。
+        claude = info.get("provider") in (None, "claude-code")
         try:
-            observed, values, warnings = read_models(self.bb, tid, entry.get("model_observation", {}))
+            observed, values, warnings = read_models(self.bb, tid, entry.get("model_observation", {}), claude)
         except Exception as exc:
             self.events.append(event(self.now, tid, "warning", source="models", detail=str(exc)[:200]))
             return
@@ -418,8 +437,9 @@ class Checker:
                            returned=returned, notified=notify)
             if notify and not self.dry_run:
                 try:
-                    self.bb.tell(tid, f"{TAG} 模型变化（{source}）：{before} → {value}；基线 {record['baseline']}。"
-                                 "请在本回合回复里告诉用户请求模型或实际模型的变化及影响。")
+                    self.bb.tell(tid, f"{TAG} {MODEL_SOURCES.get(source, source)}从 {model_text(before)} 变为 "
+                                 f"{model_text(value)}（登记时 {model_text(record['baseline'])}）。请在本回合回复里告诉用户"
+                                 "这一变化和影响，并给出选项：换回原模型，或新开线程接任（bb-steward「接任」）。")
                     change["ok"] = True
                 except Exception as exc:
                     change.update(ok=False, detail=str(exc)[:200])
@@ -733,9 +753,13 @@ def report(state, events, now, since_minutes):
             elif e["event"] == "retry":
                 lines.append(f"  {hhmm(e['ts'])} 回合失败，重试第 {e['attempt']} 次" + ("" if e.get("ok") else "（重试命令失败）"))
             elif e["event"] == "handover":
-                lines.append(f"  {hhmm(e['ts'])} 接任 {e['old']} → {e['new']}：{json.dumps(e['steps'], ensure_ascii=False)}")
+                moved = sum(1 for s in e["steps"] if s["step"].startswith("reparent:") and s["ok"])
+                failed = [s["step"] for s in e["steps"] if not s["ok"]]
+                lines.append(f"  {hhmm(e['ts'])} 接任 {e['old']} → {e['new']}：转来 {moved} 个子线程"
+                             + (f"，失败步骤：{'、'.join(failed)}" if failed else ""))
             elif e["event"] == "model_change":
-                lines.append(f"  {hhmm(e['ts'])} 模型变化 {e['source']}：{e['before']} → {e['value']}"
+                lines.append(f"  {hhmm(e['ts'])} 模型变化，{MODEL_SOURCES.get(e['source'], e['source'])}："
+                             f"{model_text(e['before'])} → {model_text(e['value'])}"
                              + ("（回到基线）" if e.get("returned") else "")
                              + ("（提醒发送失败）" if e.get("ok") is False else ""))
             elif e["event"] == "recovered":
