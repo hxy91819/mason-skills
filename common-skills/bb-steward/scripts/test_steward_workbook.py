@@ -37,6 +37,12 @@ class StewardWorkbookTests(unittest.TestCase):
         self.assertEqual(res["stats"]["route_items"], 3)
         self.assertEqual(res["stats"]["decision_items"], 2)
 
+    def test_traditional_chinese_headings_pass_check(self):
+        text = (VALID_WORKBOOK.replace("## 路线", "## 路線")
+                .replace("## 关键决策", "## 關鍵決策")
+                .replace("## 用户待办", "## 用戶待辦"))
+        self.assertTrue(sw.check_workbook(text)["ok"])
+
     def test_extra_section_or_table_in_route_is_rejected(self):
         with_extra = VALID_WORKBOOK + "\n## 追加任务\n\n- [ ] 临时事项\n"
         res1 = sw.check_workbook(with_extra)

@@ -15,6 +15,8 @@ import subprocess
 import sys
 
 REQUIRED_SECTIONS = ["路线", "关键决策", "用户待办"]
+# 项目文档规范可能要求繁体中文，标题按同义词归一后再比对。
+SECTION_ALIASES = {"路線": "路线", "關鍵決策": "关键决策", "用戶待辦": "用户待办"}
 DEFAULT_MAX_NONEMPTY_LINES = 45
 DEFAULT_MAX_LINE_CHARS = 180
 DEFAULT_MAX_ROUTE_ITEMS = 10
@@ -47,6 +49,7 @@ def parse_workbook(text: str):
             continue
         if stripped.startswith("## "):
             sec_name = stripped[3:].strip()
+            sec_name = SECTION_ALIASES.get(sec_name, sec_name)
             section_order.append(sec_name)
             current_section = sec_name
             sections.setdefault(sec_name, [])
