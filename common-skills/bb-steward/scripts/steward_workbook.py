@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""BB 管家工作簿（Workbook）结构、容量与提交节流门禁。
+"""BB 管家工作簿（Workbook）结构、容量、提交节流与收尾对账门禁。
 
 用法：
   python3 steward_workbook.py --mode check --file docs/steward/<topic>.md
   python3 steward_workbook.py --mode should-commit --file docs/steward/<topic>.md
+  python3 steward_workbook.py --mode reconcile [--live] --file docs/steward/<topic>.md
 
+reconcile 检查路线未完成行的状态标记与用户待办的原因类别；--live 另经 `bb thread list`
+核对「进行中」的线程是否还活着。
 stdout 输出 JSON；退出码 0 表示通过，2 表示门禁未通过或参数错误。
 """
 import argparse
+from datetime import datetime
 import json
 from pathlib import Path
 import re
@@ -23,6 +27,23 @@ DEFAULT_MAX_DECISIONS = 12
 MD_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
 WIKI_LINK_RE = re.compile(r"\[\[(?:[^|\]]+\|)?([^\]]+)\]\]")
 CHECKBOX_RE = re.compile(r"^-\s*\[([ xX])\]\s*(.+)$")
+
+# 收尾对账：路线未完成行 `←` 之后的四种状态，与用户待办「为什么只能用户做」的五个类别。
+STATE_RUNNING, STATE_WAITING_USER, STATE_SCHEDULED, STATE_QUEUED_AFTER = "进行中", "等用户", "定时", "排在"
+STATE_KEYWORDS = (STATE_RUNNING, STATE_WAITING_USER, STATE_SCHEDULED, STATE_QUEUED_AFTER)
+STATE_HINT = "← 进行中 thr_xxx / 等用户 / 定时 MM-DD HH:MM / 排在 X 后：依赖的产出"
+TODO_CATEGORIES = ("凭据账号", "真机线下", "对外沟通", "不可逆上线", "用户保留")
+NON_BLOCKING = {"", "-", "无", "不挡"}
+THREAD_ID_RE = re.compile(r"(?<![A-Za-z0-9_])thr_[a-z0-9]{6,}")
+SCHEDULE_RE = re.compile(r"(?:(\d{4})-)?(\d{1,2})-(\d{1,2})\s*(\d{1,2})[:：](\d{2})")
+# 阶段编号：「阶段5」「发布 1–6」「阶段1–4、9、12–14」「Stage 2」，用来把待办的“挡住”栏和依赖对象对到路线行。
+STAGE_ID_RE = re.compile(
+    r"(阶段|发布|stage)\s*(\d+(?:\s*[–—\-~～至到]\s*\d+)?(?:\s*[、,，/和]\s*\d+(?:\s*[–—\-~～至到]\s*\d+)?)*)", re.I)
+# BB 线程状态里只有 idle 和 error 是停着的；pending/starting/active/stopping 都算在动。
+SETTLED_STATUSES = ("idle", "error")
+DEFAULT_GRACE_MINUTES = 30
+# 这些后台活动在跑时，空闲线程仍算在干活；Plan 模式等审批不算。
+ALIVE_ACTIVITY_KEYS = ("activeBackgroundAgentCount", "activeBackgroundCommandCount", "activeGoalCount", "activeWorkflowCount")
 
 
 def visible_length(line: str) -> int:
@@ -132,6 +153,279 @@ def check_workbook(text: str, max_nonempty_lines=DEFAULT_MAX_NONEMPTY_LINES,
     }
 
 
+def route_stem(body: str) -> str:
+    """路线行冒号或左括号前的阶段主干名称，作为跨编辑稳定的行标识。"""
+    return re.split(r"[（(—\-:：]", body.split("←", 1)[0].strip(), maxsplit=1)[0].strip()
+
+
+def parse_schedule(text: str, now: datetime):
+    """解析 `MM-DD HH:MM`（可带年份）为本地时间；省略年份时取离 now 最近的那一年。"""
+    m = SCHEDULE_RE.search(text)
+    if not m:
+        return None
+    year, month, day, hour, minute = m.groups()
+    try:
+        if year:
+            return datetime(int(year), int(month), int(day), int(hour), int(minute))
+        candidates = [datetime(now.year + d, int(month), int(day), int(hour), int(minute)) for d in (-1, 0, 1)]
+    except ValueError:
+        return None
+    return min(candidates, key=lambda c: abs((c - now).total_seconds()))
+
+
+def parse_marker(body: str, now: datetime):
+    """解析未完成行 `←` 之后的状态。返回 (state, detail)：state 为四种关键词之一，无效时为 None、detail 写原因。"""
+    if "←" not in body:
+        return None, "缺状态"
+    marker = body.rsplit("←", 1)[1].strip()
+    for keyword in STATE_KEYWORDS:
+        if not marker.startswith(keyword):
+            continue
+        rest = marker[len(keyword):]
+        if keyword == STATE_RUNNING and not THREAD_ID_RE.search(body):
+            return None, "进行中但没写线程 ID"
+        if keyword == STATE_SCHEDULED and parse_schedule(rest, now) is None:
+            return None, "定时没写 MM-DD HH:MM"
+        if keyword == STATE_QUEUED_AFTER:
+            reason = re.split(r"[:：]", rest, maxsplit=1)
+            if "后" not in reason[0] or len(reason) < 2 or not reason[1].strip():
+                return None, "排在…后 没写依赖的产出"
+        return keyword, marker
+    return None, f"状态「{marker[:12]}」不在四种之内"
+
+
+def state_signature(body: str):
+    """状态签名：进行中/等用户只看关键词（换线程 ID 不算跃迁），定时看时间，排在看依赖对象。"""
+    if "←" not in body:
+        return None
+    marker = body.rsplit("←", 1)[1].strip()
+    if marker.startswith(STATE_SCHEDULED):
+        m = SCHEDULE_RE.search(marker)
+        return (STATE_SCHEDULED, m.group(0) if m else marker)
+    if marker.startswith(STATE_QUEUED_AFTER):
+        return (STATE_QUEUED_AFTER, re.split(r"[:：]", marker, maxsplit=1)[0])
+    for keyword in (STATE_RUNNING, STATE_WAITING_USER):
+        if marker.startswith(keyword):
+            return (keyword,)
+    return ("其他", marker)
+
+
+def table_cells(line: str):
+    return [c.strip() for c in line.strip().strip("|").split("|")]
+
+
+def parse_todos(parsed):
+    """解析用户待办表格；按表头名取列，缺表头时按模板列序。"""
+    columns = {"状态": 0, "事项": 1, "为什么只能用户做": 2, "挡住": 3, "提出": 4}
+    todos = []
+    for lineno, raw in parsed["sections"].get("用户待办", []):
+        s = raw.strip()
+        if not (s.startswith("|") and s.endswith("|")):
+            continue
+        cells = table_cells(s)
+        if all(set(c) <= {"-", ":", " "} for c in cells):
+            continue
+        if cells and cells[0] == "状态":
+            columns = {name: idx for idx, name in enumerate(cells)}
+            continue
+
+        def cell(name):
+            idx = columns.get(name)
+            return cells[idx] if idx is not None and idx < len(cells) else ""
+
+        todos.append({
+            "line": lineno,
+            "status": cell("状态"),
+            "item": cell("事项"),
+            "reason": cell("为什么只能用户做"),
+            "blocks": cell("挡住"),
+        })
+    return todos
+
+
+def plain_label(text: str, limit=24) -> str:
+    s = WIKI_LINK_RE.sub(r"\1", MD_LINK_RE.sub(r"\1", text)).replace("`", "").replace("*", "").strip()
+    return s if len(s) <= limit else s[:limit] + "…"
+
+
+def row_head(body: str) -> str:
+    """路线行第一个冒号前的标题部分（先展开 Markdown 链接，免得 URL 里的冒号截断）。"""
+    head = MD_LINK_RE.sub(r"\1", body.split("←", 1)[0])
+    return re.split(r"[:：]", head, maxsplit=1)[0]
+
+
+def stage_ids(text: str):
+    ids = set()
+    for m in STAGE_ID_RE.finditer(text):
+        prefix = m.group(1).lower()
+        for part in re.split(r"[、,，/和]", m.group(2)):
+            nums = [int(n) for n in re.findall(r"\d+", part)]
+            if len(nums) >= 2 and 0 <= nums[1] - nums[0] < 100:
+                ids.update((prefix, n) for n in range(nums[0], nums[1] + 1))
+            elif nums:
+                ids.add((prefix, nums[0]))
+    return ids
+
+
+def squash(text: str) -> str:
+    return re.sub(r"\s+", "", plain_label(text, limit=10**6)).lower()
+
+
+def refers_to(text: str, head: str) -> bool:
+    """text（待办“挡住”栏或依赖对象）是否指向标题为 head 的路线行：有阶段编号时比编号，否则比去空白后的标题。"""
+    ids = stage_ids(head)
+    if ids:
+        return bool(ids & stage_ids(text))
+    h, t = squash(head), squash(text)
+    return len(h) >= 2 and len(t) >= 2 and (h in t or t in h)
+
+
+def normalize_thread(raw: dict) -> dict:
+    activity = raw.get("activity") or {}
+    return {
+        "id": raw.get("id"),
+        "status": raw.get("status"),
+        "archived": bool(raw.get("archivedAt")),
+        # queuedWork 为 waiting 才是还有消息等着送达；failed 是送达失败，不算在动。
+        "queued": raw.get("queuedWork") == "waiting",
+        "interaction": bool(raw.get("hasPendingInteraction")),
+        "background": any((activity.get(k) or 0) > 0 for k in ALIVE_ACTIVITY_KEYS),
+        "updated_at": (raw.get("updatedAt") or 0) / 1000,
+        "parent": raw.get("parentThreadId"),
+    }
+
+
+def thread_state(info, now_ts: float, grace_seconds: float) -> str:
+    """alive=在跑/排队/有后台活动；recent=刚结束不到宽限期（完成通知可能还在路上）。"""
+    if info is None:
+        return "missing"
+    if info["archived"]:
+        return "archived"
+    if info["interaction"]:
+        return "interaction"
+    if info["status"] not in SETTLED_STATUSES or info["queued"] or info["background"]:
+        return "alive"
+    if info["status"] == "error":
+        return "failed"
+    if now_ts - info["updated_at"] < grace_seconds:
+        return "recent"
+    return "stopped"
+
+
+def describe_thread(tid: str, state: str, info, now_ts: float) -> str:
+    if state == "stopped":
+        hours = (now_ts - info["updated_at"]) / 3600
+        return f"{tid} 已空闲 {hours:.1f} 小时"
+    return f"{tid} " + {"missing": "找不到", "archived": "已归档", "failed": "失败且没有排队的重试",
+                        "interaction": "在等待交互"}.get(state, state)
+
+
+def bb_thread_list(*args):
+    """调用 `bb thread list ... --json`，返回规范化线程列表；失败抛 RuntimeError。"""
+    try:
+        res = subprocess.run(["bb", "thread", "list", *args, "--json"], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"bb thread list 调用失败：{exc}") from exc
+    try:
+        data = json.loads(res.stdout)
+    except ValueError as exc:
+        raise RuntimeError(f"bb thread list 返回非 JSON：{res.stderr.strip()[:300]}") from exc
+    if res.returncode or not isinstance(data, list):
+        raise RuntimeError(f"bb thread list 失败：{res.stdout.strip()[:300] or res.stderr.strip()[:300]}")
+    return [normalize_thread(t) for t in data]
+
+
+def fetch_threads(ids):
+    """按 ID 批量查线程，返回 {id: info}；查不到的 ID 不出现在结果里。"""
+    found = {}
+    ids = sorted(set(ids))
+    for start in range(0, len(ids), 200):
+        args = []
+        for tid in ids[start:start + 200]:
+            args += ["--thread", tid]
+        for info in bb_thread_list(*args):
+            found[info["id"]] = info
+    return found
+
+
+def reconcile_workbook(text: str, now: datetime | None = None, threads: dict | None = None,
+                       unlisted_alive: int = 0, grace_minutes: int = DEFAULT_GRACE_MINUTES):
+    """收尾对账。threads 为 None 时只做静态检查；给出时核对「进行中」线程的存活。
+
+    unlisted_alive>0 表示管家另有未写进路线的在跑子线程（工作簿取自远端、可能还没提交新线程 ID），
+    这时「进行中但线程已停」降为 minor。problems 里 severity=nudge 的项让 ok 为 False。
+    """
+    now = now or datetime.now()
+    now_ts = now.timestamp()
+    grace = grace_minutes * 60
+    parsed = parse_workbook(text)
+    problems = []
+    stats = {"open_rows": 0, STATE_RUNNING: 0, STATE_WAITING_USER: 0, STATE_SCHEDULED: 0, STATE_QUEUED_AFTER: 0}
+    referenced = set()
+
+    def add(kind, severity, line, label, detail):
+        problems.append({"kind": kind, "severity": severity, "line": line, "label": label, "detail": detail})
+
+    rows = []
+    for lineno, raw in parsed["sections"].get("路线", []):
+        m = CHECKBOX_RE.match(raw.strip())
+        if m:
+            rows.append({"line": lineno, "done": m.group(1).lower() == "x", "body": m.group(2), "head": row_head(m.group(2))})
+    todos = parse_todos(parsed)
+    blocking = [t for t in todos if t["status"] == "待办" and t["blocks"] not in NON_BLOCKING]
+
+    for row in rows:
+        lineno, body = row["line"], row["body"]
+        referenced.update(THREAD_ID_RE.findall(body))
+        if row["done"]:
+            continue
+        stats["open_rows"] += 1
+        label = plain_label(route_stem(body))
+        state, detail = parse_marker(body, now)
+        if state is None:
+            add("no_state", "nudge", lineno, label, detail)
+            continue
+        stats[state] += 1
+        if state == STATE_WAITING_USER:
+            if not any(refers_to(t["blocks"], row["head"]) for t in blocking):
+                add("user_wait_unbacked", "nudge", lineno, label, "标等用户，但没有“挡住”栏指向这一行的未完成待办")
+        elif state == STATE_QUEUED_AFTER:
+            target = re.split(r"[:：]", detail, maxsplit=1)[0][len(STATE_QUEUED_AFTER):].rsplit("后", 1)[0].strip()
+            # 依赖对上本簿路线行且都已完成时，这一行已经可以推进；对不上的视为外部依赖，不判。
+            matched = [r for r in rows if r is not row and refers_to(target, r["head"])]
+            if matched and all(r["done"] for r in matched):
+                add("dependency_done", "nudge", lineno, label, f"前置「{plain_label(target)}」已完成，这一行该推进了")
+        elif state == STATE_SCHEDULED:
+            due = parse_schedule(detail[len(STATE_SCHEDULED):], now)
+            if due is not None and now_ts - due.timestamp() > grace:
+                add("schedule_passed", "nudge", lineno, label, f"定时 {due:%m-%d %H:%M} 已过")
+        elif state == STATE_RUNNING and threads is not None:
+            ids = THREAD_ID_RE.findall(body)
+            states = {tid: thread_state(threads.get(tid), now_ts, grace) for tid in ids}
+            waiting = [tid for tid, st in states.items() if st == "interaction"]
+            if waiting:
+                add("child_waiting", "nudge", lineno, label, "、".join(f"{tid} 在等待交互" for tid in waiting))
+            if not waiting and not any(st in ("alive", "recent") for st in states.values()):
+                detail = "标进行中，但" + "、".join(describe_thread(tid, st, threads.get(tid), now_ts) for tid, st in states.items())
+                if unlisted_alive:
+                    add("stale_running", "minor", lineno, label, detail + f"（另有 {unlisted_alive} 条未写进路线的子线程在跑）")
+                else:
+                    add("stale_running", "nudge", lineno, label, detail)
+
+    for todo in (t for t in todos if t["status"] == "待办"):
+        if not todo["reason"].startswith(TODO_CATEGORIES):
+            severity = "nudge" if todo in blocking else "minor"
+            add("todo_category_missing", severity, todo["line"], plain_label(todo["item"]),
+                "用户待办原因没以类别开头（" + "、".join(TODO_CATEGORIES) + "）")
+
+    return {
+        "ok": not any(p["severity"] == "nudge" for p in problems),
+        "stats": stats,
+        "referenced_threads": sorted(referenced),
+        "problems": problems,
+    }
+
+
 def extract_state_signature(text: str):
     """提取决定工作簿是否发生实质状态跃迁的签名，忽略括号内的过程文字微调。"""
     parsed = parse_workbook(text)
@@ -141,11 +435,7 @@ def extract_state_signature(text: str):
         m = CHECKBOX_RE.match(s)
         if m:
             checked = m.group(1).lower() == "x"
-            is_current = "←" in s
-            # 提取冒号或左括号前的阶段主干名称
-            body = m.group(2).split("←", 1)[0].strip()
-            stem = re.split(r"[（(—\-:：]", body, maxsplit=1)[0].strip()
-            route_sig.append((stem, checked, is_current))
+            route_sig.append((route_stem(m.group(2)), checked, state_signature(m.group(2))))
 
     decision_sig = []
     for _, raw in parsed["sections"].get("关键决策", []):
@@ -153,18 +443,7 @@ def extract_state_signature(text: str):
         if s.startswith("- "):
             decision_sig.append(re.sub(r"\s+", " ", s[2:].strip()))
 
-    todo_sig = []
-    for _, raw in parsed["sections"].get("用户待办", []):
-        s = raw.strip()
-        if not s or s == "无。" or s == "无":
-            continue
-        if s.startswith("|") and s.endswith("|"):
-            cells = [c.strip() for c in s.strip("|").split("|")]
-            if len(cells) >= 2 and cells[0] not in ("状态", "---") and not all(set(c) <= {"-", ":"} for c in cells):
-                status = cells[0]
-                item = cells[1]
-                blocker = cells[3] if len(cells) >= 4 else ""
-                todo_sig.append((status, item, blocker))
+    todo_sig = [(t["status"], t["item"], t["blocks"]) for t in parse_todos(parsed)]
 
     return {
         "route": route_sig,
@@ -235,8 +514,10 @@ def should_commit_workbook(file_path: Path, check_args: dict, baseline_text: str
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--mode", required=True, choices=["check", "should-commit"], help="check=校验结构与容量；should-commit=校验并判断相对 HEAD 是否有实质状态变化")
+    p.add_argument("--mode", required=True, choices=["check", "should-commit", "reconcile"],
+                   help="check=校验结构与容量；should-commit=校验并判断相对 HEAD 是否有实质状态变化；reconcile=收尾对账")
     p.add_argument("--file", required=True, help="工作簿 Markdown 文件路径")
+    p.add_argument("--live", action="store_true", help="reconcile 时经 bb thread list 核对「进行中」线程是否还活着")
     p.add_argument("--max-nonempty-lines", type=int, default=DEFAULT_MAX_NONEMPTY_LINES)
     p.add_argument("--max-line-chars", type=int, default=DEFAULT_MAX_LINE_CHARS)
     p.add_argument("--max-route-items", type=int, default=DEFAULT_MAX_ROUTE_ITEMS)
@@ -258,6 +539,17 @@ def main():
     }
     if args.mode == "check":
         res = {"file": str(fpath), **check_workbook(fpath.read_text(), **check_args)}
+    elif args.mode == "reconcile":
+        text = fpath.read_text()
+        threads, warnings = None, []
+        if args.live:
+            try:
+                threads = fetch_threads(reconcile_workbook(text)["referenced_threads"])
+            except RuntimeError as exc:
+                warnings.append(f"线程核对跳过：{exc}")
+        res = {"file": str(fpath), **reconcile_workbook(text, threads=threads)}
+        if warnings:
+            res["warnings"] = warnings
     else:
         res = should_commit_workbook(fpath, check_args)
     print(json.dumps(res, ensure_ascii=False, indent=2))
