@@ -156,6 +156,12 @@ class StewardWorkbookTests(unittest.TestCase):
 
 
 class ReconcileTests(unittest.TestCase):
+    def test_running_references_exclude_completed_and_other_states(self):
+        text = RECONCILED_WORKBOOK.replace("- [x] 阶段 1：盘点仓库", "- [x] 阶段 1：盘点仓库 ← 进行中 thr_done000001")
+        text = text.replace("← 等用户", "← 等用户 thr_wait000001")
+        self.assertEqual(sw.running_thread_ids(text), ["thr_aaaaaa1111"])
+        self.assertIn("thr_done000001", sw.reconcile_workbook(text)["referenced_threads"])
+
     def test_every_open_row_in_a_valid_state_passes(self):
         res = sw.reconcile_workbook(RECONCILED_WORKBOOK, now=NOW)
         self.assertTrue(res["ok"], res["problems"])

@@ -61,8 +61,18 @@ python3 scripts/steward_workbook.py --mode should-commit --file <工作簿路径
 
 1. 读工作簿；读 `bb status`，检查分支、`git status --short`、`git worktree list`。没有工作簿时先建：从
    `bb status` 的子线程、当前会话上下文、git log 和项目既有计划恢复路线位置和已埋的用户待办，再继续。
-2. 登记看门狗（见「看门狗」）；已登记的重跑只更新登记。
+2. 登记看门狗（见「看门狗」）；同线程重登记只更新，别的线程登记着同工作簿时即接任，按「接任」补齐上下文。
 3. 从路线的当前位置决定下一步；遇到用户依赖时按下节处理。
+
+## 接任
+
+登记即接任：看门狗移除同仓库同相对路径的旧登记（worktree 归一），未传的简称与 ref 沿用旧值；先落盘，
+再逐项尝试转移旧线程未归档且活着、刚结束或被工作簿「进行中」引用的子线程；新线程若挂在旧线程下则解开，
+取消旧线程自动重试，并向未归档旧线程排队发 `[bb-steward 交接]`。失败只记录，登记输出与事件日志可查。
+
+新管家读 `bb thread log <旧> --limit 3`，把未入簿的用户要求补进路线；在关键决策原地更新一行
+`管家：thr_新（MM-DD 接任 thr_旧）`，按工作簿门禁提交。收到 `[bb-steward 交接]` 就停止派发和改工作簿；
+用户来找时指向新线程，不用回复交接消息。
 
 ## 等待用户时继续推进
 
@@ -105,7 +115,8 @@ python3 scripts/steward_workbook.py --mode reconcile --live --file <工作簿路
 ## 看门狗
 
 `scripts/steward_watch.py` 由 BB 脚本 automation 每 30 分钟跑一次，不调模型：管家回合失败且没有排队的重试时
-替它重试，恢复后提醒核对失败期间的通知；管家空闲而对账不过时，把问题行发给管家。节流和升级规则见脚本
+替它重试，恢复后提醒核对失败期间的通知；管家空闲而对账不过时，把问题行发给管家。每轮增量检查 BB 请求模型（含推理级别）与 Claude Code 实际模型：首次只记基线，偏离基线的新值提醒一次，
+回到基线只记事件，读不到记 warning。节流和升级规则见脚本
 `--help`。会话开始时登记，首次登记会在当前项目创建 automation：
 
 ```bash
@@ -113,10 +124,11 @@ python3 scripts/steward_watch.py register --workbook <工作簿路径> [--ref or
 ```
 
 工作簿以远端分支为准、主工作区不在该分支时传 `--ref`。收到 `[bb-steward 看门狗]` 消息就按「收尾对账」
-处理，不用回复它。
+处理。模型变化、同一问题催满 2 次、升级过的中断恢复，须在本回合回复里告诉用户变化或问题与影响；
+其他提醒不用回复看门狗。摘要 automation 已停，用户提醒由管家转告。
 
 ## 回看
 
 运行事实在 BB 线程记录与 `bb-dispatch` 本地账本里：`bb thread show <线程ID>` 看单次派发结果，`bb thread list` 看本会话派出的线程，`bb-dispatch --history-summary` 看难度分布、候选成功率/接受率、原会话重试与冷却走势和复盘提示，`scripts/steward_workbook.py --mode check --file <工作簿路径>` 检查工作簿健康度。工作簿不存线程 ID 以外的运行细节。
 
-看门狗的记录在它自己的事件日志里：`scripts/steward_watch.py report --since <分钟>` 看各管家最近的检查、催办和需要用户看一眼的事，`scripts/steward_watch.py summary` 看 7 天内的催办后解决率、重试与失败次数和复盘提示。日志超过 2 MB 丢掉较早的一半，不做长期折算。
+看门狗的记录在它自己的事件日志里：`scripts/steward_watch.py report --since <分钟>` 看各管家最近的检查、催办、接任、模型变化和需要用户看一眼的事，`scripts/steward_watch.py summary` 看 7 天内的催办后解决率、重试、失败、接任与模型变化次数和复盘提示。日志超过 2 MB 丢掉较早的一半，不做长期折算。

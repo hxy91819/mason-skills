@@ -3,12 +3,13 @@
 
 对每个登记的管家：
 - 线程归档或已删除：移除登记。
-- 在跑、有排队消息、等待交互或有后台活动：跳过。
+- 每轮增量读取 BB 请求模型与 Claude Code 实际模型，首次记基线；新偏离值仅提醒一次，回到基线只记事件。
+- 在跑、有排队消息、等待交互或有后台活动：跳过对账与重试。
 - 回合失败且没有排队的重试：`bb thread retry`，间隔 0/30/60/120/240/240 分钟，最多 6 次；
   失败满 60 分钟记为需要用户看一眼。恢复后发一次提醒，让管家核对失败期间到达的通知。
 - 空闲（回合结束满 10 分钟）：读工作簿跑收尾对账（steward_workbook.reconcile_workbook），有 nudge 级
   问题就把问题行发给管家。同一问题最多发 2 次，同一管家两次催办至少隔 2 小时；发满仍未解决的
-  记为需要用户看一眼。
+  记为需要用户看一眼，并要求管家在本回合回复里转告用户。
 
 用法：
   steward_watch.py register --workbook <路径> [--ref origin/main] [--name 简称] [--thread thr_x] [--project proj_x]
@@ -19,7 +20,8 @@
 
 登记与运行状态在 ${XDG_STATE_HOME:-~/.local/state}/bb-steward/watch.json（可用 BB_STEWARD_WATCH_STATE
 或 --state 改），事件日志在同目录 watch.events.jsonl，超过 2 MB 丢掉较早的一半。首次登记会在当前项目
-创建脚本 automation。run 无事可报时不输出，automation 记为静默跳过。
+创建脚本 automation（不创建摘要 automation）。模型变化、催满两次、升级过的中断恢复由管家回复转告用户。
+同工作簿跨线程登记即接任，先保存新登记，再独立尝试迁移子线程、取消旧重试及交接通知。run 无事可报时不输出，automation 记为静默跳过。
 """
 import argparse
 from collections import Counter, defaultdict
@@ -85,14 +87,23 @@ class Bb:
         except RuntimeError as exc:
             raise WatchError(str(exc)) from exc
 
-    def children(self, parent):
+    def children(self, parent, include_hidden=False):
         try:
-            return sw.bb_thread_list("--parent-thread", parent)
+            return sw.bb_thread_list("--parent-thread", parent, *(["--include-hidden"] if include_hidden else []))
         except RuntimeError as exc:
             raise WatchError(str(exc)) from exc
 
     def tell(self, thread, message):
         self._run(["thread", "tell", thread, "--message-file", "-", "--mode", "queue"], stdin=message)
+
+    def log(self, thread, after):
+        return self._run(["thread", "log", thread, "--after-seq", str(after), "--limit", "10000"])
+
+    def reparent(self, thread, parent=None):
+        self._run(["thread", "update", thread, *(["--parent-thread", parent] if parent else ["--clear-parent-thread"])])
+
+    def cancel_retry(self, thread):
+        self._run(["provider-retry", "cancel", thread])
 
     def retry(self, thread, reason):
         self._run(["thread", "retry", thread, "--reason", reason])
@@ -233,6 +244,80 @@ def read_workbook(entry):
     return res.stdout
 
 
+# ---------- 模型观测（只读来源，游标与基线由调用方保存） ----------
+
+def claude_model(provider_thread_id):
+    """倒序按块读尾部，遇到最后一条真实 assistant 即停，避免读完整会话。"""
+    if not provider_thread_id or Path(provider_thread_id).name != provider_thread_id:
+        raise WatchError("没有可用的 Claude providerThreadId")
+    root = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+    paths = list((root / "projects").glob(f"*/{provider_thread_id}.jsonl"))
+    if not paths:
+        raise WatchError("未找到 Claude 会话文件")
+    for path in sorted(paths, key=lambda p: p.stat().st_mtime, reverse=True):
+        with path.open("rb") as handle:
+            handle.seek(0, 2)
+            offset, tail = handle.tell(), b""
+            while offset:
+                size = min(offset, 65536)
+                offset -= size
+                handle.seek(offset)
+                parts = (handle.read(size) + tail).split(b"\n")
+                tail = parts.pop(0) if offset else b""
+                for line in reversed(parts):
+                    try:
+                        row = json.loads(line)
+                    except (ValueError, UnicodeDecodeError):
+                        continue
+                    msg = row.get("message") or {}
+                    model = msg.get("model")
+                    if row.get("type") == "assistant" and model and model != "<synthetic>":
+                        return model
+    raise WatchError("Claude 会话没有真实 assistant model")
+
+
+def read_models(bb, tid, previous):
+    """大页增量扫描；只返回最小事实，不把事件正文存入状态。"""
+    observed = dict(previous)
+    after = observed.get("seq", 0)
+    warnings = []
+    while True:
+        try:
+            rows = bb.log(tid, after)
+        except (OSError, WatchError) as exc:
+            warnings.append(f"BB 模型日志不可读：{exc}")
+            break
+        if not isinstance(rows, list):
+            raise WatchError("thread log 返回非事件数组")
+        for row in rows:
+            data = row.get("data") or {}
+            if row.get("type") == "client/turn/requested":
+                execution = data.get("execution") or {}
+                if execution.get("model"):
+                    observed["requested"] = {"model": execution["model"], "reasoningLevel": execution.get("reasoningLevel")}
+            elif row.get("type") == "thread/identity" and data.get("providerThreadId"):
+                observed["providerThreadId"] = data["providerThreadId"]
+        if not rows:
+            break
+        cursor = max(row["seq"] for row in rows)
+        if cursor <= after:
+            raise WatchError("thread log 游标未前进")
+        after = cursor
+        if len(rows) < 10000:
+            break
+    observed["seq"] = after
+    values = {}
+    if observed.get("requested"):
+        values["requested"] = observed["requested"]
+    else:
+        warnings.append("BB 请求模型不可读")
+    try:
+        values["actual"] = claude_model(observed.get("providerThreadId"))
+    except (OSError, WatchError) as exc:
+        warnings.append(str(exc))
+    return observed, values, warnings
+
+
 # ---------- 检查一个管家 ----------
 
 def problem_key(problem):
@@ -265,7 +350,8 @@ def recovery_message(outage):
     retried = f"看门狗重试了 {outage['retries']} 次，" if outage.get("retries") else ""
     return (f"{TAG} 你的回合从 {hhmm(outage['since'])} 起连续失败，{retried}现在已恢复。"
             "这段时间到达的子线程通知和消息可能没处理：先用 `bb thread log --self` 核对，"
-            "再按 bb-steward「收尾对账」继续。不用回复看门狗。")
+            "再按 bb-steward「收尾对账」继续。"
+            + ("请在本回合回复里告诉用户此次中断已恢复及影响。" if outage.get("escalated") else "不用回复看门狗。"))
 
 
 class Checker:
@@ -288,6 +374,7 @@ class Checker:
             reason = "线程已删除" if info is None else "线程已归档"
             self.events.append(event(self.now, tid, "unregister", reason=reason))
             return {"result": "unregistered", "remove": True, "report": f"{name}：{reason}，已移除登记"}
+        self.check_models(tid, entry)
         busy = (info["status"] not in sw.SETTLED_STATUSES or info["queued"]
                 or info["interaction"] or info["background"])
         if busy:
@@ -301,6 +388,42 @@ class Checker:
             self.events.append(event(self.now, tid, "check", result="settling"))
             return {"result": "settling"}
         return self.reconcile(tid, entry, name)
+
+    def check_models(self, tid, entry):
+        try:
+            observed, values, warnings = read_models(self.bb, tid, entry.get("model_observation", {}))
+        except Exception as exc:
+            self.events.append(event(self.now, tid, "warning", source="models", detail=str(exc)[:200]))
+            return
+        entry["model_observation"] = observed
+        for detail in warnings:
+            self.events.append(event(self.now, tid, "warning", source="models", detail=detail[:200]))
+        for source, value in values.items():
+            tracked = entry.setdefault("models", {})
+            if source not in tracked:
+                tracked[source] = {"baseline": value, "current": value, "notified": []}
+                self.events.append(event(self.now, tid, "model_baseline", source=source, value=value))
+                continue
+            record = tracked[source]
+            if record["current"] == value:
+                continue
+            before = record["current"]
+            record["current"] = value
+            returned = value == record["baseline"]
+            notify = not returned and value not in record["notified"]
+            if notify:
+                record["notified"].append(value)
+            self.persist()
+            change = event(self.now, tid, "model_change", source=source, before=before, value=value,
+                           returned=returned, notified=notify)
+            if notify and not self.dry_run:
+                try:
+                    self.bb.tell(tid, f"{TAG} 模型变化（{source}）：{before} → {value}；基线 {record['baseline']}。"
+                                 "请在本回合回复里告诉用户请求模型或实际模型的变化及影响。")
+                    change["ok"] = True
+                except Exception as exc:
+                    change.update(ok=False, detail=str(exc)[:200])
+            self.events.append(change)
 
     def handle_failure(self, tid, entry, info, name):
         outage = entry.get("outage")
@@ -391,6 +514,13 @@ class Checker:
                 self.events.append(event(self.now, tid, "escalate", reason="problem",
                                          kind=problem["kind"], label=problem["label"]))
                 notes.append(f"「{problem['label']}」已催 {record['count']} 次仍未处理，需要用户看一眼")
+        if notes:
+            self.persist()
+            if not self.dry_run:
+                try:
+                    self.bb.tell(tid, f"{TAG} " + "；".join(notes) + "。请在本回合回复里告诉用户问题与影响。")
+                except WatchError as exc:
+                    self.events.append(event(self.now, tid, "warning", source="escalation", detail=str(exc)[:200]))
         # 只发还有额度的问题，且发出去的、计数的、记进 pending 的是同一组。
         sent_keys = [k for k in urgent if tracked[k]["count"] < MAX_NUDGES_PER_PROBLEM][:MESSAGE_MAX_PROBLEMS]
         last = entry.get("last_nudge")
@@ -401,11 +531,18 @@ class Checker:
                 tracked[key]["last_nudged"] = self.now
             entry["last_nudge"] = self.now
             entry["pending_nudge"] = {"ts": self.now, "keys": sent_keys}
+            full = [urgent[k] for k in sent_keys if tracked[k]["count"] >= MAX_NUDGES_PER_PROBLEM]
+            for problem in full:
+                tracked[problem_key(problem)]["escalated"] = True
+                self.events.append(event(self.now, tid, "escalate", reason="problem", kind=problem["kind"], label=problem["label"]))
             self.persist()
             ok = True
             if not self.dry_run:
                 try:
-                    self.bb.tell(tid, nudge_message(entry, sent, len(problems) - len(sent)))
+                    message = nudge_message(entry, sent, len(problems) - len(sent))
+                    if full:
+                        message += "\n以下问题已催满 2 次：" + "、".join(p["label"] for p in full) + "。请在本回合回复里告诉用户问题与影响。"
+                    self.bb.tell(tid, message)
                 except WatchError:
                     ok = False
             labels = [f"{p['label']} {p['detail'][:20]}" for p in sent]
@@ -470,36 +607,91 @@ def main_worktree(top):
     return common.parent if common is not None and common.name == ".git" else top
 
 
+def workbook_identity(workbook):
+    path = Path(workbook).expanduser().resolve()
+    try:
+        top = git_toplevel(path).resolve()
+        return str(main_worktree(top).resolve()), path.relative_to(top).as_posix()
+    except WatchError:
+        return None, str(path)
+
+
+def entry_identity(entry):
+    if entry.get("repo") and entry.get("path"):
+        return str(main_worktree(Path(entry["repo"])).resolve()), entry["path"]
+    return workbook_identity(entry["workbook"])
+
+
+def handover(bb, old, new, entry, now):
+    """每个外部步骤独立失败；登记已由 register 落盘，不回滚。"""
+    results = []
+
+    def attempt(step, call):
+        try:
+            value = call()
+            results.append({"step": step, "ok": True})
+            return value
+        except Exception as exc:
+            results.append({"step": step, "ok": False, "detail": str(exc)[:200]})
+            return None
+
+    infos = attempt("threads", lambda: bb.threads([old, new])) or {}
+    if (infos.get(new) or {}).get("parent") == old:
+        attempt("clear_parent", lambda: bb.reparent(new))
+    referenced = set(attempt("workbook", lambda: sw.running_thread_ids(read_workbook(entry))) or [])
+    children = attempt("children", lambda: bb.children(old, include_hidden=True)) or []
+    for child in children:
+        if child["id"] != new and not child["archived"] and (
+                child["id"] in referenced or sw.thread_state(child, now, sw.DEFAULT_GRACE_MINUTES * 60) in ("alive", "recent")):
+            attempt("reparent:" + child["id"], lambda child=child: bb.reparent(child["id"], new))
+    attempt("cancel_retry", lambda: bb.cancel_retry(old))
+    if old in infos and not infos[old]["archived"]:
+        attempt("notify", lambda: bb.tell(old, f"[bb-steward 交接] 已由 @thread:{new} 接任。停止派发和改工作簿；"
+                                          "用户来找时指向新线程，不用回复。"))
+    return {"old": old, "new": new, "steps": results}
+
+
 def register(state, bb, thread, workbook, ref=None, name=None, project=None, script_path=None,
              state_path=None, manage_automation=True, now=None):
     if not thread:
         raise WatchError("缺少 --thread，且当前不在 BB 线程里（没有 BB_THREAD_ID）")
-    workbook = Path(workbook).expanduser().absolute()
-    entry = {"workbook": str(workbook), "registered_at": round(now or time.time(), 3)}
-    top = None
-    if ref:
-        top = git_toplevel(workbook)
-        try:
-            rel = workbook.resolve().relative_to(top.resolve()).as_posix()
-        except ValueError as exc:
-            raise WatchError(f"工作簿 {workbook} 不在仓库 {top} 里") from exc
-        entry.update(repo=str(main_worktree(top)), path=rel, ref=ref)
-        read_workbook(entry)
-    elif not workbook.is_file():
-        raise WatchError(f"工作簿不存在：{workbook}；工作簿以远端分支为准时传 --ref")
-    else:
-        with contextlib.suppress(WatchError):
-            top = git_toplevel(workbook)
-    entry["name"] = name or (top.name if top else workbook.stem)
+    now = time.time() if now is None else now
+    workbook = Path(workbook).expanduser().resolve()
+    identity = workbook_identity(workbook)
+    olds = [(tid, e) for tid, e in state["stewards"].items()
+            if tid != thread and entry_identity(e) == identity]
     previous = state["stewards"].get(thread, {})
-    runtime = {k: previous[k] for k in ("problems", "last_nudge", "pending_nudge", "outage") if k in previous}
+    inherited = olds[0][1] if olds else previous
+    ref = ref if ref is not None else inherited.get("ref")
+    entry = {"workbook": str(workbook), "registered_at": round(now, 3)}
+    if identity[0]:
+        entry.update(repo=identity[0], path=identity[1])
+    if ref:
+        if not identity[0]:
+            raise WatchError("--ref 需要 Git 仓库")
+        entry["ref"] = ref
+        if not olds:
+            read_workbook(entry)
+    elif not olds and not workbook.is_file():
+        raise WatchError(f"工作簿不存在：{workbook}；工作簿以远端分支为准时传 --ref")
+    entry["name"] = name if name is not None else inherited.get("name") or (Path(identity[0]).name if identity[0] else workbook.stem)
+    runtime = {k: previous[k] for k in ("problems", "last_nudge", "pending_nudge", "outage", "models", "model_observation") if k in previous}
     state["stewards"][thread] = {**entry, **runtime}
+    for old, _ in olds:
+        del state["stewards"][old]
+    path = state_path or state_path_from(None)
+    handovers = []
+    if olds:
+        save_state(path, state)
+        for old, _ in olds:
+            result = handover(bb, old, thread, entry, now)
+            handovers.append(result)
+            append_events(path, [event(now, thread, "handover", **result)])
     if not manage_automation:
         automation = {"status": "skipped", "reason": "--no-automation"}
     else:
-        automation = ensure_automation(state, bb, project, script_path or Path(__file__).resolve(),
-                                       state_path or state_path_from(None))
-    return {"thread": thread, **entry, "automation": automation}
+        automation = ensure_automation(state, bb, project, script_path or Path(__file__).resolve(), path)
+    return {"thread": thread, **entry, "automation": automation, "handovers": handovers}
 
 
 # ---------- 汇报与复盘 ----------
@@ -540,6 +732,12 @@ def report(state, events, now, since_minutes):
                 lines.append(f"  {hhmm(e['ts'])} 上次催办后：解决 {e['resolved']} 处，仍在 {e['persisted']} 处")
             elif e["event"] == "retry":
                 lines.append(f"  {hhmm(e['ts'])} 回合失败，重试第 {e['attempt']} 次" + ("" if e.get("ok") else "（重试命令失败）"))
+            elif e["event"] == "handover":
+                lines.append(f"  {hhmm(e['ts'])} 接任 {e['old']} → {e['new']}：{json.dumps(e['steps'], ensure_ascii=False)}")
+            elif e["event"] == "model_change":
+                lines.append(f"  {hhmm(e['ts'])} 模型变化 {e['source']}：{e['before']} → {e['value']}"
+                             + ("（回到基线）" if e.get("returned") else "")
+                             + ("（提醒发送失败）" if e.get("ok") is False else ""))
             elif e["event"] == "recovered":
                 lines.append(f"  {hhmm(e['ts'])} 从失败恢复（约 {e.get('minutes', 0)} 分钟）")
         outage = entry.get("outage")
@@ -558,7 +756,7 @@ def report(state, events, now, since_minutes):
 
 
 COUNTED_EVENTS = {"retry": "retries", "outage": "outages", "escalate": "escalations",
-                  "unregister": "unregistered", "error": "errors"}
+                  "unregister": "unregistered", "error": "errors", "handover": "handovers", "model_change": "model_changes"}
 
 
 def summary(state, events, now, days):
@@ -638,7 +836,7 @@ def main(argv=None):
                 else:
                     for s in res["stewards"].values():
                         print(f"{s['name']}：检查 {s.get('checks', 0)}，催办 {s.get('nudges', 0)}，解决率 {s['resolve_share']}，"
-                              f"重试 {s.get('retries', 0)}，失败 {s.get('outages', 0)} 次")
+                              f"重试 {s.get('retries', 0)}，失败 {s.get('outages', 0)} 次，接任 {s.get('handovers', 0)}，模型变化 {s.get('model_changes', 0)} 次")
                     for h in res["hooks"]:
                         print(f"复盘提示 {h['hook']}：{h['detail']}")
             return 0

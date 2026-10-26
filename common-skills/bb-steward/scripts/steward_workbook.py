@@ -348,6 +348,18 @@ def fetch_threads(ids):
     return found
 
 
+def running_thread_ids(text: str):
+    """仅提取未完成且标为「进行中」的路线引用；不改变对账的 referenced_threads 口径。"""
+    ids = set()
+    for _, raw in parse_workbook(text)["sections"].get("路线", []):
+        match = CHECKBOX_RE.match(raw.strip())
+        if match and match.group(1).lower() != "x":
+            body = match.group(2)
+            if parse_marker(body, datetime.now())[0] == STATE_RUNNING:
+                ids.update(THREAD_ID_RE.findall(body))
+    return sorted(ids)
+
+
 def reconcile_workbook(text: str, now: datetime | None = None, threads: dict | None = None,
                        unlisted_alive: int = 0, grace_minutes: int = DEFAULT_GRACE_MINUTES):
     """收尾对账。threads 为 None 时只做静态检查；给出时核对「进行中」线程的存活。
