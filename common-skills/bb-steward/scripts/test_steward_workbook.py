@@ -108,6 +108,7 @@ class StewardWorkbookTests(unittest.TestCase):
     def test_should_commit_ignores_micro_progress_and_detects_state_transitions(self):
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp) / "workbook.md"
+            (p.parent / "ledger.md").write_text("# 既有历史账")
             check_args = {
                 "max_nonempty_lines": sw.DEFAULT_MAX_NONEMPTY_LINES,
                 "max_line_chars": sw.DEFAULT_MAX_LINE_CHARS,
@@ -116,7 +117,7 @@ class StewardWorkbookTests(unittest.TestCase):
             }
             # 1. 仅修改括号里的最近线程 ID 和微进度，不应触发 commit
             minor_edit = VALID_WORKBOOK.replace("thr_55yf6266zn", "thr_new123，已跑完第一轮测试")
-            p.write_text(minor_edit)
+            p.write_text(minor_edit.replace("更新：2026-10-14", "[要求帐（历史流水账）](ledger.md)"))
             r_minor = sw.should_commit_workbook(p, check_args, baseline_text=VALID_WORKBOOK)
             self.assertTrue(r_minor["ok"])
             self.assertFalse(r_minor["should_commit"])
@@ -127,7 +128,7 @@ class StewardWorkbookTests(unittest.TestCase):
                 "- [ ] 阶段 2：冷启动独立实例与 Playwright 回归 ← 进行中（最近线程 thr_55yf6266zn）\n- [ ] 阶段 3：浅色多图落地页重设计与发布",
                 "- [x] 阶段 2：冷启动独立实例与 Playwright 回归\n- [ ] 阶段 3：浅色多图落地页重设计与发布 ← 进行中",
             )
-            p.write_text(stage_done)
+            p.write_text(stage_done.replace("更新：2026-10-14", "[要求帐（历史流水账）](ledger.md)"))
             r_stage = sw.should_commit_workbook(p, check_args, baseline_text=VALID_WORKBOOK)
             self.assertTrue(r_stage["ok"])
             self.assertTrue(r_stage["should_commit"])
@@ -135,7 +136,7 @@ class StewardWorkbookTests(unittest.TestCase):
 
             # 3. 用户待办状态从“待办”变为“已完成”，应触发 commit
             todo_done = VALID_WORKBOOK.replace("| 待办 | 用公司账号", "| 已完成 | 用公司账号")
-            p.write_text(todo_done)
+            p.write_text(todo_done.replace("更新：2026-10-14", "[要求帐（历史流水账）](ledger.md)"))
             r_todo = sw.should_commit_workbook(p, check_args, baseline_text=VALID_WORKBOOK)
             self.assertTrue(r_todo["ok"])
             self.assertTrue(r_todo["should_commit"])
@@ -144,6 +145,7 @@ class StewardWorkbookTests(unittest.TestCase):
     def test_should_commit_tracks_state_changes_but_not_thread_ids(self):
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp) / "workbook.md"
+            (p.parent / "ledger.md").write_text("# 既有历史账")
             check_args = {
                 "max_nonempty_lines": sw.DEFAULT_MAX_NONEMPTY_LINES,
                 "max_line_chars": sw.DEFAULT_MAX_LINE_CHARS,
@@ -156,7 +158,7 @@ class StewardWorkbookTests(unittest.TestCase):
                 ("定时 10-26 22:10 打开窗口", "定时 10-27 08:00 打开窗口", True),
             ]
             for old, new, expected in cases:
-                p.write_text(RECONCILED_WORKBOOK.replace(old, new))
+                p.write_text(RECONCILED_WORKBOOK.replace(old, new).replace("更新：2026-10-26", "[要求帐（历史流水账）](ledger.md)"))
                 res = sw.should_commit_workbook(p, check_args, baseline_text=RECONCILED_WORKBOOK)
                 self.assertEqual(res["should_commit"], expected, (old, new))
 
