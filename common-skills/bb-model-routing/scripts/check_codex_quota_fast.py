@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """巡检 Codex 账号剩余额度；若 codex 或 codex-l 任意账号剩余额度 <= 40%，则关闭 Fast。"""
 
+import argparse
 import json
 import os
 import re
@@ -10,6 +11,17 @@ from pathlib import Path
 
 CONFIG_PATH = Path(os.environ.get("BB_DISPATCH_CONFIG", Path.home() / ".config/bb-dispatch/config.yaml"))
 QUOTA_THRESHOLD_PERCENT = 40.0  # 剩余额度阈值百分比
+
+
+def notify_thread(thread_id, message):
+    if not thread_id:
+        return False
+    try:
+        res = subprocess.run(["bb", "thread", "tell", thread_id, message], capture_output=True, text=True, timeout=15)
+        return res.returncode == 0
+    except Exception as exc:
+        sys.stderr.write(f"通知线程失败: {exc}\n")
+        return False
 
 
 def get_usage():
@@ -100,11 +112,18 @@ def check_and_fuse(config_path=CONFIG_PATH, dry_run=False):
 
 
 def main():
-    dry_run = "--dry-run" in sys.argv
-    result = check_and_fuse(dry_run=dry_run)
+    parser = argparse.ArgumentParser(description="巡检 Codex 账号剩余额度并在超限时熔断 Fast")
+    parser.add_argument("--dry-run", action="store_true", help="乾跑模式，不修改配置文件")
+    parser.add_argument("--notify-thread", default=os.environ.get("BB_NOTIFY_THREAD"), help="状态切换时通知的目标 BB 线程 ID")
+    args = parser.parse_args()
+
+    result = check_and_fuse(dry_run=args.dry_run)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     if result["action"] == "fused_closed_fast":
-        print(f"⚠️ 触发额度熔断：{'; '.join(result['reasons'])}，已自动关闭 Fast！")
+        msg = f"⚠️ 触发额度熔断：{'; '.join(result['reasons'])}，已自动关闭 Fast！"
+        print(msg)
+        if args.notify_thread and not args.dry_run:
+            notify_thread(args.notify_thread, f"[Codex 额度熔断告警] {'; '.join(result['reasons'])}，已自动关闭 Fast 开关（fast: false）。")
     elif result["fuse_triggered"]:
         print("⚠️ 额度低于阈值，但 Fast 当前已处于关闭状态。")
     else:

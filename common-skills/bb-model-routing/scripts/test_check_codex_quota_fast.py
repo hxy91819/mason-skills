@@ -69,6 +69,25 @@ class TestCheckCodexQuotaFast(unittest.TestCase):
             finally:
                 checker.get_usage = orig_get_usage
 
+    def test_notify_thread(self):
+        orig_run = checker.subprocess.run
+        calls = []
+
+        class FakeRes:
+            returncode = 0
+
+        def fake_run(cmd, *args, **kwargs):
+            calls.append(cmd)
+            return FakeRes()
+
+        try:
+            checker.subprocess.run = fake_run
+            res = checker.notify_thread("thr_test123", "熔断测试")
+            self.assertTrue(res)
+            self.assertEqual(calls, [["bb", "thread", "tell", "thr_test123", "熔断测试"]])
+        finally:
+            checker.subprocess.run = orig_run
+
 
 if __name__ == "__main__":
     unittest.main()
