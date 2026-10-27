@@ -584,6 +584,8 @@ class Checker:
 
 def run(state, state_path, bb, now=None, dry_run=False):
     now = now if now is not None else time.time()
+    if not dry_run:
+        retry_plugin_unregistrations(state, bb, state_path)
     checker = Checker(state, state_path, bb, now, dry_run)
     stewards = state["stewards"]
     results = {}
@@ -597,9 +599,9 @@ def run(state, state_path, bb, now=None, dry_run=False):
                 checker.events.append(event(now, tid, "error", detail=str(exc)[:300]))
                 outcome = {"result": "error", "report": f"{entry.get('name') or tid}：检查出错：{str(exc)[:200]}"}
             if outcome.get("remove"):
-                if not dry_run:
-                    outcome["plugin"] = sync_plugin(bb, "unregister", tid)
                 del stewards[tid]
+                if not dry_run:
+                    outcome["plugin"] = unregister_plugin(state, bb, tid, state_path)
             results[tid] = outcome
     if not dry_run:
         save_state(state_path, state)
@@ -685,7 +687,6 @@ def sync_plugin(bb, command, thread, entry=None):
         values = {"thread": thread}
         if command == "register":
             if entry.get("ref"):
-                bb.steward("unregister", thread=thread)
                 return {"status": "skipped", "reason": "Git-ref 工作簿暂不提供平台入口，继续使用工作簿链接"}
             workbook = Path(entry["workbook"])
             ledger = None
@@ -707,6 +708,29 @@ def sync_plugin(bb, command, thread, entry=None):
         return {"status": "registered" if command == "register" else "unregistered"}
     except Exception:
         return {"status": "skipped", "reason": "管家插件未安装或暂未就绪，看门狗继续运行"}
+
+
+def unregister_plugin(state, bb, thread, state_path):
+    pending = set(state.get("pending_plugin_unregistrations", []))
+    pending.add(thread)
+    state["pending_plugin_unregistrations"] = sorted(pending)
+    save_state(state_path, state)
+    result = sync_plugin(bb, "unregister", thread)
+    if result["status"] == "unregistered":
+        pending.remove(thread)
+        state["pending_plugin_unregistrations"] = sorted(pending)
+        save_state(state_path, state)
+    return result
+
+
+def retry_plugin_unregistrations(state, bb, state_path):
+    for thread in list(state.get("pending_plugin_unregistrations", []))[:20]:
+        active = state["stewards"].get(thread)
+        if active and not active.get("ref"):
+            state["pending_plugin_unregistrations"].remove(thread)
+            save_state(state_path, state)
+        else:
+            unregister_plugin(state, bb, thread, state_path)
 
 
 def register(state, bb, thread, workbook, ref=None, name=None, project=None, script_path=None,
@@ -750,8 +774,10 @@ def register(state, bb, thread, workbook, ref=None, name=None, project=None, scr
     else:
         automation = ensure_automation(state, bb, project, script_path or Path(__file__).resolve(), path)
     plugin_result = sync_plugin(bb, "register", thread, entry)
-    if ref and olds:
-        plugin_result["handover"] = [{"thread": old, **sync_plugin(bb, "unregister", old)} for old, _ in olds]
+    if ref:
+        plugin_result["cleanup"] = [{"thread": tid, **unregister_plugin(state, bb, tid, path)} for tid in [thread, *(old for old, _ in olds)]]
+    elif thread in state.get("pending_plugin_unregistrations", []):
+        state["pending_plugin_unregistrations"].remove(thread)
     return {"thread": thread, **entry, "automation": automation, "handovers": handovers,
             "plugin": plugin_result}
 
@@ -916,11 +942,11 @@ def main(argv=None):
                 print(json.dumps(res, ensure_ascii=False, indent=2))
             elif args.cmd == "unregister":
                 removed = state["stewards"].pop(args.thread, None)
-                save_state(path, state)
+                plugin_result = unregister_plugin(state, bb, args.thread, path)
                 if removed:
                     append_events(path, [event(time.time(), args.thread, "unregister", reason="手动移除")])
                 print(json.dumps({"thread": args.thread, "removed": bool(removed),
-                                  "plugin": sync_plugin(bb, "unregister", args.thread)}, ensure_ascii=False))
+                                  "plugin": plugin_result}, ensure_ascii=False))
             else:
                 started = time.time()
                 results, events = run(state, path, bb, now=started, dry_run=args.dry_run)

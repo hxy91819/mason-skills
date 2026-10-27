@@ -1,6 +1,8 @@
 """验证 BB 管家看门狗：催办节流与升级、失败重试与恢复、登记与 automation、事件日志与复盘。"""
 from pathlib import Path
 import json
+import contextlib
+import io
 import subprocess
 import sys
 import tempfile
@@ -540,8 +542,38 @@ class PluginSyncTests(unittest.TestCase):
             with mock.patch.object(bb, "steward", side_effect=watch.WatchError("not installed")):
                 self.assertEqual(watch.sync_plugin(bb, "register", TID, entry)["status"], "skipped")
             self.assertEqual(watch.sync_plugin(bb, "register", TID, {**entry, "ref": "origin/main"})["status"], "skipped")
-            self.assertEqual(bb.plugin_calls[-1], ("unregister", {"thread": TID}))
             self.assertEqual(watch.sync_plugin(bb, "unregister", TID)["status"], "unregistered")
+
+    def test_failed_unregister_survives_reload_and_retries_without_a_steward(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "watch.json"
+            state = watch.empty_state()
+            bb = FakeBb()
+            watch.save_state(path, state)
+            with mock.patch.object(bb, "steward", side_effect=watch.WatchError("unavailable")), mock.patch.object(watch, "Bb", return_value=bb), contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(watch.main(["--state", str(path), "unregister", "--thread", TID]), 0)
+                self.assertEqual(json.loads(output.getvalue())["plugin"]["status"], "skipped")
+            state = watch.load_state(path)
+            self.assertEqual(state["pending_plugin_unregistrations"], [TID])
+            watch.run(state, path, bb, now=NOW, dry_run=True)
+            self.assertEqual(bb.plugin_calls, [])
+            watch.run(state, path, bb, now=NOW)
+            self.assertEqual(watch.load_state(path)["pending_plugin_unregistrations"], [])
+            self.assertEqual(bb.plugin_calls, [("unregister", {"thread": TID})])
+
+    def test_git_ref_takeover_cleans_old_and_new_plugin_markers(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "watch.json"
+            workbook = Path(temp) / "workbook.md"
+            workbook.write_text("# workbook")
+            state = watch.empty_state()
+            state["stewards"]["old"] = {"workbook": str(workbook), "repo": temp, "path": "workbook.md", "ref": "origin/main"}
+            bb = FakeBb()
+            with mock.patch.object(watch, "workbook_identity", return_value=(temp, "workbook.md")):
+                result = watch.register(state, bb, "new", str(workbook), state_path=path, manage_automation=False)
+            self.assertEqual(set(state["stewards"]), {"new"})
+            self.assertEqual(result["plugin"]["status"], "skipped")
+            self.assertEqual({values["thread"] for command, values in bb.plugin_calls if command == "unregister"}, {"old", "new"})
 
 
 if __name__ == "__main__":
