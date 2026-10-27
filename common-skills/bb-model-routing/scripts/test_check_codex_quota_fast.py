@@ -69,6 +69,86 @@ class TestCheckCodexQuotaFast(unittest.TestCase):
             finally:
                 checker.get_usage = orig_get_usage
 
+    def test_fuse_triggers_per_agent_only_for_low_quota(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg = Path(td) / "config.yaml"
+            cfg.write_text("""version: 2
+fast: true
+agents:
+  codex:
+    provider: codex
+    routes:
+      medium: {model: gpt-6.1-sol}
+  codexl:
+    provider: codex-l
+    routes:
+      medium: {model: gpt-6.1-sol}
+""", encoding="utf-8")
+
+            orig_get_usage = checker.get_usage
+            try:
+                checker.get_usage = lambda: {
+                    "codex": {
+                        "status": "ok",
+                        "windows": [{"label": "Weekly limit", "usedPercent": 65, "resetsAt": "2026-11-01"}]
+                    },
+                    "codex-l": {
+                        "status": "ok",
+                        "windows": [{"label": "Weekly limit", "usedPercent": 15, "resetsAt": "2026-11-01"}]
+                    }
+                }
+                res = checker.check_and_fuse(config_path=cfg, dry_run=False)
+                self.assertTrue(res["fuse_triggered"])
+                self.assertEqual(res["action"], "fused_closed_fast")
+                self.assertEqual(res["fused_agents"], ["codex"])
+                content = cfg.read_text(encoding="utf-8")
+                # Top level fast: true is preserved
+                self.assertIn("fast: true", content)
+                # agents.codex has fast: false
+                self.assertIn("fast: false", content)
+                # Check parsed structure
+                data, _ = checker.load_config(cfg)
+                self.assertEqual(data["agents"]["codex"]["fast"], False)
+                self.assertNotIn("fast", data["agents"]["codexl"])
+            finally:
+                checker.get_usage = orig_get_usage
+
+    def test_already_closed_per_agent(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg = Path(td) / "config.yaml"
+            cfg.write_text("""version: 2
+fast: true
+agents:
+  codex:
+    provider: codex
+    fast: false
+    routes:
+      medium: {model: gpt-6.1-sol}
+  codexl:
+    provider: codex-l
+    routes:
+      medium: {model: gpt-6.1-sol}
+""", encoding="utf-8")
+
+            orig_get_usage = checker.get_usage
+            try:
+                checker.get_usage = lambda: {
+                    "codex": {
+                        "status": "ok",
+                        "windows": [{"label": "Weekly limit", "usedPercent": 70, "resetsAt": "2026-11-01"}]
+                    },
+                    "codex-l": {
+                        "status": "ok",
+                        "windows": [{"label": "Weekly limit", "usedPercent": 15, "resetsAt": "2026-11-01"}]
+                    }
+                }
+                res = checker.check_and_fuse(config_path=cfg, dry_run=False)
+                self.assertTrue(res["fuse_triggered"])
+                self.assertEqual(res["action"], "already_closed")
+                self.assertEqual(res["fused_agents"], [])
+            finally:
+                checker.get_usage = orig_get_usage
+
     def test_notify_thread(self):
         orig_run = checker.subprocess.run
         calls = []

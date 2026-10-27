@@ -314,6 +314,28 @@ environments:
         with self.assertRaises(m.DispatchError):
             m.dispatch(self.args('--environment', 'env', '--dry-run'), self.enable_fast_catalog())
 
+    def test_agent_fast_override_and_invalid_value(self):
+        config = m.yaml.safe_load(self.config.read_text())
+        config['fast'] = True
+        config['agents']['primary']['fast'] = False
+        self.config.write_text(m.yaml.safe_dump(config))
+        result = m.dispatch(self.args('--dry-run'), self.enable_fast_catalog())
+        self.assertEqual(result['selection']['service_tier'], 'default')
+        self.assertEqual(result['argv'][result['argv'].index('--service-tier') + 1], 'default')
+
+        config['fast'] = False
+        config['agents']['primary']['fast'] = True
+        self.config.write_text(m.yaml.safe_dump(config))
+        result = m.dispatch(self.args('--dry-run'), self.enable_fast_catalog())
+        self.assertEqual(result['selection']['service_tier'], 'fast')
+        self.assertEqual(result['argv'][result['argv'].index('--service-tier') + 1], 'fast')
+
+        config['agents']['primary']['fast'] = 'invalid'
+        self.config.write_text(m.yaml.safe_dump(config))
+        with self.assertRaises(m.DispatchError) as ctx:
+            m.dispatch(self.args('--dry-run'), self.enable_fast_catalog())
+        self.assertIn("agents.primary.fast 必须是 true 或 false", str(ctx.exception))
+
     def test_fast_cli_is_rejected(self):
         import contextlib
         import io

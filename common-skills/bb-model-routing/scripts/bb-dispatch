@@ -1221,7 +1221,14 @@ def dispatch_unlocked(args, call, now, config, slots):
             levels = [entry.get("reasoningEffort") for entry in (selected_model.get("supportedReasoningEfforts") or [])]
             if reasoning is not None and reasoning not in levels:
                 raise DispatchError(f"模型 {model} 不支持 reasoning={reasoning}；可用值：{levels}。")
-            if fast and supports_service_tier(selected, selected_model, "fast"):
+            agent_fast = agent.get("fast")
+            if agent_fast is not None:
+                if not isinstance(agent_fast, bool):
+                    raise DispatchError(f"agents.{alias}.fast 必须是 true 或 false。")
+                candidate_fast = agent_fast
+            else:
+                candidate_fast = fast
+            if candidate_fast and supports_service_tier(selected, selected_model, "fast"):
                 service_tier = "fast"
             elif supports_service_tier(selected, selected_model, "default"):
                 service_tier = "default"

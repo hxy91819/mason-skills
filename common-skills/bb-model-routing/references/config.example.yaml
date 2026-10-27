@@ -18,6 +18,8 @@ defaults:
 agents:
   primary:
     provider: <provider-id>
+    # 可选：人手改这个开关单独控制该账号是否带 --service-tier fast；省略时继承顶层 fast。
+    # fast: true
     # 可选：标题前缀图标形状，支持 circle（圆，默认）、square（方）、heart（心）；省略时按别名自动映射。
     # shape: circle
     # 可选：此 provider 跨模型、难度和派发进程共享的并发上限；省略则不限制。

@@ -21,7 +21,7 @@ bb-dispatch --difficulty complex --task '审查证据并裁决指定的技术问
 
 默认权限为 `accept-edits`。用户可在顶层或环境配置中设置已授权的 `permission_mode`；权限不兼容时报告错误，不自动升级。
 
-`fast` 控制派发是否请求 BB 的 Fast service tier。省略时默认 `true`；人手改配置文件为 `false` 即关闭。脚本不提供命令行覆盖，也不接受模型侧选择。优先级与权限相同：环境配置覆盖顶层。打开且模型支持 fast 时传 `--service-tier fast`；关闭或模型不支持 fast 时，只要 provider 列出 service tiers（含 `default`）就显式传 `--service-tier default`，硬性覆盖项目历史记忆偏好；整个 provider 均不支持 service tiers 时才省略该参数。
+`fast` 控制派发是否请求 BB 的 Fast service tier。省略时默认 `true`；人手改配置文件为 `false` 即关闭。脚本不提供命令行覆盖，也不接受模型侧选择。优先级：`agents.<别名>.fast` > 环境配置 `environments.<id>.fast` > 顶层配置 `fast`。打开且模型支持 fast 时传 `--service-tier fast`；关闭或模型不支持 fast 时，只要 provider 列出 service tiers（含 `default`）就显式传 `--service-tier default`，硬性覆盖项目历史记忆偏好；整个 provider 均不支持 service tiers 时才省略该参数。
 
 配置 `version: 2`。`defaults` 将 simple/medium/complex 映射到路由。字符串或有序别名列表使用 `fallback`：脚本按配置顺序校验并派发首个可用候选。需要在候选间分摊独立任务时使用显式配置：
 
@@ -50,7 +50,7 @@ defaults:
 
 路由项只由 `--difficulty simple|medium|complex` 决定；候选仅在存在该难度或显式 `default` 时参与。难度归类标准只在 SKILL.md「判断与调用」维护，本文不复述。没有任何匹配项会报错，不会猜测模型。
 
-优先级：命令行覆盖 > 环境配置 > 顶层配置。候选始终由 defaults 决定，脚本不提供 `--agent` 覆盖入口。`environments.<精确环境 ID>` 可覆盖 defaults、agents、permission_mode、fast；同名 agent 整体替换，必须写出 provider 和 routes。目录路径模式尚无环境 ID，不应用 `environments.<id>` 覆盖，只使用顶层配置。模型的明确要求通过配置调整表达，思考深度的明确要求用 `--reasoning` 表达，Fast 只改配置文件，缺失配置时先补齐，不静默替换。
+优先级：命令行覆盖 > `agents.<别名>` 配置 > 环境配置 > 顶层配置。候选始终由 defaults 决定，脚本不提供 `--agent` 覆盖入口。`environments.<精确环境 ID>` 可覆盖 defaults、agents、permission_mode、fast；同名 agent 整体替换，必须写出 provider 和 routes。每个 agent 可通过 `fast: true|false` 单独控制是否开启 Fast。目录路径模式尚无环境 ID，不应用 `environments.<id>` 覆盖，只使用顶层配置。模型的明确要求通过配置调整表达，思考深度的明确要求用 `--reasoning` 表达，Fast 只改配置文件，缺失配置时先补齐，不静默替换。
 
 `--fallback-from <别名>` 把本次候选截取为从该别名起的后缀，供需要点名续派候选的调用方使用；别名不在候选中时报错，点名的别名本身不按冷却跳过。实际派发时链上位于该别名之前的候选按 provider 与模型冷却 15 分钟。一般改派不必传它：`--on-failure` 记下失败或 spawn 失败后，该候选已冷却，重跑同一命令就会跳过。负载均衡续派须保持原 route 和完整 `--task` 文本，才能复现候选顺序；需要补充进展时，续派保留原任务文本，创建成功后通过 `bb thread tell` 向新线程补充进展与位置。
 
