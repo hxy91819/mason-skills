@@ -18,7 +18,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
-from urllib.parse import unquote, urlsplit
+import steward_source as source
 
 REQUIRED_SECTIONS = ["路线", "关键决策", "用户待办"]
 # 项目文档规范可能要求繁体中文，标题按同义词归一后再比对。
@@ -260,24 +260,21 @@ def check_ledger(text: str):
     return {"ok": not errors, "stats": {"periods": periods, "rows": rows}, "summary": summary, "errors": errors}
 
 
-def check_workbook_file(file_path: Path, **check_args):
-    text = file_path.read_text()
+def check_workbook_source(file, text, read, git_source=False, **check_args):
     res = check_workbook(text, **check_args)
-    # 标头是第一个二级标题前的内容；只检查要求帐入口，不扩大到一般材料链接。
-    for line in text.splitlines():
-        if line.startswith("## "):
-            break
-        for match in LEDGER_LINK_RE.finditer(line):
-            label, target = match.groups()
-            target = target.strip().strip("<>")
-            url = urlsplit(target)
-            path = unquote(url.path)
-            if not (re.search(r"要求[帳帐]", label) or re.search(r"-要求[帳帐]\.md$", path)):
-                continue
-            if url.scheme or url.netloc or not path or not (file_path.parent / path).is_file():
-                res["errors"].append(f"要求帐链接必须指向存在的本地文件：{target}")
-    res["ok"] = not res["errors"]
+    try:
+        target, kind = source.ledger_entry(text)
+        ledger = source.resolve_link(file, target, git_source)
+        read(ledger)
+        res['ledger'] = {'path': ledger, 'kind': kind}
+    except (source.SourceError, OSError, ValueError) as exc:
+        res['errors'].append(str(exc))
+    res['ok'] = not res['errors']
     return res
+
+
+def check_workbook_file(file_path: Path, **check_args):
+    return check_workbook_source(str(file_path), file_path.read_text(), lambda path: Path(path).read_text(), **check_args)
 
 
 def route_stem(body: str) -> str:
@@ -657,6 +654,11 @@ def parser():
     p.add_argument("--mode", required=True, choices=["check", "should-commit", "reconcile", "ledger-check"],
                    help="ledger-check=校验要求帐；check=校验结构、容量与要求帐入口；should-commit=校验并判断相对 HEAD 是否有实质状态变化；reconcile=收尾对账")
     p.add_argument("--file", required=True, help="工作簿或要求帐 Markdown 文件路径")
+    p.add_argument("--repo", help="Git 仓库绝对路径；--file 为仓库相对路径")
+    revision = p.add_mutually_exclusive_group()
+    revision.add_argument("--ref", help="核实远端并固定 SHA，如 origin/main")
+    revision.add_argument("--revision", help="本次操作已固定的 40 位 SHA；不宣称为最新")
+    p.add_argument("--ledger-kind", choices=['standard', 'history'], default='standard')
     p.add_argument("--live", action="store_true", help="reconcile 时经 bb thread list 核对「进行中」线程是否还活着")
     p.add_argument("--max-nonempty-lines", type=int, default=DEFAULT_MAX_NONEMPTY_LINES)
     p.add_argument("--max-line-chars", type=int, default=DEFAULT_MAX_LINE_CHARS)
@@ -667,8 +669,10 @@ def parser():
 
 def main():
     args = parser().parse_args()
+    if args.ledger_kind != 'standard' and args.mode != 'ledger-check':
+        parser().error('--ledger-kind 仅用于 ledger-check')
     fpath = Path(args.file).expanduser()
-    if not fpath.is_file():
+    if not args.repo and not fpath.is_file():
         print(json.dumps({"ok": False, "file": str(fpath), "errors": [f"文件不存在：{fpath}"]}, ensure_ascii=False, indent=2))
         return 2
     check_args = {
@@ -677,10 +681,28 @@ def main():
         "max_route_items": args.max_route_items,
         "max_decisions": args.max_decisions,
     }
-    if args.mode == "check":
+    if args.repo or args.ref or args.revision:
+        try:
+            if not args.repo or not Path(args.repo).is_absolute() or not (args.ref or args.revision) or args.mode == 'should-commit':
+                raise source.SourceError('Git 来源需要 --repo 与 --ref/--revision；不支持 should-commit')
+            sha = source.pin(args.repo, args.ref) if args.ref else args.revision
+            file = source.relative_path(args.file)
+            read = lambda path: source.read(args.repo, sha, path)
+            text = read(file)
+            if args.mode == 'check':
+                res = check_workbook_source(file, text, read, True, **check_args)
+            elif args.mode == 'ledger-check':
+                res = check_ledger(text) if args.ledger_kind == 'standard' else {'ok': False, 'applicable': False, 'errors': ['历史流水账；标准五列表统计不适用']}
+            else:
+                threads = fetch_threads(reconcile_workbook(text)['referenced_threads']) if args.live else None
+                res = reconcile_workbook(text, threads=threads)
+            res['snapshot'] = {'repo': str(Path(args.repo).resolve()), 'ref': args.ref, 'sha': sha}
+        except (source.SourceError, OSError, ValueError, RuntimeError) as exc:
+            res = {'ok': False, 'errors': [str(exc)]}
+    elif args.mode == "check":
         res = {"file": str(fpath), **check_workbook_file(fpath, **check_args)}
     elif args.mode == "ledger-check":
-        res = {"file": str(fpath), **check_ledger(fpath.read_text())}
+        res = {"file": str(fpath), **(check_ledger(fpath.read_text()) if args.ledger_kind == "standard" else {"ok": False, "applicable": False, "errors": ["历史流水账；标准五列表统计不适用"]})}
     elif args.mode == "reconcile":
         text = fpath.read_text()
         threads, warnings = None, []

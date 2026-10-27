@@ -115,10 +115,10 @@ class LedgerTests(unittest.TestCase):
             path.write_text(path.read_text().replace('領域設計-要求帳.md', '%E9%A0%98%E5%9F%9F%E8%A8%AD%E8%A8%88-要求帳.md#結果'))
             self.assertTrue(sw.check_workbook_file(path)['ok'])
 
-    def test_check_cli_checks_entry_without_requiring_one_for_legacy_workbooks(self):
+    def test_check_cli_reports_missing_or_external_entry(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'workbook.md'
-            for link, expected in (('', 0), ('[逐项记录](topic-要求帳.md)', 2),
+            for link, expected in (('', 2), ('[逐项记录](topic-要求帳.md)', 2),
                                    ('[要求帳](https://example.org/ledger.md)', 2)):
                 path.write_text(VALID_WORKBOOK.replace('\n## 路线', f'\n{link}\n\n## 路线', 1))
                 with patch.object(sys, 'argv', ['steward_workbook', '--mode', 'check', '--file', str(path)]):

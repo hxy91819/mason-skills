@@ -259,7 +259,8 @@ class WatchTests(unittest.TestCase):
         wb.write_text(GOOD.replace("← 等用户", "← 进行中 thr_oldchild01"))
         subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
         subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "wb"], check=True)
-        subprocess.run(["git", "-C", str(repo), "update-ref", "refs/remotes/origin/main", "HEAD"], check=True)
+        subprocess.run(["git", "-C", str(repo), "branch", "main"], check=True)
+        subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", str(repo)], check=True)
         self.state["stewards"] = {}
         watch.register(self.state, self.bb, TID, str(wb), ref="origin/main", name="A", now=NOW, state_path=self.state_path)
         self.bb.set("thr_oldchild01", idle=3 * HOUR)
@@ -282,13 +283,12 @@ class WatchTests(unittest.TestCase):
         (tree / "docs" / "wb.md").write_text(GOOD)
         subprocess.run(["git", "-C", str(tree), "add", "."], check=True)
         subprocess.run(["git", "-C", str(tree), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "wb"], check=True)
-        subprocess.run(git + ["update-ref", "refs/remotes/origin/env", "env"], check=True)
+        subprocess.run(git + ["remote", "add", "origin", str(repo)], check=True)
         res = watch.register(self.state, self.bb, TID, str(tree / "docs" / "wb.md"), ref="origin/env", manage_automation=False, state_path=self.state_path)
         self.assertEqual(Path(res["repo"]).resolve(), repo.resolve())
-        # 新登记从主工作区路径（文件在该分支不存在）接任，沿用远端 ref 与简称。
         self.bb.set("thr_new00001")
         takeover = watch.register(self.state, self.bb, "thr_new00001", str(repo / "docs" / "wb.md"),
-                                  state_path=self.state_path, manage_automation=False)
+                                  state_path=self.state_path, manage_automation=False, ref="origin/env")
         self.assertEqual(takeover["ref"], "origin/env")
         self.assertEqual(takeover["name"], res["name"])
         self.assertNotIn(TID, self.state["stewards"])
@@ -541,7 +541,6 @@ class PluginSyncTests(unittest.TestCase):
             self.assertEqual(bb.plugin_calls[0][1]["ledger"], str(Path(temp) / "different ledger.md"))
             with mock.patch.object(bb, "steward", side_effect=watch.WatchError("not installed")):
                 self.assertEqual(watch.sync_plugin(bb, "register", TID, entry)["status"], "skipped")
-            self.assertEqual(watch.sync_plugin(bb, "register", TID, {**entry, "ref": "origin/main"})["status"], "skipped")
             self.assertEqual(watch.sync_plugin(bb, "unregister", TID)["status"], "unregistered")
 
     def test_failed_unregister_survives_reload_and_retries_without_a_steward(self):
@@ -579,24 +578,39 @@ class PluginSyncTests(unittest.TestCase):
             self.assertEqual(bb.plugin_calls, [("unregister", {"thread": "ready"})])
             self.assertNotIn("ready", state["pending_plugin_unregistrations"])
 
-    def test_git_ref_takeover_cleans_old_and_new_plugin_markers(self):
+    def test_git_ref_reregistration_and_reload_keep_source_binding_and_cancel_pending_cleanup(self):
         with tempfile.TemporaryDirectory() as temp:
-            path = Path(temp) / "watch.json"
-            workbook = Path(temp) / "workbook.md"
-            workbook.write_text("# workbook")
+            repo = Path(temp) / 'repo'
+            subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+            git = ['git', '-C', str(repo)]
+            subprocess.run(git + ['config', 'user.name', 'Test'], check=True)
+            subprocess.run(git + ['config', 'user.email', 'test@example.invalid'], check=True)
+            workbook = repo / 'workbook.md'
+            workbook.write_text(GOOD.replace('更新：2026-10-26', '[要求帐（历史流水账）](history.md)'))
+            (repo / 'history.md').write_text('# 历史流水账')
+            subprocess.run(git + ['add', '.'], check=True)
+            subprocess.run(git + ['commit', '-qm', 'initial'], check=True)
+            subprocess.run(git + ['branch', '-M', 'main'], check=True)
+            subprocess.run(git + ['remote', 'add', 'origin', str(repo)], check=True)
+            path = Path(temp) / 'watch.json'
             state = watch.empty_state()
-            state["stewards"]["old"] = {"workbook": str(workbook), "repo": temp, "path": "workbook.md", "ref": "origin/main"}
+            state['pending_plugin_unregistrations'] = [TID]
             bb = FakeBb()
-            with mock.patch.object(watch, "workbook_identity", return_value=(temp, "workbook.md")), mock.patch.object(bb, "steward", side_effect=watch.WatchError("unavailable")):
-                result = watch.register(state, bb, "new", str(workbook), state_path=path, manage_automation=False)
-            self.assertEqual(set(state["stewards"]), {"new"})
-            self.assertEqual(result["plugin"]["status"], "skipped")
+            result = watch.register(state, bb, TID, str(workbook), ref='origin/main', state_path=path, manage_automation=False)
+            self.assertEqual(result['plugin']['status'], 'registered')
+            watch.save_state(path, state)
             state = watch.load_state(path)
-            self.assertEqual(set(state["pending_plugin_unregistrations"]), {"old", "new"})
-            with mock.patch.object(watch, "read_workbook", return_value=GOOD):
-                watch.run(state, path, bb, now=NOW)
-            self.assertEqual({values["thread"] for command, values in bb.plugin_calls if command == "unregister"}, {"old", "new"})
-            self.assertEqual(watch.load_state(path)["pending_plugin_unregistrations"], [])
+            watch.retry_plugin_unregistrations(state, bb, path)
+            result = watch.register(state, bb, TID, str(workbook), state_path=path, manage_automation=False)
+            self.assertEqual(result['ref'], 'origin/main')
+            self.assertEqual([cmd for cmd, _ in bb.plugin_calls], ['register', 'register'])
+            self.assertEqual(bb.plugin_calls[-1][1]['workbook'], 'workbook.md')
+            self.assertEqual(bb.plugin_calls[-1][1]['repo'], str(repo))
+            self.assertEqual(bb.plugin_calls[-1][1]['ledger_kind'], 'history')
+            self.assertEqual(state['pending_plugin_unregistrations'], [])
+            other = watch.register(state, bb, 'other', str(workbook), state_path=path, manage_automation=False)
+            self.assertEqual(other['handovers'], [])
+            self.assertIn(TID, state['stewards'])
 
 
 if __name__ == "__main__":

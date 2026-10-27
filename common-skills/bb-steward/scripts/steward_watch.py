@@ -35,7 +35,6 @@ import shlex
 import subprocess
 import sys
 import time
-from urllib.parse import unquote, urlsplit
 
 try:
     import fcntl
@@ -86,7 +85,7 @@ class Bb:
     def steward(self, command, **values):
         args = ["steward", command]
         for key, value in values.items():
-            args.extend(["--" + key, str(value)])
+            args.extend(["--" + key.replace("_", "-"), str(value)])
         return self._run(args, timeout=65)
 
     def threads(self, ids):
@@ -244,17 +243,13 @@ def git_toplevel(path):
 
 
 def read_workbook(entry):
-    """无 ref 读工作区文件；有 ref 先 fetch 再读远端分支上的版本（fetch 失败沿用本地已有的 ref）。"""
     if not entry.get("ref"):
         return Path(entry["workbook"]).read_text()
-    remote, _, branch = entry["ref"].partition("/")
-    if branch:
-        with contextlib.suppress(Exception):
-            git("-C", entry["repo"], "fetch", "-q", remote, branch)
-    res = git("-C", entry["repo"], "show", f"{entry['ref']}:{entry['path']}")
-    if res.returncode:
-        raise WatchError(res.stderr.strip()[:200] or "git show 失败")
-    return res.stdout
+    try:
+        sha = sw.source.pin(entry['repo'], entry['ref'])
+        return sw.source.read(entry['repo'], sha, entry['path'])
+    except sw.source.SourceError as exc:
+        raise WatchError(str(exc)) from exc
 
 
 # ---------- 模型观测（只读来源，游标与基线由调用方保存） ----------
@@ -686,26 +681,18 @@ def sync_plugin(bb, command, thread, entry=None):
     try:
         values = {"thread": thread}
         if command == "register":
-            if entry.get("ref"):
-                return {"status": "skipped", "reason": "Git-ref 工作簿暂不提供平台入口，继续使用工作簿链接"}
-            workbook = Path(entry["workbook"])
-            ledger = None
-            for line in workbook.read_text().splitlines():
-                if line.startswith("## "):
-                    break
-                for label, target in sw.LEDGER_LINK_RE.findall(line):
-                    url = urlsplit(target.strip().strip("<>"))
-                    path = unquote(url.path)
-                    if not url.scheme and not url.netloc and path and ("要求帳" in label or "要求帐" in label or path.endswith(("-要求帳.md", "-要求帐.md"))):
-                        ledger = (workbook.parent / path).resolve()
-                        break
-                if ledger:
-                    break
-            if ledger is None:
-                return {"status": "skipped", "reason": "工作簿标头缺少本地要求帐入口"}
-            values.update(topic=entry["name"], workbook=str(workbook), ledger=str(ledger), checker=str(Path(sw.__file__).resolve()))
+            git_source = bool(entry.get('ref'))
+            file = entry['path'] if git_source else entry['workbook']
+            target, kind = sw.source.ledger_entry(read_workbook(entry))
+            ledger = sw.source.resolve_link(file, target, git_source)
+            values.update(topic=entry['name'], workbook=file, ledger=ledger,
+                          checker=str(Path(sw.__file__).resolve()), ledger_kind=kind)
+            if git_source:
+                values.update(repo=entry['repo'], ref=entry['ref'])
         bb.steward(command, **values)
         return {"status": "registered" if command == "register" else "unregistered"}
+    except (sw.source.SourceError, WatchError, OSError, ValueError) as exc:
+        return {"status": "skipped", "reason": str(exc)}
     except Exception:
         return {"status": "skipped", "reason": "管家插件未安装或暂未就绪，看门狗继续运行"}
 
@@ -727,7 +714,7 @@ def unregister_plugin(state, bb, thread, state_path):
 def retry_plugin_unregistrations(state, bb, state_path):
     for thread in list(state.get("pending_plugin_unregistrations", []))[:20]:
         active = state["stewards"].get(thread)
-        if active and not active.get("ref"):
+        if active:
             state["pending_plugin_unregistrations"].remove(thread)
             save_state(state_path, state)
         else:
@@ -746,8 +733,9 @@ def register(state, bb, thread, workbook, ref=None, name=None, project=None, scr
     now = time.time() if now is None else now
     workbook = Path(workbook).expanduser().resolve()
     identity = workbook_identity(workbook)
+    ref = ref if ref is not None else state["stewards"].get(thread, {}).get("ref")
     olds = [(tid, e) for tid, e in state["stewards"].items()
-            if tid != thread and entry_identity(e) == identity]
+            if tid != thread and entry_identity(e) == identity and e.get("ref") == ref]
     previous = state["stewards"].get(thread, {})
     inherited = olds[0][1] if olds else previous
     ref = ref if ref is not None else inherited.get("ref")
@@ -780,9 +768,7 @@ def register(state, bb, thread, workbook, ref=None, name=None, project=None, scr
     else:
         automation = ensure_automation(state, bb, project, script_path or Path(__file__).resolve(), path)
     plugin_result = sync_plugin(bb, "register", thread, entry)
-    if ref:
-        plugin_result["cleanup"] = [{"thread": tid, **unregister_plugin(state, bb, tid, path)} for tid in [thread, *(old for old, _ in olds)]]
-    elif thread in state.get("pending_plugin_unregistrations", []):
+    if thread in state.get("pending_plugin_unregistrations", []):
         state["pending_plugin_unregistrations"].remove(thread)
     return {"thread": thread, **entry, "automation": automation, "handovers": handovers,
             "plugin": plugin_result}
