@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""巡检 Codex 账号剩余额度；若 codex 或 codex-l 等账号剩余额度 <= 40%，则关闭对应账号的 Fast。"""
+"""巡检 Codex 账号剩余额度；若 codex 或 codex-l 等账号剩余额度 <= 40%，则关闭对应账号的 Fast。
+若所有可监控账号均关闭 Fast，则联动关闭无法获取额度的账号（如 codex-b）。"""
 
 import argparse
 import json
@@ -157,18 +158,28 @@ def check_and_fuse(config_path=CONFIG_PATH, dry_run=False):
     fused_agents = []
     fuse_triggered = False
 
+    measurable_count = 0
+    measurable_fast_active_count = 0
+    unmeasurable_accounts = []
+
     for provider_id, label in monitored:
         stat, err = parse_remaining(usage_data, provider_id)
         accounts_stat[provider_id] = stat or {"error": err}
         if stat is None:
+            unmeasurable_accounts.append((provider_id, label))
             continue
 
+        measurable_count += 1
         rem = stat["remaining_percent"]
+        alias = provider_to_alias.get(provider_id)
+        if alias and alias in agents and isinstance(agents[alias], dict):
+            current_fast = agents[alias].get("fast", global_fast)
+        else:
+            current_fast = global_fast
+
         if rem <= QUOTA_THRESHOLD_PERCENT:
             fuse_triggered = True
-            alias = provider_to_alias.get(provider_id)
             if alias and alias in agents and isinstance(agents[alias], dict):
-                current_fast = agents[alias].get("fast", global_fast)
                 if current_fast is True:
                     fused_agents.append(alias)
                     reasons.append(f"{label} 剩余额度仅剩 {rem:.1f}% (<= {QUOTA_THRESHOLD_PERCENT}%)，已自动关闭该账号 Fast 开关（agents.{alias}.fast: false）")
@@ -180,6 +191,27 @@ def check_and_fuse(config_path=CONFIG_PATH, dry_run=False):
                     reasons.append(f"{label} 剩余额度仅剩 {rem:.1f}% (<= {QUOTA_THRESHOLD_PERCENT}%)，已自动关闭全局 Fast 开关（fast: false）")
                 else:
                     reasons.append(f"{label} 剩余额度仅剩 {rem:.1f}% (<= {QUOTA_THRESHOLD_PERCENT}%)，全局 Fast 已处于关闭状态")
+        else:
+            if current_fast is True:
+                measurable_fast_active_count += 1
+
+    # 若存在可监控账号，且所有可监控账号的 Fast 均已关闭（本次熔断或此前已关），则联动关闭无法获取额度的账号
+    if measurable_count > 0 and measurable_fast_active_count == 0:
+        for provider_id, label in unmeasurable_accounts:
+            alias = provider_to_alias.get(provider_id)
+            if alias and alias in agents and isinstance(agents[alias], dict):
+                current_fast = agents[alias].get("fast", global_fast)
+                if current_fast is True:
+                    fused_agents.append(alias)
+                    fuse_triggered = True
+                    reasons.append(f"{label} 无法获取额度，因所有可监控 Codex 账号均已关闭 Fast，联动关闭该账号 Fast（agents.{alias}.fast: false）")
+                else:
+                    reasons.append(f"{label} 无法获取额度，且 Fast 此前已处于关闭状态")
+            else:
+                if global_fast is True:
+                    fused_agents.append(None)
+                    fuse_triggered = True
+                    reasons.append(f"{label} 无法获取额度，因所有可监控 Codex 账号均已关闭 Fast，联动关闭全局 Fast 开关（fast: false）")
 
     action_taken = "none"
     if fused_agents:
@@ -203,7 +235,7 @@ def check_and_fuse(config_path=CONFIG_PATH, dry_run=False):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="巡检 Codex 账号剩余额度并在超限时独立熔断 Fast")
+    parser = argparse.ArgumentParser(description="巡检 Codex 账号剩余额度并在超限时独立/联动熔断 Fast")
     parser.add_argument("--dry-run", action="store_true", help="乾跑模式，不修改配置文件")
     parser.add_argument("--notify-thread", default=os.environ.get("BB_NOTIFY_THREAD"), help="状态切换时通知的目标 BB 线程 ID")
     args = parser.parse_args()

@@ -149,6 +149,88 @@ agents:
             finally:
                 checker.get_usage = orig_get_usage
 
+    def test_cascade_fuse_unmeasurable_when_all_measurable_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg = Path(td) / "config.yaml"
+            cfg.write_text("""version: 2
+fast: true
+agents:
+  codex:
+    provider: codex
+  codexl:
+    provider: codex-l
+  codexb:
+    provider: codex-b
+""", encoding="utf-8")
+
+            orig_get_usage = checker.get_usage
+            try:
+                checker.get_usage = lambda: {
+                    "codex": {
+                        "status": "ok",
+                        "windows": [{"label": "Weekly limit", "usedPercent": 65, "resetsAt": "2026-11-01"}]
+                    },
+                    "codex-l": {
+                        "status": "ok",
+                        "windows": [{"label": "Weekly limit", "usedPercent": 70, "resetsAt": "2026-11-01"}]
+                    },
+                    "codex-b": {
+                        "status": "unauthenticated"
+                    }
+                }
+                res = checker.check_and_fuse(config_path=cfg, dry_run=False)
+                self.assertTrue(res["fuse_triggered"])
+                self.assertEqual(res["action"], "fused_closed_fast")
+                self.assertIn("codex", res["fused_agents"])
+                self.assertIn("codexl", res["fused_agents"])
+                self.assertIn("codexb", res["fused_agents"])
+                data, _ = checker.load_config(cfg)
+                self.assertEqual(data["agents"]["codex"]["fast"], False)
+                self.assertEqual(data["agents"]["codexl"]["fast"], False)
+                self.assertEqual(data["agents"]["codexb"]["fast"], False)
+            finally:
+                checker.get_usage = orig_get_usage
+
+    def test_unmeasurable_not_fused_when_any_measurable_healthy(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg = Path(td) / "config.yaml"
+            cfg.write_text("""version: 2
+fast: true
+agents:
+  codex:
+    provider: codex
+  codexl:
+    provider: codex-l
+  codexb:
+    provider: codex-b
+""", encoding="utf-8")
+
+            orig_get_usage = checker.get_usage
+            try:
+                checker.get_usage = lambda: {
+                    "codex": {
+                        "status": "ok",
+                        "windows": [{"label": "Weekly limit", "usedPercent": 65, "resetsAt": "2026-11-01"}]
+                    },
+                    "codex-l": {
+                        "status": "ok",
+                        "windows": [{"label": "Weekly limit", "usedPercent": 20, "resetsAt": "2026-11-01"}]
+                    },
+                    "codex-b": {
+                        "status": "unauthenticated"
+                    }
+                }
+                res = checker.check_and_fuse(config_path=cfg, dry_run=False)
+                self.assertTrue(res["fuse_triggered"])
+                self.assertEqual(res["action"], "fused_closed_fast")
+                self.assertEqual(res["fused_agents"], ["codex"])
+                data, _ = checker.load_config(cfg)
+                self.assertEqual(data["agents"]["codex"]["fast"], False)
+                self.assertNotIn("fast", data["agents"]["codexl"])
+                self.assertNotIn("fast", data["agents"]["codexb"])
+            finally:
+                checker.get_usage = orig_get_usage
+
     def test_notify_thread(self):
         orig_run = checker.subprocess.run
         calls = []
