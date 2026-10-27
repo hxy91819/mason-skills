@@ -75,6 +75,12 @@ common-skills/
 │   ├── scripts/               # refactor_guard.py evidence gate
 │   ├── examples/              # Runnable SQLite N+1 demo
 │   └── tests/
+├── test-audit/                # Test authoring gate and proof audit ($test-audit, adapted from OpenClaw)
+│   ├── SKILL.md
+│   ├── CAMPAIGN.md
+│   ├── LICENSE
+│   ├── agents/
+│   └── references/
 ├── story-direction-review/
 │   ├── SKILL.md
 │   └── agents/
@@ -161,6 +167,7 @@ python3 common-skills/skill-manifest-sync/scripts/sync_skill_symlinks.py --mode 
 | [ppt-visual-review](common-skills/ppt-visual-review/) | Layout-focused slide review: arrows, whitespace, same-type consistency, global font/color, alignment and CJK typography checks. Dispatches a simple-difficulty reviewer thread via bb-model-routing, then loops review → fix → re-review until clean, then delivers a whole-deck before/after HTML report. Explicit invocation only; honors read-only requests. |
 | [review-html-report](common-skills/review-html-report/) | Renders existing review records as a self-contained HTML report with evidence, before/after comparisons, and copyable feedback. Shared output for PPT and spec-leak reviews; does not start a review. |
 | [secure-release](common-skills/secure-release/) | Integrates fail-closed release pipelines using a versioned CI kit; npm is the first implemented adapter. |
+| [test-audit](common-skills/test-audit/) | Gates new tests and audits existing ones: per-declaration retain/fix/consolidate/delete ledger with evidence, junk-pattern checklist, retention bar, and a whole-subsystem campaign mode. Adapted from [OpenClaw's test-audit](https://github.com/openclaw/openclaw/tree/main/.agents/skills/test-audit) (MIT, Copyright OpenClaw Foundation). Explicit invocation only. |
 | [spec-leak-review](common-skills/spec-leak-review/) | Reviews and fixes leaked production instructions in websites, slides, and text, revalidates changes, and delivers HTML. Explicit invocation only; honors read-only and text-only requests. |
 | [submitting-github-issues-with-images](common-skills/submitting-github-issues-with-images/) | Uploads local screenshots, videos, or diagnostic attachments as GitHub Release Assets, embeds them in issues, PR bodies, or comments, and verifies the published result by reading it back online. Explicit invocation only, with a stated exception for authorized caller workflows. |
 | [story-direction-review](common-skills/story-direction-review/) | Reviews a completed Story for direction drift, invalidated assumptions, coverage gaps, and necessary plan changes. Explicit invocation only. |

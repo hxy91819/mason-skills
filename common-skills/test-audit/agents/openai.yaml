@@ -1,0 +1,7 @@
+interface:
+  display_name: "Test Audit"
+  short_description: "Gate new tests and prune duplicate or implementation-coupled proof"
+  default_prompt: "Use $test-audit to audit the tests in this scope."
+
+policy:
+  allow_implicit_invocation: false

@@ -131,6 +131,8 @@ skills:
 - name: teach
   source: mattpocock-skills
   note: 在当前工作区多会话教学一个主题
+- name: test-audit
+  note: 测试编写门禁与逐条证据审计（改编自 OpenClaw，MIT）
 - name: to-questionnaire
   source: mattpocock-skills
   note: 把独自答不了的决策变成给知情人的问卷
