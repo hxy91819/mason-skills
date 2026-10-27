@@ -711,14 +711,15 @@ def sync_plugin(bb, command, thread, entry=None):
 
 
 def unregister_plugin(state, bb, thread, state_path):
-    pending = set(state.get("pending_plugin_unregistrations", []))
-    pending.add(thread)
-    state["pending_plugin_unregistrations"] = sorted(pending)
+    pending = list(dict.fromkeys(state.get("pending_plugin_unregistrations", [])))
+    if thread not in pending:
+        pending.append(thread)
+    state["pending_plugin_unregistrations"] = pending
     save_state(state_path, state)
     result = sync_plugin(bb, "unregister", thread)
     if result["status"] == "unregistered":
         pending.remove(thread)
-        state["pending_plugin_unregistrations"] = sorted(pending)
+        state["pending_plugin_unregistrations"] = pending
         save_state(state_path, state)
     return result
 
@@ -730,7 +731,12 @@ def retry_plugin_unregistrations(state, bb, state_path):
             state["pending_plugin_unregistrations"].remove(thread)
             save_state(state_path, state)
         else:
-            unregister_plugin(state, bb, thread, state_path)
+            result = unregister_plugin(state, bb, thread, state_path)
+            if result["status"] == "skipped":
+                pending = state["pending_plugin_unregistrations"]
+                pending.remove(thread)
+                pending.append(thread)
+                save_state(state_path, state)
 
 
 def register(state, bb, thread, workbook, ref=None, name=None, project=None, script_path=None,

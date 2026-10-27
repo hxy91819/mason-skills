@@ -261,7 +261,7 @@ class WatchTests(unittest.TestCase):
         subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "wb"], check=True)
         subprocess.run(["git", "-C", str(repo), "update-ref", "refs/remotes/origin/main", "HEAD"], check=True)
         self.state["stewards"] = {}
-        watch.register(self.state, self.bb, TID, str(wb), ref="origin/main", name="A", now=NOW)
+        watch.register(self.state, self.bb, TID, str(wb), ref="origin/main", name="A", now=NOW, state_path=self.state_path)
         self.bb.set("thr_oldchild01", idle=3 * HOUR)
         self.bb.kids[TID] = [dict(self.bb.infos["thr_oldchild01"]), {**self.bb.infos[TID], "id": "thr_newchild01", "status": "active"}]
         self.assertEqual(self.tick(NOW)["result"], "ok")
@@ -561,6 +561,24 @@ class PluginSyncTests(unittest.TestCase):
             self.assertEqual(watch.load_state(path)["pending_plugin_unregistrations"], [])
             self.assertEqual(bb.plugin_calls, [("unregister", {"thread": TID})])
 
+    def test_pending_cleanup_rotates_failures_instead_of_starving_later_threads(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "watch.json"
+            state = watch.empty_state()
+            blocked = [f"blocked-{i:02d}" for i in range(20)]
+            state["pending_plugin_unregistrations"] = [*blocked, "ready"]
+            bb = FakeBb()
+            real_steward = bb.steward
+            def steward(command, **values):
+                if values["thread"] in blocked:
+                    raise watch.WatchError("unavailable")
+                return real_steward(command, **values)
+            bb.steward = steward
+            watch.run(state, path, bb, now=NOW)
+            watch.run(state, path, bb, now=NOW)
+            self.assertEqual(bb.plugin_calls, [("unregister", {"thread": "ready"})])
+            self.assertNotIn("ready", state["pending_plugin_unregistrations"])
+
     def test_git_ref_takeover_cleans_old_and_new_plugin_markers(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "watch.json"
@@ -569,11 +587,16 @@ class PluginSyncTests(unittest.TestCase):
             state = watch.empty_state()
             state["stewards"]["old"] = {"workbook": str(workbook), "repo": temp, "path": "workbook.md", "ref": "origin/main"}
             bb = FakeBb()
-            with mock.patch.object(watch, "workbook_identity", return_value=(temp, "workbook.md")):
+            with mock.patch.object(watch, "workbook_identity", return_value=(temp, "workbook.md")), mock.patch.object(bb, "steward", side_effect=watch.WatchError("unavailable")):
                 result = watch.register(state, bb, "new", str(workbook), state_path=path, manage_automation=False)
             self.assertEqual(set(state["stewards"]), {"new"})
             self.assertEqual(result["plugin"]["status"], "skipped")
+            state = watch.load_state(path)
+            self.assertEqual(set(state["pending_plugin_unregistrations"]), {"old", "new"})
+            with mock.patch.object(watch, "read_workbook", return_value=GOOD):
+                watch.run(state, path, bb, now=NOW)
             self.assertEqual({values["thread"] for command, values in bb.plugin_calls if command == "unregister"}, {"old", "new"})
+            self.assertEqual(watch.load_state(path)["pending_plugin_unregistrations"], [])
 
 
 if __name__ == "__main__":
