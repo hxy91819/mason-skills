@@ -42,6 +42,8 @@ skills:
 - name: codebase-design
   source: mattpocock-skills
   note: 深模块设计的共享词汇与改进时机
+- name: codebase-tidy
+  note: 一波功能后手动整轮整理：锁回归、清理重构、按步 smoke、教训沉淀为规则
 - name: dev-html-preview
   note: 将生成的静态 HTML 发布为带认证和有效期的用户预览链接
 - name: diagnosing-bugs

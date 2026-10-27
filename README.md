@@ -46,6 +46,9 @@ common-skills/
 │   │   └── SKILL.md
 │   └── skill-maker/
 │       └── SKILL.md
+├── codebase-tidy/              # Post-burst architecture tidy ($codebase-tidy)
+│   ├── SKILL.md
+│   └── agents/
 ├── distill/
 │   └── SKILL.md
 ├── large-task-planning/
@@ -146,6 +149,7 @@ python3 common-skills/skill-manifest-sync/scripts/sync_skill_symlinks.py --mode 
 | [ask-oracle](common-skills/ask-oracle/) | Investigates a focused high-impact question, dispatches the configured BB Oracle, and returns its independent technical judgment. |
 | [article-polish](common-skills/article-polish/) | Article polishing with quick / normal / refined modes. Derivative work based on [baoyu-translate](https://github.com/JimLiu/baoyu-skills/tree/main/skills/baoyu-translate). |
 | [article-workflow](common-skills/article-workflow/) | A phased article optimization workflow with 13 skills — from brief generation through final publication. See [workflow README](common-skills/article-workflow/README.md) for phase order and usage. |
+| [codebase-tidy](common-skills/codebase-tidy/) | Tidies a project after a burst of (often agent-driven) feature work: inventories drift against the architecture intent, locks regressions with boundary-level tests, refactors in small smoke-verified steps, and turns lessons into enforceable repository rules in a separate PR. Explicit invocation only. |
 | [distill](common-skills/distill/) | Reviews one session or a bounded periodic cross-session window for evidence-backed harness and project-knowledge improvements, explicitly auditing repository Skills and AGENTS.md instructions for design and usability problems. |
 | [large-task-planning](common-skills/large-task-planning/) | Compiles a large engineering goal into reader-friendly SPEC/STATUS views and a JSON execution plan; also supplies its contract and CLI to active orchestration flows. |
 | [large-task-orchestrator](common-skills/large-task-orchestrator/) | 用带 pid 锁的后台确定性 driver 经 BB（`bb-model-routing`）派发 Worker / Validator，并仅在异常时派 Judge 执行计划；按计划隔离状态，支持并行。仅显式调用。 |

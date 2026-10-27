@@ -1,0 +1,7 @@
+interface:
+  display_name: "Codebase Tidy"
+  short_description: "一波功能之后收拢架构：锁行为、清屎山、沉淀规则"
+  default_prompt: "Use $codebase-tidy to tidy this project after the recent burst of feature work."
+
+policy:
+  allow_implicit_invocation: false
