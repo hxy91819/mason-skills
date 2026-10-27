@@ -27,6 +27,9 @@ class LedgerTests(unittest.TestCase):
         res = sw.check_ledger(FIXTURE)
         self.assertTrue(res['ok'], res['errors'])
         self.assertEqual(res['stats'], {'periods': 2, 'rows': 8})
+        self.assertEqual(sum(res['summary'].values()), 8)
+        self.assertEqual(res['summary']['進行中'], 1)
+        self.assertEqual(res['summary']['待使用者'], 1)
 
     def test_accepts_locatable_materials_and_specific_qualitative_results(self):
         for material in ('[報告](report.md)', 'PR #117', 'commit 7f3b384',

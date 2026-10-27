@@ -35,6 +35,7 @@ import shlex
 import subprocess
 import sys
 import time
+from urllib.parse import unquote, urlsplit
 
 try:
     import fcntl
@@ -81,6 +82,12 @@ class Bb:
             detail = json.dumps(error, ensure_ascii=False) if error else (res.stderr.strip() or res.stdout.strip())
             raise WatchError(f"bb {' '.join(args[:2])} 失败：{detail[:300]}")
         return data
+
+    def steward(self, command, **values):
+        args = ["steward", command]
+        for key, value in values.items():
+            args.extend(["--" + key, str(value)])
+        return self._run(args, timeout=65)
 
     def threads(self, ids):
         try:
@@ -590,6 +597,8 @@ def run(state, state_path, bb, now=None, dry_run=False):
                 checker.events.append(event(now, tid, "error", detail=str(exc)[:300]))
                 outcome = {"result": "error", "report": f"{entry.get('name') or tid}：检查出错：{str(exc)[:200]}"}
             if outcome.get("remove"):
+                if not dry_run:
+                    outcome["plugin"] = sync_plugin(bb, "unregister", tid)
                 del stewards[tid]
             results[tid] = outcome
     if not dry_run:
@@ -671,6 +680,35 @@ def handover(bb, old, new, entry, now):
     return {"old": old, "new": new, "steps": results}
 
 
+def sync_plugin(bb, command, thread, entry=None):
+    try:
+        values = {"thread": thread}
+        if command == "register":
+            if entry.get("ref"):
+                bb.steward("unregister", thread=thread)
+                return {"status": "skipped", "reason": "Git-ref 工作簿暂不提供平台入口，继续使用工作簿链接"}
+            workbook = Path(entry["workbook"])
+            ledger = None
+            for line in workbook.read_text().splitlines():
+                if line.startswith("## "):
+                    break
+                for label, target in sw.LEDGER_LINK_RE.findall(line):
+                    url = urlsplit(target.strip().strip("<>"))
+                    path = unquote(url.path)
+                    if not url.scheme and not url.netloc and path and ("要求帳" in label or "要求帐" in label or path.endswith(("-要求帳.md", "-要求帐.md"))):
+                        ledger = (workbook.parent / path).resolve()
+                        break
+                if ledger:
+                    break
+            if ledger is None:
+                return {"status": "skipped", "reason": "工作簿标头缺少本地要求帐入口"}
+            values.update(topic=entry["name"], workbook=str(workbook), ledger=str(ledger), checker=str(Path(sw.__file__).resolve()))
+        bb.steward(command, **values)
+        return {"status": "registered" if command == "register" else "unregistered"}
+    except Exception:
+        return {"status": "skipped", "reason": "管家插件未安装或暂未就绪，看门狗继续运行"}
+
+
 def register(state, bb, thread, workbook, ref=None, name=None, project=None, script_path=None,
              state_path=None, manage_automation=True, now=None):
     if not thread:
@@ -711,7 +749,11 @@ def register(state, bb, thread, workbook, ref=None, name=None, project=None, scr
         automation = {"status": "skipped", "reason": "--no-automation"}
     else:
         automation = ensure_automation(state, bb, project, script_path or Path(__file__).resolve(), path)
-    return {"thread": thread, **entry, "automation": automation, "handovers": handovers}
+    plugin_result = sync_plugin(bb, "register", thread, entry)
+    if ref and olds:
+        plugin_result["handover"] = [{"thread": old, **sync_plugin(bb, "unregister", old)} for old, _ in olds]
+    return {"thread": thread, **entry, "automation": automation, "handovers": handovers,
+            "plugin": plugin_result}
 
 
 # ---------- 汇报与复盘 ----------
@@ -877,7 +919,8 @@ def main(argv=None):
                 save_state(path, state)
                 if removed:
                     append_events(path, [event(time.time(), args.thread, "unregister", reason="手动移除")])
-                print(json.dumps({"thread": args.thread, "removed": bool(removed)}, ensure_ascii=False))
+                print(json.dumps({"thread": args.thread, "removed": bool(removed),
+                                  "plugin": sync_plugin(bb, "unregister", args.thread)}, ensure_ascii=False))
             else:
                 started = time.time()
                 results, events = run(state, path, bb, now=started, dry_run=args.dry_run)

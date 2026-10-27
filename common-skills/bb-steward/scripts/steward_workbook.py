@@ -169,6 +169,7 @@ LEDGER_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 def check_ledger(text: str):
     """检查时期表与逐项结果；不推断业务真实性或要求是否记全。"""
     errors, rows, periods = [], 0, 0
+    summary = dict.fromkeys(sorted(LEDGER_STATES), 0)
     in_period, tables, header, separator = False, 0, False, False
     fenced = False
 
@@ -225,6 +226,8 @@ def check_ledger(text: str):
         date, requirement, status, result, material = cells
         if date in EMPTY_CELL or requirement in EMPTY_CELL:
             error(lineno, "日期与要求不能为空。")
+        if status in summary:
+            summary[status] += 1
         if status not in LEDGER_STATES:
             error(lineno, f"未知状态「{status}」；仅允许 {'、'.join(sorted(LEDGER_STATES))}。")
         normalized = re.sub(r"[\s`*。.!！；;]+", "", result).lower()
@@ -254,7 +257,7 @@ def check_ledger(text: str):
     close_period(last_line)
     if not periods:
         errors.append("缺少时期标题：## <YYYY-MM-DD> 起（主题）。")
-    return {"ok": not errors, "stats": {"periods": periods, "rows": rows}, "errors": errors}
+    return {"ok": not errors, "stats": {"periods": periods, "rows": rows}, "summary": summary, "errors": errors}
 
 
 def check_workbook_file(file_path: Path, **check_args):

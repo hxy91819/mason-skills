@@ -51,6 +51,11 @@ class FakeBb:
         self.cancelled = []
         self.logs = []
         self.log_calls = []
+        self.plugin_calls = []
+
+    def steward(self, command, **values):
+        self.plugin_calls.append((command, values))
+        return {}
 
     def set(self, tid=TID, status="idle", idle=2 * HOUR, now=NOW, **flags):
         info = {"id": tid, "status": status, "archived": False, "queued": False, "interaction": False,
@@ -521,6 +526,22 @@ class CliTests(unittest.TestCase):
                                  capture_output=True, text=True)
             self.assertEqual(out.returncode, 0, out.stderr)
             self.assertIn("看门狗未完成", out.stdout)
+
+
+class PluginSyncTests(unittest.TestCase):
+    def test_register_reads_actual_header_link_and_skips_unavailable_plugin(self):
+        with tempfile.TemporaryDirectory() as temp:
+            workbook = Path(temp) / "workbook.md"
+            workbook.write_text("# 目标\n\n[要求帳](different%20ledger.md)\n\n## 路线\n")
+            entry = {"workbook": str(workbook), "name": "目标"}
+            bb = FakeBb()
+            self.assertEqual(watch.sync_plugin(bb, "register", TID, entry)["status"], "registered")
+            self.assertEqual(bb.plugin_calls[0][1]["ledger"], str(Path(temp) / "different ledger.md"))
+            with mock.patch.object(bb, "steward", side_effect=watch.WatchError("not installed")):
+                self.assertEqual(watch.sync_plugin(bb, "register", TID, entry)["status"], "skipped")
+            self.assertEqual(watch.sync_plugin(bb, "register", TID, {**entry, "ref": "origin/main"})["status"], "skipped")
+            self.assertEqual(bb.plugin_calls[-1], ("unregister", {"thread": TID}))
+            self.assertEqual(watch.sync_plugin(bb, "unregister", TID)["status"], "unregistered")
 
 
 if __name__ == "__main__":
