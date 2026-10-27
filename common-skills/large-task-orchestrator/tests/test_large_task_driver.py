@@ -124,7 +124,8 @@ thread_id = f"thr_{role}_{story.lower().replace('-', '')}_{index + 1}"
 world["threads"][thread_id] = {"status": "active", "output": "", "queue": list(queue), "task": get("--task"),
                                "difficulty": get("--difficulty"),
                                "interactions": list(world.get("interactions", {}).get(key, []))}
-world.setdefault("dispatches", []).append({"thread": thread_id, "difficulty": get("--difficulty"), "title": title})
+world.setdefault("dispatches", []).append({"thread": thread_id, "difficulty": get("--difficulty"), "title": title,
+                                           "unknown": get("--unknown")})
 world_handle.seek(0); json.dump(world, world_handle, ensure_ascii=False, indent=1)
 world_handle.truncate(); world_handle.flush()
 print(json.dumps({"dry_run": False, "selection": {"provider": "p", "model": "m", "difficulty": get("--difficulty")},
@@ -414,7 +415,7 @@ class DriverTest(unittest.TestCase):
                 "interactions": list(world.get("interactions", {}).get(key, [])),
             }
             world.setdefault("dispatches", []).append(
-                {"thread": thread_id, "difficulty": get("--difficulty"), "title": title}
+                {"thread": thread_id, "difficulty": get("--difficulty"), "title": title, "unknown": get("--unknown")}
             )
             save()
             return ok(
@@ -1029,8 +1030,10 @@ class DriverTest(unittest.TestCase):
         self.assertEqual(self.story("STORY-01")["status"], "done")
         workers = [d for d in self.read_world()["dispatches"] if d["title"] == "STORY-01 worker"]
         self.assertEqual([d["difficulty"] for d in workers], ["medium", "complex"])
+        self.assertEqual([bool(d["unknown"]) for d in workers], [False, True])
         judge = next(d for d in self.read_world()["dispatches"] if d["title"] == "STORY-01 judge")
         self.assertEqual(judge["difficulty"], "complex")
+        self.assertTrue(judge["unknown"])
 
     def test_extensionless_root_file_reaches_validator(self) -> None:
         first = self.story("STORY-01")

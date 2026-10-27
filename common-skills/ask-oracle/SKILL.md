@@ -47,6 +47,7 @@ triggers:
 
 ```text
 difficulty: complex
+unknown: <请 Oracle 裁决的核心问题，一句话>
 permission-mode: full
 title: Oracle: <简短问题>
 task: <角色边界 + 上述咨询任务>

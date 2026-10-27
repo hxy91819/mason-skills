@@ -54,7 +54,7 @@ defaults:
 
 `--fallback-from <别名>` 把本次候选截取为从该别名起的后缀，供需要点名续派候选的调用方使用；别名不在候选中时报错，点名的别名本身不按冷却跳过。实际派发时链上位于该别名之前的候选按 provider 与模型冷却 15 分钟。一般改派不必传它：`--on-failure` 记下失败或 spawn 失败后，该候选已冷却，重跑同一命令就会跳过。负载均衡续派须保持原 route 和完整 `--task` 文本，才能复现候选顺序；需要补充进展时，续派保留原任务文本，创建成功后通过 `bb thread tell` 向新线程补充进展与位置。
 
-`--closed-scope` 声明任务边界已闭合（目标文件、改法、验证方式均已明确），未配合 `--escalate-from <线程ID>` 时强制要求 `--difficulty simple`。`--max-task-chars`（默认 2500，0 为不限制）对未传 `--escalate-from` 的 `medium`/`complex` 任务检查有效指导长度（自动剥离 `autoreview` 审查标准、`ask-oracle` 证据块及 `large-task-orchestrator` 执行包/报告协议块后的字符数），超长时拒绝派发并提示改用 `simple` 或精简任务书。
+`--closed-scope` 声明任务边界已闭合（目标文件、改法、验证方式均已明确），未配合 `--escalate-from <线程ID>` 时强制要求 `--difficulty simple`。`--max-task-chars`（默认 2500，0 为不限制）对未传 `--escalate-from` 的 `medium`/`complex` 任务检查有效指导长度（自动剥离 `autoreview` 审查标准、`ask-oracle` 证据块及 `large-task-orchestrator` 执行包/报告协议块后的字符数），超长时拒绝派发并提示改用 `simple` 或精简任务书。实际创建线程的 `complex` 未传 `--escalate-from` 时须带 `--unknown '<一句话最大未知>'`，`--dry-run` 配置自检不要求。
 
 `--on-failure <线程ID>` 处理报错的子线程，只看 BB 的结构化信息：线程不在 `error` 状态返回 `not-failed`；`bb provider-retry status` 列出 BB 自动重试时返回 `waiting`。报错线程上的排队消息要等线程被重试才送出，不算已有重试。账本 `retries` 记当前这次故障已安排的原会话重试次数，`retry_ts` 记最近一次安排的时间；`retries` 大于 0 时读 `bb thread log`：那之后还没有回合结束，说明上次的重试还没执行，返回 `waiting`；那之后有回合成功结束，说明那次故障已恢复，这次从头计（派发补记 `completed` 时也清零）。`bb provider-retry explain` 的结论是 `attempts-exhausted`（BB 已在原会话重试到上限）或 `beyond-maximum-wait`（额度重置超过它的最长等待）时不再重试；否则用 `bb thread retry --send-at` 在原会话安排下一次重试（1、2、4 分钟），返回 `retry-scheduled`；BB 回复该回合已有排队的重试（`retry_already_queued`）时返回 `waiting`。重试用尽或无法重试时记 `failed`，返回 `cooled` 与当前冷却；重试期间不改终态，线程之前的成功照样为冷却清零。读不到线程状态或日志时报错退出，稍后重跑同一命令。只处理账本里的线程；配合 `--dry-run` 只给出动作，不安排重试、不写账本。
 

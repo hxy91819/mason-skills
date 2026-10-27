@@ -16,7 +16,7 @@ m = fixtures.m
 def dispatch_worker(config, ledger, state, start, results, difficulty="simple"):
     m.CONCURRENCY_PATH = Path(state)
     args = m.parser().parse_args(['--config', config, '--ledger', ledger,
-                                  '--difficulty', difficulty, '--task', '并行任务',
+                                  '--difficulty', difficulty, '--task', '并行任务', '--unknown', '测试用最大未知',
                                   '--project', 'proj', '--environment', 'env'])
 
     def bb(*argv):

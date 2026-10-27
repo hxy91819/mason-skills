@@ -23,10 +23,10 @@ Agent 自行决定使用 subagent，或用户只要求“用 subagent 检查一�
 每个任务单独判断，同一批任务也逐个归档：
 
 1. 用一句话说出任务的**最大未知**：按父 agent 掌握的实际情况，子线程拿到任务时还不知道、必须自己弄清或裁决的那件事。
-2. 按最大未知归档，拿不准时把最大未知说得更具体再对照：
+2. 按最大未知归档，拿不准时把最大未知说得更具体再对照，仍落在两档之间就取低一档：
    - `simple`：说不出最大未知。做什么、改哪里、怎么算完成都已写进任务文本，失败模式可预期（测试不过就修到过）。典型：按明确说明实现功能（代码量可以很大）、编写或执行既有测试、机械迁移、同步文档与配置。
    - `medium`：最大未知有边界，子线程能在圈定范围内把它闭合：要比较或探索方案、先做 POC 才能定实现路径；要在外部系统或服务上自己摸索交互步骤和异常分支；缺陷已复现、范围已圈定到某条链路或几个模块，根因未定位；验收标准要子线程自己补全或判断（“看是否可行”）。
-   - `complex`：最大未知没有边界，任务本身又跨多个系统：根因连出在哪个系统都不知道；要在父 agent 尚未裁决的多个可行方案之间做跨系统的设计或架构取舍；父 agent 自己解决不了、要请专家咨询（Oracle）或裁决互相矛盾的结论（Judge）。
+   - `complex`：最大未知没有边界，任务本身又跨多个系统：根因连出在哪个系统都不知道；要在父 agent 尚未裁决的多个可行方案之间做跨系统的设计或架构取舍；父 agent 自己解决不了、要请专家咨询（Oracle）或裁决互相矛盾的结论（Judge）。检验无边界：父 agent 说不出最大未知落在哪个系统或哪条链路，也列不出候选方案；能说出其一就有边界，归 `medium`。跨多个系统只是 `complex` 的前提。
 
    下限：失败模式不可预期的任务至少 `medium`，不归 `simple`。这类任务测试通过不等于做对——并发交错、恢复路径、隔离泄漏、把部分成功写成整项通过都不会体现在测试结果里。属于这一类：并发、锁与崩溃恢复；Bot 或租户隔离与安全边界的改动；下根因定论；汇总证据做验收收口或发布签字；当必审改动的唯一审查人。边界：按固定命令或清单核对、如实报告结果的验证仍是 `simple`（编排后端里 Validator 固定 `simple` 与此一致）；要综合多份证据下“可以签字或发布”结论的，才至少 `medium`。
 3. 只有一部分带未知时，把已闭合的实现、文档或固定清单验收拆出去按 `simple` 派，未知部分单独归档。
@@ -35,23 +35,28 @@ Agent 自行决定使用 subagent，或用户只要求“用 subagent 检查一�
 
 - 在测试环境按清单逐项实测、缺陷只记录：步骤已写死是 `simple`；要子线程自己构造场景（注入故障、造坏数据、准备多账号）是 `medium`。
 - 修复缺陷：根因已定位是 `simple`；只知道症状和所在链路是 `medium`。
-- 按既定流程构造制品、发布或部署：`simple`；流程第一次跑、要边做边定步骤是 `medium`。
+- 按既定流程构造制品、发布、部署或合并：`simple`；流程第一次跑、要边做边定步骤是 `medium`。
+- 按固定规则扫描、比对或补登记（历史、配置、清单）：`simple`。
+- 只读调研或写设计文档，要回答的问题已经圈定：`medium`。
 - 审查：需求与验收条件明确的闭合改动、修复后的增量补审是 `simple`；跨模块状态机的深度审查是 `medium`。
 - 多个服务联动出错，没有复现也没有报错，不知道在哪一层：`complex`。
 
 父 agent 派发前查清改法、定好接口与架构裁决、或把外部系统的交互步骤写死，这部分不确定性就已消化，按剩下的最大未知归档。保留不确定性直接派 `medium`，是把探索成本转给子线程，只在父 agent 自己探索更贵时才这么做。
 
-升档的依据有两种：同一任务此前的低档线程失败、反复返工或产出需要大量纠正，这时传入 `--escalate-from <前序线程ID>` 并在派发报告里说明；或者用户点名要求某个任务用哪一档。
+后续任务每次按剩下的最大未知重新归档：前序线程已经做完设计、定位了根因或完成裁决，落地、部署、补 PR、补登记和按清单验收通常是 `simple`，需要子线程自己处理现场异常时是 `medium`。
 
-脚本内置两项确定性分档门禁：
+`complex` 换来的是更深的推理和更长的耗时，接受率并不更高（用 `--history-summary` 对比各档的 accepted/decided），所以从低档起步、凭证据升档。升档的依据有两种：同一任务此前的低档线程失败、反复返工或产出需要大量纠正，这时传入 `--escalate-from <前序线程ID>` 并在派发报告里说明；或者用户点名要求某个任务用哪一档。
+
+脚本内置三项确定性分档门禁：
 - 传入 `--closed-scope` 声明边界已闭合时，强制要求 `--difficulty simple`（除非同时提供 `--escalate-from <前序线程ID>` 并通过存在性校验）。
+- 实际创建线程（非 `--dry-run`）的 `complex` 未提供 `--escalate-from` 时，必须用 `--unknown` 写一句最大未知，写入账本供复盘；写不出无边界的未知就改派 `medium`。用户点名要 `complex` 时如实写明。
 - 传入 `--difficulty medium|complex` 且未提供 `--escalate-from` 时，有效任务指导长度（自动剥离 `autoreview` 审查标准、`ask-oracle` 证据块与 `large-task-orchestrator` 执行包/报告协议块）默认不得超过 `--max-task-chars 2500` 字符；超限说明父线程已完成细化，应改用 `simple` 或精简任务书。
 
 ```bash
 bb-dispatch --difficulty simple --closed-scope --task '按 tests/ 既有用例验证登录流程，失败项修到通过'
 bb-dispatch --difficulty medium --task '验证用 X 方案替换 Y 是否可行，给出 POC 与结论'
 bb-dispatch --difficulty medium --escalate-from thr_xxx --task '<低档线程失败后升档重派的任务>'
-bb-dispatch --difficulty complex --task '<已调查证据、待裁决问题与预期输出>'
+bb-dispatch --difficulty complex --unknown '<一句话最大未知>' --task '<已调查证据、待裁决问题与预期输出>'
 ```
 
 `--task` 依 [派发任务模板](references/task-template.md) 填：目标、先读、开工前对齐远端、授权范围与根因位置、自行引入的决定必须单列、交付与验证、回复格式。`--task` 只写任务目标、范围、输入和验收要求。provider、模型、推理级别和可用性检查是派发元数据：由 `bb-dispatch` 根据配置和目录决定，不写入子线程 prompt，也不要求子 agent 在开始前重新查询或确认。用户明确要求改变 provider 或模型时，调整用户配置后再派发，仍不把路由要求带入 `--task`。
@@ -103,12 +108,12 @@ driver 只传任务文本、难度与已有环境，路由仍由本配置决定�
 
 脚本在本地 Git-ignored 路径 `~/.cache/bb-dispatch/ledger.json`（可通过 `--ledger` 或 `BB_DISPATCH_LEDGER_PATH` 覆盖）维护运行账本与熔断冷却表，读写异常旁路告警、绝不阻塞主派发：
 
-1. **最小事实与滚动折算**：每次派发仅记录 `id`、`ts`、`difficulty`、`agent`、`provider`、`model`、`reasoning`、`task_chars`、`outcome`、`outcome_ts`、`retries`、`retry_ts`、`decision`，不存任务正文、diff 或线程日志。live 窗口保留最近 200 条，48 小时内的条目还要识别终态、计算冷却，超出也照留；更早的超出部分自动折算进固定维度 `rollups`，live 与 rollup 不重复计数。账本读改写加文件锁，写入前重读合并，并行派发与回写互不覆盖。
+1. **最小事实与滚动折算**：每次派发仅记录 `id`、`ts`、`project`、`parent_thread`、`difficulty`、`agent`、`provider`、`model`、`reasoning`、`task_chars`、`outcome`、`outcome_ts`、`retries`、`retry_ts`、`decision`，填写时另记 `unknown`（截断到 120 字）与 `escalated_from`，不存任务正文、diff 或线程日志。live 窗口保留最近 200 条，48 小时内的条目还要识别终态、计算冷却，超出也照留；更早的超出部分自动折算进固定维度 `rollups`，live 与 rollup 不重复计数。账本读改写加文件锁，写入前重读合并，并行派发与回写互不覆盖。
 2. **两层退避的熔断冷却与决策回环（Circuit Breaker）**：两层都不读报错文字、不分失败类型。原会话一层由 `--on-failure` 负责：已有重试排着时不插手，否则按 1、2、4 分钟在原会话重试，用尽（或 BB 已重试到上限、判定额度短期回不来）才记 `failed`，成功过又报错从头计，细则见[配置与派发](references/dispatch.md)。派发一层按 provider 与模型冷却，只看 48 小时内的终态：首次失败冷却 15 分钟，冷却期内的失败只顺延，冷却结束后再失败才翻倍，最长 6 小时，成功一次清零；每次派发先读一次 `bb thread list`，把 48 小时内还在等结果（仍记为 `spawned`，或成功过又在原会话重试）、已空闲且没有排队消息和待处理交互的线程记为 `completed`，读不到时告警跳过。spawn 失败和被 `--fallback-from` 跳过的候选另冷却 15 分钟。冷却中的候选优先跳过，全部冷却时仍挑一个试，避免死锁。父 agent 用稳定线程 ID 回写裁决（未知 ID 拒绝报错，重复回写覆盖）；终态有误、或放弃任务要记失败时加 `--outcome`：
    ```bash
    bb-dispatch --on-failure <线程ID>
    bb-dispatch --record-decision <线程ID> --decision accepted
    bb-dispatch --record-decision <线程ID> --outcome failed --decision rejected
    ```
-3. **聚合复盘与偏斜检测**：运行 `bb-dispatch --history-summary`（或 `--stats`）只读输出（同样先按线程状态补齐终态，但不写账本）按难度占比、各候选失败率/接受率、当前活跃冷却及确定性复盘 hooks（`simple_share_low` 当总派发 $\ge 5$ 且 `simple` 占比 $<20\%$、`high_failure_rate` 当候选失败率 $\ge 30\%$、`low_acceptance_rate` 当候选接受率 $<50\%$）。派发时若触发复盘 hook，返回 JSON 的 `selection.warnings` 会同步携带提醒。
+3. **聚合复盘与偏斜检测**：运行 `bb-dispatch --history-summary`（或 `--stats`）只读输出（同样先按线程状态补齐终态，但不写账本）按难度占比、各候选失败率/接受率、当前活跃冷却及确定性复盘 hooks（`simple_share_low` 当总派发 $\ge 5$ 且 `simple` 占比 $<20\%$、`high_failure_rate` 当候选失败率 $\ge 30\%$、`low_acceptance_rate` 当候选接受率 $<50\%$、`complex_share_high` 当某父线程最近 10 次派发里 `complex` $\ge 3$ 次且占比 $\ge 30\%$），`by_parent` 列出各父线程最近 10 次的分档。全局占比会被其他会话稀释，长会话的分档漂移看本父线程这一项。派发时 `selection.warnings` 携带全局 hook 与本父线程的 `complex_share_high`，并逐条写到 stderr，只取 stdout 线程 ID 时也看得到。
 4. **复盘日志**：账本旁的 `ledger.events.jsonl` 只追加 `dispatch`（`diverted` 为因冷却绕开的候选）、`deferred`（交给 BB 自动重试）、`retry`、`recovered`、`cooled`（带原因与等级）五类事件，不存任务正文，超过 4 MB 丢掉较早的一半。`--history-summary` 的 `retry_review` 汇总近 7 天的计数、`retry_recovery_rate`（原会话重试过的故障里最终恢复的比例），以及按次数、原因、provider 与模型、日期的分布，用来判断重试是否奏效、冷却是否频繁、走势是否正常。

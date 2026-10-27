@@ -793,6 +793,10 @@ class Driver:
     def dispatch_thread(self, *, difficulty: str, title: str, task: str, role: str = "") -> str:
         self.ensure_thread_capacity(role)
         command = [*self.dispatch, "--difficulty", difficulty, "--title", title, "--task", task]
+        if difficulty == "complex":
+            # bb-dispatch 要求首次派 complex 写一句最大未知；这里的 complex 只来自 Judge、Story 计划或 Judge 升档。
+            unknown = "裁决 Worker 与 Validator 互相矛盾的结论" if role == "judge" else f"{title}：Story 计划或 Judge 升档定为 complex"
+            command += ["--unknown", unknown]
         if self.args.environment:
             command += ["--environment", self.args.environment]
         payload = run_json(command, cwd=self.repository)

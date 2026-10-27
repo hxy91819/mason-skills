@@ -9,7 +9,7 @@ spawn 发出后任何失败都中止并冷却该候选，由调用方确认线�
 每次派发先按 BB 线程状态把账本里已做完的线程记为 completed，成功一次清零。
 关联父线程时在任务末尾附加固定的回报方式，让子线程把回报留到回合结束。
 
-参数见 --help。stdout 为 JSON；stderr 为错误；退出码 0 成功、2 失败。
+参数见 --help。stdout 为 JSON；stderr 为错误与复盘提醒；退出码 0 成功、2 失败。
 依赖 Python 3.10+、PyYAML 和 PATH 上的 bb。
 """
 import argparse
@@ -80,6 +80,12 @@ MAX_LIVE_ENTRIES = 200
 # 复盘日志超过上限时丢掉较早的一半；汇总只看近 7 天，正常用量下仍留得下几十天。
 EVENTS_MAX_BYTES = 4 * 1024 * 1024
 DEFAULT_MAX_TASK_CHARS = 2500
+UNKNOWN_MAX_CHARS = 120
+# 按父线程最近几次派发看分档是否漂向 complex；全局占比会被其他会话稀释。
+PARENT_WINDOW = 10
+COMPLEX_SHARE_MIN_ENTRIES = 5
+COMPLEX_SHARE_MIN_COUNT = 3
+COMPLEX_SHARE_THRESHOLD = 0.30
 REVIEW_PROMPT_ANCHOR = "# Review agent 提示词"
 DRIVER_PAYLOAD_ANCHORS = (
     "\n执行包：\n",
@@ -709,6 +715,28 @@ def summarize_ledger(ledger, now=None):
             "message": f"simple 难度占比仅 {by_difficulty['simple']['total']}/{total_dispatches} (<20%)，请核查是否将边界已闭合任务误判为 medium/complex。",
         })
 
+    recent = {}
+    for entry in sorted(live_entries, key=lambda e: e.get("ts") or 0, reverse=True):
+        parent = entry.get("parent_thread")
+        if parent and len(recent.setdefault(parent, [])) < PARENT_WINDOW:
+            recent[parent].append(entry.get("difficulty"))
+    by_parent = {}
+    for parent, diffs in sorted(recent.items()):
+        if len(diffs) < COMPLEX_SHARE_MIN_ENTRIES:
+            continue
+        counts = {d: diffs.count(d) for d in DIFFICULTIES}
+        by_parent[parent] = {"recent": len(diffs), **counts}
+        if counts["complex"] >= COMPLEX_SHARE_MIN_COUNT and counts["complex"] / len(diffs) >= COMPLEX_SHARE_THRESHOLD:
+            hooks.append({
+                "hook": "complex_share_high",
+                "parent_thread": parent,
+                "numerator": counts["complex"],
+                "denominator": len(diffs),
+                "message": f"父线程 {parent} 最近 {len(diffs)} 次派发里 complex 占 {counts['complex']} 次（>=30%）。"
+                           "complex 只留给说不出落在哪个系统、也列不出候选方案的最大未知；其余按剩余未知派 medium 或 simple，"
+                           "低档失败或返工再带 --escalate-from 升档。",
+            })
+
     for agent, ag in sorted(by_agent.items()):
         total = ag["total"]
         failed = sum(ag["outcomes"][k] for k in FAILED_OUTCOMES)
@@ -747,6 +775,7 @@ def summarize_ledger(ledger, now=None):
         "rolled_up_entries": rolled_up_count,
         "by_difficulty": by_difficulty,
         "by_agent": by_agent,
+        "by_parent": by_parent,
         "active_cooldowns": active_cooldowns,
         "review_hooks": hooks,
     }
@@ -892,6 +921,14 @@ def validate_contract_gates(args, call):
         raise DispatchError(
             f"边界已闭合（--closed-scope）的任务必须使用 --difficulty simple；"
             f"当前传入 {args.difficulty!r}。若因前序低档线程失败需升档，请提供 --escalate-from <前序线程ID>。"
+        )
+
+    unknown = (getattr(args, "unknown", None) or "").strip()
+    if args.difficulty == "complex" and not escalate_from and not unknown and not getattr(args, "dry_run", False):
+        raise DispatchError(
+            "首次派 complex 要用 --unknown 写一句最大未知，并确认它没有边界：说不出它落在哪个系统或哪条链路，"
+            "也列不出候选方案。能说出其一就是有边界，改派 --difficulty medium；"
+            "前序低档线程失败或返工要升档时传 --escalate-from <线程ID>。"
         )
 
     max_chars = getattr(args, "max_task_chars", DEFAULT_MAX_TASK_CHARS)
@@ -1110,6 +1147,7 @@ def dispatch_unlocked(args, call, now, config, slots):
     # 从子线程首条消息复制回来的任务先去掉回报方式，续派的候选顺序与标题保持不变。
     args.task = string(args.task.split(REPORT_PROTOCOL_ANCHOR, 1)[0], "task")
     escalate_from = validate_contract_gates(args, call)
+    unknown = (getattr(args, "unknown", None) or "").strip()
 
     environment_path = Path(args.environment).expanduser() if args.environment else None
     path_mode = environment_path is not None and environment_path.is_dir()
@@ -1272,6 +1310,8 @@ def dispatch_unlocked(args, call, now, config, slots):
                 candidates=chain, fallbacks=fallbacks, attempts=attempts)
     if escalate_from:
         plan["escalated_from"] = escalate_from
+    if unknown:
+        plan["unknown"] = unknown
     if reconciled:
         plan["reconciled"] = reconciled
     if limited(provider, model):
@@ -1354,11 +1394,18 @@ def dispatch_unlocked(args, call, now, config, slots):
             "outcome": "spawned",
             "decision": None,
         }
+        if unknown:
+            entry["unknown"] = unknown[:UNKNOWN_MAX_CHARS]
+        if escalate_from:
+            entry["escalated_from"] = escalate_from
     merged = persist(entry=entry)
     if entry is not None and merged is not None:
         summary = summarize_ledger(merged, now=now)
-        if summary["review_hooks"]:
-            plan["warnings"] = [h["message"] for h in summary["review_hooks"]]
+        # 其他父线程的分档偏斜只在 --history-summary 里看，不打扰本次派发。
+        hooks = [h for h in summary["review_hooks"]
+                 if h["hook"] != "complex_share_high" or h["parent_thread"] == parent.get("id")]
+        if hooks:
+            plan["warnings"] = [h["message"] for h in hooks]
     # 返回完整创建回执，包括排队状态；不把创建成功宣称为任务完成。
     return {"dry_run": False, "selection": plan, "result": result}
 
@@ -1372,6 +1419,7 @@ def parser():
     p.add_argument("--task", help="任务目标、范围和验收要求")
     p.add_argument("--closed-scope", action="store_true", help="声明任务边界已闭合（目标文件、改法、验证已定）；未传 --escalate-from 时强制要求 simple")
     p.add_argument("--escalate-from", metavar="线程ID", help="前序失败或返工的低档线程 ID，用作升档或豁免长任务门禁的凭证")
+    p.add_argument("--unknown", metavar="最大未知", help="一句话写出任务的最大未知；首次派 complex（未传 --escalate-from）时必填，截断后记入账本供复盘")
     p.add_argument("--max-task-chars", type=int, default=DEFAULT_MAX_TASK_CHARS, help=f"medium/complex 任务指导的最大字符数（默认 {DEFAULT_MAX_TASK_CHARS}，0 为不限制）")
     p.add_argument("--fallback-from", metavar="别名", help="从 defaults.<路由> 链中该别名起续派；链上排在它前面的候选按 provider 与模型冷却 15 分钟")
     p.add_argument("--reasoning", help="覆盖推理级别，仍校验模型目录")
@@ -1414,7 +1462,11 @@ def main():
         if not args.difficulty or args.task is None:
             raise DispatchError("派发模式必须提供 --difficulty 与 --task。")
         string(args.task, "task")
-        print(json.dumps(dispatch(args), ensure_ascii=False, indent=2))
+        result = dispatch(args)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        # 调用方常只取 stdout 里的线程 ID，复盘提醒另写 stderr，过滤输出时也看得到。
+        for warning in (result.get("selection") or {}).get("warnings") or []:
+            print(f"提醒：{warning}", file=sys.stderr)
     except DispatchError as exc:
         print(str(exc), file=sys.stderr)
         return 2
