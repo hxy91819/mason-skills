@@ -2,6 +2,7 @@
 """BB 管家工作簿（Workbook）结构、容量、提交节流与收尾对账门禁。
 
 用法：
+  python3 steward_workbook.py --mode ledger-check --file docs/steward/<topic>-要求帳.md
   python3 steward_workbook.py --mode check --file docs/steward/<topic>.md
   python3 steward_workbook.py --mode should-commit --file docs/steward/<topic>.md
   python3 steward_workbook.py --mode reconcile [--live] --file docs/steward/<topic>.md
@@ -17,6 +18,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+from urllib.parse import unquote, urlsplit
 
 REQUIRED_SECTIONS = ["路线", "关键决策", "用户待办"]
 # 项目文档规范可能要求繁体中文，标题按同义词归一后再比对。
@@ -154,6 +156,125 @@ def check_workbook(text: str, max_nonempty_lines=DEFAULT_MAX_NONEMPTY_LINES,
         },
         "errors": errors,
     }
+
+
+LEDGER_COLUMNS = ["日期", "要求", "狀態", "結果", "材料"]
+LEDGER_STATES = {"完成", "採納", "部分採納", "進行中", "待使用者", "被覆蓋", "排除"}
+EMPTY_CELL = {"", "-", "—", "无", "無", "待补", "待補", "...", "…"}
+EMPTY_RESULTS = {"完成", "已完成", "已採納", "採納", "已采纳", "采纳", "已處理", "已处理",
+                 "處理完畢", "处理完毕", "已落實", "已落实", "已解决", "已解決", "done", "ok"}
+LEDGER_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+
+
+def check_ledger(text: str):
+    """检查时期表与逐项结果；不推断业务真实性或要求是否记全。"""
+    errors, rows, periods = [], 0, 0
+    in_period, tables, header, separator = False, 0, False, False
+    fenced = False
+
+    def error(lineno, message):
+        errors.append(f"第 {lineno} 行：{message}")
+
+    def close_period(lineno):
+        if in_period and tables != 1:
+            error(lineno, "每个时期必须且只能有一张要求表。")
+        if header and not separator:
+            error(lineno, "表头后缺少五列 Markdown 分隔行。")
+
+    last_line = 1
+    for lineno, raw in enumerate(text.splitlines(), 1):
+        last_line = lineno
+        line = raw.strip()
+        if line.startswith(("```", "~~~")):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        if line.startswith("## "):
+            close_period(lineno)
+            in_period = bool(re.fullmatch(r"## \d{4}-\d{2}-\d{2} 起[（(].+?[）)]", line))
+            if not in_period:
+                error(lineno, "时期标题应为 ## <YYYY-MM-DD> 起（主题）。")
+            periods += int(in_period)
+            tables, header, separator = 0, False, False
+            continue
+        if not line.startswith("|"):
+            if header and not separator:
+                error(lineno, "表头后缺少五列 Markdown 分隔行。")
+            header, separator = False, False
+            continue
+        cells = [c.strip() for c in re.split(r"(?<!\\)\|", line.strip("|"))]
+        if not in_period:
+            error(lineno, "要求表必须位于时期标题下。")
+        if not header:
+            tables += 1
+            header = True
+            separator = False
+            if cells != LEDGER_COLUMNS:
+                error(lineno, f"表头必须为 {' | '.join(LEDGER_COLUMNS)}。")
+            continue
+        if not separator:
+            separator = True
+            if len(cells) == 5 and all(re.fullmatch(r":?-{3,}:?", c) for c in cells):
+                continue
+            error(lineno, "表头后缺少五列 Markdown 分隔行。")
+        if len(cells) != 5:
+            error(lineno, f"要求行必须有五列，当前 {len(cells)} 列。")
+            continue
+        rows += 1
+        date, requirement, status, result, material = cells
+        if date in EMPTY_CELL or requirement in EMPTY_CELL:
+            error(lineno, "日期与要求不能为空。")
+        if status not in LEDGER_STATES:
+            error(lineno, f"未知状态「{status}」；仅允许 {'、'.join(sorted(LEDGER_STATES))}。")
+        normalized = re.sub(r"[\s`*。.!！；;]+", "", result).lower()
+        vacuous = (normalized in EMPTY_RESULTS or bool(re.fullmatch(
+            r"(?:已|已经|已經)?(?:全部|全數|全部都|均|都)?(?:完成|處理|处理|採納|采纳|落實|落实|解决|解決)(?:了|完畢|完毕)?",
+            normalized)))
+        if result in EMPTY_CELL or vacuous:
+            error(lineno, "结果须写具体结论，不能只写完成／已完成等空话。")
+        if status in {"完成", "採納"}:
+            # 文件地址也可定位本机材料；裸预览名不是地址。
+            located = (any(m.group(2).strip() not in EMPTY_CELL for m in LEDGER_LINK_RE.finditer(material))
+                       or re.search(r"https?://\S+|(?:/|\./|\.\./|~/)[^\s、；;]+|\bPR\s*#?\d+|\b[0-9a-f]{7,40}\b|[會会][話话]回[覆复]", material))
+            if not located:
+                error(lineno, f"{status}须有材料链接、文件地址、commit、PR 或明确写會話回覆。")
+        if status == "被覆蓋":
+            target = re.search(
+                r"(?:被|由)\s*(.+?)\s*(?:取代|替代|覆蓋|覆盖)|"
+                r"(?:取代者|替代者|覆蓋者|覆盖者|改為|改为|改由)[:：]?\s*(.+)", result)
+            if not target or next((g for g in target.groups() if g), "").strip() in EMPTY_CELL | {"後續要求", "后续要求", "後續需求", "后续需求", "其他要求", "其他需求"}:
+                error(lineno, "被覆蓋的结果须指出被哪一列或哪件事取代。")
+        if status == "排除":
+            no_reason = re.fullmatch(
+                r"(?:已|已经|已經)?(?:排除|取消|不做|不採納|不采纳|不執行|不执行)"
+                r"(?:(?:這|这|該|该|此)(?:個|个)?(?:要求|需求|事項|事项|任務|任务))?", normalized)
+            if result in EMPTY_CELL or vacuous or no_reason or normalized in {"無需處理", "无需处理"}:
+                error(lineno, "排除须在结果写原因。")
+    close_period(last_line)
+    if not periods:
+        errors.append("缺少时期标题：## <YYYY-MM-DD> 起（主题）。")
+    return {"ok": not errors, "stats": {"periods": periods, "rows": rows}, "errors": errors}
+
+
+def check_workbook_file(file_path: Path, **check_args):
+    text = file_path.read_text()
+    res = check_workbook(text, **check_args)
+    # 标头是第一个二级标题前的内容；只检查要求帐入口，不扩大到一般材料链接。
+    for line in text.splitlines():
+        if line.startswith("## "):
+            break
+        for match in LEDGER_LINK_RE.finditer(line):
+            label, target = match.groups()
+            target = target.strip().strip("<>")
+            url = urlsplit(target)
+            path = unquote(url.path)
+            if not (re.search(r"要求[帳帐]", label) or re.search(r"-要求[帳帐]\.md$", path)):
+                continue
+            if url.scheme or url.netloc or not path or not (file_path.parent / path).is_file():
+                res["errors"].append(f"要求帐链接必须指向存在的本地文件：{target}")
+    res["ok"] = not res["errors"]
+    return res
 
 
 def route_stem(body: str) -> str:
@@ -489,7 +610,7 @@ def head_content_for(file_path: Path):
 
 def should_commit_workbook(file_path: Path, check_args: dict, baseline_text: str | None = None):
     text = file_path.read_text()
-    check_res = check_workbook(text, **check_args)
+    check_res = check_workbook_file(file_path, **check_args)
     if not check_res["ok"]:
         return {
             **check_res,
@@ -530,9 +651,9 @@ def should_commit_workbook(file_path: Path, check_args: dict, baseline_text: str
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--mode", required=True, choices=["check", "should-commit", "reconcile"],
-                   help="check=校验结构与容量；should-commit=校验并判断相对 HEAD 是否有实质状态变化；reconcile=收尾对账")
-    p.add_argument("--file", required=True, help="工作簿 Markdown 文件路径")
+    p.add_argument("--mode", required=True, choices=["check", "should-commit", "reconcile", "ledger-check"],
+                   help="ledger-check=校验要求帐；check=校验结构、容量与要求帐入口；should-commit=校验并判断相对 HEAD 是否有实质状态变化；reconcile=收尾对账")
+    p.add_argument("--file", required=True, help="工作簿或要求帐 Markdown 文件路径")
     p.add_argument("--live", action="store_true", help="reconcile 时经 bb thread list 核对「进行中」线程是否还活着")
     p.add_argument("--max-nonempty-lines", type=int, default=DEFAULT_MAX_NONEMPTY_LINES)
     p.add_argument("--max-line-chars", type=int, default=DEFAULT_MAX_LINE_CHARS)
@@ -554,7 +675,9 @@ def main():
         "max_decisions": args.max_decisions,
     }
     if args.mode == "check":
-        res = {"file": str(fpath), **check_workbook(fpath.read_text(), **check_args)}
+        res = {"file": str(fpath), **check_workbook_file(fpath, **check_args)}
+    elif args.mode == "ledger-check":
+        res = {"file": str(fpath), **check_ledger(fpath.read_text())}
     elif args.mode == "reconcile":
         text = fpath.read_text()
         threads, warnings = None, []
