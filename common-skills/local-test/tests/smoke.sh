@@ -69,6 +69,61 @@ git worktree add -q "$TMP/wt-alpha" -b alpha
 git worktree add -q "$TMP/wt-beta" -b beta
 
 echo
+echo "=== 参数校验先于任何副作用 ==="
+# 用真实 CLI 和临时配置观察 drop、共享中间件与状态文件；不接触本机环境。
+mkdir -p "$TMP/args/.local-test/run" "$TMP/args/bin"
+cat >"$TMP/args/.local-test.yml" <<YML
+project: args
+middleware: compose.yml
+database:
+  mode: rebuildable
+  prepare: echo prepare >> $TMP/actions
+  seed: echo seed >> $TMP/actions
+  verify: echo verify >> $TMP/actions
+  drop: echo drop >> $TMP/actions
+services:
+  web:
+    cmd: echo service >> $TMP/actions
+YML
+touch "$TMP/args/compose.yml"
+cat >"$TMP/args/bin/docker" <<SH
+#!/usr/bin/env bash
+echo docker >> "$TMP/actions"
+SH
+cp "$TMP/args/bin/docker" "$TMP/args/bin/tail"
+chmod +x "$TMP/args/bin/docker" "$TMP/args/bin/tail"
+# 单点回归：后置帮助必须保留 prepared 标记，也不能调用 drop 或 docker。
+touch "$TMP/args/.local-test/run/db-prepared"
+OUT="$(cd "$TMP/args" && PATH="$TMP/args/bin:$PATH" "$LT" stop --help 2>&1)"; RC=$?
+check "stop --help 退出码" "$RC" "0"
+if echo "$OUT" | grep -q '用法:'; then ok "后置帮助打印说明"; else bad "后置帮助未打印说明: $OUT"; fi
+if [[ -f "$TMP/args/.local-test/run/db-prepared" && ! -f "$TMP/actions" ]]; then ok "后置帮助无副作用"; else bad "后置帮助执行了命令"; fi
+
+# 所有子命令的两种后置帮助（包括已有有效参数之后），都不得执行。
+for CMD_ARGS in 'doctor' 'init --force' 'init --from-json missing.json' 'start' 'stop' 'status' 'logs web' 'gc' 'destroy' 'reset --yes'; do
+  for HELP in -h --help; do
+    rm -f "$TMP/actions"
+    touch "$TMP/args/.local-test/run/db-prepared"
+    OUT="$(cd "$TMP/args" && PATH="$TMP/args/bin:$PATH" "$LT" $CMD_ARGS "$HELP" 2>&1)"; RC=$?
+    check "$CMD_ARGS $HELP 退出码" "$RC" "0"
+    if echo "$OUT" | grep -q '用法:' && [[ -f "$TMP/args/.local-test/run/db-prepared" && ! -f "$TMP/actions" ]]; then ok "$CMD_ARGS $HELP 只打印帮助"; else bad "$CMD_ARGS $HELP 执行了命令"; fi
+  done
+done
+for CMD_ARGS in 'doctor' 'init --force' 'start' 'stop' 'status' 'logs web' 'gc' 'destroy' 'reset --yes'; do
+  for BAD in --unknown -z; do
+    rm -f "$TMP/actions"
+    touch "$TMP/args/.local-test/run/db-prepared"
+    OUT="$(cd "$TMP/args" && PATH="$TMP/args/bin:$PATH" "$LT" $CMD_ARGS "$BAD" 2>&1)"; RC=$?
+    check "$CMD_ARGS $BAD 退出码" "$RC" "1"
+    if echo "$OUT" | grep -q 'ERROR:' && [[ -f "$TMP/args/.local-test/run/db-prepared" && ! -f "$TMP/actions" ]]; then ok "$CMD_ARGS $BAD 拒绝且无副作用"; else bad "$CMD_ARGS $BAD 执行了命令"; fi
+  done
+done
+for CMD_ARGS in 'init --from-json' 'stop extra' 'logs web extra'; do
+  OUT="$(cd "$TMP/args" && PATH="$TMP/args/bin:$PATH" "$LT" $CMD_ARGS 2>&1)"; RC=$?
+  check "$CMD_ARGS 拒绝无效参数" "$RC" "1"
+done
+
+echo
 echo "=== 1. doctor ==="
 lt_in "$TMP/main" doctor; check "doctor 退出码" "$?" "0"
 

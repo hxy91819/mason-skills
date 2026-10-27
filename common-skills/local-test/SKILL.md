@@ -53,11 +53,15 @@ preview_url: http://127.0.0.1:$LOCAL_TEST_PORT_WEB
 
 `cmd` 运行时由 `bash -c` 求值，可引用 `$LOCAL_TEST_NAMESPACE` 与 `$LOCAL_TEST_PORT_<服务名大写>`；`preview_url` 只做同名变量替换，不执行。服务顺序即配置顺序：`start` 按序、`stop` 逆序。配置原则：中间件容器化且全机一份、按 namespace 分库；业务服务默认裸进程（利于热重载与断点），不为每个 worktree 复制中间件，不用固定槽位环境池，不把未验证代码合入主干来借环境。
 
+`database.drop` 只删除 `$LOCAL_TEST_NAMESPACE` 对应的数据库，以及项目已按 namespace 隔离的 bucket；空 namespace 也只删除主 checkout 的数据库。共享容器与数据卷属于全机基础设施，drop 不得移除它们；只有显式的 `reset --yes` 才清共享数据卷。
+
 数据库默认采用 `rebuildable`：`prepare` 只负责 schema，`seed` 从仓库声明式基线和 Git-ignored 私有 overlay 写入必要配置，`verify` 从数据库回读并与两者比较。构建、运行、审计和同步历史属于过程数据，不进入 seed；需要稳定复现的历史整理为脱敏场景 fixture。真实账号、凭据、内部地址及个人数据只放私有 overlay 或 `_FILE`，仓库提交 schema、合成值和非敏感基线。`retained` 是明确例外，项目文档需说明不可重建内容、归属和清理方式。
 
 ## 三、命令与退出码
 
 `doctor` 体检并检查数据库重建闭环 | `init` 生成配置 | `start` 按 prepare → seed → verify 拉起 | `stop` 逆序收敛；`rebuildable` 同时 drop 本环境库，最后一个环境停止共享中间件 | `status` 本环境加全机登记 | `logs <svc>` | `gc` 回收孤儿环境 | `destroy` 确保 drop 库并删登记 | `reset --yes` 清共享数据卷，仅用户明确要求"彻底重置"时用。
+
+任意子命令后带 `-h`／`--help` 都只打印帮助，优先于配置读取与执行；未知选项或多余参数在执行前报错。
 
 退出码：`0` 成功；`1` 参数或配置错误；`2` 环境预检失败（端口被未知进程占用、超 `LOCAL_TEST_MAX_ENVS`、`real` 却不在主 checkout）；`3` 服务启动失败。
 

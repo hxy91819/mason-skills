@@ -10,7 +10,7 @@ set -euo pipefail
 #   - 端口被未知进程占用即保守失败，不抢端口——那可能是其他 agent 的现场；
 #   - YAML/JSON 自己解析：CLI 要能在任意技术栈的仓库里直接跑，不引入 ruby/python/yq 依赖；
 #   - 只用 bash 3.2 语法（无关联数组、无 mapfile），保证 macOS 自带 bash 可用。
-LT_VERSION="1.2.0"
+LT_VERSION="1.2.1"
 STATE_DIR=".local-test"
 RUN_DIR="$STATE_DIR/run"
 LOG_DIR="$STATE_DIR/logs"
@@ -31,6 +31,7 @@ usage() {
   本地多服务联调环境的统一入口。读取项目根 .local-test.yml；中间件走 docker compose 且
   全机一份，业务服务以裸进程按 worktree namespace 隔离启动并仅监听 127.0.0.1。
 选项:
+  -h, --help       在任意子命令后打印本说明并退出，不执行命令
   doctor           检查 git/docker/setsid/cksum 与配置合法性；不启动任何东西
   init             从 --from-json <file> 或 stdin 的 JSON 生成 .local-test.yml（--force 覆盖）
   start            按中间件 -> 建库 -> 业务服务顺序拉起；幂等，已运行的服务跳过
@@ -772,8 +773,37 @@ cmd_init() {
   log_info "下一步：lt doctor 复核，再 lt start"
 }
 
-main() {
+validate_arguments() {
   local cmd="${1:-}"
+  (( $# == 0 )) || shift
+  case "$cmd" in
+    init)
+      while (( $# > 0 )); do
+        case "$1" in
+          --force) shift ;;
+          --from-json)
+            [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || { log_error "--from-json 需要文件路径"; return 1; }
+            shift 2 ;;
+          *) log_error "init 未知参数 $1"; return 1 ;;
+        esac
+      done ;;
+    logs)
+      [[ $# -eq 1 && -n "$1" && "$1" != -* ]] || { log_error "logs 需要且只接受一个服务名"; return 1; } ;;
+    reset)
+      [[ $# -eq 0 || ( $# -eq 1 && "$1" == --yes ) ]] || { log_error "reset 只接受 --yes"; return 1; } ;;
+    doctor|start|stop|status|gc|destroy|help|'')
+      [[ $# -eq 0 ]] || { log_error "$cmd 不接受参数: $*"; return 1; } ;;
+    *) log_error "未知命令 $cmd"; return 1 ;;
+  esac
+}
+
+main() {
+  local cmd="${1:-}" arg
+  # 参数先于配置、登记与生命周期操作；帮助在任意位置都只读。
+  for arg in "$@"; do
+    case "$arg" in -h|--help) usage; return 0 ;; esac
+  done
+  validate_arguments "$@" || return 1
   SPAWN_MODE="$(detect_spawn_mode)"
   REPO_ROOT="$(repo_root)"
   cd "$REPO_ROOT"
