@@ -1,7 +1,9 @@
-# Fork 分支清单：scripts/fork-aggregate 从 base 开始，按顺序 merge 下列分支生成 main。
+# Fork 分支清单：scripts/fork-aggregate 从 main（base tag + 适用的 security/baseline）开始，按顺序 merge 下列分支生成 aggregate。
+# main 保存安全基线；聚合只发布到 aggregate / origin/aggregate。
 # 格式：<分支>  <上游状态>  [上游链接]  # 一句话说明
 # 上游状态：needs-feedback（未反馈）| reported（已提 issue）| pr-open（已提 PR）| fork-only（个人偏好，不回流）| internal（fork 维护/部署）
 # 叠放分支（基于另一 fork 分支）必须排在其基础分支之后，说明里写 "叠在 <分支> 上"。
+# security/baseline 是 main 的基线组成，不列入本清单。
 
 base <release-tag>
 

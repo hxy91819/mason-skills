@@ -5,10 +5,11 @@ usage() {
   cat <<'USAGE'
 用法：scripts/fork-aggregate [--base <tag>] [--promote]
 
-从 .fork/branches 的 base（或 --base）重新生成聚合：依次 merge 清单中的分支到
-.worktrees/aggregate-next 的 aggregate/next 分支。已解决过的冲突由 git rerere 自动复用。
---promote  成功后把根目录 main 移到新结果，并推送到 fork（带 lease）。
-清单读取自 fork-tooling 分支（本地优先，其次 fork/fork-tooling）。
+从 .fork/branches 的 base（或 --base）重新生成聚合：以个人 fork 的 main
+（上游稳定 tag，含适用的 security/baseline）为起点，依次 merge 清单中的分支到
+.worktrees/aggregate-next 的 aggregate-next 分支。已解决过的冲突由 git rerere 自动复用。
+--promote  成功后把结果提升到 aggregate 并推送到 origin（普通推送），不移动根目录 main。
+清单读取自 fork-tooling 分支（本地优先，其次 origin/fork-tooling）。
 USAGE
 }
 
@@ -27,30 +28,78 @@ root="$(git rev-parse --path-format=absolute --git-common-dir)"
 root="$(dirname "$root")"
 cd "$root"
 
-git fetch --quiet --prune fork
+git fetch --quiet --tags upstream
+git fetch --quiet --prune origin
 
 if git rev-parse --verify --quiet refs/heads/fork-tooling >/dev/null; then
   list_ref=refs/heads/fork-tooling
 else
-  list_ref=refs/remotes/fork/fork-tooling
+  list_ref=refs/remotes/origin/fork-tooling
 fi
 list="$(git show "$list_ref:.fork/branches" | sed -e 's/#.*//' -e '/^[[:space:]]*$/d')"
 
-base="${base_override:-$(awk '$1 == "base" { print $2 }' <<<"$list")}"
-git fetch --quiet origin "refs/tags/$base:refs/tags/$base" 2>/dev/null || true
+base="${base_override:-$(printf '%s\n' "$list" | awk '$1 == "base" { print $2 }')}"
 git rev-parse --verify --quiet "refs/tags/$base" >/dev/null || { echo "找不到 tag $base" >&2; exit 1; }
-mapfile -t branches < <(awk '$1 != "base" { print $1 }' <<<"$list")
+
+main_ref=""
+if git rev-parse --verify --quiet refs/remotes/origin/main >/dev/null; then
+  main_ref=refs/remotes/origin/main
+elif git rev-parse --verify --quiet refs/heads/main >/dev/null; then
+  main_ref=refs/heads/main
+fi
+[ -n "$main_ref" ] || { echo "找不到 main；先把个人 fork 的 main 设为基线 $base" >&2; exit 1; }
+
+git merge-base --is-ancestor "refs/tags/$base" "$main_ref" || {
+  echo "main 尚未包含基线 tag $base；先更新并推送 main（$base + 适用的 security/baseline）后再聚合" >&2
+  exit 1
+}
+
+security_refs=()
+if git rev-parse --verify --quiet refs/heads/security/baseline >/dev/null; then
+  security_refs+=(refs/heads/security/baseline)
+fi
+if git rev-parse --verify --quiet refs/remotes/origin/security/baseline >/dev/null; then
+  security_refs+=(refs/remotes/origin/security/baseline)
+fi
+if [ ${#security_refs[@]} -gt 0 ]; then
+  baseline_ok=0
+  for security_ref in "${security_refs[@]}"; do
+    if git merge-base --is-ancestor "$security_ref" "$main_ref"; then
+      baseline_ok=1
+      break
+    fi
+  done
+  [ "$baseline_ok" = 1 ] || {
+    echo "security/baseline 尚未合入 main；先把 main 更新为 $base + security/baseline 后再聚合" >&2
+    exit 1
+  }
+fi
+
+branches=()
+while IFS= read -r branch; do
+  [ -n "$branch" ] && branches+=("$branch")
+done <<EOF
+$(printf '%s\n' "$list" | awk '$1 != "base" { print $1 }')
+EOF
 
 resolve_ref() {
   local branch="$1" local_sha remote_sha
   local_sha="$(git rev-parse --verify --quiet "refs/heads/$branch" || true)"
-  remote_sha="$(git rev-parse --verify --quiet "refs/remotes/fork/$branch" || true)"
+  remote_sha="$(git rev-parse --verify --quiet "refs/remotes/origin/$branch" || true)"
   if [ -n "$local_sha" ] && [ -n "$remote_sha" ] && [ "$local_sha" != "$remote_sha" ]; then
-    echo "警告：$branch 本地与 fork 不一致，使用本地（记得推送）" >&2
+    echo "警告：$branch 本地与 origin 不一致，使用本地（记得推送）" >&2
   fi
   if [ -n "$local_sha" ]; then echo "$local_sha"; elif [ -n "$remote_sha" ]; then echo "$remote_sha"; else
-    echo "找不到分支 $branch（本地或 fork）" >&2; return 1
+    echo "找不到分支 $branch（本地或 origin）" >&2; return 1
   fi
+}
+
+promote_result() {
+  local result="$1" remote_after
+  git push --quiet origin "$result:refs/heads/aggregate"
+  remote_after="$(git ls-remote origin refs/heads/aggregate | cut -f1)"
+  [ "$remote_after" = "$result" ] || { echo "origin 上的 aggregate=$remote_after 与 $result 不一致" >&2; exit 1; }
+  echo "已提升并推送 aggregate = $result（根目录 main 保持基线）"
 }
 
 git config rerere.enabled true
@@ -63,14 +112,14 @@ if [ -d "$wt" ]; then
     echo "$wt 有未提交改动，先处理后再运行" >&2
     exit 1
   fi
-  git -C "$wt" checkout --quiet -B aggregate/next "refs/tags/$base"
+  git -C "$wt" checkout --quiet -B aggregate-next "$main_ref"
 else
-  git worktree add --quiet -B aggregate/next "$wt" "refs/tags/$base"
+  git worktree add --quiet -B aggregate-next "$wt" "$main_ref"
 fi
 
 for branch in "${branches[@]}"; do
   ref="$(resolve_ref "$branch")"
-  if git -C "$wt" merge --quiet --no-ff --no-edit -m "Merge $branch" "$ref" >/dev/null 2>&1; then
+  if git -C "$wt" merge --no-autostash --quiet --no-ff --no-edit -m "Merge $branch" "$ref" >/dev/null 2>&1; then
     echo "merged   $branch"
     continue
   fi
@@ -81,14 +130,15 @@ for branch in "${branches[@]}"; do
   fi
   echo "CONFLICT $branch"
   git -C "$wt" diff --name-only --diff-filter=U | sed 's/^/  /'
-  if ! git merge-tree --write-tree "refs/tags/$base" "$ref" >/dev/null 2>&1; then
+  if ! git merge-tree --write-tree "$main_ref" "$ref" >/dev/null 2>&1; then
     cat <<EOF
-该分支单独合入 $base 就冲突：在它自己的 worktree 里 rebase 到 $base 并修复、验证，
-push --force-with-lease 到 fork 后重新运行本脚本。不要在聚合里修。
+该分支单独合入 main（$base 基线）就冲突：在它自己的 worktree 里
+rebase --no-autostash main 并修复、验证，push --force-with-lease 到 origin 后重新运行本脚本。
+不要在聚合里修。
 EOF
   else
     cat <<EOF
-这是 fork 分支之间的冲突：在 $wt 里只做两边合并（不加新行为），
+这是两个分支之间的冲突：在 $wt 里只做两边合并（不加新行为），
 git add 后 git commit --no-edit，然后重新运行本脚本（rerere 会记住这次解决）。
 同一对分支反复出现非平凡冲突时，把后者叠到前者上。
 EOF
@@ -96,22 +146,19 @@ EOF
   exit 1
 done
 
-result="$(git -C "$wt" rev-parse HEAD)"
-echo "聚合完成：aggregate/next = $result（base $base，${#branches[@]} 个分支）"
+previous_aggregate="$(git rev-parse --verify --quiet refs/remotes/origin/aggregate || true)"
+if [ -n "$previous_aggregate" ] && ! git merge-base --is-ancestor "$previous_aggregate" refs/heads/aggregate-next; then
+  git -C "$wt" merge --quiet --no-ff --strategy=ours --no-edit -m "Retain previous aggregate history" "$previous_aggregate"
+fi
+
+result="$(git -C "$wt" rev-parse refs/heads/aggregate-next)"
+git merge-base --is-ancestor "$main_ref" "$result" || {
+  echo "聚合结果不含 main；先检查聚合 worktree" >&2
+  exit 1
+}
+
+echo "聚合完成：aggregate-next = $result（base $base，${#branches[@]} 个分支）"
 
 [ "$promote" = 1 ] || exit 0
 
-if [ "$(git -C "$root" branch --show-current)" != main ]; then
-  echo "根目录不在 main，停止" >&2
-  exit 1
-fi
-if [ -n "$(git -C "$root" status --porcelain --untracked-files=no)" ]; then
-  echo "根目录有未提交的已跟踪改动，停止" >&2
-  exit 1
-fi
-remote_before="$(git ls-remote fork refs/heads/main | cut -f1)"
-git -C "$root" reset --quiet --keep "$result"
-git -C "$root" push --quiet --force-with-lease="refs/heads/main:$remote_before" fork main
-remote_after="$(git ls-remote fork refs/heads/main | cut -f1)"
-[ "$remote_after" = "$result" ] || { echo "fork 上的 main=$remote_after 与 $result 不一致" >&2; exit 1; }
-echo "已提升并推送 main = $result"
+promote_result "$result"

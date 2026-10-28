@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -35,7 +35,7 @@ function runAggregate(cwd, ...args) {
 function withFork(run) {
   const dir = mkdtempSync(join(tmpdir(), "fork-aggregate-"));
   const upstream = join(dir, "upstream");
-  const forkRemote = join(dir, "fork.git");
+  const originRemote = join(dir, "origin.git");
   const root = join(dir, "root");
   try {
     git(dir, "init", "-q", "-b", "main", upstream);
@@ -43,50 +43,80 @@ function withFork(run) {
     git(upstream, "config", "user.name", "T");
     commitFile(upstream, "app.txt", "line1\nline2\nline3\n", "v1");
     git(upstream, "tag", "v1");
-    git(dir, "init", "-q", "--bare", "-b", "main", forkRemote);
+    git(dir, "init", "-q", "--bare", "-b", "main", originRemote);
     git(dir, "clone", "-q", upstream, root);
     git(root, "config", "user.email", "t@example.com");
     git(root, "config", "user.name", "T");
-    git(root, "remote", "add", "fork", forkRemote);
+    git(root, "remote", "rename", "origin", "upstream");
+    git(root, "remote", "add", "origin", originRemote);
     git(root, "checkout", "-q", "main");
-    git(root, "push", "-q", "fork", "main");
-    run({ upstream, root });
+    git(root, "push", "-q", "origin", "main");
+    run({ dir, upstream, originRemote, root });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 }
 
-function addBranch(root, name, file, content) {
-  git(root, "branch", name, "v1");
+function addBranch(root, name, file, content, base = "main") {
   const wt = join(root, "..", name.replaceAll("/", "-"));
-  git(root, "worktree", "add", "-q", wt, name);
+  git(root, "worktree", "add", "-q", "-b", name, wt, base);
   commitFile(wt, file, content, name);
-  git(root, "push", "-q", "fork", name);
+  git(root, "push", "-q", "origin", name);
+}
+
+function addSecurityBaseline(root) {
+  const wt = join(root, "..", "security-baseline");
+  git(root, "worktree", "add", "-q", "-b", "security/baseline", wt, "main");
+  commitFile(wt, "security.txt", "patched\n", "security baseline");
+  git(root, "push", "-q", "origin", "security/baseline");
+}
+
+function mergeBaselineIntoMain(root) {
+  git(root, "merge", "-q", "--no-ff", "-m", "Merge security/baseline", "security/baseline");
+  git(root, "push", "-q", "origin", "main");
 }
 
 function writeList(root, base, branches) {
   const wt = join(root, "..", "tooling");
-  git(root, "worktree", "add", "-q", "-B", "fork-tooling", wt, "v1");
-  execFileSync("mkdir", ["-p", join(wt, ".fork")]);
+  git(root, "worktree", "add", "-q", "-B", "fork-tooling", wt, "main");
+  mkdirSync(join(wt, ".fork"), { recursive: true });
   const lines = [`base ${base}`, "fork-tooling internal", ...branches.map((b) => `${b} needs-feedback # ${b}`)];
   commitFile(wt, ".fork/branches", `# list\n${lines.join("\n")}\n`, "list");
 }
 
-test("merges every listed branch onto the base tag", () => {
+test("merges every listed branch onto main without moving root main", () => {
   withFork(({ root }) => {
     addBranch(root, "feature/a", "a.txt", "a\n");
     addBranch(root, "feature/b", "b.txt", "b\n");
     writeList(root, "v1", ["feature/a", "feature/b"]);
+    const before = git(root, "rev-parse", "main");
     const { status, output } = runAggregate(root);
     assert.equal(status, 0, output);
-    const tree = git(root, "ls-tree", "--name-only", "aggregate/next");
+    assert.equal(git(root, "rev-parse", "main"), before);
+    assert.equal(git(root, "rev-parse", "HEAD"), before);
+    const tree = git(root, "ls-tree", "--name-only", "aggregate-next");
     assert.match(tree, /a\.txt/);
     assert.match(tree, /b\.txt/);
     assert.match(tree, /\.fork/);
   });
 });
 
-test("a conflict between fork branches stops, and its recorded resolution replays", () => {
+test("requires security/baseline in main and includes it in the aggregate", () => {
+  withFork(({ root }) => {
+    addSecurityBaseline(root);
+    writeList(root, "v1", ["feature/a"]);
+    const blocked = runAggregate(root);
+    assert.equal(blocked.status, 1);
+    assert.match(blocked.output, /security\/baseline 尚未合入 main/);
+    mergeBaselineIntoMain(root);
+    addBranch(root, "feature/a", "a.txt", "a\n");
+    const { status, output } = runAggregate(root);
+    assert.equal(status, 0, output);
+    assert.equal(git(root, "show", "aggregate-next:security.txt"), "patched");
+  });
+});
+
+test("a conflict between branches stops, and its recorded resolution replays", () => {
   withFork(({ root }) => {
     addBranch(root, "fix/x", "app.txt", "line1\nX\nline3\n");
     addBranch(root, "fix/y", "app.txt", "line1\nY\nline3\n");
@@ -94,7 +124,7 @@ test("a conflict between fork branches stops, and its recorded resolution replay
     const first = runAggregate(root);
     assert.equal(first.status, 1);
     assert.match(first.output, /CONFLICT fix\/y/);
-    assert.match(first.output, /fork 分支之间的冲突/);
+    assert.match(first.output, /两个分支之间的冲突/);
     const wt = join(root, ".worktrees", "aggregate-next");
     writeFileSync(join(wt, "app.txt"), "line1\nX\nY\nline3\n");
     git(wt, "add", "app.txt");
@@ -102,7 +132,7 @@ test("a conflict between fork branches stops, and its recorded resolution replay
     const second = runAggregate(root);
     assert.equal(second.status, 0, second.output);
     assert.match(second.output, /rerere +fix\/y/);
-    assert.equal(git(root, "show", "aggregate/next:app.txt"), "line1\nX\nY\nline3");
+    assert.equal(git(root, "show", "aggregate-next:app.txt"), "line1\nX\nY\nline3");
   });
 });
 
@@ -111,26 +141,43 @@ test("a branch that conflicts with a new upstream tag is sent back to its own re
     addBranch(root, "fix/z", "app.txt", "line1\nZ\nline3\n");
     commitFile(upstream, "app.txt", "line1\nUPSTREAM\nline3\n", "v2");
     git(upstream, "tag", "v2");
-    writeList(root, "v1", ["fix/z"]);
-    const { status, output } = runAggregate(root, "--base", "v2");
+    writeList(root, "v2", ["fix/z"]);
+    const stale = runAggregate(root);
+    assert.equal(stale.status, 1);
+    assert.match(stale.output, /main 尚未包含基线 tag v2/);
+    git(root, "merge", "-q", "--no-ff", "-m", "v2", "v2");
+    git(root, "push", "-q", "origin", "main");
+    const { status, output } = runAggregate(root);
     assert.equal(status, 1);
-    assert.match(output, /该分支单独合入 v2 就冲突/);
+    assert.match(output, /单独合入 main（v2 基线）就冲突/);
   });
 });
 
-test("--promote moves main and publishes it to the fork", () => {
-  withFork(({ root }) => {
+test("--promote publishes aggregate without moving root main", () => {
+  withFork(({ dir, root }) => {
     addBranch(root, "feature/a", "a.txt", "a\n");
     writeList(root, "v1", ["feature/a"]);
+    const mainBefore = git(root, "rev-parse", "main");
+    git(root, "checkout", "-q", "-b", "scratch", "main");
+    const scratchBefore = git(root, "rev-parse", "HEAD");
     const { status, output } = runAggregate(root, "--promote");
     assert.equal(status, 0, output);
-    const head = git(root, "rev-parse", "HEAD");
-    assert.equal(git(root, "branch", "--show-current"), "main");
-    assert.equal(head, git(root, "rev-parse", "aggregate/next"));
-    assert.equal(git(root, "ls-remote", "fork", "refs/heads/main").split("\t")[0], head);
-    const clone = join(root, ".git", "clone");
-    git(root, "clone", "-q", git(root, "remote", "get-url", "fork"), clone);
+    assert.equal(git(root, "branch", "--show-current"), "scratch");
+    assert.equal(git(root, "rev-parse", "HEAD"), scratchBefore);
+    assert.equal(git(root, "rev-parse", "main"), mainBefore);
+    const aggregate = git(root, "rev-parse", "aggregate-next");
+    const aggregateTree = git(root, "rev-parse", "aggregate-next^{tree}");
+    assert.equal(git(root, "ls-remote", "origin", "refs/heads/aggregate").split("\t")[0], aggregate);
+    assert.equal(git(root, "ls-remote", "origin", "refs/heads/main").split("\t")[0], mainBefore);
+    const clone = join(dir, "clone");
+    git(root, "clone", "-q", git(root, "remote", "get-url", "origin"), clone);
     assert.equal(git(clone, "branch", "--show-current"), "main");
-    assert.equal(git(clone, "rev-parse", "HEAD"), head);
+    assert.equal(git(clone, "rev-parse", "HEAD"), mainBefore);
+    const second = runAggregate(root, "--promote");
+    assert.equal(second.status, 0, second.output);
+    assert.equal(git(root, "rev-parse", "main"), mainBefore);
+    assert.equal(git(root, "rev-parse", "aggregate-next^{tree}"), aggregateTree);
+    const after = git(root, "ls-remote", "origin", "refs/heads/aggregate").split("\t")[0];
+    assert.equal(git(root, "merge-base", "--is-ancestor", aggregate, after), "");
   });
 });
