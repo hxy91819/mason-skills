@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import steward_workbook as sw
@@ -95,7 +96,30 @@ class StewardWorkbookTests(unittest.TestCase):
         self.assertFalse(res2["ok"])
         self.assertTrue(any("在「路线」中使用了表格" in e for e in res2["errors"]))
 
-    def test_overlong_line_and_excess_decisions_are_rejected(self):
+    def test_excess_decisions_warn_without_failing(self):
+        extra = "\n".join(f"- 2026-10-14 决定 {i}。原因：用户确认。影响：阶段 2。" for i in range(sw.DEFAULT_MAX_DECISIONS))
+        res = sw.check_workbook(VALID_WORKBOOK.replace("\n\n## 用户待办", "\n" + extra + "\n\n## 用户待办", 1))
+        self.assertTrue(res["ok"])
+        self.assertTrue(any("关键决策" in w for w in res["warnings"]))
+        self.assertEqual(sw.check_workbook(VALID_WORKBOOK)["warnings"], [])
+
+    def test_fetch_threads_filters_full_list_and_falls_back_to_archived(self):
+        active = {"id": "thr_active", "status": "idle"}
+        archived = {"id": "thr_old", "status": "idle", "archivedAt": 1}
+        calls = []
+
+        def fake_list(*args):
+            calls.append(args)
+            rows = [archived] if "--archived" in args else [active, {"id": "thr_other"}]
+            return [sw.normalize_thread(r) for r in rows]
+
+        with mock.patch.object(sw, "bb_thread_list", side_effect=fake_list):
+            found = sw.fetch_threads(["thr_active", "thr_old"])
+        self.assertEqual(set(found), {"thr_active", "thr_old"})
+        self.assertTrue(found["thr_old"]["archived"])
+        self.assertFalse(any("--thread" in a for a in calls))
+
+    def test_overlong_line_is_rejected(self):
         long_line = "- [ ] 阶段 2：" + ("校准修了某问题、" * 30)
         bloated = VALID_WORKBOOK.replace(
             "- [ ] 阶段 2：冷启动独立实例与 Playwright 回归 ← 进行中（最近线程 thr_55yf6266zn）",

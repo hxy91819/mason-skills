@@ -142,13 +142,17 @@ def check_workbook(text: str, max_nonempty_lines=DEFAULT_MAX_NONEMPTY_LINES,
 
     decision_lines = parsed["sections"].get("关键决策", [])
     decisions = [raw.strip() for _, raw in decision_lines if raw.strip().startswith("- ")]
+    warnings = []
+    # 用户决策会持续增加，条数只作提醒；真正的硬上限是一屏的非空行数。
     if len(decisions) > max_decisions:
-        errors.append(
-            f"「关键决策」条数 {len(decisions)} 超过上限 {max_decisions}；新决定覆盖旧决定时应原地替换，随线程消亡的局部取舍不入簿。"
+        warnings.append(
+            f"「关键决策」条数 {len(decisions)} 超过建议值 {max_decisions}；逐条复核：所影响阶段已全部完成、"
+            "或已写进项目文档/ADR 的移出（要求帐留有原始记录），仍约束未完成工作的照留。"
         )
 
     return {
         "ok": len(errors) == 0,
+        "warnings": warnings,
         "stats": {
             "nonempty_lines": len(nonempty_lines),
             "route_items": len(route_items),
@@ -462,14 +466,15 @@ def bb_thread_list(*args):
 
 def fetch_threads(ids):
     """按 ID 批量查线程，返回 {id: info}；查不到的 ID 不出现在结果里。"""
-    found = {}
-    ids = sorted(set(ids))
-    for start in range(0, len(ids), 200):
-        args = []
-        for tid in ids[start:start + 200]:
-            args += ["--thread", tid]
-        for info in bb_thread_list(*args):
-            found[info["id"]] = info
+    # bb thread list 没有按 ID 过滤的参数；整表拉取后筛选，未命中的再查一次归档表。
+    wanted = set(ids)
+    if not wanted:
+        return {}
+    found = {info["id"]: info for info in bb_thread_list("--include-hidden") if info["id"] in wanted}
+    if wanted - found.keys():
+        for info in bb_thread_list("--archived", "--include-hidden"):
+            if info["id"] in wanted:
+                found[info["id"]] = info
     return found
 
 
