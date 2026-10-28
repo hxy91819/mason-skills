@@ -61,7 +61,7 @@ bb-dispatch --difficulty complex --unknown '<一句话最大未知>' --task '<�
 
 `--task` 依 [派发任务模板](references/task-template.md) 填：目标、先读、开工前对齐远端、授权范围与根因位置、自行引入的决定必须单列、交付与验证、回复格式。`--task` 只写任务目标、范围、输入和验收要求。provider、模型、推理级别和可用性检查是派发元数据：由 `bb-dispatch` 根据配置和目录决定，不写入子线程 prompt，也不要求子 agent 在开始前重新查询或确认。用户明确要求改变 provider 或模型时，调整用户配置后再派发，仍不把路由要求带入 `--task`。
 
-每次派发按 `defaults.<难度>` 选择候选；父 agent 只选择任务难度，provider 和模型由用户配置决定。脚本不接受 `--agent`，已有工具上下文也不构成绕过配置的例外。只有用户明确指定推理级别时才传 `--reasoning`；其余由脚本读取配置。配置未指定时省略该参数，使用 provider 默认值。`fast` 只看用户配置（省略默认 `true`，可在顶层配置也可在 `agents.<别名>.fast` 针对特定账号单独配置），人手改文件即可开关 Fast service tier；脚本不提供命令行覆盖。命令未安装时直接执行本技能的 `scripts/bb-dispatch`。需要预览用 `--dry-run`，脚本已完成的环境与模型校验无需重复查询。
+每次派发按 `defaults.<难度>` 选择候选；父 agent 只选择任务难度，provider 和模型由用户配置决定。脚本不接受 `--agent`，已有工具上下文也不构成绕过配置的例外。只有用户明确指定推理级别时才传 `--reasoning`；其余由脚本读取配置。配置未指定时省略该参数，使用 provider 默认值。`fast` 只看用户配置（省略默认 `true`，可在顶层配置也可在 `agents.<别名>.fast` 针对特定账号单独配置；周期临近重置或需临时突击使用时可在配置中加 `force_fast: true` 强制开启并豁免巡检熔断），人手改文件即可开关 Fast service tier；脚本不提供命令行覆盖。命令未安装时直接执行本技能的 `scripts/bb-dispatch`。需要预览用 `--dry-run`，脚本已完成的环境与模型校验无需重复查询。
 
 ## 派发边界
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """巡检 Codex 账号剩余额度；若 codex 或 codex-l 等账号剩余额度 <= 40%，则关闭对应账号的 Fast。
-若所有可监控账号均关闭 Fast，则联动关闭无法获取额度的账号（如 codex-b）。"""
+若所有可监控账号均关闭 Fast，则联动关闭无法获取额度的账号（如 codex-b）。
+若配置了 force_fast: true（全局或 agent 级），则强制开启 Fast 并豁免额度熔断。"""
 
 import argparse
 import json
@@ -129,12 +130,18 @@ def check_and_fuse(config_path=CONFIG_PATH, dry_run=False):
     config_data, content = load_config(config_path)
 
     global_fast = True
-    if config_data and isinstance(config_data, dict) and "fast" in config_data:
-        global_fast = bool(config_data["fast"])
+    global_force_fast = False
+    if config_data and isinstance(config_data, dict):
+        if "fast" in config_data:
+            global_fast = bool(config_data["fast"])
+        global_force_fast = bool(config_data.get("force_fast", False))
     elif content:
         m = re.search(r"^\s*fast:\s*(true|false)", content, re.MULTILINE)
         if m:
             global_fast = (m.group(1).lower() == "true")
+        mf = re.search(r"^\s*force_fast:\s*(true|false)", content, re.MULTILINE)
+        if mf:
+            global_force_fast = (mf.group(1).lower() == "true")
 
     agents = {}
     if config_data and isinstance(config_data, dict):
@@ -172,25 +179,33 @@ def check_and_fuse(config_path=CONFIG_PATH, dry_run=False):
         measurable_count += 1
         rem = stat["remaining_percent"]
         alias = provider_to_alias.get(provider_id)
+        account_force_fast = global_force_fast
         if alias and alias in agents and isinstance(agents[alias], dict):
+            if "force_fast" in agents[alias]:
+                account_force_fast = bool(agents[alias]["force_fast"])
             current_fast = agents[alias].get("fast", global_fast)
         else:
             current_fast = global_fast
 
         if rem <= QUOTA_THRESHOLD_PERCENT:
-            fuse_triggered = True
-            if alias and alias in agents and isinstance(agents[alias], dict):
+            if account_force_fast:
+                reasons.append(f"{label} 剩余额度仅剩 {rem:.1f}% (<= {QUOTA_THRESHOLD_PERCENT}%)，但已配置 force_fast: true，豁免熔断")
                 if current_fast is True:
-                    fused_agents.append(alias)
-                    reasons.append(f"{label} 剩余额度仅剩 {rem:.1f}% (<= {QUOTA_THRESHOLD_PERCENT}%)，已自动关闭该账号 Fast 开关（agents.{alias}.fast: false）")
-                else:
-                    reasons.append(f"{label} 剩余额度仅剩 {rem:.1f}% (<= {QUOTA_THRESHOLD_PERCENT}%)，该账号 Fast 已处于关闭状态")
+                    measurable_fast_active_count += 1
             else:
-                if global_fast is True:
-                    fused_agents.append(None)
-                    reasons.append(f"{label} 剩余额度仅剩 {rem:.1f}% (<= {QUOTA_THRESHOLD_PERCENT}%)，已自动关闭全局 Fast 开关（fast: false）")
+                fuse_triggered = True
+                if alias and alias in agents and isinstance(agents[alias], dict):
+                    if current_fast is True:
+                        fused_agents.append(alias)
+                        reasons.append(f"{label} 剩余额度仅剩 {rem:.1f}% (<= {QUOTA_THRESHOLD_PERCENT}%)，已自动关闭该账号 Fast 开关（agents.{alias}.fast: false）")
+                    else:
+                        reasons.append(f"{label} 剩余额度仅剩 {rem:.1f}% (<= {QUOTA_THRESHOLD_PERCENT}%)，该账号 Fast 已处于关闭状态")
                 else:
-                    reasons.append(f"{label} 剩余额度仅剩 {rem:.1f}% (<= {QUOTA_THRESHOLD_PERCENT}%)，全局 Fast 已处于关闭状态")
+                    if global_fast is True:
+                        fused_agents.append(None)
+                        reasons.append(f"{label} 剩余额度仅剩 {rem:.1f}% (<= {QUOTA_THRESHOLD_PERCENT}%)，已自动关闭全局 Fast 开关（fast: false）")
+                    else:
+                        reasons.append(f"{label} 剩余额度仅剩 {rem:.1f}% (<= {QUOTA_THRESHOLD_PERCENT}%)，全局 Fast 已处于关闭状态")
         else:
             if current_fast is True:
                 measurable_fast_active_count += 1
@@ -199,7 +214,13 @@ def check_and_fuse(config_path=CONFIG_PATH, dry_run=False):
     if measurable_count > 0 and measurable_fast_active_count == 0:
         for provider_id, label in unmeasurable_accounts:
             alias = provider_to_alias.get(provider_id)
+            account_force_fast = global_force_fast
             if alias and alias in agents and isinstance(agents[alias], dict):
+                if "force_fast" in agents[alias]:
+                    account_force_fast = bool(agents[alias]["force_fast"])
+                if account_force_fast:
+                    reasons.append(f"{label} 无法获取额度，但已配置 force_fast: true，豁免联动熔断")
+                    continue
                 current_fast = agents[alias].get("fast", global_fast)
                 if current_fast is True:
                     fused_agents.append(alias)
@@ -208,6 +229,9 @@ def check_and_fuse(config_path=CONFIG_PATH, dry_run=False):
                 else:
                     reasons.append(f"{label} 无法获取额度，且 Fast 此前已处于关闭状态")
             else:
+                if account_force_fast:
+                    reasons.append(f"{label} 无法获取额度，但已配置 force_fast: true，豁免联动熔断")
+                    continue
                 if global_fast is True:
                     fused_agents.append(None)
                     fuse_triggered = True
@@ -222,6 +246,8 @@ def check_and_fuse(config_path=CONFIG_PATH, dry_run=False):
         action_taken = "fused_closed_fast"
     elif fuse_triggered:
         action_taken = "already_closed"
+    elif global_force_fast:
+        action_taken = "forced_fast"
     else:
         action_taken = "kept_current"
 
@@ -229,6 +255,7 @@ def check_and_fuse(config_path=CONFIG_PATH, dry_run=False):
         "action": action_taken,
         "fuse_triggered": fuse_triggered,
         "fused_agents": [a for a in fused_agents if a],
+        "force_fast": global_force_fast,
         "reasons": reasons,
         "accounts": accounts_stat,
     }
@@ -247,6 +274,8 @@ def main():
         print(msg)
         if args.notify_thread and not args.dry_run:
             notify_thread(args.notify_thread, f"[Codex 额度熔断告警] {'; '.join(result['reasons'])}")
+    elif result["action"] == "forced_fast":
+        print(f"⚡ force_fast 强制开启模式：{'; '.join(result['reasons']) if result['reasons'] else '所有账号保持开启 Fast，豁免熔断。'}")
     elif result["fuse_triggered"]:
         print(f"⚠️ 额度低于阈值，但 Fast 当前已处于关闭状态：{'; '.join(result['reasons'])}")
     else:

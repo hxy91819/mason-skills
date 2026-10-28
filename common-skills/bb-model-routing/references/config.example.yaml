@@ -3,6 +3,8 @@ permission_mode: accept-edits
 # 人手改这个开关控制派发是否带 --service-tier fast；省略时默认 true。
 # 脚本没有命令行覆盖。模型不支持 fast 时仍派发，只是不带该参数。
 fast: true
+# 可选：强制开启 Fast 并豁免巡检自动熔断（额度即将重置或临时突击时使用；也可在 agents.<别名>.force_fast 配置）
+# force_fast: true
 # defaults 只选择 provider 别名；模型与推理级别在 agents.<别名>.routes 中定义。
 # 值可为有序别名列表作同档 fallback 链，如 simple: [primary, backup]。
 # 等权负载均衡：{mode: load-balance, candidates: [primary, backup]}

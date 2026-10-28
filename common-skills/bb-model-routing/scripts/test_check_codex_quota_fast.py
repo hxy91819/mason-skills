@@ -231,6 +231,74 @@ agents:
             finally:
                 checker.get_usage = orig_get_usage
 
+    def test_force_fast_global_exempts_fuse(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg = Path(td) / "config.yaml"
+            cfg.write_text("""version: 2
+fast: true
+force_fast: true
+agents:
+  codex:
+    provider: codex
+  codexl:
+    provider: codex-l
+""", encoding="utf-8")
+
+            orig_get_usage = checker.get_usage
+            try:
+                checker.get_usage = lambda: {
+                    "codex": {
+                        "status": "ok",
+                        "windows": [{"label": "Weekly limit", "usedPercent": 70, "resetsAt": "2026-11-01"}]
+                    },
+                    "codex-l": {
+                        "status": "ok",
+                        "windows": [{"label": "Weekly limit", "usedPercent": 80, "resetsAt": "2026-11-01"}]
+                    }
+                }
+                res = checker.check_and_fuse(config_path=cfg, dry_run=False)
+                self.assertEqual(res["action"], "forced_fast")
+                self.assertEqual(res["fused_agents"], [])
+                data, _ = checker.load_config(cfg)
+                self.assertNotIn("fast", data["agents"]["codex"])
+                self.assertNotIn("fast", data["agents"]["codexl"])
+            finally:
+                checker.get_usage = orig_get_usage
+
+    def test_force_fast_agent_level_exempts_specific_agent(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg = Path(td) / "config.yaml"
+            cfg.write_text("""version: 2
+fast: true
+agents:
+  codex:
+    provider: codex
+    force_fast: true
+  codexl:
+    provider: codex-l
+""", encoding="utf-8")
+
+            orig_get_usage = checker.get_usage
+            try:
+                checker.get_usage = lambda: {
+                    "codex": {
+                        "status": "ok",
+                        "windows": [{"label": "Weekly limit", "usedPercent": 75, "resetsAt": "2026-11-01"}]
+                    },
+                    "codex-l": {
+                        "status": "ok",
+                        "windows": [{"label": "Weekly limit", "usedPercent": 85, "resetsAt": "2026-11-01"}]
+                    }
+                }
+                res = checker.check_and_fuse(config_path=cfg, dry_run=False)
+                self.assertEqual(res["action"], "fused_closed_fast")
+                self.assertEqual(res["fused_agents"], ["codexl"])
+                data, _ = checker.load_config(cfg)
+                self.assertNotIn("fast", data["agents"]["codex"])
+                self.assertEqual(data["agents"]["codexl"]["fast"], False)
+            finally:
+                checker.get_usage = orig_get_usage
+
     def test_notify_thread(self):
         orig_run = checker.subprocess.run
         calls = []
