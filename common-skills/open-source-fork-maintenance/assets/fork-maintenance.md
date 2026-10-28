@@ -44,12 +44,13 @@ git worktree add .worktrees/<name> -b feature/<name> main   # 修复用 fix/<nam
 ## 2. 聚合打包
 
 ```bash
-scripts/fork-aggregate            # 从 main 生成 .worktrees/aggregate-next 中的本地临时验证候选
-scripts/fork-aggregate --promote  # 成功后把结果提升到 aggregate 并推送到 origin
+scripts/fork-aggregate                                # 从 main 生成 .worktrees/aggregate-next 中的候选
+# 在 .worktrees/aggregate-next 里验证
+scripts/fork-aggregate --promote-only --result <sha>  # 提升验证过的同一个提交
 ```
 
-脚本从 `origin/main` 开始，先确认 `main` 已包含基线 tag 和适用的 `security/baseline`，再依次 `merge --no-ff` 清单中的分支。每次从头生成，没有中间状态需要维护。`--promote` 只把结果提升到 `aggregate` 并推送到 `origin/aggregate`，不 reset 根目录 `main`；根目录在哪个分支都不影响提升。
-在 `.worktrees/aggregate-next` 里按本项目的构建/测试命令验证，通过后再 `--promote`：全量 typecheck/构建，加上本次冲突或新增分支涉及的包的测试；各分支自己的测试在分支上已经跑过。
+脚本从 `origin/main` 开始，先确认 `main` 已包含基线 tag 和适用的 `security/baseline`，再依次 `merge --no-ff` 清单中的分支。每次从头生成，没有中间状态需要维护。验证后提升要推送验证过的那个 SHA：`--promote-only --result <sha>` 不重新生成，只把该提交提升到 `aggregate` 并推送到 `origin/aggregate`，不移动根目录 `main`；根目录在哪个分支都不影响提升。`--promote` 重新聚合并提升本次结果；已验证的候选必须用 `--promote-only`，不要重新生成。
+在 `.worktrees/aggregate-next` 里按本项目的构建/测试命令验证：全量 typecheck/构建，加上本次冲突或新增分支涉及的包的测试；各分支自己的测试在分支上已经跑过。验证通过后记录该 worktree 的 HEAD SHA，用 `--promote-only --result <sha>` 提升同一个提交。
 提升与推送到 `origin` 不需要再询问。有明确安装包的项目，验证并提升聚合后按第 3 节推送 tag，由 CI 打包发布；聚合脚本本身只生成和提升分支，不自动打 tag。替换本机运行中的服务按本项目的部署授权与流程执行。
 
 ### 冲突怎么解决
@@ -58,7 +59,7 @@ scripts/fork-aggregate --promote  # 成功后把结果提升到 aggregate 并推
 
 | 类型 | 判断 | 处理 |
 | --- | --- | --- |
-| 分支与上游冲突 | 该分支单独合入 `main` 就冲突 | 在该分支 worktree 里 `git rebase --no-autostash main`，修复、测试、`git push --force-with-lease origin <branch>`，重跑脚本。修好的分支同时也保持了对上游可合并。 |
+| 分支与上游冲突 | 该分支单独合入 `main` 就冲突 | 在该分支 worktree 里 `git rebase --no-autostash main`，修复、测试、`git push --force-with-lease origin <branch>`，重跑脚本。向上游提交时，按第 4 节用 `git rebase --onto upstream/main` 去掉安全基线。 |
 | 安全基线与新 tag 冲突 | `security/baseline` 合入新 tag 冲突 | 在 `security/baseline` 上 `git merge <new-tag>`，解决并验证后 `git push origin security/baseline`，再更新 `main`。 |
 | 分支之间冲突 | 单独都能合入，一起才冲突 | 在 `.worktrees/aggregate-next` 里只做两边合并、不加新行为，`git add` 后 `git commit --no-edit`，重跑脚本。`rerere` 会记住这次解决，下次自动复用。 |
 
@@ -72,7 +73,7 @@ scripts/fork-aggregate --promote  # 成功后把结果提升到 aggregate 并推
 2. 把 `main` 更新到新基线：有安全基线时合并 `security/baseline`，没有时合并新 tag；推送 `origin/main`，根目录保持干净的 `main`。
 3. 运行聚合脚本，按上表逐个处理冲突。没有冲突的分支不用动；脚本发现 `main` 还没包含新 tag 或基线时会先停下。
 4. 某个分支 rebase 后变空，说明上游已经包含它：从清单删除这一行，删除分支（`origin` 上的也删），在提交说明里写明被上游哪个版本吸收。
-5. 验证、`--promote`，提交并推送 `fork-tooling` 上的新 `base`。
+5. 验证、`--promote-only --result <sha>`，提交并推送 `fork-tooling` 上的新 `base`。
 
 ## 3. 打包与发布
 

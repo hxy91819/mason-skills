@@ -76,6 +76,10 @@ function mergeBaselineIntoMain(root) {
   git(root, "push", "-q", "origin", "main");
 }
 
+function securityWorktree(root) {
+  return join(root, "..", "security-baseline");
+}
+
 function writeList(root, base, branches) {
   const wt = join(root, "..", "tooling");
   git(root, "worktree", "add", "-q", "-B", "fork-tooling", wt, "main");
@@ -106,7 +110,7 @@ test("requires security/baseline in main and includes it in the aggregate", () =
     addSecurityBaseline(root);
     writeList(root, "v1", ["feature/a"]);
     const blocked = runAggregate(root);
-    assert.equal(blocked.status, 1);
+    assert.equal(blocked.status, 1, blocked.output);
     assert.match(blocked.output, /security\/baseline 尚未合入 main/);
     mergeBaselineIntoMain(root);
     addBranch(root, "feature/a", "a.txt", "a\n");
@@ -179,5 +183,85 @@ test("--promote publishes aggregate without moving root main", () => {
     assert.equal(git(root, "rev-parse", "aggregate-next^{tree}"), aggregateTree);
     const after = git(root, "ls-remote", "origin", "refs/heads/aggregate").split("\t")[0];
     assert.equal(git(root, "merge-base", "--is-ancestor", aggregate, after), "");
+  });
+});
+
+test("origin security/baseline ahead of local is adopted and must be in main", () => {
+  withFork(({ root }) => {
+    addSecurityBaseline(root);
+    mergeBaselineIntoMain(root);
+    writeList(root, "v1", []);
+    const wt = securityWorktree(root);
+    commitFile(wt, "security.txt", "patched\nremote-extra\n", "remote baseline");
+    const remoteTip = git(wt, "rev-parse", "HEAD");
+    git(root, "push", "-q", "origin", "security/baseline");
+    git(wt, "reset", "-q", "--hard", "HEAD~1");
+    const blocked = runAggregate(root);
+    assert.equal(blocked.status, 1, blocked.output);
+    assert.match(blocked.output, /security\/baseline 尚未合入 main/);
+    assert.ok(blocked.output.includes(remoteTip), blocked.output);
+    git(root, "merge", "-q", "--no-ff", "-m", "Merge newer security baseline", remoteTip);
+    git(root, "push", "-q", "origin", "main");
+    const { status, output } = runAggregate(root);
+    assert.equal(status, 0, output);
+    assert.equal(git(root, "show", "aggregate-next:security.txt"), "patched\nremote-extra");
+  });
+});
+
+test("local security/baseline ahead of origin is adopted and must be in main", () => {
+  withFork(({ root }) => {
+    addSecurityBaseline(root);
+    mergeBaselineIntoMain(root);
+    writeList(root, "v1", []);
+    const wt = securityWorktree(root);
+    commitFile(wt, "security.txt", "patched\nlocal-extra\n", "local baseline");
+    const localTip = git(wt, "rev-parse", "HEAD");
+    const blocked = runAggregate(root);
+    assert.equal(blocked.status, 1, blocked.output);
+    assert.match(blocked.output, /security\/baseline 尚未合入 main/);
+    assert.ok(blocked.output.includes(localTip), blocked.output);
+    git(root, "merge", "-q", "--no-ff", "-m", "Merge local security baseline", "security/baseline");
+    git(root, "push", "-q", "origin", "main");
+    const { status, output } = runAggregate(root);
+    assert.equal(status, 0, output);
+    assert.equal(git(root, "show", "aggregate-next:security.txt"), "patched\nlocal-extra");
+  });
+});
+
+test("diverged local and origin security/baseline tips are rejected", () => {
+  withFork(({ root }) => {
+    addSecurityBaseline(root);
+    mergeBaselineIntoMain(root);
+    writeList(root, "v1", []);
+    const wt = securityWorktree(root);
+    commitFile(wt, "security.txt", "patched\nlocal\n", "local baseline");
+    const other = join(root, "..", "baseline-other");
+    git(root, "worktree", "add", "-q", "--detach", other, "security/baseline~1");
+    commitFile(other, "security.txt", "patched\norigin\n", "origin baseline");
+    git(other, "push", "-q", "origin", "HEAD:refs/heads/security/baseline");
+    const mainBefore = git(root, "rev-parse", "main");
+    const { status, output } = runAggregate(root);
+    assert.equal(status, 1, output);
+    assert.match(output, /security\/baseline.*分叉/);
+    assert.equal(git(root, "rev-parse", "main"), mainBefore);
+    assert.equal(git(root, "ls-remote", "origin", "refs/heads/aggregate"), "");
+  });
+});
+
+test("--promote-only publishes the verified SHA without rebuilding", () => {
+  withFork(({ root }) => {
+    addBranch(root, "feature/a", "a.txt", "a\n");
+    writeList(root, "v1", ["feature/a"]);
+    const built = runAggregate(root);
+    assert.equal(built.status, 0, built.output);
+    const verified = git(root, "rev-parse", "aggregate-next");
+    const verifiedTree = git(root, "rev-parse", "aggregate-next^{tree}");
+    const mainBefore = git(root, "rev-parse", "main");
+    const promoted = runAggregate(root, "--promote-only", "--result", verified);
+    assert.equal(promoted.status, 0, promoted.output);
+    assert.equal(git(root, "rev-parse", "aggregate-next"), verified);
+    assert.equal(git(root, "rev-parse", "aggregate-next^{tree}"), verifiedTree);
+    assert.equal(git(root, "rev-parse", "main"), mainBefore);
+    assert.equal(git(root, "ls-remote", "origin", "refs/heads/aggregate").split("\t")[0], verified);
   });
 });

@@ -4,25 +4,34 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 用法：scripts/fork-aggregate [--base <tag>] [--promote]
+      scripts/fork-aggregate --promote-only [--result <sha>]
 
 从 .fork/branches 的 base（或 --base）重新生成聚合：以个人 fork 的 main
 （上游稳定 tag，含适用的 security/baseline）为起点，依次 merge 清单中的分支到
 .worktrees/aggregate-next 的 aggregate-next 分支。已解决过的冲突由 git rerere 自动复用。
---promote  成功后把结果提升到 aggregate 并推送到 origin（普通推送），不移动根目录 main。
+--promote       生成成功后把本次结果提升到 aggregate 并推送到 origin（普通推送），不移动根目录 main。
+--promote-only  不重新生成，直接提升 aggregate-next 当前指向的提交；用于已验证的结果。
+--result        与 --promote-only 一起使用，提升指定的已验证 SHA。
+验证后用 `--promote-only --result <sha>` 提升，推送的就是验证过的同一个提交。
 清单读取自 fork-tooling 分支（本地优先，其次 origin/fork-tooling）。
 USAGE
 }
 
 base_override=""
 promote=0
+promote_only=0
+result_override=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --base) base_override="${2:?--base 需要 tag}"; shift 2 ;;
     --promote) promote=1; shift ;;
+    --promote-only) promote_only=1; shift ;;
+    --result) result_override="${2:?--result 需要 SHA}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
   esac
 done
+[ -z "$result_override" ] || { [ "$promote_only" = 1 ] && [[ "$result_override" =~ ^[a-f0-9]{40}$ ]]; } || { usage >&2; exit 2; }
 
 root="$(git rev-parse --path-format=absolute --git-common-dir)"
 root="$(dirname "$root")"
@@ -54,25 +63,61 @@ git merge-base --is-ancestor "refs/tags/$base" "$main_ref" || {
   exit 1
 }
 
-security_refs=()
-if git rev-parse --verify --quiet refs/heads/security/baseline >/dev/null; then
-  security_refs+=(refs/heads/security/baseline)
+security_local="$(git rev-parse --verify --quiet refs/heads/security/baseline || true)"
+security_remote="$(git rev-parse --verify --quiet refs/remotes/origin/security/baseline || true)"
+security_tip=""
+if [ -n "$security_local" ] && [ -n "$security_remote" ] && [ "$security_local" != "$security_remote" ]; then
+  if git merge-base --is-ancestor "$security_local" "$security_remote"; then
+    security_tip="$security_remote"
+  elif git merge-base --is-ancestor "$security_remote" "$security_local"; then
+    security_tip="$security_local"
+  else
+    echo "security/baseline 本地（$security_local）与 origin（$security_remote）分叉；先统一到同一个 tip 并推送后再聚合" >&2
+    exit 1
+  fi
+elif [ -n "$security_local" ]; then
+  security_tip="$security_local"
+else
+  security_tip="$security_remote"
 fi
-if git rev-parse --verify --quiet refs/remotes/origin/security/baseline >/dev/null; then
-  security_refs+=(refs/remotes/origin/security/baseline)
-fi
-if [ ${#security_refs[@]} -gt 0 ]; then
-  baseline_ok=0
-  for security_ref in "${security_refs[@]}"; do
-    if git merge-base --is-ancestor "$security_ref" "$main_ref"; then
-      baseline_ok=1
-      break
-    fi
-  done
-  [ "$baseline_ok" = 1 ] || {
-    echo "security/baseline 尚未合入 main；先把 main 更新为 $base + security/baseline 后再聚合" >&2
+if [ -n "$security_tip" ]; then
+  git merge-base --is-ancestor "$security_tip" "$main_ref" || {
+    echo "security/baseline 尚未合入 main（$security_tip）；先把 main 更新为 $base + security/baseline 后再聚合" >&2
     exit 1
   }
+fi
+
+promote_result() {
+  local result="$1" remote_after
+  git push --quiet origin "$result:refs/heads/aggregate"
+  remote_after="$(git ls-remote origin refs/heads/aggregate | cut -f1)"
+  [ "$remote_after" = "$result" ] || { echo "origin 上的 aggregate=$remote_after 与 $result 不一致" >&2; exit 1; }
+  echo "已提升并推送 aggregate = $result（根目录 main 保持基线）"
+}
+
+if [ "$promote_only" = 1 ]; then
+  if [ -n "$result_override" ]; then
+    result="$result_override"
+  else
+    result="$(git rev-parse --verify --quiet refs/heads/aggregate-next || true)"
+    [ -n "$result" ] || { echo "没有 aggregate-next 分支；先运行一次聚合并验证" >&2; exit 1; }
+  fi
+  result="$(git rev-parse --verify --quiet "$result^{commit}")" || {
+    echo "找不到待提升的提交 $result" >&2
+    exit 1
+  }
+  git merge-base --is-ancestor "$main_ref" "$result" || {
+    echo "待提升的 $result 不含当前 main；先重新生成并验证" >&2
+    exit 1
+  }
+  if [ -n "$security_tip" ]; then
+    git merge-base --is-ancestor "$security_tip" "$result" || {
+      echo "待提升的 $result 不含 security/baseline（$security_tip）" >&2
+      exit 1
+    }
+  fi
+  promote_result "$result"
+  exit 0
 fi
 
 branches=()
@@ -92,14 +137,6 @@ resolve_ref() {
   if [ -n "$local_sha" ]; then echo "$local_sha"; elif [ -n "$remote_sha" ]; then echo "$remote_sha"; else
     echo "找不到分支 $branch（本地或 origin）" >&2; return 1
   fi
-}
-
-promote_result() {
-  local result="$1" remote_after
-  git push --quiet origin "$result:refs/heads/aggregate"
-  remote_after="$(git ls-remote origin refs/heads/aggregate | cut -f1)"
-  [ "$remote_after" = "$result" ] || { echo "origin 上的 aggregate=$remote_after 与 $result 不一致" >&2; exit 1; }
-  echo "已提升并推送 aggregate = $result（根目录 main 保持基线）"
 }
 
 git config rerere.enabled true
@@ -156,6 +193,12 @@ git merge-base --is-ancestor "$main_ref" "$result" || {
   echo "聚合结果不含 main；先检查聚合 worktree" >&2
   exit 1
 }
+if [ -n "$security_tip" ]; then
+  git merge-base --is-ancestor "$security_tip" "$result" || {
+    echo "聚合结果不含 security/baseline（$security_tip）；先检查 main 和聚合 worktree" >&2
+    exit 1
+  }
+fi
 
 echo "聚合完成：aggregate-next = $result（base $base，${#branches[@]} 个分支）"
 
