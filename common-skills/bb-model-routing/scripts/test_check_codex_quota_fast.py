@@ -299,6 +299,123 @@ agents:
             finally:
                 checker.get_usage = orig_get_usage
 
+    def test_quota_fuse_custom_threshold_below_custom_does_not_fuse(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg = Path(td) / "config.yaml"
+            cfg.write_text("""version: 2
+fast: true
+quota_fuse:
+  used_threshold_percent: 95.0
+  restore_at: "2099-01-01T00:00:00+08:00"
+agents:
+  codex:
+    provider: codex
+  codexl:
+    provider: codex-l
+""", encoding="utf-8")
+
+            orig_get_usage = checker.get_usage
+            try:
+                checker.get_usage = lambda: {
+                    "codex": {
+                        "status": "ok",
+                        "windows": [{"label": "Weekly limit", "usedPercent": 80, "resetsAt": "2026-11-01"}]
+                    },
+                    "codex-l": {
+                        "status": "ok",
+                        "windows": [{"label": "Weekly limit", "usedPercent": 75, "resetsAt": "2026-11-01"}]
+                    }
+                }
+                res = checker.check_and_fuse(config_path=cfg, dry_run=False)
+                self.assertEqual(res["action"], "kept_current")
+                self.assertFalse(res["fuse_triggered"])
+                self.assertEqual(res["used_threshold"], 95.0)
+                self.assertEqual(res["remaining_threshold"], 5.0)
+                data, _ = checker.load_config(cfg)
+                self.assertNotIn("fast", data["agents"]["codex"])
+            finally:
+                checker.get_usage = orig_get_usage
+
+    def test_quota_fuse_custom_threshold_above_custom_fuses(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg = Path(td) / "config.yaml"
+            cfg.write_text("""version: 2
+fast: true
+quota_fuse:
+  used_threshold_percent: 95.0
+  restore_at: "2099-01-01T00:00:00+08:00"
+agents:
+  codex:
+    provider: codex
+  codexl:
+    provider: codex-l
+""", encoding="utf-8")
+
+            orig_get_usage = checker.get_usage
+            try:
+                checker.get_usage = lambda: {
+                    "codex": {
+                        "status": "ok",
+                        "windows": [{"label": "Weekly limit", "usedPercent": 96, "resetsAt": "2026-11-01"}]
+                    },
+                    "codex-l": {
+                        "status": "ok",
+                        "windows": [{"label": "Weekly limit", "usedPercent": 75, "resetsAt": "2026-11-01"}]
+                    }
+                }
+                res = checker.check_and_fuse(config_path=cfg, dry_run=False)
+                self.assertEqual(res["action"], "fused_closed_fast")
+                self.assertTrue(res["fuse_triggered"])
+                self.assertEqual(res["fused_agents"], ["codex"])
+                data, _ = checker.load_config(cfg)
+                self.assertEqual(data["agents"]["codex"]["fast"], False)
+                self.assertNotIn("fast", data["agents"]["codexl"])
+            finally:
+                checker.get_usage = orig_get_usage
+
+    def test_quota_fuse_auto_restore_after_expire(self):
+        from datetime import datetime, timezone, timedelta
+        with tempfile.TemporaryDirectory() as td:
+            cfg = Path(td) / "config.yaml"
+            cfg.write_text("""version: 2
+fast: true
+quota_fuse:
+  used_threshold_percent: 95.0
+  restore_at: "2026-10-30T12:00:00+08:00"
+agents:
+  codex:
+    provider: codex
+  codexl:
+    provider: codex-l
+""", encoding="utf-8")
+
+            orig_get_usage = checker.get_usage
+            try:
+                # codex at 70% used: > 60% default threshold, but < 95% temporary threshold
+                checker.get_usage = lambda: {
+                    "codex": {
+                        "status": "ok",
+                        "windows": [{"label": "Weekly limit", "usedPercent": 70, "resetsAt": "2026-11-01"}]
+                    },
+                    "codex-l": {
+                        "status": "ok",
+                        "windows": [{"label": "Weekly limit", "usedPercent": 30, "resetsAt": "2026-11-01"}]
+                    }
+                }
+                # Simulate running at 2026-10-30 12:05:00 (after restore_at)
+                future_dt = datetime(2026, 10, 30, 12, 5, 0, tzinfo=timezone(timedelta(hours=8)))
+                res = checker.check_and_fuse(config_path=cfg, dry_run=False, now_dt=future_dt)
+                self.assertTrue(res["threshold_restored"])
+                self.assertEqual(res["used_threshold"], 60.0)
+                self.assertEqual(res["action"], "fused_closed_fast")
+                self.assertEqual(res["fused_agents"], ["codex"])
+                data, _ = checker.load_config(cfg)
+                self.assertEqual(data["agents"]["codex"]["fast"], False)
+                # quota_fuse block should be cleaned up
+                self.assertNotIn("quota_fuse", data)
+            finally:
+                checker.get_usage = orig_get_usage
+
     def test_notify_thread(self):
         orig_run = checker.subprocess.run
         calls = []
