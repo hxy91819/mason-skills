@@ -101,6 +101,8 @@ skills:
   note: 用一次性原型回答设计问题
 - name: prototype-alignment-review
   note: 原型对齐审查：逐维度比对原型与正式页面的功能设计，产出可派发差异清单
+- name: reader-led-design
+  note: 以读者任务设计页面与文件
 - name: readiness-fix
   note: 根据本地 readiness 报告修复失败信号
 - name: readiness-report
