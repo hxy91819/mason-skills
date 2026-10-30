@@ -111,11 +111,6 @@ def check_workbook(text: str, max_nonempty_lines=DEFAULT_MAX_NONEMPTY_LINES,
         first_ln, first_h = parsed["subheadings"][0]
         errors.append(f"第 {first_ln} 行出现不允许的子标题 {first_h!r}；工作簿保持三段扁平结构。")
 
-    if len(nonempty_lines) > max_nonempty_lines:
-        errors.append(
-            f"非空行总数 {len(nonempty_lines)} 超过一屏上限 {max_nonempty_lines}；请先删减或将细碎矩阵移回项目文档/Issue。"
-        )
-
     for lineno, raw in enumerate(parsed["lines"], start=1):
         vlen = visible_length(raw)
         if vlen > max_line_chars:
@@ -143,7 +138,12 @@ def check_workbook(text: str, max_nonempty_lines=DEFAULT_MAX_NONEMPTY_LINES,
     decision_lines = parsed["sections"].get("关键决策", [])
     decisions = [raw.strip() for _, raw in decision_lines if raw.strip().startswith("- ")]
     warnings = []
-    # 用户决策会持续增加，条数只作提醒；真正的硬上限是一屏的非空行数。
+    # 行数与决策条数只作提醒：目的是不乱加东西，不是压缩必要事实。
+    if len(nonempty_lines) > max_nonempty_lines:
+        warnings.append(
+            f"非空行总数 {len(nonempty_lines)} 超过建议值 {max_nonempty_lines}；检查有没有过程流水账或细碎矩阵该移回项目文档/Issue，"
+            "已完成阶段与仍有约束力的条目照留。"
+        )
     if len(decisions) > max_decisions:
         warnings.append(
             f"「关键决策」条数 {len(decisions)} 超过建议值 {max_decisions}；逐条复核：所影响阶段已全部完成、"
