@@ -111,7 +111,10 @@ def check_workbook(text: str, max_nonempty_lines=DEFAULT_MAX_NONEMPTY_LINES,
         first_ln, first_h = parsed["subheadings"][0]
         errors.append(f"第 {first_ln} 行出现不允许的子标题 {first_h!r}；工作簿保持三段扁平结构。")
 
+    todo_linenos = {ln for ln, _ in parsed["sections"].get("用户待办", [])}
     for lineno, raw in enumerate(parsed["lines"], start=1):
+        if lineno in todo_linenos:
+            continue  # 待办要写背景与建议，不受单行字数限制
         vlen = visible_length(raw)
         if vlen > max_line_chars:
             errors.append(
@@ -353,7 +356,7 @@ def parse_todos(parsed):
         cells = table_cells(s)
         if all(set(c) <= {"-", ":", " "} for c in cells):
             continue
-        if cells and cells[0] == "状态":
+        if "状态" in cells and "事项" in cells:
             columns = {name: idx for idx, name in enumerate(cells)}
             continue
 

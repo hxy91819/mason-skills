@@ -119,6 +119,22 @@ class StewardWorkbookTests(unittest.TestCase):
         self.assertTrue(res["ok"], res["errors"])
         self.assertTrue(any("非空行总数" in w for w in res["warnings"]))
 
+    def test_numbered_todo_table_with_background_parses(self):
+        long_bg = "背景说明" * 60
+        text = VALID_WORKBOOK.replace(
+            "| 状态 | 事项 | 为什么只能用户做 | 挡住 | 提出 |\n| --- | --- | --- | --- | --- |\n"
+            "| 待办 | 用公司账号抓取《揭榜方案模板》 | 乐享需要本人登录 | 阶段 3 | 2026-10-14 |",
+            "| 编号 | 状态 | 事项 | 背景 | 建议 | 为什么只能用户做 | 挡住 | 提出 |\n"
+            "| --- | --- | --- | --- | --- | --- | --- | --- |\n"
+            f"| D1 | 待办 | 用公司账号抓取《揭榜方案模板》 | {long_bg} | 现在抓 | 乐享需要本人登录 | 阶段 3 | 2026-10-14 |",
+        )
+        self.assertIn("| D1 |", text)
+        res = sw.check_workbook(text)
+        self.assertTrue(res["ok"], res["errors"])
+        todos = sw.parse_todos(sw.parse_workbook(text))
+        self.assertEqual([(t["status"], t["blocks"], t["reason"]) for t in todos],
+                         [("待办", "阶段 3", "乐享需要本人登录")])
+
     def test_excess_decisions_warn_without_failing(self):
         extra = "\n".join(f"- 2026-10-14 决定 {i}。原因：用户确认。影响：阶段 2。" for i in range(sw.DEFAULT_MAX_DECISIONS))
         res = sw.check_workbook(VALID_WORKBOOK.replace("\n\n## 用户待办", "\n" + extra + "\n\n## 用户待办", 1))
