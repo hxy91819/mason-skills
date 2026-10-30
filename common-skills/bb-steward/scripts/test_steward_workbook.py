@@ -96,6 +96,19 @@ class StewardWorkbookTests(unittest.TestCase):
         self.assertFalse(res2["ok"])
         self.assertTrue(any("在「路线」中使用了表格" in e for e in res2["errors"]))
 
+    def test_route_stage_count_is_unbounded_by_default(self):
+        extra = "\n".join(f"- [ ] 阶段 {i}：并行事项" for i in range(4, 16))
+        text = VALID_WORKBOOK.replace(
+            "- [ ] 阶段 3：浅色多图落地页重设计与发布",
+            "- [ ] 阶段 3：浅色多图落地页重设计与发布\n" + extra,
+        )
+        res = sw.check_workbook(text)
+        self.assertTrue(res["ok"], res["errors"])
+        self.assertEqual(res["stats"]["route_items"], 15)
+        capped = sw.check_workbook(text, max_route_items=10)
+        self.assertFalse(capped["ok"])
+        self.assertTrue(any("阶段数 15 超过上限 10" in e for e in capped["errors"]))
+
     def test_excess_decisions_warn_without_failing(self):
         extra = "\n".join(f"- 2026-10-14 决定 {i}。原因：用户确认。影响：阶段 2。" for i in range(sw.DEFAULT_MAX_DECISIONS))
         res = sw.check_workbook(VALID_WORKBOOK.replace("\n\n## 用户待办", "\n" + extra + "\n\n## 用户待办", 1))

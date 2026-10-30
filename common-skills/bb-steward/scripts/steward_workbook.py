@@ -25,7 +25,7 @@ REQUIRED_SECTIONS = ["路线", "关键决策", "用户待办"]
 SECTION_ALIASES = {"路線": "路线", "關鍵決策": "关键决策", "用戶待辦": "用户待办"}
 DEFAULT_MAX_NONEMPTY_LINES = 45
 DEFAULT_MAX_LINE_CHARS = 180
-DEFAULT_MAX_ROUTE_ITEMS = 10
+DEFAULT_MAX_ROUTE_ITEMS = None  # 路线阶段数暂不设上限；需要时用 --max-route-items 显式指定
 DEFAULT_MAX_DECISIONS = 12
 
 MD_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
@@ -137,7 +137,7 @@ def check_workbook(text: str, max_nonempty_lines=DEFAULT_MAX_NONEMPTY_LINES,
         if m:
             route_items.append((lineno, m.group(1).lower() == "x", "←" in s, m.group(2)))
 
-    if len(route_items) > max_route_items:
+    if max_route_items is not None and len(route_items) > max_route_items:
         errors.append(f"「路线」阶段数 {len(route_items)} 超过上限 {max_route_items}。")
 
     decision_lines = parsed["sections"].get("关键决策", [])
