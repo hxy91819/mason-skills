@@ -1,0 +1,6 @@
+interface:
+  display_name: "多 Agent 协作项目初始化"
+  short_description: "按二十个线程并行的标准初始化或整改项目的合入、CI、发布、协作状态与派发配置"
+  default_prompt: "使用 $multi-agent-project-setup 评估并整改这个项目：先量基线，再按清单逐项对照，给出落地顺序与复测结果。"
+policy:
+  allow_implicit_invocation: false
