@@ -84,6 +84,8 @@ skills:
   note: 大型任务的人读视图与 Agent JSON 双层规划
 - name: local-test
   note: 本地测试与环境启停安全规范
+- name: multi-agent-project-setup
+  note: 多 Agent 并行项目的初始化配置与整改清单：合入门禁、CI 分层、发布、协作状态、派发节流、本机与观测；手动触发
 - name: open-source-contribution
   note: 开源贡献与发布卫生规范
 - name: open-source-fork-maintenance
