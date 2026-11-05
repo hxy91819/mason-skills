@@ -5,15 +5,13 @@ description: "交付前独立代码审查。代码改动准备提交或发布时
 
 # Auto Review
 
-按 description 的条件自动调用，也可显式调用 `$autoreview`。必须先按名称加载 `$bb-model-routing`；其路由配置是 reviewer 的 provider、模型、推理级别与 fallback 的唯一来源。依赖不可用时报告缺失，不改用本机 CLI 或宿主 subagent。
+按 description 的条件自动调用，也可显式调用 `$autoreview`。必须先按名称加载 `$bb-model-routing`；其路由配置是 reviewer 的 provider、模型、推理级别与 fallback 的唯一来源。依赖不可用时报告缺失；宿主有 subagent 工具时，用宿主 subagent 以同一任务文本执行。
 
 ## 派发审查
 
-若当前线程是被派发的执行子线程，且父线程已在任务契约中写明“由父线程统一派发独立审查/验收”，则本线程只运行确定性测试与自检，不重复嵌套启动本技能。
-
 派发前跑完仓库已有的测试、类型检查和 validator 并修到通过，改动定稿后再派发；这些确定性检查能发现的问题不留给审查。
 
-确定准确的审查目标：未提交改动、分支相对指定 base 的差异，或指定 commit；同时整理原始需求和验收条件。读取[审查提示词](references/review-prompt.md)，把其中完整的审查标准、输出格式与本次具体范围一起写入 `--task`。按已加载的 `$bb-model-routing` 契约调用其派发入口，审查难度按 `$bb-model-routing` 的不确定性标准归类，不强制 `medium` 起步：需求、验收条件与审查标准已明确，对闭合边界改动或修复后增量差异做审查时使用 `simple`；被审改动涉及跨模块复杂状态机、并发竞态或方案边界未闭合需自行深挖时使用 `medium`：
+确定准确的审查目标：未提交改动、分支相对指定 base 的差异，或指定 commit；同时整理原始需求和验收条件。读取[审查提示词](references/review-prompt.md)，把其中完整的审查标准、输出格式与本次具体范围一起写入 `--task`。按已加载的 `$bb-model-routing` 契约调用其派发入口，审查难度按其不确定性标准归类，不强制 `medium` 起步：
 
 ```bash
 bb-dispatch --difficulty simple --task '<仓库、Git 审查范围、原始需求、验收条件，以及 references/review-prompt.md 的完整审查标准和输出格式>'

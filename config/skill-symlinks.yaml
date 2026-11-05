@@ -121,6 +121,8 @@ skills:
   note: 用原生 subagent 隔离测试 skill 行为
 - name: spec-leak-review
   note: 界面/文本中的 spec leak 审查
+- name: steward-sync
+  note: 管家/子线定期进展同步：状态探测、二次核实、emoji+表格短报告；手动触发
 - name: story-direction-review
   note: Story 完成后的方向独立检查
 - name: submit-pr-mr
