@@ -886,7 +886,7 @@ def parser():
     sub = p.add_subparsers(dest="cmd", required=True)
     reg = sub.add_parser("register", help="登记或更新一个管家，并确保看门狗 automation 存在")
     reg.add_argument("--workbook", required=True, help="工作簿路径；配合 --ref 时可以是工作区里不存在的路径")
-    reg.add_argument("--ref", help="工作簿以该远端分支为准，如 origin/main")
+    reg.add_argument("--ref", help="仅旧项目仓库内工作簿：以该远端分支为准，如 origin/main；离线工作簿不传")
     reg.add_argument("--name", help="汇报里用的简称，默认取仓库目录名")
     reg.add_argument("--thread", default=os.environ.get("BB_THREAD_ID"), help="管家线程 ID，默认当前线程")
     reg.add_argument("--project", default=os.environ.get("BB_PROJECT_ID"), help="首次创建 automation 的项目，默认当前项目")

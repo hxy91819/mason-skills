@@ -2,10 +2,10 @@
 """BB 管家工作簿（Workbook）结构、容量、提交节流与收尾对账门禁。
 
 用法：
-  python3 steward_workbook.py --mode ledger-check --file docs/steward/<topic>-要求帳.md
-  python3 steward_workbook.py --mode check --file docs/steward/<topic>.md
-  python3 steward_workbook.py --mode should-commit --file docs/steward/<topic>.md
-  python3 steward_workbook.py --mode reconcile [--live] --file docs/steward/<topic>.md
+  python3 steward_workbook.py --mode ledger-check --file .local/steward/<topic>-要求帳.md
+  python3 steward_workbook.py --mode check --file .local/steward/<topic>.md
+  python3 steward_workbook.py --mode should-commit --file .local/steward/<topic>.md
+  python3 steward_workbook.py --mode reconcile [--live] --file .local/steward/<topic>.md
 
 reconcile 检查路线未完成行的状态标记与用户待办的原因类别；--live 另经 `bb thread list`
 核对「进行中」的线程是否还活着。
@@ -16,6 +16,7 @@ from datetime import datetime
 import json
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import steward_source as source
@@ -657,12 +658,66 @@ def should_commit_workbook(file_path: Path, check_args: dict, baseline_text: str
     }
 
 
+def workbook_location(repo=None):
+    """Resolve the shared primary checkout, including when invoked in a worktree."""
+    cwd = Path(repo or Path.cwd()).expanduser().resolve()
+    result = subprocess.run(
+        ["git", "-C", str(cwd), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        capture_output=True, text=True, check=True, timeout=10,
+    )
+    common = Path(result.stdout.strip()).resolve()
+    return common.parent / ".local" / "steward", common
+
+
+def init_workbook(repo=None):
+    path, common = workbook_location(repo)
+    root = common.parent
+    created = not path.exists()
+    path.mkdir(parents=True, exist_ok=True)
+    # Check from the project, never from the nested local repository.
+    def ignored():
+        return subprocess.run(
+            ["git", "-C", str(root), "check-ignore", "-v", ".local/steward/"],
+            capture_output=True, text=True, timeout=10,
+        )
+    result = ignored()
+    if result.returncode == 1:
+        exclude = common / "info" / "exclude"
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        old = exclude.read_text() if exclude.exists() else ""
+        with exclude.open("a") as handle:
+            handle.write(("\n" if old and not old.endswith("\n") else "") + "/.local/\n")
+        result = ignored()
+    if result.returncode:
+        raise RuntimeError("无法确认项目忽略 .local/steward：" + result.stderr.strip())
+    imported = []
+    legacy = root / "docs" / "steward"
+    if not any(child.name != ".git" for child in path.iterdir()) and legacy.is_dir():
+        for child in legacy.iterdir():
+            if child.name == ".git":
+                continue
+            target = path / child.name
+            if child.is_dir():
+                shutil.copytree(child, target)
+            else:
+                shutil.copy2(child, target)
+            imported.append(child.name)
+        if imported:
+            print("仓库副本请经 MR 删除、AGENTS.md 路由改指 .local/steward/", file=sys.stderr)
+    # rev-parse alone would find the enclosing project; require a git marker here.
+    if not (path / ".git").exists():
+        subprocess.run(["git", "-C", str(path), "init"], capture_output=True,
+                       text=True, check=True, timeout=10)
+    return {"path": str(path), "created": created,
+            "ignored_by": result.stdout.strip(), "imported": sorted(imported)}
+
+
 def parser():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--mode", required=True, choices=["check", "should-commit", "reconcile", "ledger-check"],
+    p.add_argument("--mode", required=True, choices=["init", "path", "check", "should-commit", "reconcile", "ledger-check"],
                    help="ledger-check=校验要求帐；check=校验结构、容量与要求帐入口；should-commit=校验并判断相对 HEAD 是否有实质状态变化；reconcile=收尾对账")
-    p.add_argument("--file", required=True, help="工作簿或要求帐 Markdown 文件路径")
-    p.add_argument("--repo", help="Git 仓库绝对路径；--file 为仓库相对路径")
+    p.add_argument("--file", help="工作簿或要求帐 Markdown 文件路径")
+    p.add_argument("--repo", help="init/path 的项目路径；其他模式为 Git 来源仓库绝对路径")
     revision = p.add_mutually_exclusive_group()
     revision.add_argument("--ref", help="核实远端并固定 SHA，如 origin/main")
     revision.add_argument("--revision", help="本次操作已固定的 40 位 SHA；不宣称为最新")
@@ -677,6 +732,20 @@ def parser():
 
 def main():
     args = parser().parse_args()
+    if args.mode in ("init", "path"):
+        if args.file or args.ref or args.revision:
+            parser().error("init/path 不使用 --file、--ref 或 --revision")
+        try:
+            if args.mode == "path":
+                print(workbook_location(args.repo)[0])
+            else:
+                print(json.dumps(init_workbook(args.repo), ensure_ascii=False, indent=2))
+            return 0
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            print(json.dumps({"ok": False, "errors": [str(exc)]}, ensure_ascii=False))
+            return 2
+    if not args.file:
+        parser().error("此模式需要 --file")
     if args.ledger_kind != 'standard' and args.mode != 'ledger-check':
         parser().error('--ledger-kind 仅用于 ledger-check')
     fpath = Path(args.file).expanduser()
