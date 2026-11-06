@@ -129,6 +129,24 @@ class ConcurrencyTests(unittest.TestCase):
         self.turns['created_1'] = [(int(time.time()) + 1, 'failed')]
         self.assertEqual(m.dispatch(self.args('--dry-run'), self.fake)['selection']['provider'], 'primary')
 
+    def test_idle_thread_with_oversized_log_releases_reservation(self):
+        m.dispatch(self.args(), self.fake)
+        self.threads = [self.running('idle')]
+        fake = self.fake
+
+        def oversized(*args):
+            if args[:2] == ('thread', 'log'):
+                raise m.DispatchError('bb thread log 失败：event_data_too_large：HTTP 413', code='event_data_too_large')
+            return fake(*args)
+        self.assertEqual(m.dispatch(self.args('--dry-run'), oversized)['selection']['provider'], 'primary')
+
+        def broken(*args):
+            if args[:2] == ('thread', 'log'):
+                raise m.DispatchError('bb thread log 失败：其他错误', code='internal')
+            return fake(*args)
+        result = m.dispatch(self.args('--dry-run'), broken)
+        self.assertNotEqual(result['selection']['provider'], 'primary')
+
     def test_capacity_does_not_cool_or_change_ledger_and_cannot_be_bypassed(self):
         self.threads = [self.running()]
         with self.assertRaisesRegex(m.DispatchError, '并发已满'):
