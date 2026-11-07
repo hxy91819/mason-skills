@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily backup of the {{ project_name }} database
+
+[Timer]
+OnCalendar=*-*-* {{ (backup | default({})).daily_utc | default('03:00:00') }} UTC
+RandomizedDelaySec=15m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

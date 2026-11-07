@@ -339,28 +339,11 @@ For HTTP proxy projects used by interactive agents:
 
 ## Review Workflow
 
-Before review, freeze scope: user request, changed files, intended behavior,
-security boundary, and tests.
-
-Run focused proof first:
-
-```bash
-go test ./...
-gitleaks detect --no-git --redact --no-banner --source .
-pre-commit run --all-files
-```
-
-Then run the project's autoreview helper if available. If a finding is
-accepted:
-
-1. Verify it against real code.
-2. Fix the smallest in-scope bug class.
-3. Add or update a focused test when practical.
-4. Rerun focused proof and autoreview.
-5. Stop when autoreview reports no accepted/actionable findings.
-
-Do not keep widening scope to satisfy speculative findings. Escalate when the
-fix requires a new public contract, release policy, or architecture decision.
+Use `$autoreview` for independent review when its invocation conditions apply.
+That skill owns dispatch, findings, follow-up limits, decisions, and closure;
+do not create a second review loop here. Run the repository's relevant checks
+and the privacy checks above before handing off. Pure documentation or other
+closed changes follow `$autoreview`'s own exemptions.
 
 ## Final Report
 

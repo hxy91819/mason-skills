@@ -1,0 +1,238 @@
+---
+# 发布/回滚共用流程：落地部署文件、更新镜像、等待健康、冒烟、记录版本。
+- name: 校验发布参数
+  ansible.builtin.assert:
+    that:
+      - release_sha is match('^[0-9a-f]{40}$')
+      - release_short_sha is match('^[0-9a-f]{7,40}$')
+      - release_api_image | length > 0
+      - release_web_image | length > 0
+      - release_timestamp | length > 0
+      - release_action in ['release', 'rollback']
+      - database.mode in ['bundled', 'external']
+      - gateway.mode in ['bundled', 'external']
+      - gateway.host | length > 0
+      - gateway_tls_mode in ['auto', 'ip-shortlived', 'internal', 'off']
+      - private_env_file | length > 0
+    fail_msg: "发布参数不完整；请通过 infra/deploy/deploy.sh 调用。"
+
+- name: 校验部署目录已由 bootstrap 创建
+  ansible.builtin.stat:
+    path: "{{ deploy_root }}"
+  register: deploy_root_stat
+
+- name: 确认部署目录存在
+  ansible.builtin.assert:
+    that:
+      - deploy_root_stat.stat.exists
+      - deploy_root_stat.stat.isdir
+    fail_msg: "部署目录 {{ deploy_root }} 不存在，请先执行 deploy.sh <env> bootstrap。"
+
+- name: 复制部署用 Compose 文件
+  ansible.builtin.copy:
+    src: "{{ repo_root }}/{{ item }}"
+    dest: "{{ deploy_root }}/{{ item | basename }}"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0644'
+  loop: "{{ compose_files }}"
+
+- name: 安装数据库幂等初始化脚本
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../files/postgres-init.sh"
+    dest: "{{ deploy_root }}/postgres-init.sh"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0755'
+
+- name: 渲染边缘/外部网关站点块
+  ansible.builtin.template:
+    src: Caddyfile.site.j2
+    dest: "{{ deploy_root }}/Caddyfile.site"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0644'
+
+- name: 写入私有运行配置（0600）
+  ansible.builtin.copy:
+    src: "{{ private_env_file }}"
+    dest: "{{ deploy_root }}/private.env"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0600'
+  no_log: true
+  diff: false
+
+- name: 读取当前 release 链接
+  ansible.builtin.stat:
+    path: "{{ deploy_root }}/current"
+    follow: false
+  register: current_release_link
+  check_mode: false
+
+- name: 记录本次发布之前的版本
+  ansible.builtin.set_fact:
+    release_previous_record: "{{ current_release_link.stat.lnk_target | default('') }}"
+  when: release_action == 'release'
+
+- name: 校验回滚目标记录
+  when: release_action == 'rollback'
+  block:
+    - name: 检查目标记录文件存在
+      ansible.builtin.stat:
+        path: "{{ deploy_root }}/{{ rollback_to_record }}"
+      register: rollback_target_stat
+
+    - name: 确认回滚目标存在
+      ansible.builtin.assert:
+        that:
+          - rollback_to_record | length > 0
+          - rollback_target_stat.stat.exists
+        fail_msg: "回滚目标记录 {{ rollback_to_record }} 不存在。"
+
+    - name: 读取回滚目标记录
+      ansible.builtin.slurp:
+        src: "{{ deploy_root }}/{{ rollback_to_record }}"
+      register: rollback_target_raw
+
+    - name: 解析回滚目标记录
+      ansible.builtin.set_fact:
+        rollback_target_record: "{{ rollback_target_raw.content | b64decode | from_json }}"
+
+    - name: 确认回滚镜像与记录一致
+      ansible.builtin.assert:
+        that:
+          - rollback_target_record.api_image == release_api_image
+          - rollback_target_record.web_image == release_web_image
+        fail_msg: "回滚镜像参数与 release 记录不一致，拒绝执行。"
+
+- name: 组装发布记录
+  ansible.builtin.set_fact:
+    release_record:
+      schema: 1
+      action: "{{ release_action }}"
+      project: "{{ project_name }}"
+      environment: "{{ environment_name }}"
+      sha: "{{ release_sha }}"
+      short_sha: "{{ release_short_sha }}"
+      recorded_at: "{{ release_timestamp }}"
+      api_image: "{{ release_api_image }}"
+      api_image_id: "{{ release_api_image_id | default('') }}"
+      web_image: "{{ release_web_image }}"
+      web_image_id: "{{ release_web_image_id | default('') }}"
+      database_mode: "{{ database.mode }}"
+      gateway_mode: "{{ gateway.mode }}"
+      previous: "{{ release_previous_record }}"
+
+- name: 补充回滚记录字段
+  ansible.builtin.set_fact:
+    release_record: "{{ release_record | combine({'from': rollback_from_record, 'to': rollback_to_record}) }}"
+  when: release_action == 'rollback'
+
+- name: 计算记录文件名
+  ansible.builtin.set_fact:
+    release_record_file: >-
+      releases/{{ 'rollback-' if release_action == 'rollback' else '' }}{{ release_timestamp }}-{{ release_short_sha }}.json
+
+- name: 写入 release 记录
+  ansible.builtin.copy:
+    content: "{{ release_record | to_nice_json }}\n"
+    dest: "{{ deploy_root }}/{{ release_record_file }}"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0644'
+
+- name: 定义 Compose 调用参数
+  ansible.builtin.set_fact:
+    compose_argv:
+      - docker
+      - compose
+      - --project-name
+      - "{{ project_name }}"
+      - --env-file
+      - "{{ deploy_root }}/private.env"
+      - -f
+      - "{{ deploy_root }}/{{ compose_base_name }}"
+      - -f
+      - "{{ deploy_root }}/{{ compose_db_name }}"
+      - -f
+      - "{{ deploy_root }}/{{ compose_gateway_name }}"
+
+- name: 启动 bundled PostgreSQL 并等待健康
+  ansible.builtin.command:
+    argv: "{{ compose_argv + ['up', '-d', '--wait', 'postgres'] }}"
+  when: database.mode == 'bundled'
+  changed_when: true
+
+- name: 幂等重放数据库角色和 schema 初始化
+  ansible.builtin.command:
+    argv: "{{ compose_argv + ['exec', '-T', 'postgres', 'sh', '/docker-entrypoint-initdb.d/00-app-init.sh'] }}"
+  when: database.mode == 'bundled'
+  no_log: true
+  changed_when: true
+
+- name: 启动并等待应用栈健康
+  ansible.builtin.command:
+    argv: "{{ compose_argv + ['up', '-d', '--wait', '--remove-orphans'] }}"
+  register: compose_up
+  changed_when: true
+
+- name: 重建 Web 以清理旧上游连接
+  ansible.builtin.command:
+    argv: "{{ compose_argv + ['up', '-d', '--no-deps', '--force-recreate', '--wait', 'web'] }}"
+  changed_when: true
+
+- name: 重建边缘网关以加载新站点配置
+  ansible.builtin.command:
+    argv: "{{ compose_argv + ['up', '-d', '--no-deps', '--force-recreate', '--wait', 'edge'] }}"
+  when: gateway.mode == 'bundled'
+  changed_when: true
+
+- name: 对配置的冒烟路径做检查
+  ansible.builtin.command:
+    argv: >-
+      {{ ['curl', '-fsS', '--max-time', '10']
+         + (['-k'] if smoke.insecure | default(false) | bool else [])
+         + ['-o', '/dev/null', '-w', '%{http_code}', smoke_base_url ~ item] }}
+  loop: "{{ smoke_paths }}"
+  register: smoke_result
+  until: smoke_result.stdout == '200'
+  retries: "{{ smoke_retries | int }}"
+  delay: "{{ smoke_delay | int }}"
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: 切换 current 到本次发布
+  ansible.builtin.file:
+    src: "{{ release_record_file }}"
+    dest: "{{ deploy_root }}/current"
+    state: link
+    force: true
+  when: release_action == 'release'
+
+- name: 回滚时切回目标记录
+  ansible.builtin.file:
+    src: "{{ rollback_to_record }}"
+    dest: "{{ deploy_root }}/current"
+    state: link
+    force: true
+  when: release_action == 'rollback'
+
+- name: 标记本次 release 为成功（供默认回滚筛选）
+  ansible.builtin.file:
+    path: "{{ deploy_root }}/{{ release_record_file }}.ok"
+    state: touch
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0644'
+  when: release_action == 'release'
+
+- name: 输出发布/回滚摘要
+  ansible.builtin.debug:
+    msg:
+      - "动作：{{ release_action }}；记录：{{ release_record_file }}"
+      - "提交：{{ release_sha }}"
+      - "API：{{ release_api_image }}"
+      - "Web：{{ release_web_image }}"
+      - "冒烟路径：{{ smoke_paths | join('、') }}；全部返回 200"
+      - "数据库：{{ database.mode }}；网关：{{ gateway.mode }}（{{ gateway_tls_mode }}）"

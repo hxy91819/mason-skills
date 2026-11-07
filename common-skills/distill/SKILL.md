@@ -157,8 +157,10 @@ same change are one candidate.
 ## Phase 3: Decide
 
 Rank candidates by safety and correctness impact, recurrence, evidence strength, and
-maintenance cost. Present them in numbered rounds grouped by category (**Harness**,
-**Project knowledge**), at most eight per message, with no cap on rounds. Recompute the
+maintenance cost. Present all surviving candidates, grouped by category (**Harness**,
+**Project knowledge**). There is no numeric limit per message or per session; use readable
+groups when the evidence warrants a longer set. Do not stop at an arbitrary shortlist or
+invent candidates to fill a quota. Recompute the
 frontier after each reply until every candidate is shown and every choice settled.
 Recommend the full surviving set by default. Ask choices in grilling's `Q1` / `Q2` format
 with the recommended answer marked `➡️`; skip questions the evidence already answers.

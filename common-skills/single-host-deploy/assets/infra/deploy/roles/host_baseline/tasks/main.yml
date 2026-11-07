@@ -1,0 +1,305 @@
+---
+# 主机基线：Docker 官方源、部署账号/目录、UFW、备份 systemd 单元。
+# 只增补本项目需要的规则和文件，不重置主机已有防火墙或删除其他单元。
+- name: 校验主机基线的必填变量
+  ansible.builtin.assert:
+    that:
+      - project_name is string
+      - project_name | length > 0
+      - project_name is match('^[a-z0-9][a-z0-9-]*$')
+      - deploy_root is match('^/[A-Za-z0-9._/-]+$')
+      - deploy_root is not match('/$')
+      - ansible_facts.os_family == 'Debian'
+      - ansible_facts.distribution in ['Ubuntu', 'Debian']
+      - database.mode in ['bundled', 'external']
+      - gateway.mode in ['bundled', 'external']
+      - firewall.allowed_tcp_ports is sequence
+    fail_msg: >-
+      主机基线变量不合法：需要 Debian/Ubuntu、绝对路径 deploy_root、
+      合法 project_name，以及 database/gateway mode 为 bundled 或 external。
+
+- name: 确认部署账号已存在且可用 sudo
+  ansible.builtin.command: "getent passwd {{ deploy_user }}"
+  register: deploy_account
+  changed_when: false
+  check_mode: false
+
+- name: 校验部署账号
+  ansible.builtin.assert:
+    that:
+      - deploy_account.rc == 0
+      - deploy_user != 'root'
+    fail_msg: >-
+      SSH 账号 {{ deploy_user }} 不存在，或使用了 root。请先用云主机控制台创建
+      可登录、可免密 sudo 的部署账号；本工具不负责分发 SSH 公钥。
+
+- name: 更新 apt 缓存
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+  when: not ansible_check_mode
+
+- name: 安装 Docker 源所需的基础包
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+    state: present
+
+- name: 创建 Docker apt keyring 目录
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: 检查 Docker 官方 GPG key
+  ansible.builtin.stat:
+    path: /etc/apt/keyrings/docker.asc
+  register: docker_key_file
+
+- name: 下载 Docker 官方 GPG key（缺失时）
+  ansible.builtin.get_url:
+    url: "https://download.docker.com/linux/{{ ansible_facts.distribution | lower }}/gpg"
+    dest: /etc/apt/keyrings/docker.asc
+    owner: root
+    group: root
+    mode: '0644'
+  when: not docker_key_file.stat.exists
+
+- name: 写入 Docker 官方 apt 源
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/docker.list
+    content: |
+      deb [arch={{ docker_deb_arch }} signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/{{ ansible_facts.distribution | lower }} {{ ansible_facts.distribution_release }} stable
+    owner: root
+    group: root
+    mode: '0644'
+  register: docker_repo
+
+- name: Docker 源变化后刷新 apt 缓存
+  ansible.builtin.apt:
+    update_cache: true
+  when:
+    - docker_repo.changed
+    - not ansible_check_mode
+
+- name: 安装 Docker Engine、Buildx 与 Compose 插件
+  ansible.builtin.apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-buildx-plugin
+      - docker-compose-plugin
+    state: present
+
+- name: 检查 Docker 可执行文件
+  ansible.builtin.stat:
+    path: /usr/bin/docker
+  register: docker_binary
+
+- name: 启用并启动 Docker
+  ansible.builtin.systemd:
+    name: docker
+    enabled: true
+    state: started
+  when: not ansible_check_mode or docker_binary.stat.exists
+
+- name: 把部署账号加入 docker 组
+  ansible.builtin.user:
+    name: "{{ deploy_user }}"
+    groups: docker
+    append: true
+  when: not ansible_check_mode or docker_binary.stat.exists
+
+- name: 说明 check 模式下尚未安装 Docker 的跳过项
+  ansible.builtin.debug:
+    msg: "check 模式不会安装 Docker；Docker 服务启动与 docker 组检查已跳过。"
+  when:
+    - ansible_check_mode
+    - not docker_binary.stat.exists
+
+- name: 创建部署根目录
+  ansible.builtin.file:
+    path: "{{ deploy_root }}"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0700'
+
+- name: 创建发布记录目录
+  ansible.builtin.file:
+    path: "{{ deploy_root }}/releases"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0755'
+
+- name: 创建备份目录
+  ansible.builtin.file:
+    path: "{{ deploy_root }}/backups"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0700'
+
+- name: 安装数据库备份脚本
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../files/backup-db.sh"
+    dest: "{{ deploy_root }}/backup-db.sh"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0755'
+
+- name: 渲染备份环境文件
+  ansible.builtin.template:
+    src: backup.env.j2
+    dest: "{{ deploy_root }}/backup.env"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0600'
+
+- name: 安装备份 service
+  ansible.builtin.template:
+    src: backup.service.j2
+    dest: "/etc/systemd/system/{{ project_name }}-db-backup.service"
+    owner: root
+    group: root
+    mode: '0644'
+  register: backup_service_unit
+
+- name: 安装备份 timer
+  ansible.builtin.template:
+    src: backup.timer.j2
+    dest: "/etc/systemd/system/{{ project_name }}-db-backup.timer"
+    owner: root
+    group: root
+    mode: '0644'
+  register: backup_timer_unit
+
+- name: 备份单元变化后重载 systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when:
+    - (backup_service_unit.changed or backup_timer_unit.changed)
+    - not ansible_check_mode
+
+- name: 检查备份 timer 单元是否存在
+  ansible.builtin.stat:
+    path: "/etc/systemd/system/{{ project_name }}-db-backup.timer"
+  register: backup_timer_file
+
+- name: 启用并启动每日备份 timer
+  ansible.builtin.systemd:
+    name: "{{ project_name }}-db-backup.timer"
+    enabled: true
+    state: started
+  when: not ansible_check_mode or backup_timer_file.stat.exists
+
+- name: 说明 check 模式下备份 timer 未落地
+  ansible.builtin.debug:
+    msg: "check 模式不会写入 systemd 单元；timer 启用已跳过。"
+  when:
+    - ansible_check_mode
+    - not backup_timer_file.stat.exists
+
+- name: 安装 UFW
+  ansible.builtin.apt:
+    name: ufw
+    state: present
+  when:
+    - firewall.manage | bool
+    - not ansible_check_mode
+
+- name: 放行本项目需要的 TCP 端口
+  community.general.ufw:
+    rule: allow
+    port: "{{ item | string }}"
+    proto: tcp
+  loop: "{{ firewall.allowed_tcp_ports }}"
+  when:
+    - firewall.manage | bool
+    - not ansible_check_mode
+
+- name: 设置 UFW 默认拒绝入站、拒绝转发
+  community.general.ufw:
+    direction: "{{ item.direction }}"
+    policy: "{{ item.policy }}"
+  loop:
+    - { direction: incoming, policy: deny }
+    - { direction: outgoing, policy: allow }
+    - { direction: routed, policy: deny }
+  when:
+    - firewall.manage | bool
+    - not ansible_check_mode
+
+- name: 启用 UFW
+  community.general.ufw:
+    state: enabled
+    logging: low
+  when:
+    - firewall.manage | bool
+    - not ansible_check_mode
+
+- name: 读取 UFW 现状用于报告（只读）
+  ansible.builtin.command: ufw status verbose
+  register: ufw_status
+  changed_when: false
+  check_mode: false
+  failed_when: false
+  when: firewall.manage | bool
+
+- name: 计算 UFW 已放行的 TCP 端口（只读）
+  ansible.builtin.set_fact:
+    ufw_allowed_ports: >-
+      {{ ufw_status.stdout_lines | default([])
+         | select('match', '^[0-9]+(/tcp)?\s+ALLOW')
+         | map('regex_replace', '^([0-9]+).*$', '\1')
+         | map('int') | list }}
+  when: ufw_status.rc | default(1) == 0
+
+- name: 计算 UFW 缺少的端口（只读）
+  ansible.builtin.set_fact:
+    ufw_missing_ports: "{{ firewall.allowed_tcp_ports | map('int') | difference(ufw_allowed_ports | default([])) }}"
+  when: firewall.manage | bool
+
+- name: 报告 UFW 差异
+  ansible.builtin.debug:
+    msg: "UFW 缺少清单要求的端口：{{ ufw_missing_ports | join(', ') }}"
+  when:
+    - firewall.manage | bool
+    - ufw_missing_ports | default([]) | length > 0
+
+- name: 读取 Docker Compose 版本（只读）
+  ansible.builtin.command: docker compose version --short
+  register: compose_version
+  changed_when: false
+  check_mode: false
+  failed_when: false
+
+- name: 校验 Docker Compose v2
+  ansible.builtin.assert:
+    that:
+      - compose_version.rc == 0
+      - compose_version.stdout is version('2.0.0', '>=')
+    fail_msg: "需要 Docker Compose v2，当前输出：{{ compose_version.stdout | default('无法读取') }}"
+  when: not ansible_check_mode or compose_version.rc == 0
+
+- name: 说明 check 模式下无法校验 Compose
+  ansible.builtin.debug:
+    msg: "check 模式下 Docker/Compose 尚未安装，版本校验已跳过。"
+  when:
+    - ansible_check_mode
+    - compose_version.rc != 0
+
+- name: 输出主机基线摘要
+  ansible.builtin.debug:
+    msg:
+      - "主机：{{ inventory_hostname }}（{{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }}）"
+      - "部署目录：{{ deploy_root }}（账号 {{ deploy_user }}）"
+      - "数据库模式：{{ database.mode }}；网关模式：{{ gateway.mode }}"
+      - "备份 timer：{{ project_name }}-db-backup.timer（{{ (backup | default({})).daily_utc | default('03:00:00') }} UTC，保留 {{ (backup | default({})).retention_days | default(14) }} 天）"
+      - "UFW 默认策略：{{ (ufw_status.stdout_lines | default(['未启用']))[:3] | join(' / ') }}"

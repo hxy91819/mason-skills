@@ -1,0 +1,55 @@
+# {{ gateway_comment }}
+{% if gateway.mode == 'bundled' and gateway_tls_mode in ['auto', 'ip-shortlived'] and gateway.acme_email %}
+{
+    admin off
+    email {{ gateway.acme_email }}
+}
+{% endif %}
+{{ gateway_site_address }} {
+{% if gateway_tls_mode == 'ip-shortlived' %}
+    tls {
+        issuer acme {
+            dir https://acme-v02.api.letsencrypt.org/directory
+            profile shortlived
+            disable_http_challenge
+        }
+    }
+{% elif gateway_tls_mode == 'internal' %}
+    # 仅用于一次性验证或没有公网 ACME 的环境；公网部署不要用 internal。
+    tls internal
+{% endif %}
+    log {
+{% if gateway_log_mode == 'file' %}
+        output file {{ gateway_log_path }} {
+            roll_size 10MiB
+            roll_keep 3
+        }
+{% else %}
+        output stdout
+{% endif %}
+        format filter {
+            wrap json
+            fields {
+                request>headers delete
+                resp_headers delete
+                request>uri regexp "[?].*$" ""
+            }
+        }
+    }
+    @foreignOrigin {
+        header Origin *
+{% for allowed_origin in [origin] + (gateway.allowed_origins | default([])) %}
+        not header Origin {{ allowed_origin }}
+{% endfor %}
+    }
+    route {
+        respond @foreignOrigin "Forbidden" 403
+        reverse_proxy {{ gateway_upstream }} {
+            header_up Host {{ gateway_host_header }}
+            transport http {
+                dial_timeout 10s
+            }
+            stream_close_delay 5m
+        }
+    }
+}
