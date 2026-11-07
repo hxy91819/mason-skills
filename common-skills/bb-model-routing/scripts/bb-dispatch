@@ -1029,11 +1029,20 @@ class ConcurrencySlots:
             # 未知创建结果、线程暂未可见，均保持占位。idle 还需结束事件，避免初始 idle 提早释放。
             if thread is not None and not self.occupied(thread):
                 # 归档本身足以终止派发资格，不要求存在 turn/completed 日志。
-                if (thread.get("archivedAt") is not None
-                        or turns_ended_since(self.call, thread["id"], item["ts"])):
+                if thread.get("archivedAt") is not None or self.turn_ended(thread["id"], item["ts"]):
                     continue
             keep.append(item)
         self.reservations = keep
+
+    def turn_ended(self, thread_id, since):
+        try:
+            return bool(turns_ended_since(self.call, thread_id, since))
+        except DispatchError as exc:
+            # BB 单次日志响应上限 8 MiB；读不出来的空闲线程必然已跑过回合，按已结束释放，
+            # 否则这一条占位会让整次刷新失败，所有线路都显示并发已满。
+            if exc.code == "event_data_too_large":
+                return True
+            raise
 
     def usage(self, provider, models=None):
         self.refresh()
