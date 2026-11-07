@@ -1,0 +1,3 @@
+---
+db_init_network_args: "{{ ['--network', database.network] if (database.network | default('') | length) > 0 else [] }}"
+db_init_image: postgres:18.6-alpine

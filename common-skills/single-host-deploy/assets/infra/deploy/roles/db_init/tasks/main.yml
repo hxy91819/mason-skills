@@ -1,0 +1,90 @@
+---
+# 仅在外部数据库模式、且显式执行 deploy.sh <env> db-init 时运行。
+# 需要数据库管理员凭据；不会在 bootstrap/release 中自动执行。
+- name: 校验外部数据库初始化参数
+  ansible.builtin.assert:
+    that:
+      - database.mode == 'external'
+      - database.host | length > 0
+      - database.user | length > 0
+      - database.name | length > 0
+      - database.schema is match('^[a-z_][a-z0-9_]*$')
+      - database.user is match('^[a-z_][a-z0-9_]*$')
+      - database.name is match('^[a-z_][a-z0-9_]*$')
+      - database.connection_limit | int > 0
+      - deploy_secrets.DATABASE_ADMIN_PASSWORD | length > 0
+      - deploy_secrets.DATABASE_PASSWORD | length > 0
+    fail_msg: >-
+      db-init 只用于 database.mode=external。请填写 database.host/user/name/schema、
+      管理员角色与 DATABASE_ADMIN_PASSWORD，并显式执行本动作。
+
+- name: 确认部署目录存在
+  ansible.builtin.stat:
+    path: "{{ deploy_root }}"
+  register: db_init_root
+
+- name: 校验部署目录
+  ansible.builtin.assert:
+    that:
+      - db_init_root.stat.exists
+      - db_init_root.stat.isdir
+    fail_msg: "部署目录 {{ deploy_root }} 不存在，请先执行 bootstrap。"
+
+- name: 安装数据库初始化脚本
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../files/postgres-init.sh"
+    dest: "{{ deploy_root }}/postgres-init.sh"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0755'
+
+- name: 幂等创建外部数据库角色、库与 schema
+  ansible.builtin.command:
+    argv: >-
+      {{ ['docker', 'run', '--rm'] + db_init_network_args
+         + ['-e', 'PGHOST', '-e', 'PGPORT', '-e', 'PGUSER', '-e', 'PGPASSWORD',
+            '-e', 'APP_DB_USER', '-e', 'APP_DB_PASSWORD', '-e', 'APP_DB_NAME',
+            '-e', 'APP_DB_SCHEMA', '-e', 'APP_DB_CONNECTION_LIMIT',
+            '-v', deploy_root ~ '/postgres-init.sh:/init.sh:ro',
+            db_init_image, 'sh', '/init.sh'] }}
+  environment:
+    PGHOST: "{{ database.host }}"
+    PGPORT: "{{ database.port | default(5432) }}"
+    PGUSER: "{{ database.admin_user | default('postgres') }}"
+    PGPASSWORD: "{{ deploy_secrets.DATABASE_ADMIN_PASSWORD }}"
+    APP_DB_USER: "{{ database.user }}"
+    APP_DB_PASSWORD: "{{ deploy_secrets.DATABASE_PASSWORD }}"
+    APP_DB_NAME: "{{ database.name }}"
+    APP_DB_SCHEMA: "{{ database.schema }}"
+    APP_DB_CONNECTION_LIMIT: "{{ database.connection_limit }}"
+  no_log: true
+  changed_when: true
+
+- name: 用应用角色验证 search_path 与 schema
+  ansible.builtin.command:
+    argv: >-
+      {{ ['docker', 'run', '--rm'] + db_init_network_args
+         + ['-e', 'PGHOST', '-e', 'PGPORT', '-e', 'PGUSER', '-e', 'PGPASSWORD', '-e', 'PGDATABASE',
+            db_init_image, 'psql', '-tAc',
+            "SELECT current_schema(), current_setting('search_path')"] }}
+  environment:
+    PGHOST: "{{ database.host }}"
+    PGPORT: "{{ database.port | default(5432) }}"
+    PGUSER: "{{ database.user }}"
+    PGPASSWORD: "{{ deploy_secrets.DATABASE_PASSWORD }}"
+    PGDATABASE: "{{ database.name }}"
+  register: db_init_verify
+  changed_when: false
+
+- name: 确认应用角色连接与 search_path
+  ansible.builtin.assert:
+    that:
+      - db_init_verify.stdout is search(database.schema)
+    fail_msg: "应用角色连接成功但 search_path 不符合预期：{{ db_init_verify.stdout }}"
+
+- name: 输出外部数据库初始化摘要
+  ansible.builtin.debug:
+    msg:
+      - "数据库：{{ database.name }}；角色：{{ database.user }}；schema：{{ database.schema }}"
+      - "连接上限：{{ database.connection_limit }}；应用角色 search_path 验证通过"
+      - "下一步：deploy.sh <env> release"

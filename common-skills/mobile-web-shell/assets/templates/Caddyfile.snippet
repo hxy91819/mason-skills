@@ -1,0 +1,48 @@
+# 移动 Web 外壳的静态缓存头。把 __SITE_ADDRESS__、__WEB_ROOT__、
+# __API_UPSTREAM__、__SERVICE_WORKER_FILE__ 替换成项目值。
+#
+# 如果 Web 由单独的静态服务器提供，只取 /sw.js、/assets/*、/static/* 和 fallback
+# 四段；如果外层还有共享网关，缓存头应放在真正返回文件的那一层，不要只在边缘重复。
+
+__SITE_ADDRESS__ {
+    handle /api/* {
+        reverse_proxy __API_UPSTREAM__ {
+            # SSE/流式响应需要关闭代理缓冲。
+            flush_interval -1
+        }
+    }
+
+    # Service Worker 必须从根作用域提供；构建产物可能在 /static/sw.js。
+    # no-cache 保证发版后浏览器每次都能检查到新的 SW 脚本。
+    handle /sw.js {
+        root * __WEB_ROOT__
+        rewrite * __SERVICE_WORKER_FILE__
+        header {
+            Service-Worker-Allowed "/"
+            Cache-Control "no-cache"
+        }
+        file_server
+    }
+
+    # 构建产物文件名带 hash，可以按内容长期缓存。
+    handle /assets/* {
+        root * __WEB_ROOT__
+        header Cache-Control "public, max-age=31536000, immutable"
+        file_server
+    }
+
+    # static 目录原样拷贝，文件名通常不带 hash，只做一天缓存。
+    handle /static/* {
+        root * __WEB_ROOT__
+        header Cache-Control "public, max-age=86400"
+        file_server
+    }
+
+    # SPA fallback：/ 与 /index.html 不缓存，发版后马上拿到新入口。
+    handle {
+        root * __WEB_ROOT__
+        try_files {path} /index.html
+        header Cache-Control "no-cache"
+        file_server
+    }
+}

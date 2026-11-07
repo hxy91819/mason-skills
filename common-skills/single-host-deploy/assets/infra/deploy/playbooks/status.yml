@@ -1,0 +1,84 @@
+---
+- name: 查看部署状态
+  hosts: all
+  gather_facts: true
+  become: true
+  vars:
+    deploy_user: "{{ ansible_user }}"
+    compose_argv:
+      - docker
+      - compose
+      - --project-name
+      - "{{ project_name }}"
+      - --env-file
+      - "{{ deploy_root }}/private.env"
+      - -f
+      - "{{ deploy_root }}/{{ compose.base | basename }}"
+      - -f
+      - "{{ deploy_root }}/{{ compose.database[database.mode] | basename }}"
+      - -f
+      - "{{ deploy_root }}/{{ compose.gateway[gateway.mode] | basename }}"
+  tasks:
+    - name: 读取 current 链接
+      ansible.builtin.stat:
+        path: "{{ deploy_root }}/current"
+        follow: false
+      register: status_current
+      failed_when: false
+
+    - name: 读取 current release 记录
+      ansible.builtin.slurp:
+        src: "{{ deploy_root }}/current"
+      register: status_record_raw
+      failed_when: false
+      when: status_current.stat.exists | default(false)
+
+    - name: 解析 release 记录
+      ansible.builtin.set_fact:
+        status_record: "{{ status_record_raw.content | b64decode | from_json }}"
+      when:
+        - status_record_raw is not skipped
+        - status_record_raw.content is defined
+
+    - name: 查看容器状态
+      ansible.builtin.command:
+        argv: "{{ compose_argv + ['ps'] }}"
+      register: status_containers
+      changed_when: false
+      failed_when: false
+
+    - name: 查看备份 timer 状态
+      ansible.builtin.command:
+        argv: "{{ ['systemctl', 'show', project_name ~ '-db-backup.timer', '-p', 'ActiveState', '-p', 'UnitFileState'] }}"
+      register: status_timer
+      changed_when: false
+      failed_when: false
+
+    - name: 查找最近一次备份
+      ansible.builtin.shell: >-
+        find {{ deploy_root }}/backups -maxdepth 1 -type f -name '{{ backup.file_prefix }}-*.dump'
+        -printf '%TY-%Tm-%TdT%TH:%TM:%TS %s %f\n' 2>/dev/null | sort | tail -1
+      register: status_backup
+      changed_when: false
+      failed_when: false
+
+    - name: 查看 external 网关站点块
+      ansible.builtin.stat:
+        path: "{{ deploy_root }}/Caddyfile.site"
+      register: status_gateway_site
+      when: gateway.mode == 'external'
+
+    - name: 输出部署状态
+      ansible.builtin.debug:
+        msg:
+          - "环境：{{ environment_name }}（{{ inventory_hostname }}）；部署目录：{{ deploy_root }}"
+          - "当前 release：{{ (status_record | default({})).short_sha | default('无（尚未 release）') }}，记录于 {{ (status_record | default({})).recorded_at | default('-') }}"
+          - "API 镜像：{{ (status_record | default({})).api_image | default('-') }}"
+          - "Web 镜像：{{ (status_record | default({})).web_image | default('-') }}"
+          - "数据库/网关：{{ database.mode }}/{{ gateway.mode }}"
+          - "容器状态：{{ (status_containers.stdout_lines | default(['无法读取 compose 状态'])) | join(' | ') }}"
+          - "备份 timer：{{ (status_timer.stdout_lines | default(['无法读取'])) | join('，') }}"
+          - "最近备份：{{ status_backup.stdout | default('无') }}"
+          - >-
+            外部网关：{{ '站点块已渲染到 ' ~ (deploy_root ~ '/Caddyfile.site')
+            ~ '（本工具未修改共用网关）' if gateway.mode == 'external' else 'bundled Caddy 由本栈管理' }}

@@ -1,0 +1,88 @@
+# 部署环境清单示例。复制为 <env>.local.yml 后填写；该文件已被 .gitignore 忽略。
+# 清单本身是 Ansible YAML inventory：连接字段放在 hosts.target 下。
+all:
+  vars:
+    project_name: myapp
+    environment_name: example
+    deploy_root: /srv/myapp
+    origin: https://app.example.com
+
+    gateway:
+      mode: bundled                # bundled | external
+      host: app.example.com        # 证书与 Host/Origin 使用的公网 IP 或域名
+      http_port: 80
+      https_port: 443
+      tls_mode: auto               # auto | ip-shortlived | internal | 'off'（off 需引号）
+      acme_email: ops@example.com
+      allowed_origins: []          # 额外允许的 Origin；origin 本身总是允许
+      upstream_port: 18080         # external 模式：本站 Web 的 loopback 端口
+      log_mode: auto               # auto | stdout | file
+      log_path: /var/log/app-gateway/access.log
+
+    database:
+      mode: bundled                # bundled | external
+      driver: postgresql+asyncpg   # 应用连接串 scheme
+      user: myapp
+      name: myapp
+      schema: myapp
+      connection_limit: 10
+      host: db.internal            # external 模式必填
+      port: 5432
+      network: shared_db           # external 模式必填：数据库容器所在 Docker 网络
+      container: shared-db         # external 模式必填：备份脚本 docker exec 的容器名
+      admin_user: postgres         # external 模式 db-init 使用的管理员角色
+
+    images:
+      api_repository: example/api
+      web_repository: example/web
+      platform: linux/amd64
+      api_dockerfile: infra/docker/Dockerfile.api
+      web_dockerfile: infra/docker/Dockerfile.web
+
+    compose:
+      base: infra/docker/compose.deploy.yml
+      database:
+        bundled: infra/docker/compose.deploy.bundled-db.yml
+        external: infra/docker/compose.deploy.external-db.yml
+      gateway:
+        bundled: infra/docker/compose.deploy.bundled-gateway.yml
+        external: infra/docker/compose.deploy.external-gateway.yml
+
+    app:
+      env:
+        APP_ENV: production
+        LOG_LEVEL: info
+      secrets: {}                  # 环境变量 -> 密钥键，例如 EXTRA_TOKEN: EXTRA_TOKEN
+
+    secrets:
+      required: []                 # 必须由人提供的键
+      generated: []                # 可自动生成的额外键；内置 APP_SECRET_KEY / DATABASE_* 也会按模式生成
+
+    backup:
+      file_prefix: myapp
+      daily_utc: '03:00:00'
+      retention_days: 14
+      offsite:
+        enabled: false
+        remote: ''                 # 例如 rclone remote:path
+        rclone_config: ''          # 例如 /etc/rclone/rclone.conf
+
+    firewall:
+      manage: true
+      allowed_tcp_ports: [22, 80, 443]
+
+    smoke:
+      base_url: ''                 # 留空使用 origin；一次性验证可指向本机端口
+      insecure: false              # 仅用于 internal 自签证书验证
+      retries: 30
+      delay: 5
+      paths: ['/', '/api/ready']   # 冒烟路径；按应用健康端点改
+
+  hosts:
+    target:
+      ansible_host: 203.0.113.10
+      ansible_port: 22
+      ansible_user: deploy
+      ansible_ssh_private_key_file: ~/.ssh/id_ed25519
+      ansible_become: true
+      ansible_ssh_common_args: ''

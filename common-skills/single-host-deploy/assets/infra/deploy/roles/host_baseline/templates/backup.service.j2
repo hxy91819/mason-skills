@@ -1,0 +1,17 @@
+[Unit]
+Description=Back up the {{ project_name }} database
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User={{ deploy_user }}
+SupplementaryGroups=docker
+EnvironmentFile={{ deploy_root }}/backup.env
+ExecStart={{ deploy_root }}/backup-db.sh
+UMask=0077
+Nice=10
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths={{ deploy_root }}/backups

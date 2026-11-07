@@ -1,0 +1,8 @@
+---
+profile: moderate
+skip_list:
+  - yaml[line-length]
+  - name[casing]
+  # 这些变量是 deploy.sh 与多个 role/playbook 共享的部署词汇（release_sha、gateway_* 等），
+  # 统一加 role 前缀反而会制造第二套命名；保持跨文件一致。
+  - var-naming[no-role-prefix]

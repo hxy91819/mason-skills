@@ -1,0 +1,7 @@
+interface:
+  display_name: "移动 Web 外壳"
+  short_description: "把移动 H5/PWA 打磨成接近原生的外壳"
+  default_prompt: "使用 $mobile-web-shell 按优先级检查并改进这个移动 H5/PWA：PWA 外壳、键盘与安全区、离线更新、交互细节、去网页感与按需推送；用生产构建验收，并标明浏览器模拟与真机边界。"
+
+policy:
+  allow_implicit_invocation: false

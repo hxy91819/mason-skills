@@ -1,0 +1,45 @@
+---
+release_action: release
+release_previous_record: ""
+rollback_from_record: ""
+rollback_to_record: ""
+release_record_name: ""
+private_env_file: ""
+repo_root: "{{ playbook_dir }}/../../.."
+
+compose_base_name: "{{ compose.base | basename }}"
+compose_db_name: "{{ compose.database[database.mode] | basename }}"
+compose_gateway_name: "{{ compose.gateway[gateway.mode] | basename }}"
+compose_files:
+  - "{{ compose.base }}"
+  - "{{ compose.database.bundled }}"
+  - "{{ compose.database.external }}"
+  - "{{ compose.gateway.bundled }}"
+  - "{{ compose.gateway.external }}"
+
+gateway_tls_mode: >-
+  {{ 'off' if gateway.tls_mode is sameas false else (gateway.tls_mode | default('auto') | string) }}
+gateway_scheme: "{{ 'http' if gateway_tls_mode == 'off' else 'https' }}"
+gateway_listen_port: "{{ gateway.http_port | default(80) if gateway_tls_mode == 'off' else gateway.https_port | default(443) }}"
+gateway_site_address: >-
+  {{ gateway_scheme }}://{{ gateway.host }}{{ ':' ~ gateway_listen_port
+     if gateway_listen_port | int not in [80, 443] else '' }}
+gateway_host_header: >-
+  {{ gateway.host }}{{ ':' ~ gateway_listen_port
+     if gateway_listen_port | int not in [80, 443] else '' }}
+gateway_upstream: >-
+  {{ 'web:8080' if gateway.mode == 'bundled'
+     else '127.0.0.1:' ~ (gateway.upstream_port | default(18080)) }}
+gateway_log_mode: >-
+  {{ (gateway.log_mode | default('auto')) if (gateway.log_mode | default('auto')) != 'auto'
+     else ('stdout' if gateway.mode == 'bundled' else 'file') }}
+gateway_log_path: "{{ gateway.log_path | default('/var/log/app-gateway/access.log') }}"
+gateway_comment: >-
+  {{ '由 deploy.sh 渲染；bundled 边缘 Caddy 直接加载本文件，证书状态在 caddy_data 卷。'
+     if gateway.mode == 'bundled'
+     else 'external 网关站点块：将本文件内容并入共用网关配置后校验并重载；deploy.sh 不会修改共用配置。' }}
+
+smoke_base_url: "{{ (smoke.base_url | default(origin)) | regex_replace('/$', '') }}"
+smoke_retries: "{{ smoke.retries | default(30) }}"
+smoke_delay: "{{ smoke.delay | default(5) }}"
+smoke_paths: "{{ smoke.paths | default(['/', '/api/ready']) }}"

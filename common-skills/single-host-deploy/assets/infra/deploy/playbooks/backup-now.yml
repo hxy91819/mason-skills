@@ -1,0 +1,33 @@
+---
+- name: 立即执行一次数据库备份
+  hosts: all
+  gather_facts: true
+  become: true
+  tasks:
+    - name: 启动备份 oneshot service 并等待完成
+      ansible.builtin.command:
+        argv: "{{ ['systemctl', 'start', project_name ~ '-db-backup.service'] }}"
+      register: backup_start
+      changed_when: true
+      failed_when: false
+
+    - name: 备份失败时给出排查入口
+      ansible.builtin.fail:
+        msg: >-
+          备份 service 执行失败。请查看
+          `journalctl -u {{ project_name }}-db-backup.service -n 100 --no-pager`，
+          并确认 backup.env 中的数据库容器名与目录。
+      when: backup_start.rc != 0
+
+    - name: 查找最近一次备份
+      ansible.builtin.shell: >-
+        find {{ deploy_root }}/backups -maxdepth 1 -type f -name '{{ backup.file_prefix }}-*.dump'
+        -printf '%TY-%Tm-%TdT%TH:%TM:%TS %s %f\n' 2>/dev/null | sort | tail -1
+      register: backup_latest
+      changed_when: false
+
+    - name: 输出备份结果
+      ansible.builtin.debug:
+        msg:
+          - "备份 service：{{ project_name }}-db-backup.service 执行成功"
+          - "最近备份：{{ backup_latest.stdout | default('未找到 dump 文件') }}"

@@ -84,6 +84,8 @@ skills:
   note: 大型任务的人读视图与 Agent JSON 双层规划
 - name: local-test
   note: 本地测试与环境启停安全规范
+- name: mobile-web-shell
+  note: 手动移动 H5/PWA 外壳：PWA、键盘、离线更新、手势、去网页感与推送
 - name: multi-agent-project-setup
   note: 多 Agent 并行项目的初始化配置与整改清单：合入门禁、CI 分层、发布、协作状态、派发节流、本机与观测；手动触发
 - name: open-source-contribution
@@ -119,6 +121,8 @@ skills:
 - name: setup-matt-pocock-skills
   source: mattpocock-skills
   note: 该仓库工程技能的一次性初始配置
+- name: single-host-deploy
+  note: 手动单机 Compose + Ansible 部署：发布、回滚、备份与首次切换
 - name: skill-test
   note: 用原生 subagent 隔离测试 skill 行为
 - name: spec-leak-review

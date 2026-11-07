@@ -1,0 +1,7 @@
+interface:
+  display_name: "单机部署即代码"
+  short_description: "单台 Linux 主机 + Docker Compose + Ansible 的发布、回滚与备份"
+  default_prompt: "使用 $single-host-deploy 为一台 Linux 主机上的 Docker Compose 栈建立部署即代码：清单与密钥分离、bootstrap/release/rollback/status/backup-now/db-init，首次切换先备份和行数快照，失败可回旧。"
+
+policy:
+  allow_implicit_invocation: false

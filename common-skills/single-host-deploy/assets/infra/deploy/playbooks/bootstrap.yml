@@ -1,0 +1,15 @@
+---
+- name: 主机初始化（可重复执行）
+  hosts: all
+  gather_facts: true
+  become: true
+  vars:
+    deploy_user: "{{ ansible_user }}"
+    deploy_group: "{{ deploy_group_name | default(ansible_user) }}"
+    docker_deb_arch: >-
+      {{ 'amd64' if ansible_facts.architecture == 'x86_64'
+         else ('arm64' if ansible_facts.architecture == 'aarch64' else 'unsupported') }}
+    backup_db_container: >-
+      {{ database.container if database.mode == 'external' else project_name ~ '-postgres' }}
+  roles:
+    - role: host_baseline

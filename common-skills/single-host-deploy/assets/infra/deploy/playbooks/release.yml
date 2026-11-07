@@ -1,0 +1,10 @@
+---
+- name: 发布或回滚
+  hosts: all
+  gather_facts: true
+  become: true
+  vars:
+    deploy_user: "{{ ansible_user }}"
+    deploy_group: "{{ deploy_group_name | default(ansible_user) }}"
+  roles:
+    - role: app_release
