@@ -1193,9 +1193,6 @@ def dispatch_unlocked(args, call, now, config, slots):
         return provider in limits and (scopes[provider] is None or model in scopes[provider])
 
     route = args.difficulty
-    permission = args.permission_mode or override.get("permission_mode", config.get("permission_mode", "accept-edits"))
-    if permission not in ("accept-edits", "auto", "full"):
-        raise DispatchError("permission_mode 必须是 accept-edits、auto 或 full。")
     fast = configured_bool(override, config, "fast", True, "fast")
     chain, routing_mode, candidate_weights, full_chain = candidate_chain(args, defaults, route)
 
@@ -1255,7 +1252,13 @@ def dispatch_unlocked(args, call, now, config, slots):
             selected = unique(providers, "id", provider, "provider")
             if selected.get("available") is not True:
                 raise DispatchError(f"provider {provider} 在校验环境不可用。")
-            if permission not in selected.get("capabilities", {}).get("permissionModes", []):
+            modes = selected.get("capabilities", {}).get("permissionModes", [])
+            codex = selected.get("pluginId") == "provider-codex" or provider == "codex" or provider.startswith("codex-")
+            default_permission = "auto" if codex and "auto" in modes else "accept-edits"
+            permission = args.permission_mode or agent.get("permission_mode", override.get("permission_mode", config.get("permission_mode", default_permission)))
+            if permission not in ("accept-edits", "auto", "full"):
+                raise DispatchError("permission_mode 必须是 accept-edits、auto 或 full。")
+            if permission not in modes:
                 raise DispatchError(f"{provider} 不支持权限 {permission}；请选用兼容工具，或在任务已授权后显式指定权限。")
             catalog_key = (provider, model)
             if catalog_key not in catalogs:
@@ -1434,7 +1437,7 @@ def parser():
     p.add_argument("--reasoning", help="覆盖推理级别，仍校验模型目录")
     p.add_argument("--project", help="项目 ID；ID 模式默认环境所属项目，路径模式默认当前项目")
     p.add_argument("--environment", help="现有环境 ID 或本机工作区目录；默认当前 BB 环境")
-    p.add_argument("--permission-mode", choices=["accept-edits", "auto", "full"], help="已获授权的权限；默认用户配置或 accept-edits")
+    p.add_argument("--permission-mode", choices=["accept-edits", "auto", "full"], help="权限覆盖；默认用户配置，否则支持 auto 的 Codex 用 auto，其他用 accept-edits")
     p.add_argument("--title", help="可选标题正文；按难度和账号自动加颜色形状前缀（圆/方/心），省略时从任务文本截取")
     p.add_argument("--dry-run", action="store_true", help="只读校验并输出启动参数，不创建线程；配合 --on-failure 只给出动作，不安排重试、不写账本")
     p.add_argument("--concurrency-status", action="store_true", help="只读查看 provider 当前占用与未决并发占位，不依赖统计账本")

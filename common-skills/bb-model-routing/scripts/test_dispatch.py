@@ -255,6 +255,28 @@ environments:
             m.dispatch(self.args(), self.fake)
         self.assertFalse(any(c[:2] == ('provider', 'models') for c in self.calls))
 
+    def test_codex_permission_defaults_and_explicit_overrides(self):
+        for explicit, agent_permission, global_permission, expected in [
+            (None, None, None, 'auto'),
+            (None, None, 'full', 'full'),
+            (None, 'auto', 'full', 'auto'),
+            ('accept-edits', 'auto', 'full', 'accept-edits'),
+        ]:
+            with self.subTest(explicit=explicit, agent=agent_permission, global_permission=global_permission):
+                cfg = m.yaml.safe_load(self.config.read_text())
+                cfg.pop('permission_mode', None)
+                if global_permission:
+                    cfg['permission_mode'] = global_permission
+                if agent_permission:
+                    cfg['agents']['primary']['permission_mode'] = agent_permission
+                self.providers[0]['pluginId'] = 'provider-codex'
+                self.providers[0]['capabilities']['permissionModes'] = ['accept-edits', 'auto', 'full']
+                extra = ['--permission-mode', explicit] if explicit else []
+                self.config.write_text(m.yaml.safe_dump(cfg))
+                result = m.dispatch(self.args('--dry-run', *extra), self.fake)
+                self.assertEqual(result['selection']['permission_mode'], expected)
+                self.assertEqual(result['argv'][result['argv'].index('--permission-mode') + 1], expected)
+
     def test_permission_mismatch_does_not_escalate(self):
         self.providers[0]['capabilities']['permissionModes'] = ['full']
         with self.assertRaises(m.DispatchError):

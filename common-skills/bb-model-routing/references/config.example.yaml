@@ -1,5 +1,6 @@
 version: 2
-permission_mode: accept-edits
+# 可选：统一覆盖权限；省略时支持 auto 的 Codex 默认 auto，其他默认 accept-edits。
+# permission_mode: accept-edits
 # 人手改这个开关控制派发是否带 --service-tier fast；省略时默认 true。
 # 脚本没有命令行覆盖。模型不支持 fast 时仍派发，只是不带该参数。
 fast: true
@@ -25,6 +26,8 @@ defaults:
 agents:
   primary:
     provider: <provider-id>
+    # 可选：覆盖该账号权限；Codex 推荐 auto，其他账号保持各自权限。
+    # permission_mode: auto
     # 可选：人手改这个开关单独控制该账号是否带 --service-tier fast；省略时继承顶层 fast。
     # fast: true
     # 可选：标题前缀图标形状，支持 circle（圆，默认）、square（方）、heart（心）；省略时按别名自动映射。
