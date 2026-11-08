@@ -479,7 +479,24 @@ def fetch_threads(ids):
         for info in bb_thread_list("--archived", "--include-hidden"):
             if info["id"] in wanted:
                 found[info["id"]] = info
+    # 长等待托管在线程级持久终端（bb terminal）时，线程自己显示空闲、等命令结束才被叫醒，activity 里也看不到。
+    # 没人键入过、仍在跑的终端算后台活动；人开着的交互 shell 有键入记录，不算。
+    for info in found.values():
+        if info["status"] == "idle" and not (info["archived"] or info["queued"] or info["background"]):
+            info["background"] = any(isinstance(s, dict) and s.get("status") == "running" and not s.get("lastUserInputAt")
+                                     for s in bb_terminal_sessions(info["id"]))
     return found
+
+
+def bb_terminal_sessions(tid: str):
+    """`bb terminal list --thread <id> --json` 的会话列表（只列未结束的）；查询失败返回空表，照旧按停着判断。"""
+    try:
+        res = subprocess.run(["bb", "terminal", "list", "--thread", tid, "--json"],
+                             capture_output=True, text=True, timeout=30)
+        sessions = json.loads(res.stdout).get("sessions")
+    except (OSError, subprocess.TimeoutExpired, ValueError, AttributeError):
+        return []
+    return sessions if isinstance(sessions, list) else []
 
 
 def running_thread_ids(text: str):

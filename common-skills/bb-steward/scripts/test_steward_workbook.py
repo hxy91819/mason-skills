@@ -152,11 +152,27 @@ class StewardWorkbookTests(unittest.TestCase):
             rows = [archived] if "--archived" in args else [active, {"id": "thr_other"}]
             return [sw.normalize_thread(r) for r in rows]
 
-        with mock.patch.object(sw, "bb_thread_list", side_effect=fake_list):
+        with mock.patch.object(sw, "bb_thread_list", side_effect=fake_list), \
+                mock.patch.object(sw, "bb_terminal_sessions", return_value=[]):
             found = sw.fetch_threads(["thr_active", "thr_old"])
         self.assertEqual(set(found), {"thr_active", "thr_old"})
         self.assertTrue(found["thr_old"]["archived"])
         self.assertFalse(any("--thread" in a for a in calls))
+
+    def test_idle_thread_waiting_on_its_persistent_terminal_counts_as_alive(self):
+        tid = "thr_aaaaaa1111"
+        idle_row = {"id": tid, "status": "idle", "queuedWork": "none", "activity": {}, "updatedAt": 0}
+        cases = {
+            "长等待在终端里跑": ([{"id": "term_a", "status": "running", "lastUserInputAt": None}], True),
+            "人开着的交互 shell": ([{"id": "term_b", "status": "running", "lastUserInputAt": 1}], False),
+            "没有终端或查询失败": ([], False),
+        }
+        for name, (sessions, alive) in cases.items():
+            with mock.patch.object(sw, "bb_thread_list", return_value=[sw.normalize_thread(idle_row)]), \
+                    mock.patch.object(sw, "bb_terminal_sessions", return_value=sessions):
+                threads = sw.fetch_threads([tid])
+            res = sw.reconcile_workbook(RECONCILED_WORKBOOK, now=NOW, threads=threads)
+            self.assertEqual(res["ok"], alive, (name, res["problems"]))
 
     def test_overlong_line_is_rejected(self):
         long_line = "- [ ] 阶段 2：" + ("校准修了某问题、" * 30)
