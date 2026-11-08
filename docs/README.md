@@ -14,6 +14,9 @@ This directory holds maintained repository design notes and examples. Skill sour
 | [UI 间距与对齐复盘](ui-spacing-alignment-lessons.md) | 从六张截图追到间距拥有者与门禁盲区；token／类型化插槽、全页不变量与负向自测、独立看图验收及可复用检查清单 |
 | [Fork 维护决策](adr/0001-two-tier-fork-maintenance.md) | 面向人的简短决策记录：独立来源、可选领域与新旧项目接入；不属于 Agent 默认加载材料 |
 | [large-task system design](../common-skills/large-task-planning/references/large-task-system-design.md) | Shared design principles and boundaries for planning and orchestrating large tasks; owned by `large-task-planning` |
+| [Agent 管家生产灰度复盘](agent-steward-production-rollout-lessons.md) | 候选组合回归、失败归因、合并晋级、夜间窗口与回滚裁决、工作簿和沟通交接；供类似发布参考 |
+| [云实例平台可靠性复盘](instance-platform-reliability-lessons.md) | 数据就绪、远端完成性、锁与重试、超时分层、凭据轮换、制品兼容和容量供给 |
+| [生产运维 Harness 复盘](harness/production-operations-lessons.md) | 只读监视、告警与重试预算、审批合并读回、共享节点限制、检出故障和工作区清理边界 |
 | [harness/](harness/) | Harness 大全：按主题收录真实项目验证过的 pre-commit、测试分层、testcontainers、迁移、覆盖率门禁和 Agent 工作面做法，附新项目接入清单 |
 | [recommended-global-skills.md](recommended-global-skills.md) | 推荐全局技能的准入标准与同步方式；完整清单以 `config/skill-symlinks.yaml` 为准 |
 | [authenticated HTML preview](../common-skills/local-test/references/authenticated-html-preview.md) | 单服务器 HTTPS、Cookie 登录和临时 HTML 预览；由 `local-test` 持有共享基础设施契约 |
