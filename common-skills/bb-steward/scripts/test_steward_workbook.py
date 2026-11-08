@@ -153,22 +153,26 @@ class StewardWorkbookTests(unittest.TestCase):
             return [sw.normalize_thread(r) for r in rows]
 
         with mock.patch.object(sw, "bb_thread_list", side_effect=fake_list), \
-                mock.patch.object(sw, "bb_terminal_sessions", return_value=[]):
+                mock.patch.object(sw, "waiting_on_background", return_value=False):
             found = sw.fetch_threads(["thr_active", "thr_old"])
         self.assertEqual(set(found), {"thr_active", "thr_old"})
         self.assertTrue(found["thr_old"]["archived"])
         self.assertFalse(any("--thread" in a for a in calls))
 
-    def test_idle_thread_waiting_on_its_persistent_terminal_counts_as_alive(self):
+    def test_idle_thread_waiting_on_a_child_or_its_persistent_terminal_counts_as_alive(self):
         tid = "thr_aaaaaa1111"
         idle_row = {"id": tid, "status": "idle", "queuedWork": "none", "activity": {}, "updatedAt": 0}
         cases = {
-            "长等待在终端里跑": ([{"id": "term_a", "status": "running", "lastUserInputAt": None}], True),
-            "人开着的交互 shell": ([{"id": "term_b", "status": "running", "lastUserInputAt": 1}], False),
-            "没有终端或查询失败": ([], False),
+            "长等待在终端里跑": ([], [{"id": "term_a", "status": "running", "lastUserInputAt": None}], True),
+            "独立审查子线程在跑": ([{"id": "thr_review0001", "status": "active"}], [], True),
+            "人开着的交互 shell": ([], [{"id": "term_b", "status": "running", "lastUserInputAt": 1}], False),
+            "子线程已结束、没有终端": ([{"id": "thr_review0001", "status": "idle"}], [], False),
         }
-        for name, (sessions, alive) in cases.items():
-            with mock.patch.object(sw, "bb_thread_list", return_value=[sw.normalize_thread(idle_row)]), \
+        for name, (children, sessions, alive) in cases.items():
+            def fake_list(*args, children=children):
+                return [sw.normalize_thread(r) for r in (children if "--parent-thread" in args else [idle_row])]
+
+            with mock.patch.object(sw, "bb_thread_list", side_effect=fake_list), \
                     mock.patch.object(sw, "bb_terminal_sessions", return_value=sessions):
                 threads = sw.fetch_threads([tid])
             res = sw.reconcile_workbook(RECONCILED_WORKBOOK, now=NOW, threads=threads)
