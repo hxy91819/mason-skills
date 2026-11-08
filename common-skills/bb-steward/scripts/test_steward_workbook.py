@@ -341,6 +341,17 @@ class ReconcileTests(unittest.TestCase):
         self.assertTrue(lenient["ok"])
         self.assertEqual(kinds(lenient), [("stale_running", "minor")])
 
+    def test_live_check_flags_a_stopped_thread_hidden_by_a_running_sibling(self):
+        a, b = "thr_aaaaaa1111", "thr_bbbbbb2222"
+        two = RECONCILED_WORKBOOK.replace("← 进行中 thr_aaaaaa1111", f"← 进行中 {a}、{b}")
+        both_alive = sw.reconcile_workbook(two, now=NOW, threads={a: thread(a, status="active"), b: thread(b, background=True)})
+        self.assertTrue(both_alive["ok"], both_alive["problems"])
+        res = sw.reconcile_workbook(two, now=NOW, threads={a: thread(a, status="active"), b: thread(b, idle_minutes=450)})
+        self.assertEqual(kinds(res), [("stale_sibling", "nudge")])
+        self.assertIn(b, res["problems"][0]["detail"])
+        self.assertIn("已空闲 7.5 小时", res["problems"][0]["detail"])
+        self.assertNotIn(a, res["problems"][0]["detail"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -557,6 +557,12 @@ def reconcile_workbook(text: str, now: datetime | None = None, threads: dict | N
                     add("stale_running", "minor", lineno, label, detail + f"（另有 {unlisted_alive} 条未写进路线的子线程在跑）")
                 else:
                     add("stale_running", "nudge", lineno, label, detail)
+            elif not waiting:
+                # 一行挂多个线程时，只要有一个在跑整行就像是健康的；停下的那个会被掩盖，逐个报出来。
+                stopped = {tid: st for tid, st in states.items() if st not in ("alive", "recent")}
+                if stopped:
+                    detail = "同行有线程在跑，但" + "、".join(describe_thread(tid, st, threads.get(tid), now_ts) for tid, st in stopped.items())
+                    add("stale_sibling", "minor" if unlisted_alive else "nudge", lineno, label, detail + "；拆成各自一行或更新这一行")
 
     for todo in (t for t in todos if t["status"] == "待办"):
         if not todo["reason"].startswith(TODO_CATEGORIES):
