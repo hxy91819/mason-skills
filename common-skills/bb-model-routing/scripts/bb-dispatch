@@ -712,7 +712,7 @@ def summarize_ledger(ledger, now=None):
             "hook": "simple_share_low",
             "numerator": by_difficulty["simple"]["total"],
             "denominator": total_dispatches,
-            "message": f"simple 难度占比仅 {by_difficulty['simple']['total']}/{total_dispatches} (<20%)，请核查是否将边界已闭合任务误判为 medium/complex。",
+            "message": f"simple 难度占比仅 {by_difficulty['simple']['total']}/{total_dispatches} (<20%)，请核查是否把圈定调研、可复现的缺陷定位、有回滚的运维，或边界已闭合的任务误判为 medium/complex。medium 只留给 simple 失败后的升档、并发/隔离/签字，以及父线程写不出验收标准的任务。",
         })
 
     recent = {}
@@ -733,8 +733,8 @@ def summarize_ledger(ledger, now=None):
                 "numerator": counts["complex"],
                 "denominator": len(diffs),
                 "message": f"父线程 {parent} 最近 {len(diffs)} 次派发里 complex 占 {counts['complex']} 次（>=30%）。"
-                           "complex 只留给说不出落在哪个系统、也列不出候选方案的最大未知；其余按剩余未知派 medium 或 simple，"
-                           "低档失败或返工再带 --escalate-from 升档。",
+                           "complex 只留给说不出落在哪个系统、也列不出候选方案的最大未知；其余默认派 simple。"
+                           "medium 只留给 simple 失败后带 --escalate-from 的升档、并发/隔离/签字，以及父线程写不出验收标准的任务。",
             })
 
     for agent, ag in sorted(by_agent.items()):
@@ -927,7 +927,8 @@ def validate_contract_gates(args, call):
     if args.difficulty == "complex" and not escalate_from and not unknown and not getattr(args, "dry_run", False):
         raise DispatchError(
             "首次派 complex 要用 --unknown 写一句最大未知，并确认它没有边界：说不出它落在哪个系统或哪条链路，"
-            "也列不出候选方案。能说出其一就是有边界，改派 --difficulty medium；"
+            "也列不出候选方案。能说出其一就是有边界，默认改派 --difficulty simple；"
+            "只有并发、锁与崩溃恢复、租户或安全隔离、发布签字或唯一审查人，或父线程写不出验收标准，才用 --difficulty medium。"
             "前序低档线程失败或返工要升档时传 --escalate-from <线程ID>。"
         )
 
@@ -938,8 +939,10 @@ def validate_contract_gates(args, call):
         chars = effective_task_chars(args.task)
         if chars > max_chars:
             raise DispatchError(
-                f"{args.difficulty} 任务应把探索留给子线程；当前任务指导长达 {chars} 字符（上限 {max_chars}），"
-                "说明父线程已完成细化。请改用 --difficulty simple、精简任务书，或传入 --escalate-from <前序失败线程ID>。"
+                f"{args.difficulty} 任务指导长达 {chars} 字符（上限 {max_chars}），"
+                "说明父线程已完成细化。默认改用 --difficulty simple；"
+                "若这是并发、锁与崩溃恢复、租户或安全隔离、发布签字或唯一审查人，或父线程写不出验收标准，请精简任务书而不是降档；"
+                "simple 失败或返工后的升档请传 --escalate-from <前序线程ID>。"
             )
     return escalate_from
 
@@ -1424,7 +1427,7 @@ def dispatch_unlocked(args, call, now, config, slots):
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="示例：\n  bb-dispatch --difficulty simple --task '补充 README' --dry-run\n  bb-dispatch --difficulty medium --task '定位登录失败'\n  bb-dispatch --history-summary\n  bb-dispatch --on-failure thr_xxx\n  bb-dispatch --record-decision thr_xxx --decision accepted\n输出：stdout JSON，stderr 错误；退出码 0 成功，2 失败。")
+        epilog="示例：\n  bb-dispatch --difficulty simple --task '补充 README' --dry-run\n  bb-dispatch --difficulty simple --task '登录失败可复现，在认证链路定位根因并修复'\n  bb-dispatch --difficulty medium --task '改动租户隔离边界，测试通过不足以证明没有泄漏'\n  bb-dispatch --history-summary\n  bb-dispatch --on-failure thr_xxx\n  bb-dispatch --record-decision thr_xxx --decision accepted\n输出：stdout JSON，stderr 错误；退出码 0 成功，2 失败。")
     p.add_argument("--config", default=os.environ.get("BB_DISPATCH_CONFIG", str(Path.home() / ".config/bb-dispatch/config.yaml")), help="用户 YAML 配置路径，也可设置 BB_DISPATCH_CONFIG")
     p.add_argument("--ledger", default=os.environ.get("BB_DISPATCH_LEDGER_PATH", str(Path.home() / ".cache/bb-dispatch/ledger.json")), help="运行账本与熔断缓存路径，也可设置 BB_DISPATCH_LEDGER_PATH")
     p.add_argument("--difficulty", choices=["simple", "medium", "complex"], help="任务难度")
