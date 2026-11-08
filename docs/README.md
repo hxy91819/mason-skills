@@ -17,7 +17,8 @@ This directory holds maintained repository design notes and examples. Skill sour
 | [Agent 管家生产灰度复盘](agent-steward-production-rollout-lessons.md) | 候选组合回归、失败归因、合并晋级、夜间窗口与回滚裁决、工作簿和沟通交接；供类似发布参考 |
 | [云实例平台可靠性复盘](instance-platform-reliability-lessons.md) | 数据就绪、远端完成性、锁与重试、超时分层、凭据轮换、制品兼容和容量供给 |
 | [生产运维 Harness 复盘](harness/production-operations-lessons.md) | 只读监视、告警与重试预算、审批合并读回、共享节点限制、检出故障和工作区清理边界 |
-| [harness/](harness/) | Harness 大全：按主题收录真实项目验证过的 pre-commit、测试分层、testcontainers、迁移、覆盖率门禁和 Agent 工作面做法，附新项目接入清单 |
+| [面向 Agent 的云端执行平台复盘](agent-platform-lessons.md) | 报错写给模型读、MCP 工具设计、Skill/CLI/SDK 随站点分版本发布、控制台状态只从一处来、不可逆清单与数值时间契约；新用户体验测试与走查清单；任务书固定授权、按返工风险定档、管家少醒、合入后弄红主干的几类原因；仓库规则与知识点 |
+| [harness/](harness/) | Harness 大全：按主题收录真实项目验证过的 pre-commit、测试分层、testcontainers、迁移、覆盖率门禁和 Agent 工作面做法，附新项目接入清单；[新用户体验测试](harness/agent-new-user-trial.md)让便宜模型只凭公开入口扮演新用户的 Agent |
 | [recommended-global-skills.md](recommended-global-skills.md) | 推荐全局技能的准入标准与同步方式；完整清单以 `config/skill-symlinks.yaml` 为准 |
 | [authenticated HTML preview](../common-skills/local-test/references/authenticated-html-preview.md) | 单服务器 HTTPS、Cookie 登录和临时 HTML 预览；由 `local-test` 持有共享基础设施契约 |
 | [largeplan-example/](largeplan-example/) | Valid v2 two-audience example for token login |
