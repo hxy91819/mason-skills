@@ -1,3 +1,3 @@
 policy:
-  # 派发会创建真实 BB 线程并消耗额度，只在用户显式调用时进入。
-  allow_implicit_invocation: false
+  # 派发会创建真实 BB 线程并消耗额度：普通任务不触发，只供用户显式调用或已运行流程按声明加载。
+  allow_implicit_invocation: true

@@ -1,9 +1,6 @@
 ---
 name: bb-model-routing
-description: 用户显式调用 $bb-model-routing 并要求通过 BB 派发任务时使用，按配置创建 BB 任务线程；缺少派发配置时先检测 BB provider 与模型，引导用户确认并生成配置。常规任务、默认 subagent 调用及仅查看已有线程不触发。
-disable-model-invocation: true
-triggers:
-  - user
+description: 用户显式调用 $bb-model-routing 要求通过 BB 派发时，或已在运行的流程（bb-steward、large-task-orchestrator、autoreview、ppt-visual-review、ask-oracle 等）在正文中声明依赖时使用，按配置创建 BB 任务线程；缺少派发配置时先检测 BB provider 与模型，引导用户确认并生成配置。常规任务、未声明依赖的流程、默认 subagent 调用及仅查看已有线程不触发。
 ---
 
 # BB 任务派发
