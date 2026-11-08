@@ -1,4 +1,4 @@
-# 云端执行平台复盘：架构、运行时、环境治理与云账号
+# 云端执行平台工程复盘：架构、运行时、环境治理与云账号
 
 这份复盘记录项目 W 搭建过程中可以迁移到别的项目的工程经验：从零开始，到共享测试环境跑通完整用户路径、生产环境平台层上线，前后两周。项目原件、账号、域名与业务规则都留在项目仓库，这里不收录。
 
@@ -7,7 +7,7 @@
 - 云账号与产品开通的坑：[`tencent-cloud-pitfalls`](../common-skills/tencent-cloud-pitfalls/SKILL.md)。
 - 多 Agent 并行时的合入通道与 CI：[`multi-agent-project-setup`](../common-skills/multi-agent-project-setup/SKILL.md)。
 
-面向 Agent 的产品设计、体验测试和管家经验，见[Agent 平台复盘](agent-platform-lessons.md)。
+同一项目 W 面向 Agent 的产品设计、体验测试和管家经验，见[面向 Agent 的云端执行平台复盘](agent-platform-lessons.md)。
 
 另一个云实例平台（项目 Z）也有两篇复盘，主题相近、证据不同，可以对照着读：
 

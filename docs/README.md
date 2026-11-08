@@ -11,7 +11,6 @@ This directory holds maintained repository design notes and examples. Skill sour
 | [客户确认原型复盘](client-confirmation-prototype-lessons.md) | 用点击原型让客户把规则改定：示范层与产品层分开、没答的题按默认做并标暂定、获奖标准加自审的视觉提示词、空数据路径、固定走查工具、发布门禁与踩坑；原型冻结前的那一段 |
 | [原型到正式实现复盘](prototype-to-production-lessons.md) | 原型分两条线承载（UI 抽共用包加截图比对；需求走文档链加编号测试）、领域驱动轻量版与七项守护、派发合并流程、测试分层、前端薄化、本地入口与踩坑；供同类项目参考 |
 | [原型复刻审查](prototype-replication-review.md) | 原型是三层规格（视觉、功能设计、领域规则）各需一条审查线；错误五类来源与对应审查；每个 PR 合并前的四层审查组合；像素基准逐张看；建议做成「原型对齐审查」通用技能加项目级移转约定 |
-| [云端执行平台复盘](cloud-platform-lessons.md) | 控制面、执行面、guest 与暖池的架构形状；时延花在阶段之间的等待、容量取整条链的最小值、就绪要证明能干活；环境只从主干来；新云账号头一周的时间花在哪；合入与发布链的补充；Agent 工具链的坑 |
 | [UI 间距与对齐复盘](ui-spacing-alignment-lessons.md) | 从六张截图追到间距拥有者与门禁盲区；token／类型化插槽、全页不变量与负向自测、独立看图验收及可复用检查清单 |
 | [Fork 维护决策](adr/0001-two-tier-fork-maintenance.md) | 面向人的简短决策记录：独立来源、可选领域与新旧项目接入；不属于 Agent 默认加载材料 |
 | [large-task system design](../common-skills/large-task-planning/references/large-task-system-design.md) | Shared design principles and boundaries for planning and orchestrating large tasks; owned by `large-task-planning` |
@@ -19,6 +18,7 @@ This directory holds maintained repository design notes and examples. Skill sour
 | [云实例平台可靠性复盘](instance-platform-reliability-lessons.md) | 数据就绪、远端完成性、锁与重试、超时分层、凭据轮换、制品兼容和容量供给 |
 | [生产运维 Harness 复盘](harness/production-operations-lessons.md) | 只读监视、告警与重试预算、审批合并读回、共享节点限制、检出故障和工作区清理边界 |
 | [面向 Agent 的云端执行平台复盘](agent-platform-lessons.md) | 报错写给模型读、MCP 工具设计、Skill/CLI/SDK 随站点分版本发布、控制台状态只从一处来、不可逆清单与数值时间契约；新用户体验测试与走查清单；任务书固定授权、按返工风险定档、管家少醒、合入后弄红主干的几类原因；仓库规则与知识点 |
+| [云端执行平台工程复盘](cloud-platform-lessons.md) | 同一项目 W 的工程侧：控制面、执行面、guest 与暖池的架构形状；时延花在阶段之间的等待、容量取整条链的最小值、就绪要证明能干活；环境只从主干来；新云账号头一周的时间花在哪；合入与发布链的补充；Agent 工具链的坑 |
 | [harness/](harness/) | Harness 大全：按主题收录真实项目验证过的 pre-commit、测试分层、testcontainers、迁移、覆盖率门禁和 Agent 工作面做法，附新项目接入清单；[新用户体验测试](harness/agent-new-user-trial.md)让便宜模型只凭公开入口扮演新用户的 Agent |
 | [recommended-global-skills.md](recommended-global-skills.md) | 推荐全局技能的准入标准与同步方式；完整清单以 `config/skill-symlinks.yaml` 为准 |
 | [authenticated HTML preview](../common-skills/local-test/references/authenticated-html-preview.md) | 单服务器 HTTPS、Cookie 登录和临时 HTML 预览；由 `local-test` 持有共享基础设施契约 |
