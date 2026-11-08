@@ -176,6 +176,7 @@ Start 一直停在排队，最后转了人工处理。原因是分配前就出�
 - **共享只读身份用于排障**：云侧给 ReadOnlyAccess，再显式拒绝读取密钥值、管理员凭据、AssumeRole 和 IaC state 存储桶；集群侧只给 view 权限。代价是审计里分不清具体是谁在查。
 - **管理入口先核对账号**：执行前用 STS 查当前调用者属于哪个账号，必须和 inventory 里登记的账号一致。曾有一次 test 的预检读到了 prod 的临时管理员密钥，被这条校验拦了下来。
 - **Secret 的投递状态要登记**：只读身份读不到 Secret 的值，静态登记就是唯一依据。引用了未投递 Secret 的配置，在合入前就失败。
+- **Argo CD 按命名空间管理集群时，先授权再加命名空间**：控制器要能 list/watch 新命名空间里的全部资源类型（含 CRD，如 cert-manager 的 Issuer）。先把命名空间加进 cluster Secret、权限后补的话，整个集群的缓存同步失败，同一集群上无关的应用也一起变成 Unknown。正在跑的 Pod 不受影响，但发布会停下。
 - **临时管理员密钥和精确 ID 审批**的具体做法，见 [`tencent-cloud-pitfalls` 的生产操作说明](../common-skills/tencent-cloud-pitfalls/references/production-operations.md)。
 - **共用账号**：只碰自己登记过的资源，按精确 ID 操作。
 - **告警演练**：只发到验证接收端，不往真人所在的群里发测试消息。
