@@ -86,6 +86,7 @@ STORY_FIELDS = (
 )
 OPTIONAL_STORY_FIELDS = ("difficulty",)
 STORY_DIFFICULTIES = ("simple", "medium", "complex")
+DEFAULT_STORY_DIFFICULTY = "simple"
 ACCEPTANCE_FIELDS = ("id", "criterion", "passed")
 CONTEXT_FIELDS = (
     "test_seams",
@@ -722,7 +723,7 @@ def status_payload(plan: Plan, stories: Sequence[Story]) -> dict[str, Any]:
                 "id": story.item_id,
                 "title": story.title,
                 "status": story.status,
-                "difficulty": story.data.get("difficulty", "medium"),
+                "difficulty": story.data.get("difficulty", DEFAULT_STORY_DIFFICULTY),
                 "owner": story.data["owner"],
                 "blocked_by": list(story.blocked_by),
                 "covers": list(story.covers),
@@ -1016,7 +1017,7 @@ def command_brief(args: argparse.Namespace) -> int:
         "golden_acceptance": cases,
         "story": {
             **story.data,
-            "difficulty": story.data.get("difficulty", "medium"),
+            "difficulty": story.data.get("difficulty", DEFAULT_STORY_DIFFICULTY),
         },
         "dependency_handoffs": dependencies,
     }

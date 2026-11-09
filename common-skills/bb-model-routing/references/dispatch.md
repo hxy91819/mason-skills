@@ -12,10 +12,8 @@
 
 ```bash
 bb-dispatch --difficulty simple --task '补充 README 示例' --dry-run
-bb-dispatch --difficulty simple --task '登录失败可复现，给出根因和修复'
 bb-dispatch --difficulty medium --task '改动租户隔离边界；测试通过不足以证明没有泄漏'
-bb-dispatch --difficulty simple --task '验证用户登录与权限判定测试用例' --dry-run
-bb-dispatch --difficulty complex --task '审查证据并裁决指定的技术问题' --dry-run
+bb-dispatch --difficulty complex --task 'Oracle：裁决指定的技术问题' --dry-run
 ```
 
 `--task` 只传递任务本身：目标、范围、必要输入和验收要求。provider、模型、推理级别、权限和目录校验由脚本和配置处理，不能写进子线程 prompt，也不要求子 agent 重复检查。用户直接给出 provider 或模型要求时，调用方须调整用户配置，再调用脚本。
@@ -24,7 +22,7 @@ bb-dispatch --difficulty complex --task '审查证据并裁决指定的技术问
 
 `fast` 控制派发是否请求 BB 的 Fast service tier。省略时默认 `true`；人手改配置文件为 `false` 即关闭。脚本不提供命令行覆盖，也不接受模型侧选择。优先级：`agents.<别名>.fast` > 环境配置 `environments.<id>.fast` > 顶层配置 `fast`。若在顶层或 agent 配置 `force_fast: true`，则强制开启 Fast 并豁免巡检自动熔断；也可通过 `quota_fuse` 自定义熔断阈值（如已用 95% 熔断）并在 `restore_at` 到期后自动恢复默认阈值。打开且模型支持 fast 时传 `--service-tier fast`；关闭或模型不支持 fast 时，只要 provider 列出 service tiers（含 `default`）就显式传 `--service-tier default`，硬性覆盖项目历史记忆偏好；整个 provider 均不支持 service tiers 时才省略该参数。
 
-配置 `version: 2`。`defaults` 将 simple/medium/complex 映射到路由。字符串或有序别名列表使用 `fallback`：脚本按配置顺序校验并派发首个可用候选。需要在候选间分摊独立任务时使用显式配置：
+`defaults` 将 simple/medium/complex 映射到路由。字符串或有序别名列表使用 `fallback`：脚本按配置顺序校验并派发首个可用候选。需要在候选间分摊独立任务时使用显式配置：
 
 ```yaml
 defaults:
@@ -55,7 +53,7 @@ defaults:
 
 `--fallback-from <别名>` 把本次候选截取为从该别名起的后缀，供需要点名续派候选的调用方使用；别名不在候选中时报错，点名的别名本身不按冷却跳过。实际派发时链上位于该别名之前的候选按 provider 与模型冷却 15 分钟。一般改派不必传它：`--on-failure` 记下失败或 spawn 失败后，该候选已冷却，重跑同一命令就会跳过。负载均衡续派须保持原 route 和完整 `--task` 文本，才能复现候选顺序；需要补充进展时，续派保留原任务文本，创建成功后通过 `bb thread tell` 向新线程补充进展与位置。
 
-`--closed-scope` 声明任务边界已闭合（目标文件、改法、验证方式均已明确），未配合 `--escalate-from <线程ID>` 时强制要求 `--difficulty simple`。`--max-task-chars`（默认 2500，0 为不限制）对未传 `--escalate-from` 的 `medium`/`complex` 任务检查有效指导长度（自动剥离 `autoreview` 审查标准、`ask-oracle` 证据块及 `large-task-orchestrator` 执行包/报告协议块后的字符数），超长时拒绝派发：默认改用 `simple`；若确属并发、隔离、签字或写不出验收标准，精简任务书而不是降档。实际创建线程的 `complex` 未传 `--escalate-from` 时须带 `--unknown '<一句话最大未知>'`，`--dry-run` 配置自检不要求。
+`--closed-scope` 声明目标文件、改法和验证方式已明确；未配合 `--escalate-from <线程ID>` 时脚本仍强制 `--difficulty simple`。属于 SKILL.md「判断与调用」②的任务不传它；用户点名 `medium` 时也不传。`--max-task-chars`（默认 2500，0 为不限制）对未传 `--escalate-from` 的 `medium`/`complex` 检查有效指导长度（自动剥离 `autoreview` 审查标准、`ask-oracle` 证据块及 `large-task-orchestrator` 执行包/报告协议块后的字符数），超限时拒绝。直接派②③且任务书确需超长时传 `--max-task-chars 0`，并在派发报告说明；不要为过门禁改传 `--escalate-from`。实际创建线程（非 `--dry-run`）的 `complex` 未传 `--escalate-from` 时必须带 `--unknown`；用户点名 `complex` 时写成「用户点名：<原因>」。分档以 SKILL.md「判断与调用」为准，本文不复述条件。
 
 `--on-failure <线程ID>` 处理报错的子线程，只看 BB 的结构化信息：线程不在 `error` 状态返回 `not-failed`；`bb provider-retry status` 列出 BB 自动重试时返回 `waiting`。报错线程上的排队消息要等线程被重试才送出，不算已有重试。账本 `retries` 记当前这次故障已安排的原会话重试次数，`retry_ts` 记最近一次安排的时间；`retries` 大于 0 时读 `bb thread log`：那之后还没有回合结束，说明上次的重试还没执行，返回 `waiting`；那之后有回合成功结束，说明那次故障已恢复，这次从头计（派发补记 `completed` 时也清零）。`bb provider-retry explain` 的结论是 `attempts-exhausted`（BB 已在原会话重试到上限）或 `beyond-maximum-wait`（额度重置超过它的最长等待）时不再重试；否则用 `bb thread retry --send-at` 在原会话安排下一次重试（1、2、4 分钟），返回 `retry-scheduled`；BB 回复该回合已有排队的重试（`retry_already_queued`）时返回 `waiting`。重试用尽或无法重试时记 `failed`，返回 `cooled` 与当前冷却；重试期间不改终态，线程之前的成功照样为冷却清零。读不到线程状态或日志时报错退出，稍后重跑同一命令。只处理账本里的线程；配合 `--dry-run` 只给出动作，不安排重试、不写账本。
 

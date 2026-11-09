@@ -59,7 +59,7 @@ driver 没有长会话上下文：它只保存计划、Git、少量本地状态�
 ## Driver 是唯一控制面，Judge 只处理异常
 
 `large_task_driver.py` 通过 `$bb-model-routing` 的 `bb-dispatch` 创建 BB 线程。规划者在每张 Story 顶层定义
-首轮 `difficulty`（`simple / medium / complex`），driver 只消费该决定；Validator 固定 `simple`，Judge 固定
+首轮 `difficulty`（`simple / medium / complex`）。分档以 `$bb-model-routing`「判断与调用」为准；字段省略时 driver 按 `simple`，`medium` 与 `complex` 必须写在 Story 上。Validator 固定 `simple`，Judge 固定
 `complex`。provider、模型和 reasoning 由用户路由配置决定，叶子不自选型号，driver 也不把
 路由要求写进任务文本。
 
@@ -68,8 +68,8 @@ driver 没有长会话上下文：它只保存计划、Git、少量本地状态�
 - Worker `blocked`/`failed`、线程 error、交互、越界、空改动、报告无法解析或 Validator 多轮失败时，
   driver 才派 strong Judge。Judge 只选 `retry|escalate|patch|block|replan|stop`，不实现代码。
 
-Validator 不是每张 Story 都需要：simple Story 默认采纳 Worker 的短证据，`--validator always` 可强制派发；
-黄金案例仍在 `final_story` 全量复验。这是主要的成本杠杆之一。
+默认每张 Story 都派 Validator；显式 `--validator standard-up` 才跳过 simple Story。simple Story 仍默认验证，只是可显式跳过。
+黄金案例仍在 `final_story` 全量复验。
 
 一个计划内同时只有一个 Worker 写工作区；driver 每轮只领取一张 ready Story。Worker 与 Validator 都是
 叶子，不继续派生线程，也不拥有计划状态或 Git 交付状态。Validator 的只读靠任务声明与 diff 核对保证，

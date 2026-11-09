@@ -139,7 +139,7 @@ Judge 报告再绑定 judge round，动作仍限制在固定集合：
 
 ## 常用参数与退出码
 
-- `--default-difficulty simple|medium|complex`：Story 缺少 `difficulty` 时的首轮档位；Story 的值优先，Judge 升档结果再优先。
+- `--default-difficulty simple|medium|complex`：Story 缺少 `difficulty` 时的首轮档位，默认 `simple`；`medium` 与 `complex` 需在 Story 上显式标注。Story 的值优先，Judge 升档结果再优先。
 - `--validator always|standard-up`：默认每张 Story 都验；显式 `standard-up` 才跳过 simple Story。
 - `--max-patch-rounds`、`--max-attempts`、`--max-judge-rounds`：恢复与裁决轮次上限，耗尽后停给用户。
 - `--stall-minutes`（默认 90）：单个 busy 线程超过此时长会被停止；Worker 走一次 retry 后再交 Judge，Validator 改派。

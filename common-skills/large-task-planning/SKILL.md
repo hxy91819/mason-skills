@@ -69,7 +69,7 @@ fresh、便宜的 Worker context 完成。粒度判据是 economy 或 standard �
 写成可由脚本或测试直接判定的形式，这类 Story 在执行时可以跳过独立 Validator。依赖字段 `blocked_by`
 只表达真正阻止开工的边。
 
-给每张 Story 在顶层定下 `difficulty`（`simple` / `medium` / `complex`，对应能力档 economy / standard / strong），由规划者而不是脚本判断首轮路由：三档按 `$bb-model-routing`「判断与调用」的同一套归类标准判断，衡量 Worker 要自行消化多少不确定性，不是工作量，本文不重复定义。字段缺失时按 `medium` 处理，这只是缺字段的兜底值，不是分类默认；新计划应显式写入。`complex` 是继续拆分 Story 的信号，`check` 会告警。不要在 Story 写模型名或别名，实际路由由 `bb-model-routing` 配置决定。
+给每张 Story 在顶层写下 `difficulty`（`simple` / `medium` / `complex`，对应能力档 economy / standard / strong）。分档以 `$bb-model-routing`「判断与调用」为准，本文不复述。字段可选；缺省按 `simple` 派发，`medium` 与 `complex` 必须显式标注。`complex` 是继续拆分 Story 的信号，`check` 会告警。不要在 Story 写模型名或别名，实际路由由 `bb-model-routing` 配置决定。
 
 Story Context 只保存执行所需的公共 test seams、代码入口、权威资料、write scope 和停止条件；跨仓
 Story 用 `repositories` 声明要改动的仓库根路径（见格式契约），`skills` 写该 Story 需要用到的技能名。

@@ -105,7 +105,7 @@ environments:
             '--ledger', str(self.ledger),
             '--difficulty', 'simple',
             '--task', 'literal $(touch nope) "text"',
-            '--unknown', '测试用最大未知',
+            '--unknown', '测试用原因',
             *extra,
         ])
 
@@ -684,10 +684,13 @@ environments:
                                       '--difficulty', 'complex', '--task', '裁决方案', *extra])
 
     def test_first_complex_spawn_needs_unknown_unless_escalated(self):
-        with self.assertRaisesRegex(m.DispatchError, '--unknown.*--difficulty medium'):
+        with self.assertRaises(m.DispatchError) as caught:
             m.dispatch(self.complex_args(), self.fake, now=1000)
+        self.assertIn('--unknown', str(caught.exception))
+        self.assertIn(m.MEDIUM_RULE, str(caught.exception))
+        self.assertIn(m.COMPLEX_RULE, str(caught.exception))
         self.assertEqual(self.calls, [])
-        # 配置自检的 dry-run 不创建线程，不要求写最大未知。
+        # 配置自检的 dry-run 不创建线程，不要求写 --unknown。
         self.assertTrue(m.dispatch(self.complex_args('--dry-run'), self.fake)['dry_run'])
 
         unknown = '不知道故障在网关、调度还是存储哪一层' * 10
@@ -712,7 +715,7 @@ environments:
 
         result = m.dispatch(self.args(), self.fake, now=1000)
         warnings = result['selection']['warnings']
-        self.assertTrue(any('父线程 parent 最近 5 次派发里 complex 占 3 次' in w for w in warnings))
+        self.assertTrue(any('父线程 parent 最近 5 次派发里 complex 占 3 次' in w and m.COMPLEX_RULE in w and m.MEDIUM_RULE in w for w in warnings))
         self.assertFalse(any('父线程 other' in w for w in warnings))
         summary = m.summarize_ledger(m.load_ledger(self.ledger, strict=True), now=1000)
         self.assertEqual(summary['by_parent']['parent'], {'recent': 5, 'simple': 1, 'medium': 1, 'complex': 3})
@@ -744,8 +747,10 @@ environments:
     def test_overlong_task_rejected_for_medium_and_complex_but_allowed_for_simple_or_review(self):
         long_task = '细化步骤' * 700  # 2800 chars > 2500
         for diff in ('medium', 'complex'):
-            with self.assertRaisesRegex(m.DispatchError, '说明父线程已完成细化'):
+            with self.assertRaises(m.DispatchError) as caught:
                 m.dispatch(self.args('--difficulty', diff, '--task', long_task, '--dry-run'), self.fake)
+            self.assertIn('--max-task-chars 0', str(caught.exception))
+            self.assertIn(m.MEDIUM_RULE, str(caught.exception))
         # simple 允许长任务书
         simple_ok = m.dispatch(self.args('--difficulty', 'simple', '--task', long_task, '--dry-run'), self.fake)
         self.assertEqual(simple_ok['selection']['difficulty'], 'simple')
@@ -1195,6 +1200,13 @@ environments:
         self.assertIn('simple_share_low', hook_names)
         self.assertIn('high_failure_rate', hook_names)
         self.assertIn('low_acceptance_rate', hook_names)
+        simple_hook = next(h for h in summary['review_hooks'] if h['hook'] == 'simple_share_low')
+        self.assertIn(m.MEDIUM_RULE, simple_hook['message'])
+        self.assertIn(m.COMPLEX_RULE, simple_hook['message'])
+        help_text = ''.join(m.parser().format_help().split())
+        self.assertIn(''.join(m.MEDIUM_RULE.split()), help_text)
+        self.assertIn(''.join(m.COMPLEX_RULE.split()), help_text)
+        self.assertIn('非--dry-run', help_text)
 
 
 if __name__ == '__main__':

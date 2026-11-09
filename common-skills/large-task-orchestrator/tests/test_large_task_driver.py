@@ -1029,8 +1029,8 @@ class DriverTest(unittest.TestCase):
         self.run_driver("--max-stories", "1")
         self.assertEqual(self.story("STORY-01")["status"], "done")
         workers = [d for d in self.read_world()["dispatches"] if d["title"] == "STORY-01 worker"]
-        self.assertEqual([d["difficulty"] for d in workers], ["medium", "complex"])
-        self.assertEqual([bool(d["unknown"]) for d in workers], [False, True])
+        self.assertEqual([d["difficulty"] for d in workers], ["simple", "medium"])
+        self.assertEqual([bool(d["unknown"]) for d in workers], [False, False])
         judge = next(d for d in self.read_world()["dispatches"] if d["title"] == "STORY-01 judge")
         self.assertEqual(judge["difficulty"], "complex")
         self.assertTrue(judge["unknown"])

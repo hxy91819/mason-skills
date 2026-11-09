@@ -86,7 +86,7 @@ triggers:
 | 做法 | 为什么 | 验证 |
 | --- | --- | --- |
 | 派发并发按 provider 配置上限（`$bb-model-routing` 的 `max_concurrency`），满额等线程结束再派 | 一天建 168 个线程，远超通道吞吐，靠人判断队列落不了地 | `bb-dispatch --concurrency-status` 的 used 不超过 limit |
-| 难度只量不确定性，从低档起步，凭证据升档 | 高档换来更长耗时，验收率并不更高 | `bb-dispatch --history-summary` 各档验收率相近 |
+| 分档以 `$bb-model-routing`「判断与调用」为准，本文不复述 | 档位条件只维护一处 | `bb-dispatch --history-summary` 看各档接受率 |
 | 超过 20 分钟的等待用线程级持久终端，结束后 `bb thread tell` 自己 | 空闲 30 分钟会话被回收，后台进程被杀，CI 绿了没人合 | 等待进程不在 provider 会话里 |
 | 会话过大（几十 MB）或 turn/start 超时的线程改派新线程，按入库文档接手 | 重试无效，旧线程接收不了新任务 | 长任务的进度写在仓库或 `.local` 文档里 |
 

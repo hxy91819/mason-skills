@@ -67,7 +67,7 @@
   "id": "STORY-01",
   "plan": "EPIC-EXAMPLE",
   "title": "一条可验证的纵向结果",
-  "difficulty": "medium",
+  "difficulty": "simple",
   "intent_version": 1,
   "status": "todo",
   "blocked_by": [],
@@ -96,7 +96,7 @@
 }
 ```
 
-`difficulty` 是规划时判断的首轮能力档：`simple`、`medium` 或 `complex`；省略时按 `medium` 处理。
+`difficulty` 可选，是规划时判断的首轮能力档：`simple`、`medium` 或 `complex`。分档以 `$bb-model-routing`「判断与调用」为准。省略时按 `simple` 处理；`medium` 与 `complex` 必须显式标注。
 `kind` 固定为结构类型 `large-task-story`，不参与路由。Story 不写模型名或路由别名；具体模型由
 `bb-model-routing` 根据 difficulty 配置决定。
 

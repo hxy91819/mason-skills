@@ -198,12 +198,12 @@ class EpicStoryCliTest(unittest.TestCase):
     def test_status_and_brief_separate_frontier_from_agent_context(self) -> None:
         status = json.loads(self.run_cli("status", *self.project_args(), "--json").stdout)
         self.assertEqual(status["ready"], ["STORY-01"])
-        self.assertEqual(status["stories"][0]["difficulty"], "medium")
+        self.assertEqual(status["stories"][0]["difficulty"], "simple")
         self.assertNotIn("kind", status["stories"][0])
         brief = json.loads(
             self.run_cli("brief", *self.project_args(), "--story", "STORY-01").stdout
         )
-        self.assertEqual(brief["story"]["difficulty"], "medium")
+        self.assertEqual(brief["story"]["difficulty"], "simple")
         self.assertEqual(brief["story"]["kind"], "large-task-story")
         self.assertEqual(brief["story"]["context"]["code_anchors"], ["src/demo.py:main"])
         self.assertEqual([item["id"] for item in brief["golden_acceptance"]], ["GC-01"])
@@ -242,7 +242,9 @@ class EpicStoryCliTest(unittest.TestCase):
         self.run_cli("render", *self.project_args())
         self.run_cli("check", *self.project_args())
         brief = json.loads(self.run_cli("brief", *self.project_args(), "--story", "STORY-01").stdout)
-        self.assertEqual(brief["story"]["difficulty"], "medium")
+        status = json.loads(self.run_cli("status", *self.project_args(), "--json").stdout)
+        self.assertEqual(brief["story"]["difficulty"], "simple")
+        self.assertEqual(status["stories"][0]["difficulty"], "simple")
 
     def test_transition_uses_expected_state_and_refreshes_status(self) -> None:
         self.run_cli(

@@ -794,7 +794,7 @@ class Driver:
         self.ensure_thread_capacity(role)
         command = [*self.dispatch, "--difficulty", difficulty, "--title", title, "--task", task]
         if difficulty == "complex":
-            # bb-dispatch 要求首次派 complex 写一句最大未知；这里的 complex 只来自 Judge、Story 计划或 Judge 升档。
+            # 实际创建的首次 complex 要带 --unknown；这里的 complex 只来自 Judge（角色例外）、Story 计划或 Judge 升档。
             unknown = "裁决 Worker 与 Validator 互相矛盾的结论" if role == "judge" else f"{title}：Story 计划或 Judge 升档定为 complex"
             command += ["--unknown", unknown]
         if self.args.environment:
@@ -1777,7 +1777,8 @@ def build_parser() -> argparse.ArgumentParser:
         target.add_argument("--dispatch", required=True, help="由已加载 $bb-model-routing 提供的 bb-dispatch 路径")
         target.add_argument("--environment", help="传给 bb-dispatch 的 BB 环境 ID")
         target.add_argument("--context", default="", help="附加给每个线程的仓库说明（基线、命令等）")
-        target.add_argument("--default-difficulty", choices=DIFFICULTIES, default="medium", help="首轮 Worker 难度")
+        target.add_argument("--default-difficulty", choices=DIFFICULTIES, default="simple",
+                            help="Story 缺少 difficulty 时的首轮档位，默认 simple；medium 与 complex 需在 Story 上显式标注")
         target.add_argument("--validator", choices=["always", "standard-up"], default="always",
                             help="always（默认）：每张 Story 都派 Validator；standard-up：simple 档跳过")
         target.add_argument("--max-patch-rounds", type=int, default=2, help="Validator FAIL 后发回同一 Worker 的最大轮数")
