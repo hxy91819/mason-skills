@@ -177,7 +177,7 @@ python3 scripts/steward_workbook.py --mode ledger-check --file <要求帐路径>
 python3 scripts/steward_workbook.py --mode reconcile --live --file <工作簿路径>
 ```
 
-`--live` 经 `bb thread list` 核对 `进行中` 的线程：在跑、有排队消息、有后台活动或结束不到 30 分钟算活着。
+`--live` 经 `bb thread list` 核对 `进行中` 的线程：在跑、有排队消息、有后台活动或结束不到 30 分钟算活着；空闲线程在等会叫醒它的东西也算活着：在跑的子线程（如它派出的独立审查），或没人键入过、仍在跑的线程级持久终端（`bb terminal`，长等待托管在这里）。
 
 ## 看门狗
 

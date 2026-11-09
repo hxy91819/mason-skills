@@ -152,11 +152,31 @@ class StewardWorkbookTests(unittest.TestCase):
             rows = [archived] if "--archived" in args else [active, {"id": "thr_other"}]
             return [sw.normalize_thread(r) for r in rows]
 
-        with mock.patch.object(sw, "bb_thread_list", side_effect=fake_list):
+        with mock.patch.object(sw, "bb_thread_list", side_effect=fake_list), \
+                mock.patch.object(sw, "waiting_on_background", return_value=False):
             found = sw.fetch_threads(["thr_active", "thr_old"])
         self.assertEqual(set(found), {"thr_active", "thr_old"})
         self.assertTrue(found["thr_old"]["archived"])
         self.assertFalse(any("--thread" in a for a in calls))
+
+    def test_idle_thread_waiting_on_a_child_or_its_persistent_terminal_counts_as_alive(self):
+        tid = "thr_aaaaaa1111"
+        idle_row = {"id": tid, "status": "idle", "queuedWork": "none", "activity": {}, "updatedAt": 0}
+        cases = {
+            "长等待在终端里跑": ([], [{"id": "term_a", "status": "running", "lastUserInputAt": None}], True),
+            "独立审查子线程在跑": ([{"id": "thr_review0001", "status": "active"}], [], True),
+            "人开着的交互 shell": ([], [{"id": "term_b", "status": "running", "lastUserInputAt": 1}], False),
+            "子线程已结束、没有终端": ([{"id": "thr_review0001", "status": "idle"}], [], False),
+        }
+        for name, (children, sessions, alive) in cases.items():
+            def fake_list(*args, children=children):
+                return [sw.normalize_thread(r) for r in (children if "--parent-thread" in args else [idle_row])]
+
+            with mock.patch.object(sw, "bb_thread_list", side_effect=fake_list), \
+                    mock.patch.object(sw, "bb_terminal_sessions", return_value=sessions):
+                threads = sw.fetch_threads([tid])
+            res = sw.reconcile_workbook(RECONCILED_WORKBOOK, now=NOW, threads=threads)
+            self.assertEqual(res["ok"], alive, (name, res["problems"]))
 
     def test_overlong_line_is_rejected(self):
         long_line = "- [ ] 阶段 2：" + ("校准修了某问题、" * 30)
@@ -340,6 +360,17 @@ class ReconcileTests(unittest.TestCase):
         lenient = sw.reconcile_workbook(RECONCILED_WORKBOOK, now=NOW, threads={tid: thread(tid)}, unlisted_alive=1)
         self.assertTrue(lenient["ok"])
         self.assertEqual(kinds(lenient), [("stale_running", "minor")])
+
+    def test_live_check_flags_a_stopped_thread_hidden_by_a_running_sibling(self):
+        a, b = "thr_aaaaaa1111", "thr_bbbbbb2222"
+        two = RECONCILED_WORKBOOK.replace("← 进行中 thr_aaaaaa1111", f"← 进行中 {a}、{b}")
+        both_alive = sw.reconcile_workbook(two, now=NOW, threads={a: thread(a, status="active"), b: thread(b, background=True)})
+        self.assertTrue(both_alive["ok"], both_alive["problems"])
+        res = sw.reconcile_workbook(two, now=NOW, threads={a: thread(a, status="active"), b: thread(b, idle_minutes=450)})
+        self.assertEqual(kinds(res), [("stale_sibling", "nudge")])
+        self.assertIn(b, res["problems"][0]["detail"])
+        self.assertIn("已空闲 7.5 小时", res["problems"][0]["detail"])
+        self.assertNotIn(a, res["problems"][0]["detail"])
 
 
 if __name__ == "__main__":

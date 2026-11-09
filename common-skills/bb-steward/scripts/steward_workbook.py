@@ -479,7 +479,37 @@ def fetch_threads(ids):
         for info in bb_thread_list("--archived", "--include-hidden"):
             if info["id"] in wanted:
                 found[info["id"]] = info
+    for info in found.values():
+        if info["status"] == "idle" and not (info["archived"] or info["queued"] or info["background"]):
+            info["background"] = waiting_on_background(info["id"])
     return found
+
+
+def waiting_on_background(tid: str) -> bool:
+    """空闲线程是否在等会叫醒它的东西；这两类在 activity 里都看不到，不查就会误报停摆。
+
+    - 在跑的子线程，例如它派出的独立审查，完成后回报给它；
+    - 没人键入过、仍在跑的线程级持久终端（bb terminal），长等待托管在这里。人开着的交互 shell 有键入记录，不算。
+    """
+    try:
+        children = bb_thread_list("--parent-thread", tid, "--include-hidden")
+    except RuntimeError:
+        children = []
+    if any(c["status"] not in SETTLED_STATUSES or c["queued"] or c["background"] for c in children):
+        return True
+    return any(isinstance(s, dict) and s.get("status") == "running" and not s.get("lastUserInputAt")
+               for s in bb_terminal_sessions(tid))
+
+
+def bb_terminal_sessions(tid: str):
+    """`bb terminal list --thread <id> --json` 的会话列表（只列未结束的）；查询失败返回空表，照旧按停着判断。"""
+    try:
+        res = subprocess.run(["bb", "terminal", "list", "--thread", tid, "--json"],
+                             capture_output=True, text=True, timeout=30)
+        sessions = json.loads(res.stdout).get("sessions")
+    except (OSError, subprocess.TimeoutExpired, ValueError, AttributeError):
+        return []
+    return sessions if isinstance(sessions, list) else []
 
 
 def running_thread_ids(text: str):
@@ -557,6 +587,12 @@ def reconcile_workbook(text: str, now: datetime | None = None, threads: dict | N
                     add("stale_running", "minor", lineno, label, detail + f"（另有 {unlisted_alive} 条未写进路线的子线程在跑）")
                 else:
                     add("stale_running", "nudge", lineno, label, detail)
+            elif not waiting:
+                # 一行挂多个线程时，只要有一个在跑整行就像是健康的；停下的那个会被掩盖，逐个报出来。
+                stopped = {tid: st for tid, st in states.items() if st not in ("alive", "recent")}
+                if stopped:
+                    detail = "同行有线程在跑，但" + "、".join(describe_thread(tid, st, threads.get(tid), now_ts) for tid, st in stopped.items())
+                    add("stale_sibling", "minor" if unlisted_alive else "nudge", lineno, label, detail + "；拆成各自一行或更新这一行")
 
     for todo in (t for t in todos if t["status"] == "待办"):
         if not todo["reason"].startswith(TODO_CATEGORIES):
