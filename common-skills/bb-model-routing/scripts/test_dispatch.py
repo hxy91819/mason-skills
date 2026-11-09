@@ -109,6 +109,74 @@ environments:
             *extra,
         ])
 
+    def project_floor(self, minimum):
+        config = m.yaml.safe_load(self.config.read_text())
+        config['projects'] = {'proj': {'min_difficulty': minimum}}
+        self.config.write_text(m.yaml.safe_dump(config))
+
+    def test_project_floor_lifts_route_and_records_request(self):
+        self.project_floor('medium')
+        result = m.dispatch(self.args(), self.fake)
+        selection = result['selection']
+        self.assertEqual(selection['difficulty'], 'medium')
+        self.assertEqual(selection['requested_difficulty'], 'simple')
+        self.assertEqual(selection['model'], 'medium-model')
+        self.assertTrue(selection['warnings'])
+        entry = json.loads(self.ledger.read_text())['entries'][0]
+        self.assertEqual((entry['difficulty'], entry['requested_difficulty']), ('medium', 'simple'))
+
+    def test_unconfigured_project_keeps_request(self):
+        self.config.write_text(self.config.read_text() + '\nprojects: {other: {min_difficulty: complex}}\n')
+        selection = m.dispatch(self.args('--dry-run'), self.fake)['selection']
+        self.assertEqual(selection['difficulty'], 'simple')
+        self.assertNotIn('warnings', selection)
+
+    def test_project_floor_allows_closed_scope_and_complex_lift_without_unknown(self):
+        for minimum in ('medium', 'complex'):
+            with self.subTest(minimum=minimum):
+                self.project_floor(minimum)
+                args = self.args('--closed-scope')
+                args.unknown = None
+                self.assertEqual(m.dispatch(args, self.fake)['selection']['difficulty'], minimum)
+
+    def test_project_floor_does_not_change_explicit_complex_gate(self):
+        self.project_floor('medium')
+        args = self.args('--difficulty', 'complex')
+        args.unknown = None
+        with self.assertRaises(m.DispatchError):
+            m.dispatch(args, self.fake)
+        args.unknown = 'Oracle'
+        self.assertEqual(m.dispatch(args, self.fake)['selection']['difficulty'], 'complex')
+
+    def test_project_floor_dry_run_warnings_reach_json_and_stderr(self):
+        self.project_floor('medium')
+        dispatch = m.dispatch
+        with mock.patch.object(m, 'dispatch', side_effect=lambda args: dispatch(args, self.fake)), mock.patch('sys.argv', ['bb-dispatch', '--config', str(self.config), '--ledger', str(self.ledger), '--dry-run', '--difficulty', 'simple', '--task', 'preview']), mock.patch('sys.stdout', new_callable=io.StringIO) as out, mock.patch('sys.stderr', new_callable=io.StringIO) as err:
+            self.assertEqual(m.main(), 0)
+        selection = json.loads(out.getvalue())['selection']
+        self.assertEqual(selection['difficulty'], 'medium')
+        self.assertIn(selection['warnings'][0], err.getvalue())
+        self.assertEqual(self.spawn_counter, 0)
+        self.assertFalse(self.ledger.exists())
+
+    def test_project_floor_summary_explains_skew_after_rollover(self):
+        self.project_floor('medium')
+        for _ in range(5):
+            m.dispatch(self.args(), self.fake)
+        ledger = json.loads(self.ledger.read_text())
+        for entry in ledger['entries'][:3]:
+            m.rollup_entry(ledger['rollups'], entry)
+        ledger['entries'] = ledger['entries'][3:]
+        hook = next(h for h in m.summarize_ledger(ledger)['review_hooks'] if h['hook'] == 'simple_share_low')
+        self.assertEqual(hook['denominator'], 5)
+        self.assertIn('5 次因项目下限抬升', hook['message'])
+
+    def test_invalid_project_floor_fails_without_spawn(self):
+        self.project_floor('invalid')
+        with self.assertRaises(m.DispatchError):
+            m.dispatch(self.args(), self.fake)
+        self.assertEqual(self.spawn_counter, 0)
+
     def test_dry_run_never_spawns_and_preserves_task(self):
         result = m.dispatch(self.args('--dry-run'), self.fake)
         self.assertEqual(result['selection']['agent'], 'primary')

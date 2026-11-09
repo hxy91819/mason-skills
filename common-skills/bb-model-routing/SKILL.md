@@ -39,6 +39,8 @@ Agent 自行决定使用 subagent，或用户只要求“用 subagent 检查一�
 
 父 agent 不必为了降档先把改法、接口或交互步骤查清。后续任务按本清单重新归档：设计、根因或裁决已经完成时，落地、执行部署、补 PR、补登记和按清单验收是 `simple`。
 
+用户可在 `projects.<BB项目ID>.min_difficulty` 配置项目下限；脚本自动抬升路由并保留请求难度，以下门禁按请求难度检查，详见[配置与派发](references/dispatch.md#项目最低难度)。
+
 脚本内置三项确定性门禁，拒绝条件不因本节改口：
 
 - 传入 `--closed-scope` 且未传 `--escalate-from` 时，强制 `--difficulty simple`。属于②的任务不传 `--closed-scope`；用户点名 `medium` 时也不传。
@@ -104,7 +106,7 @@ driver 只传任务文本、难度与已有环境，路由仍由本配置决定�
 
 脚本在本地 Git-ignored 路径 `~/.cache/bb-dispatch/ledger.json`（可通过 `--ledger` 或 `BB_DISPATCH_LEDGER_PATH` 覆盖）维护运行账本与熔断冷却表，读写异常旁路告警、绝不阻塞主派发：
 
-1. **最小事实与滚动折算**：每次派发仅记录 `id`、`ts`、`project`、`parent_thread`、`difficulty`、`agent`、`provider`、`model`、`reasoning`、`task_chars`、`outcome`、`outcome_ts`、`retries`、`retry_ts`、`decision`，填写时另记 `unknown`（截断到 120 字）与 `escalated_from`，不存任务正文、diff 或线程日志。live 窗口保留最近 200 条，48 小时内的条目还要识别终态、计算冷却，超出也照留；更早的超出部分自动折算进固定维度 `rollups`，live 与 rollup 不重复计数。账本读改写加文件锁，写入前重读合并，并行派发与回写互不覆盖。
+1. **最小事实与滚动折算**：每次派发仅记录 `id`、`ts`、`project`、`parent_thread`、`difficulty`、`requested_difficulty`、`agent`、`provider`、`model`、`reasoning`、`task_chars`、`outcome`、`outcome_ts`、`retries`、`retry_ts`、`decision`，填写时另记 `unknown`（截断到 120 字）与 `escalated_from`，不存任务正文、diff 或线程日志。live 窗口保留最近 200 条，48 小时内的条目还要识别终态、计算冷却，超出也照留；更早的超出部分自动折算进固定维度 `rollups`，live 与 rollup 不重复计数。账本读改写加文件锁，写入前重读合并，并行派发与回写互不覆盖。
 2. **两层退避的熔断冷却与决策回环（Circuit Breaker）**：两层都不读报错文字、不分失败类型。原会话一层由 `--on-failure` 负责：已有重试排着时不插手，否则按 1、2、4 分钟在原会话重试，用尽（或 BB 已重试到上限、判定额度短期回不来）才记 `failed`，成功过又报错从头计，细则见[配置与派发](references/dispatch.md)。派发一层按 provider 与模型冷却，只看 48 小时内的终态：首次失败冷却 15 分钟，冷却期内的失败只顺延，冷却结束后再失败才翻倍，最长 6 小时，成功一次清零；每次派发先读一次 `bb thread list`，把 48 小时内还在等结果（仍记为 `spawned`，或成功过又在原会话重试）、已空闲且没有排队消息和待处理交互的线程记为 `completed`，读不到时告警跳过。spawn 失败和被 `--fallback-from` 跳过的候选另冷却 15 分钟。冷却中的候选优先跳过，全部冷却时仍挑一个试，避免死锁。父 agent 用稳定线程 ID 回写裁决（未知 ID 拒绝报错，重复回写覆盖）；终态有误、或放弃任务要记失败时加 `--outcome`：
    ```bash
    bb-dispatch --on-failure <线程ID>

@@ -342,6 +342,8 @@ def rollup_entry(rollups, entry):
         }
         rollups[key] = bucket
     bucket["total"] = int(bucket.get("total", 0)) + 1
+    if entry.get("requested_difficulty", entry.get("difficulty")) != entry.get("difficulty"):
+        bucket["project_floor_raised"] = int(bucket.get("project_floor_raised", 0)) + 1
     outcome = entry.get("outcome") or "spawned"
     if outcome in OUTCOME_KEYS:
         bucket["outcomes"][outcome] = int(bucket["outcomes"].get(outcome, 0)) + 1
@@ -725,6 +727,8 @@ def summarize_ledger(ledger, now=None):
     for diff, stats in by_difficulty.items():
         stats["share"] = round(stats["total"] / total_dispatches, 4) if total_dispatches else 0.0
 
+    floor_raised = sum(int(b.get("project_floor_raised", 0)) for b in (ledger.get("rollups") or {}).values() if isinstance(b, dict))
+    floor_raised += sum(e.get("requested_difficulty", e.get("difficulty")) != e.get("difficulty") for e in live_entries)
     hooks = []
     if total_dispatches >= 5 and by_difficulty["simple"]["share"] < 0.20:
         hooks.append({
@@ -733,7 +737,8 @@ def summarize_ledger(ledger, now=None):
             "denominator": total_dispatches,
             "message": (
                 f"simple 难度占比仅 {by_difficulty['simple']['total']}/{total_dispatches} (<20%)，"
-                "请核查是否把其余任务误判为 medium/complex。"
+                + (f"其中 {floor_raised} 次因项目下限抬升，占比按实际难度计算，不能直接据此判断误分档。"
+                 if floor_raised else "请核查是否把其余任务误判为 medium/complex。")
                 + MEDIUM_RULE + COMPLEX_RULE
             ),
         })
@@ -933,6 +938,7 @@ def model_and_reasoning(agent, alias, route):
 
 
 def validate_contract_gates(args, call):
+    requested = getattr(args, "requested_difficulty", args.difficulty)
     escalate_from = getattr(args, "escalate_from", None)
     if escalate_from is not None:
         escalate_from = string(escalate_from, "--escalate-from")
@@ -941,14 +947,14 @@ def validate_contract_gates(args, call):
         if shown_thread.get("id") and shown_thread.get("id") != escalate_from:
             raise DispatchError(f"--escalate-from 线程 {escalate_from!r} 校验不匹配。")
 
-    if getattr(args, "closed_scope", False) and args.difficulty != "simple" and not escalate_from:
+    if getattr(args, "closed_scope", False) and requested != "simple" and not escalate_from:
         raise DispatchError(
             f"边界已闭合（--closed-scope）的任务必须使用 --difficulty simple；"
             f"当前传入 {args.difficulty!r}。若因前序低档线程失败需升档，请提供 --escalate-from <前序线程ID>。"
         )
 
     unknown = (getattr(args, "unknown", None) or "").strip()
-    if args.difficulty == "complex" and not escalate_from and not unknown and not getattr(args, "dry_run", False):
+    if requested == "complex" and not escalate_from and not unknown and not getattr(args, "dry_run", False):
         raise DispatchError(
             "实际创建线程（非 --dry-run）首次派 complex 且未传 --escalate-from 时，必须用 --unknown 写一句原因。"
             + COMPLEX_RULE
@@ -1182,6 +1188,7 @@ def dispatch_unlocked(args, call, now, config, slots):
     now = int(time.time() if now is None else now)
     # 从子线程首条消息复制回来的任务先去掉回报方式，续派的候选顺序与标题保持不变。
     args.task = string(args.task.split(REPORT_PROTOCOL_ANCHOR, 1)[0], "task")
+    args.requested_difficulty = args.difficulty
     escalate_from = validate_contract_gates(args, call)
     unknown = (getattr(args, "unknown", None) or "").strip()
 
@@ -1207,6 +1214,15 @@ def dispatch_unlocked(args, call, now, config, slots):
         if not project or env.get("projectId") != project or env.get("id") != environment:
             raise DispatchError("项目与环境不匹配；环境 ID 必须精确匹配现有环境。")
         validation_environment = environment
+    projects = mapping(config.get("projects", {}), "projects")
+    project_config = mapping(projects.get(project, {}), f"projects.{project}")
+    minimum = project_config.get("min_difficulty", "simple")
+    if minimum not in DIFFICULTIES:
+        raise DispatchError(f"projects.{project}.min_difficulty 必须为 simple、medium 或 complex。")
+    floor_warnings = []
+    if DIFFICULTIES.index(args.difficulty) < DIFFICULTIES.index(minimum):
+        args.difficulty = minimum
+        floor_warnings.append(f"按项目下限从 {args.requested_difficulty} 抬到 {minimum}（项目 {project}）。")
     # 环境块中的同名别名整体替换，避免混用另一台机器的模型和推理设置。
     override = {} if path_mode else mapping(
         mapping(config.get("environments", {}), "environments").get(environment, {}), "environment config"
@@ -1350,10 +1366,12 @@ def dispatch_unlocked(args, call, now, config, slots):
                 agent=alias, provider=provider,
                 model=model, reasoning=reasoning, permission_mode=permission,
                 service_tier=service_tier,
-                difficulty=args.difficulty, title=title,
+                difficulty=args.difficulty, requested_difficulty=args.requested_difficulty, title=title,
                 routing_mode=routing_mode, candidate_weights=candidate_weights,
                 candidates=chain, fallbacks=fallbacks, attempts=attempts,
                 parent_notifications=notifications if parent.get("id") else None)
+    if floor_warnings:
+        plan["warnings"] = floor_warnings
     if escalate_from:
         plan["escalated_from"] = escalate_from
     if unknown:
@@ -1432,6 +1450,7 @@ def dispatch_unlocked(args, call, now, config, slots):
             "project": project,
             "parent_thread": parent.get("id"),
             "difficulty": args.difficulty,
+            "requested_difficulty": args.requested_difficulty,
             "agent": alias,
             "provider": provider,
             "model": model,
@@ -1451,7 +1470,7 @@ def dispatch_unlocked(args, call, now, config, slots):
         hooks = [h for h in summary["review_hooks"]
                  if h["hook"] != "complex_share_high" or h["parent_thread"] == parent.get("id")]
         if hooks:
-            plan["warnings"] = [h["message"] for h in hooks]
+            plan.setdefault("warnings", []).extend(h["message"] for h in hooks)
     # 返回完整创建回执，包括排队状态；不把创建成功宣称为任务完成。
     return {"dry_run": False, "selection": plan, "result": result}
 

@@ -49,6 +49,11 @@ agents:
       # default 显式允许该 agent 接受所有未单独配置的路由项。
       default:
         model: <fallback-model-id>
+# 可选：按 BB 项目 ID 设置最低难度；未配置项目保持请求难度。
+projects: {}
+# projects:
+#   <project-id>:
+#     min_difficulty: medium  # simple / medium / complex
 environments: {}
 # 环境 ID 来自 bb；同名别名整体替换，不继承顶层 routes。
 # environments:

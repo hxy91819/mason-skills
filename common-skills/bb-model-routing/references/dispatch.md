@@ -8,6 +8,14 @@
 
 配置格式为 `version: 2`。迁移时把扁平的 `agents.<别名>.model/reasoning` 移到 `agents.<别名>.routes.<难度>`；同一 provider 的不同模型和难度保留在这个别名下。脚本不接受旧格式。配置服务多个环境时使用 `environments` 覆盖。脚本只读取配置，不安装 provider 或覆盖配置。新配置先运行 `--dry-run` 验证，再派发。模型目录不会自动生成用户的模型偏好。
 
+## 项目最低难度
+
+用户配置可增加 `projects: {<project-id>: {min_difficulty: medium}}`，取值为 `simple`、`medium` 或 `complex`。项目 ID 沿用 `--project` 解析：ID 模式默认目标环境所属项目，路径模式默认当前项目。未配置时保持原难度；低于下限时自动抬升，按实际难度选择路由、模型和标题。
+
+`selection.difficulty` 与账本 `difficulty` 为实际难度，`requested_difficulty` 保留原请求；抬升提示同时出现在 stderr 和 `selection.warnings`，dry-run 也可见。`--closed-scope` 与 `--unknown`、任务长度门禁仍检查请求难度，所以 simple 的 closed-scope 可抬升，抬升到 complex 不要求 unknown；直接请求 complex 的既有要求不变。
+
+历史统计按实际难度计数；`simple_share_low` 如包含抬升派发，会注明抬升次数及不能直接据此判断误分档。该计数随账本滚动折算保留；旧记录无请求字段时视为未抬升。
+
 ## 派发与配置规则
 
 ```bash
