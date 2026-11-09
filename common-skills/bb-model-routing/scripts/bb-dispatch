@@ -110,6 +110,14 @@ REPORT_PROTOCOL = (
     "进度、阶段发现、新建资源和对父线程追加消息的回应，都留到回合结束按任务要求一次交代；"
     "需要即时留底的事实（如资源 ID）先写进工作区文件。任务正文另有约定时以正文为准。"
 )
+# 长任务每个回合结束（等 CI、等审查）都会唤醒父线程；stuck/off 时只在失败、卡住或等审批时自动唤醒，
+# 其余要父线程知道的事由子线程显式 tell，进度不再逐回合打扰。
+PARENT_NOTIFICATION_MODES = ("auto", "stuck", "off")
+QUIET_REPORT_PROTOCOL = (
+    "回合结束不会自动通知父线程。只在这几种情况下用 `bb thread tell <父线程ID>` 发一条消息："
+    "需要父线程审批；需要它决定或你被卡住；阶段完成（附交付摘要）；发现不归你管的问题。进度不报。"
+    "需要即时留底的事实（如资源 ID）先写进工作区文件。任务正文另有约定时以正文为准。"
+)
 
 
 def bb(*args):
@@ -1320,8 +1328,12 @@ def dispatch_unlocked(args, call, now, config, slots):
     parent = context.get("thread") or {}
     if not parent and os.environ.get("BB_THREAD_ID"):
         parent = (call("thread", "show", os.environ["BB_THREAD_ID"]).get("thread") or {})
-    # 只要关联了父线程就附加回报方式，跨项目也一样。
-    task = args.task + REPORT_PROTOCOL_ANCHOR + REPORT_PROTOCOL if parent.get("id") else args.task
+    # 只要关联了父线程就附加回报方式，跨项目也一样；通知模式决定附加哪一份。
+    notifications = args.parent_notifications or config.get("parent_notifications") or "auto"
+    if notifications not in PARENT_NOTIFICATION_MODES:
+        raise DispatchError(f"parent_notifications 只能是 {'/'.join(PARENT_NOTIFICATION_MODES)}，收到 {notifications!r}")
+    protocol = REPORT_PROTOCOL if notifications == "auto" else QUIET_REPORT_PROTOCOL
+    task = args.task + REPORT_PROTOCOL_ANCHOR + protocol if parent.get("id") else args.task
     command = ["thread", "spawn", "--project", project, "--environment", environment,
                "--provider", provider, "--model", model,
                "--permission-mode", permission, "--prompt", task]
@@ -1332,13 +1344,16 @@ def dispatch_unlocked(args, call, now, config, slots):
     command += ["--title", title]
     if parent.get("id"):
         command += ["--parent-thread", parent["id"]]
+        if notifications != "auto":
+            command += ["--parent-notifications", notifications]
     plan = dict(project=project, environment=environment, validation_environment=validation_environment,
                 agent=alias, provider=provider,
                 model=model, reasoning=reasoning, permission_mode=permission,
                 service_tier=service_tier,
                 difficulty=args.difficulty, title=title,
                 routing_mode=routing_mode, candidate_weights=candidate_weights,
-                candidates=chain, fallbacks=fallbacks, attempts=attempts)
+                candidates=chain, fallbacks=fallbacks, attempts=attempts,
+                parent_notifications=notifications if parent.get("id") else None)
     if escalate_from:
         plan["escalated_from"] = escalate_from
     if unknown:
@@ -1458,6 +1473,9 @@ def parser():
     p.add_argument("--environment", help="现有环境 ID 或本机工作区目录；默认当前 BB 环境")
     p.add_argument("--permission-mode", choices=["accept-edits", "auto", "full"], help="权限覆盖；默认用户配置，否则支持 auto 的 Codex 用 auto，其他用 accept-edits")
     p.add_argument("--title", help="可选标题正文；按难度和账号自动加颜色形状前缀（圆/方/心），省略时从任务文本截取")
+    p.add_argument("--parent-notifications", choices=PARENT_NOTIFICATION_MODES,
+                   help="子线程哪些回合结果唤醒父线程：auto 每回合；stuck 只在失败、卡住或等审批时，其余由子线程显式 tell；"
+                        "off 不自动唤醒。省略时读配置顶层 parent_notifications，默认 auto")
     p.add_argument("--dry-run", action="store_true", help="只读校验并输出启动参数，不创建线程；配合 --on-failure 只给出动作，不安排重试、不写账本")
     p.add_argument("--concurrency-status", action="store_true", help="只读查看 provider 当前占用与未决并发占位，不依赖统计账本")
     p.add_argument("--release-reservation", metavar="占位ID", help="确认创建结果后移除指定占位；活跃线程仍按 BB 实时状态计数")

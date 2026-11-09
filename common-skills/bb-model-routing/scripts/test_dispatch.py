@@ -118,6 +118,23 @@ environments:
         self.assertIn('parent', result['argv'])
         self.assertFalse(any(c[:2] == ('thread', 'spawn') for c in self.calls))
 
+    def test_quiet_parent_notifications_spawn_with_tell_protocol(self):
+        def prompt(result):
+            return result['argv'][result['argv'].index('--prompt') + 1]
+
+        default = m.dispatch(self.args('--dry-run'), self.fake)
+        self.assertNotIn('--parent-notifications', default['argv'])
+        self.assertTrue(prompt(default).endswith(m.REPORT_PROTOCOL))
+
+        quiet = m.dispatch(self.args('--parent-notifications', 'stuck', '--dry-run'), self.fake)
+        argv = quiet['argv']
+        self.assertEqual(argv[argv.index('--parent-notifications') + 1], 'stuck')
+        self.assertTrue(prompt(quiet).endswith(m.QUIET_REPORT_PROTOCOL))
+        self.assertEqual(quiet['selection']['parent_notifications'], 'stuck')
+        # 续派时从子线程首条消息复制任务文本：去掉旧回报方式，按当前模式重新附加一次。
+        copied = m.dispatch(self.args('--task', prompt(quiet), '--parent-notifications', 'stuck', '--dry-run'), self.fake)
+        self.assertEqual(prompt(copied), prompt(quiet))
+
     def test_linked_child_gets_report_protocol_once_and_copied_task_redispatches_identically(self):
         self.load_balance_config()
 
