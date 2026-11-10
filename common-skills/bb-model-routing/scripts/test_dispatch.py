@@ -386,10 +386,15 @@ environments:
 
         return with_tiers
 
-    def test_fast_defaults_on_and_is_omitted_when_unsupported(self):
+    def test_fast_defaults_off_and_true_enables_it(self):
         result = m.dispatch(self.args('--dry-run'), self.fake)
         self.assertIsNone(result['selection']['service_tier'])
         self.assertNotIn('--service-tier', result['argv'])
+        omitted = m.dispatch(self.args('--dry-run'), self.enable_fast_catalog())
+        self.assertEqual(omitted['selection']['service_tier'], 'default')
+        config = m.yaml.safe_load(self.config.read_text())
+        config['fast'] = True
+        self.config.write_text(m.yaml.safe_dump(config))
         enabled = m.dispatch(self.args('--dry-run'), self.enable_fast_catalog())
         self.assertEqual(enabled['selection']['service_tier'], 'fast')
         self.assertEqual(enabled['argv'][enabled['argv'].index('--service-tier') + 1], 'fast')

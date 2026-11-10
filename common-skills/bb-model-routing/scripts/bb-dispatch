@@ -1239,7 +1239,7 @@ def dispatch_unlocked(args, call, now, config, slots):
         return provider in limits and (scopes[provider] is None or model in scopes[provider])
 
     route = args.difficulty
-    fast = configured_bool(override, config, "fast", True, "fast")
+    fast = configured_bool(override, config, "fast", False, "fast")
     chain, routing_mode, candidate_weights, full_chain = candidate_chain(args, defaults, route)
 
     def route_target(alias):

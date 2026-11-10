@@ -28,7 +28,7 @@ bb-dispatch --difficulty complex --task 'Oracle：裁决指定的技术问题' -
 
 权限优先级：`--permission-mode` > `agents.<别名>.permission_mode` > 环境配置 > 顶层配置。均未配置时，支持 `auto` 的原生 Codex provider 默认使用 Approve for me（`auto`），其他 provider 默认 `accept-edits`。显式配置的权限不兼容时报告错误。
 
-`fast` 控制派发是否请求 BB 的 Fast service tier。省略时默认 `true`；人手改配置文件为 `false` 即关闭。脚本不提供命令行覆盖，也不接受模型侧选择。优先级：`agents.<别名>.fast` > 环境配置 `environments.<id>.fast` > 顶层配置 `fast`。若在顶层或 agent 配置 `force_fast: true`，则强制开启 Fast 并豁免巡检自动熔断；也可通过 `quota_fuse` 自定义熔断阈值（如已用 95% 熔断）并在 `restore_at` 到期后自动恢复默认阈值。打开且模型支持 fast 时传 `--service-tier fast`；关闭或模型不支持 fast 时，只要 provider 列出 service tiers（含 `default`）就显式传 `--service-tier default`，硬性覆盖项目历史记忆偏好；整个 provider 均不支持 service tiers 时才省略该参数。
+`fast` 控制派发是否请求 BB 的 Fast service tier。省略时默认 `false`；人手改配置文件为 `true` 即开启。脚本不提供命令行覆盖，也不接受模型侧选择。优先级：`agents.<别名>.fast` > 环境配置 `environments.<id>.fast` > 顶层配置 `fast`。若在顶层或 agent 配置 `force_fast: true`，则强制开启 Fast 并豁免巡检自动熔断；也可通过 `quota_fuse` 自定义熔断阈值（如已用 95% 熔断）并在 `restore_at` 到期后自动恢复默认阈值。打开且模型支持 fast 时传 `--service-tier fast`；关闭或模型不支持 fast 时，只要 provider 列出 service tiers（含 `default`）就显式传 `--service-tier default`，硬性覆盖项目历史记忆偏好；整个 provider 均不支持 service tiers 时才省略该参数。
 
 `defaults` 将 simple/medium/complex 映射到路由。字符串或有序别名列表使用 `fallback`：脚本按配置顺序校验并派发首个可用候选。需要在候选间分摊独立任务时使用显式配置：
 
