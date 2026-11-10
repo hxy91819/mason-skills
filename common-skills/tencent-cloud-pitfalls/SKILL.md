@@ -1,6 +1,6 @@
 ---
 name: tencent-cloud-pitfalls
-description: 腾讯云开通与排障的已知坑。两种情况使用：在新主账号上首次用 IaC 或 API 开通产品（TKE 网络插件、CLS 采集、云监控告警、COS 策略、TCR、CLB、DNSPod、TAT）；或腾讯云 API 返回不说明原因的拒绝，如 ClusterNotSuitEnableVPCCNI、role not exist、TradeFailed、NotPurchased、ServiceNotSubscribed。只选择 tccli 账号或查询已有资源时不使用。
+description: 腾讯云开通与排障的已知坑。三种情况使用：在新主账号上首次用 IaC 或 API 开通产品（TKE 网络插件、CLS 采集、云监控告警、COS 策略、TCR、CLB、DNSPod、TAT）；腾讯云 API 返回不说明原因的拒绝，如 ClusterNotSuitEnableVPCCNI、role not exist、TradeFailed、NotPurchased、ServiceNotSubscribed；或删除、退还、IaC refresh 的回读和「不存在」字面不一致，如 NodePoolQueryFailed、ResourceNotFound、包月 TerminateInstances。只选择 tccli 账号或查询已有资源时不使用。
 ---
 
 # 腾讯云开通与排障踩坑
@@ -46,6 +46,8 @@ description: 腾讯云开通与排障的已知坑。两种情况使用：在新�
 开通或修改某个产品之前，先读 [references/product-pitfalls.md](references/product-pitfalls.md) 里对应的一节。涵盖：
 
 - TKE 网络与 DNS
+- TKE kubeconfig
+- TKE 节点池与包月退还
 - CLS 采集
 - 云监控
 - COS
@@ -54,9 +56,12 @@ description: 腾讯云开通与排障的已知坑。两种情况使用：在新�
 - CLB
 - TCR
 - DNSPod
-- 删除顺序
+- 删除回读
 - 单账号多业务时的 CAM
 - 配额与账单
 - 零散的参数问题
+- CAM 写请求的类型
+- CynosDB
+- pulumi-tencentcloud v0.2.3
 
 用临时管理员密钥操作生产账号，或在多人共用的账号里操作时，先读 [references/production-operations.md](references/production-operations.md)。

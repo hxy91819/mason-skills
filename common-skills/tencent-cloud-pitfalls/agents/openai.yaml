@@ -1,6 +1,6 @@
 interface:
   display_name: "腾讯云踩坑"
-  short_description: "新账号开通产品与云 API 笼统拒绝时的已知坑和排查方法"
-  default_prompt: "使用 $tencent-cloud-pitfalls 先对齐新账号的服务角色与服务开通，再按产品查已知坑；API 报笼统拒绝时按单变量对照排查。"
+  short_description: "新账号开通、笼统拒绝，以及删除回读和 provider 误报不存在"
+  default_prompt: "使用 $tencent-cloud-pitfalls 先对齐新账号的服务角色与服务开通，再按产品查已知坑；API 报笼统拒绝，或删除、退还、refresh 的回读和「不存在」不一致时，按对应条目处理。"
 policy:
   allow_implicit_invocation: true
