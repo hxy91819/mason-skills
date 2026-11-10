@@ -515,6 +515,7 @@ environments:
                  ('🟢', '任务'),
                  ('🟨', '任务'),
                  ('❤️', '任务'),
+                 ('📒', '任务'),
                  ('文' * 100, '文' * 79 + '…')]
         for supplied, expected in cases:
             for difficulty, prefix in [('simple', '🟢'), ('medium', '🟡'), ('complex', '🔴')]:
@@ -529,6 +530,22 @@ environments:
                         command = result['argv'] if dry_run else self.calls[-1]
                         self.assertEqual(command[command.index('--title') + 1], prefix + ' ' + expected)
                         self.assertEqual(result['selection']['title'], prefix + ' ' + expected)
+
+    def test_codexm_book_titles_across_difficulties(self):
+        for alias in ('codexm', 'codex-m', 'custom_agent'):
+            for difficulty, prefix in [('simple', '📗'), ('medium', '📒'), ('complex', '📕')]:
+                with self.subTest(alias=alias, difficulty=difficulty):
+                    config = m.yaml.safe_load(self.config.read_text())
+                    config['agents'][alias] = {
+                        'provider': 'primary',
+                        'routes': {difficulty: {'model': 'fast-model', 'reasoning': 'low'}}
+                    }
+                    if alias == 'custom_agent':
+                        config['agents'][alias]['shape'] = 'book'
+                    config['defaults'][difficulty] = alias
+                    self.config.write_text(m.yaml.safe_dump(config))
+                    result = m.dispatch(self.args('--difficulty', difficulty, '--title', '📒 测试任务', '--dry-run'), self.fake)
+                    self.assertEqual(result['selection']['title'], prefix + ' 测试任务')
 
     def test_shaped_title_prefixes_by_agent_and_shape(self):
         config = m.yaml.safe_load(self.config.read_text())

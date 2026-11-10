@@ -46,6 +46,7 @@ SHAPED_TITLE_PREFIXES = {
     "circle": {"simple": "🟢", "medium": "🟡", "complex": "🔴"},
     "square": {"simple": "🟩", "medium": "🟨", "complex": "🟥"},
     "heart": {"simple": "💚", "medium": "💛", "complex": "❤️"},
+    "book": {"simple": "📗", "medium": "📒", "complex": "📕"},
 }
 AGENT_SHAPES = {
     "codex": "circle",
@@ -53,6 +54,8 @@ AGENT_SHAPES = {
     "codex-l": "square",
     "codexb": "heart",
     "codex-b": "heart",
+    "codexm": "book",
+    "codex-m": "book",
 }
 ALL_TITLE_PREFIXES = tuple(
     dict.fromkeys(

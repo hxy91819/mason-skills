@@ -122,5 +122,6 @@ bb-dispatch --release-reservation <占位ID>
   - 圆形（默认 / `codex`）：`🟢` / `🟡` / `🔴`
   - 方形（`codexl` / `codex-l` / `shape: square`）：`🟩` / `🟨` / `🟥`
   - 心形（`codexb` / `codex-b` / `shape: heart`）：`💚` / `💛` / `❤️`
+  - 书本（`codexm` / `codex-m` / `shape: book`）：`📗` / `📒` / `📕`
 
 `--title` 指定正文；省略或仅空白时使用任务文本。脚本折叠空白，移除开头已有的旧 `[Agent]`、难度圆点或形状前缀，再加上本次难度与账号对应的前缀；正文最多 80 字符（含省略号）。创建命令始终传 `--title`，`selection.title` 返回实际提交的标题。建议传简短标题，避免任务细节直接出现在会话列表。后续显式重命名仍可改变标题；已有线程不会自动改名。
