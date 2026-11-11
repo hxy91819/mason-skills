@@ -43,6 +43,37 @@ class PreviewTest(unittest.TestCase):
         self.assertFalse((self.root / info['id']).exists())
         self.assertEqual(self.source.read_text(), '<html>report</html>')
 
+    def test_http_entry_requires_explicit_config_and_preserves_lifecycle(self):
+        self.cfg.update(base_url='http://masonxhuang-any3.devcloud.woa.com:8081/previews',
+                        login_url='http://masonxhuang-any3.devcloud.woa.com:8081/oauth2/sign_in')
+        self.config.write_text(json.dumps(self.cfg))
+        with self.assertRaises(ValueError):
+            Store(self.config)
+        self.cfg['allow_http'] = True
+        self.config.write_text(json.dumps(self.cfg))
+        store = Store(self.config)
+        info = store.publish(self.source, 24)
+        self.source.write_text('<html>mobile</html>')
+        updated = store.update(info['id'], self.source)
+        self.assertEqual(updated['url'], info['url'])
+        self.assertTrue(updated['url'].startswith(self.cfg['base_url'] + '/'))
+        self.assertTrue(updated['login_url'].startswith(self.cfg['login_url'] + '?rd='))
+        self.assertEqual(updated['expires_at'], info['expires_at'])
+        store.delete(info['id'])
+        self.assertTrue(self.source.exists())
+
+    def test_http_opt_in_does_not_allow_other_schemes_or_mixed_origins(self):
+        self.cfg['allow_http'] = True
+        for base, login in [
+            ('ftp://example.test/previews', 'ftp://example.test/oauth2/sign_in'),
+            ('http://example.test/previews', 'https://example.test/oauth2/sign_in'),
+            ('http://example.test:8081/previews', 'http://example.test/oauth2/sign_in'),
+        ]:
+            self.cfg.update(base_url=base, login_url=login)
+            self.config.write_text(json.dumps(self.cfg))
+            with self.assertRaises(ValueError):
+                Store(self.config)
+
     def test_update_replaces_copy_keeps_id_url_and_expiry(self):
         info = self.store.publish(self.source, 24)
         record_path = self.state / (info['id'] + '.json')

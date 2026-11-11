@@ -61,14 +61,15 @@ class Store:
                 raise ValueError(f'目录必须存在且不可被组或其他用户写入: {path}')
         self.base = cfg['base_url'].rstrip('/')
         self.login = cfg['login_url']
+        schemes = ('https', 'http') if cfg.get('allow_http') is True else ('https',)
         for url in (self.base, self.login):
             parsed = urlsplit(url)
             parsed.port
-            if (parsed.scheme != 'https' or not parsed.hostname or parsed.username
+            if (parsed.scheme not in schemes or not parsed.hostname or parsed.username
                     or parsed.password or parsed.query or parsed.fragment
                     or any(c.isspace() or c in '<>\\' for c in url)):
-                raise ValueError('base_url/login_url 需要不含凭据、查询或片段的 HTTPS 地址')
-        if urlsplit(self.base).netloc != urlsplit(self.login).netloc:
+                raise ValueError('base_url/login_url 需要不含凭据、查询或片段的 HTTPS 地址（HTTP 需配置 allow_http: true）')
+        if (urlsplit(self.base).scheme, urlsplit(self.base).netloc) != (urlsplit(self.login).scheme, urlsplit(self.login).netloc):
             raise ValueError('base_url 与 login_url 必须同一 origin')
         self.binding = hashlib.sha256(str(self.root).encode()).hexdigest()
 

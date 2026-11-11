@@ -4,7 +4,7 @@
 
 ## 本机配置
 
-管理员准备独立静态站点，如 `html.preview.test`，在认证之后把 `/previews/*` 映射到专用静态目录，保持原配方不列目录、不跟随发布的符号链接、不公开状态文件的边界。同站点静态 HTML 之间同源，只托管当前可信任务产物。
+默认入口为 `http://masonxhuang-any3.devcloud.woa.com:8081`；本机 8081 提供 HTTP，并与已有项目共用 OAuth2 Proxy 登录。仅在认证之后把 `/previews/*` 映射到专用静态目录，保留现有根路径和其他项目路由。旧入口 `https://html.preview.test` 继续保留，保持原配方不列目录、不跟随发布的符号链接、不公开状态文件的边界。同站点静态 HTML 之间同源，只托管当前可信任务产物。
 
 示例 `/etc/html-preview/publish.json`（真实地址由管理员核实替换，配置不提交 Git）：
 
@@ -12,12 +12,13 @@
 {
   "publish_root": "/srv/html-preview",
   "state_root": "/var/lib/html-preview-expiry",
-  "base_url": "https://html.preview.test/previews",
-  "login_url": "https://html.preview.test/oauth2/sign_in"
+  "base_url": "http://masonxhuang-any3.devcloud.woa.com:8081/previews",
+  "login_url": "http://masonxhuang-any3.devcloud.woa.com:8081/oauth2/sign_in",
+  "allow_http": true
 }
 ```
 
-base_url 是 ID 之前的路径，login_url 不带 query，脚本会生成编码后的 rd。两者必须同一 HTTPS origin，不能包含凭据。目录必须绝对路径、互不包含、无符号链接，发布和状态目录都只能由管理账号写入，组和其他用户不可写；状态目录不能作为 HTTP 根目录或位于被测仓库。
+base_url 是 ID 之前的路径，login_url 不带 query，脚本会生成编码后的 rd。两者必须同一 origin（协议、主机和端口一致），不能包含凭据。脚本默认要求 HTTPS；本机默认入口只有 HTTP，因此显式设置 `allow_http: true`，复用该端口现有认证。部署到其他机器时先核实协议与入口；有 HTTPS 时省略该选项。目录必须绝对路径、互不包含、无符号链接，发布和状态目录都只能由管理账号写入，组和其他用户不可写；状态目录不能作为 HTTP 根目录或位于被测仓库。
 
 目录初始创建示例沿用原配方：发布根 root:preview-auth、750；状态目录 root:root、700。脚本应由有权写这些目录的管理员或明确配置的发布账号执行，Caddy 用户只读。若使用专用发布账号，调整目录所有者而非授予所有用户写权限。状态、日志、真实配置均在 Git 外，不能将 root 服务的执行文件指向普通用户可修改的 checkout。
 
