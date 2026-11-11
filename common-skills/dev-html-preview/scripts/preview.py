@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """发布可信单文件 HTML 副本并管理 TTL；不安装网关，不修改源文件。
 
-参数：--config 本机 JSON；publish SOURCE [--hours 24]、show [ID]、
-renew ID [--hours 24]、delete ID、gc。TTL 为 1 到 168 小时。
+参数：--config 本机 JSON；publish SOURCE [--hours 24]、update ID SOURCE [--hours N]、
+show [ID]、renew ID [--hours 24]、delete ID、gc。TTL 为 1 到 168 小时。
+update 省略 --hours 时只原地替换副本，保持 ID、URL、目录绑定和到期时间不变。
 输出：stdout JSON（地址、到期时间或清理结果）；错误写 stderr，退出码 2。
 示例：preview.py --config /etc/html-preview/publish.json publish /tmp/report.html
       preview.py --config /etc/html-preview/publish.json gc
-配置与状态均应位于 Git 外。只删除有效登记目录中的 index.html，不递归清目录。
+配置与状态均应位于 Git 外。只删除或替换有效登记目录中的 index.html，不递归清目录。
 """
 
 import argparse
@@ -118,11 +119,15 @@ class Store:
             'access_verified': False,
         }
 
-    def publish(self, source, ttl):
+    @staticmethod
+    def source_payload(source):
         source = plain_path(source)
         if source.suffix.lower() not in ('.html', '.htm') or not source.is_file():
             raise ValueError('需要可信的单文件 HTML，不能是目录或符号链接')
-        payload = source.read_bytes()
+        return source.read_bytes()
+
+    def publish(self, source, ttl):
+        payload = self.source_payload(source)
         ident = 'p-' + secrets.token_hex(8)
         target = self.root / ident
         if target.exists() or target.is_symlink() or self.path(ident).exists():
@@ -137,6 +142,33 @@ class Store:
         with index.open('xb') as f:
             f.write(payload)
         index.chmod(0o644)
+        return self.describe(record)
+
+    def update(self, ident, source, ttl=None):
+        try:
+            record = self.read(ident)
+        except FileNotFoundError:
+            raise ValueError('预览 ID 不存在，请重新发布源文件') from None
+        if record['expires_at'] <= time.time():
+            raise ValueError('预览已过期，请重新发布源文件')
+        index = plain_path(self.root / ident / 'index.html')
+        if not index.is_file():
+            raise ValueError('发布副本已不存在，请重新发布源文件')
+        payload = self.source_payload(source)
+        # 同目录临时文件写完再 rename，读请求不会看到半个文件。
+        temp = index.parent / ('.index-' + secrets.token_hex(8))
+        try:
+            with temp.open('xb') as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+            temp.chmod(0o644)
+            os.replace(temp, index)
+        finally:
+            temp.unlink(missing_ok=True)
+        if ttl is not None:
+            record['expires_at'] = time.time() + ttl * 3600
+            self.write(record)
         return self.describe(record)
 
     def renew(self, ident, ttl):
@@ -183,6 +215,10 @@ def main():
     pub = commands.add_parser('publish', help='发布单文件 HTML 的副本')
     pub.add_argument('source')
     pub.add_argument('--hours', type=hours, default=24)
+    upd = commands.add_parser('update', help='原地替换已登记副本，保持 ID 和 URL 不变')
+    upd.add_argument('id')
+    upd.add_argument('source')
+    upd.add_argument('--hours', type=hours, default=None, help='同时续期；省略时保持原到期时间')
     show = commands.add_parser('show', help='只读展示登记、URL 和到期时间；省略 ID 列出全部')
     show.add_argument('id', nargs='?')
     renew = commands.add_parser('renew', help='从现在起续期，已删除副本不可续期')
@@ -196,6 +232,8 @@ def main():
         with store.locked():
             if args.command == 'publish':
                 result = store.publish(args.source, args.hours)
+            elif args.command == 'update':
+                result = store.update(args.id, args.source, args.hours)
             elif args.command == 'renew':
                 result = store.renew(args.id, args.hours)
             elif args.command == 'delete':

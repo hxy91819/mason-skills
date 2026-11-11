@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -41,6 +42,111 @@ class PreviewTest(unittest.TestCase):
         self.store.delete(info['id'])
         self.assertFalse((self.root / info['id']).exists())
         self.assertEqual(self.source.read_text(), '<html>report</html>')
+
+    def test_update_replaces_copy_keeps_id_url_and_expiry(self):
+        info = self.store.publish(self.source, 24)
+        record_path = self.state / (info['id'] + '.json')
+        record_before = record_path.read_text()
+        self.source.write_text('<html>updated</html>')
+        updated = self.store.update(info['id'], self.source)
+        self.assertEqual(updated['id'], info['id'])
+        self.assertEqual(updated['url'], info['url'])
+        self.assertTrue(updated['published_copy_exists'])
+        self.assertEqual((self.root / info['id'] / 'index.html').read_text(), '<html>updated</html>')
+        self.assertEqual(record_path.read_text(), record_before)
+        self.assertEqual(sorted(p.name for p in (self.root / info['id']).iterdir()), ['index.html'])
+
+    def test_update_can_renew_expiry(self):
+        info = self.store.publish(self.source, 1)
+        record_path = self.state / (info['id'] + '.json')
+        before = json.loads(record_path.read_text())['expires_at']
+        started = time.time()
+        self.store.update(info['id'], self.source, 24)
+        finished = time.time()
+        after = json.loads(record_path.read_text())['expires_at']
+        self.assertGreater(after, before)
+        self.assertGreaterEqual(after, started + 24 * 3600)
+        self.assertLessEqual(after, finished + 24 * 3600)
+
+    def test_update_unknown_id_requires_republish(self):
+        with self.assertRaisesRegex(ValueError, '不存在.*重新发布'):
+            self.store.update('p-0123456789abcdef', self.source)
+
+    def test_update_deleted_copy_requires_republish(self):
+        info = self.store.publish(self.source, 24)
+        (self.root / info['id'] / 'index.html').unlink()
+        with self.assertRaisesRegex(ValueError, '副本已不存在.*重新发布'):
+            self.store.update(info['id'], self.source)
+        self.assertFalse((self.root / info['id'] / 'index.html').exists())
+
+    def test_update_expired_id_requires_republish(self):
+        with patch('preview.time.time', return_value=1000):
+            info = self.store.publish(self.source, 1)
+        record_path = self.state / (info['id'] + '.json')
+        record_before = record_path.read_text()
+        with patch('preview.time.time', return_value=4601):
+            with self.assertRaisesRegex(ValueError, '已过期.*重新发布'):
+                self.store.update(info['id'], self.source, 24)
+        self.assertEqual((self.root / info['id'] / 'index.html').read_text(), '<html>report</html>')
+        self.assertEqual(record_path.read_text(), record_before)
+
+    def test_update_requires_single_html_file(self):
+        info = self.store.publish(self.source, 24)
+        directory = self.base / 'directory.html'
+        directory.mkdir()
+        text = self.base / 'notes.txt'
+        text.write_text('not html')
+        link = self.base / 'linked.html'
+        link.symlink_to(self.source)
+        for bad in (directory, text, link):
+            with self.assertRaises(ValueError):
+                self.store.update(info['id'], bad)
+        self.assertEqual((self.root / info['id'] / 'index.html').read_text(), '<html>report</html>')
+
+    def test_update_waits_for_existing_lock(self):
+        info = self.store.publish(self.source, 24)
+        self.source.write_text('<html>locked update</html>')
+        script = Path(__file__).with_name('preview.py')
+        holder_code = (
+            'import sys, time\n'
+            'sys.path.insert(0, sys.argv[1])\n'
+            'from preview import Store\n'
+            'lock = Store(sys.argv[2]).locked()\n'
+            'lock.__enter__()\n'
+            "print('locked', flush=True)\n"
+            'time.sleep(30)\n'
+        )
+        holder = subprocess.Popen(
+            [sys.executable, '-c', holder_code, str(script.parent), str(self.config)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+        def stop(proc):
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            for pipe in (proc.stdout, proc.stderr):
+                if pipe is not None:
+                    pipe.close()
+
+        self.addCleanup(stop, holder)
+        self.assertEqual(holder.stdout.readline().strip(), 'locked')
+        updater = subprocess.Popen(
+            [sys.executable, str(script), '--config', str(self.config),
+             'update', info['id'], str(self.source)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(stop, updater)
+        with self.assertRaises(subprocess.TimeoutExpired):
+            updater.wait(timeout=0.5)
+        holder.terminate()
+        holder.wait(timeout=5)
+        out, err = updater.communicate(timeout=10)
+        self.assertEqual(updater.returncode, 0, err)
+        self.assertEqual(json.loads(out)['url'], info['url'])
+        self.assertEqual((self.root / info['id'] / 'index.html').read_text(),
+                         '<html>locked update</html>')
+        self.assertEqual(sorted(p.name for p in (self.root / info['id']).iterdir()), ['index.html'])
+        stop(holder)
+        stop(updater)
 
     def test_gc_expiry_and_unknown_directory_preserved(self):
         with patch('preview.time.time', return_value=1000):

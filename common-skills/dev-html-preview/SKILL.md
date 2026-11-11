@@ -1,6 +1,6 @@
 ---
 name: dev-html-preview
-description: Publish, renew, inspect, or delete a temporary static HTML browser preview only when the user explicitly invokes `$dev-html-preview`.
+description: Publish, update, renew, inspect, or delete a temporary static HTML browser preview only when the user explicitly invokes `$dev-html-preview`.
 disable-model-invocation: true
 triggers:
   - user
@@ -8,7 +8,7 @@ triggers:
 
 # HTML 预览发布
 
-这是显式启动的流程：仅当用户写出 `$dev-html-preview` 时使用。普通 HTML 文件、图表或示意图请求由当前任务直接处理；用户只要本地文件或 IDE 内嵌展示时，不发布预览。显式启动后可继续处理该预览的续期、查询或删除。
+这是显式启动的流程：仅当用户写出 `$dev-html-preview` 时使用。普通 HTML 文件、图表或示意图请求由当前任务直接处理；用户只要本地文件或 IDE 内嵌展示时，不发布预览。显式启动后可继续处理该预览的更新、续期、查询或删除。
 
 ## 发布前
 
@@ -32,6 +32,7 @@ python3 /path/to/dev-html-preview/scripts/preview.py --config /etc/html-preview/
 ## 生命周期
 
 - 查询 `show [ID]`：只读汇总登记、副本存在和到期状态；无历史内容、源文件路径或访问日志。
+- 内容更新 `update ID SOURCE [--hours N]`：内容更新用 update，保持 URL 不变；原地替换已登记副本，ID 和目录绑定不变。省略 `--hours` 时到期时间不变，传入时同时续期。已删除或已过期的 ID 不能更新，需重新发布。
 - 续期 `renew ID --hours 24`：用户仍需查看，或当前任务明确延长预览时使用；已删除的副本需从源重新发布。普通 Agent 回复、查看状态或静默访问不续期。
 - 删除 `delete ID`：用户要求撤下或已明确不再需要时，仅删除该发布副本。
 - 自动清理 `gc`：由 systemd timer 独立运行，只处理本脚本有效登记且到期的副本；Agent 会话结束不影响 timer。未知格式、符号链接、额外文件只报告并保留，不能为了清空目录而递归删除。
@@ -40,6 +41,6 @@ python3 /path/to/dev-html-preview/scripts/preview.py --config /etc/html-preview/
 
 ## 状态与失败边界
 
-本机状态是发布/删除的事实源，由脚本在文件锁内原子更新，放在发布根之外、Git 外。只记 ID、目录绑定摘要、创建/到期时间与格式版本，不存 prompt、源路径、正文、凭据。发布先登记再复制，中断留下的空副本仍可到期回收；gc 单条失败继续检查其他记录，并以非零退出码及错误列表报告。
+本机状态是发布、更新、删除的事实源，由脚本在文件锁内原子更新，放在发布根之外、Git 外。只记 ID、目录绑定摘要、创建/到期时间与格式版本，不存 prompt、源路径、正文、凭据。发布先登记再复制，中断留下的空副本仍可到期回收；更新先写完临时文件再 rename，不暴露半个副本；gc 单条失败继续检查其他记录，并以非零退出码及错误列表报告。
 
 当前提供 `show` 即时汇总，没有长期运行历史、裁决回写或滚动统计；不把它描述为完整审计。自动清理只减少已登记副本，异常记录保留待处理，不强行折算或丢弃。源 HTML 始终由原任务自行保留。
