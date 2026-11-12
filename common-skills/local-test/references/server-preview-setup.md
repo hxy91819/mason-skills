@@ -77,6 +77,8 @@ standard_logging = true
 custom_templates_dir = "/etc/html-preview/templates"
 ```
 
+`cookie_expire = "168h"` 与 `cookie_refresh = "0"` 在原版 oauth2-proxy 中只提供固定 7 天。滚动 7 天需要认证程序在有效本地密码会话上同步刷新签名时间和浏览器 Cookie；本地 htpasswd 登录没有 OAuth refresh token，开启原版 `cookie_refresh` 会错误进入 OAuth 校验并清除会话。复用已有机器时先读取登记中的 `auth_policy` 和运行实例，保留它的续期程序、服务模板和密钥；不要把原版程序或旧示例覆盖回去。按登记的 inventory/check/verify 命令核对全部域名、端口及别名，而非只验证新站点。
+
 provider/client 字段是本地 htpasswd 模式的程序占位，外部 OAuth 路由由 Caddy 阻断；不是 Google 登录。使用静态 HTML 配方的本地账号表单模板，不显示第三方登录按钮。配置 htpasswd 后不需要 `email_domains`；保持 `skip_provider_button=false`，避免跳入已禁用的 OAuth 流程。会话文件只保存一份 `OAUTH2_PROXY_COOKIE_SECRET`，按原配方生成随机密钥并持久化。`cookie_domains` 与 `whitelist_domains` 只允许该受控父域，不接受任意外部回跳。
 
 建立一个 `local-preview-auth@gateway.service`，沿用原配方的 `User`、沙箱和 `Restart=on-failure`，将 `EnvironmentFile`、`--config` 指向共享文件。认证服务先启动；停止认证服务时入口必须拒绝或报错，不能自动放行业务。账号更新后重启这一个实例；改密码不自动撤销已有 Cookie，需轮换共享密钥才能使旧会话失效。
@@ -111,6 +113,8 @@ https://operations.preview.test {
     }
 }
 ```
+
+`preview_session_renewal` 是认证成功响应的公共适配器，把认证端的续期 Set-Cookie 传回浏览器并设置私有、不缓存的响应。`preview_shared_check` 已包含它；自定义认证转发分支也要传递续期 Cookie，不能留空成功响应。共享父域 Cookie 可在同一受控父域的子站共享；其他域名或 IP 的 host-only Cookie 各自续期，不能强行共享到无关域。
 
 `preview_shared_login` 隔离登录路径；`preview_shared_check` 仅认证子请求移除 Authorization，再把认证成功的请求交给业务上游。业务请求保留原始 Authorization、URI 和方法；不从认证响应复制身份头到业务请求。不得把业务 file_server、API 或 WebSocket 放在认证之前。代理上游无 URI 改写，应用仍使用自己的根路径。
 

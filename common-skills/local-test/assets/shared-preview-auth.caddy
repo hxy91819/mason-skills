@@ -1,3 +1,10 @@
+# Shared by every authenticated site, including project-specific auth handlers.
+(preview_session_renewal) {
+	@sessionRenewed expression `{http.reverse_proxy.header.Set-Cookie} != ""`
+	header @sessionRenewed +Set-Cookie {http.reverse_proxy.header.Set-Cookie}
+	header @sessionRenewed >Cache-Control "private, no-store"
+}
+
 (preview_shared_login) {
 	@login {
 		path /oauth2/sign_in /oauth2/sign_out
@@ -52,6 +59,7 @@
 		header_up X-Forwarded-Uri {uri}
 		@authenticated status 2xx
 		handle_response @authenticated {
+			import preview_session_renewal
 		}
 		@unauthenticated status 401
 		handle_response @unauthenticated {
