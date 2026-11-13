@@ -57,7 +57,8 @@ class ConcurrencyTests(unittest.TestCase):
         self.config.write_text(m.yaml.safe_dump(config))
 
     def fake(self, *args):
-        if args == ('thread', 'list', '--include-hidden'):
+        # 真实 bb thread list 默认不含归档线程；漏传 --include-archived 会让归档线程的占位永不释放。
+        if args == ('thread', 'list', '--include-hidden', '--include-archived'):
             return self.threads
         return fixtures.DispatchTests.fake(self, *args)
 

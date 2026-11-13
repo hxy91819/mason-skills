@@ -1055,7 +1055,7 @@ class ConcurrencySlots:
     def refresh(self):
         if self.threads is not None:
             return
-        rows = self.call("thread", "list", "--include-hidden")
+        rows = self.call("thread", "list", "--include-hidden", "--include-archived")
         if not isinstance(rows, list) or any(not isinstance(t, dict) or not t.get("id") for t in rows):
             raise DispatchError("无法确定并发量：bb thread list 返回格式未知。")
         self.threads = {t["id"]: t for t in rows}
