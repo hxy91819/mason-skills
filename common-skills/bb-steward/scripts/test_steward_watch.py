@@ -2,6 +2,7 @@
 from pathlib import Path
 import json
 import contextlib
+import os
 import io
 import subprocess
 import sys
@@ -419,7 +420,7 @@ class WatchTests(unittest.TestCase):
     def test_actual_model_still_read_when_bb_log_is_unavailable(self):
         self.bb.log = mock.Mock(side_effect=watch.WatchError("unreadable"))
         with mock.patch.object(watch, "claude_model", return_value="actual") as reader:
-            observed, values, warnings = watch.read_models(self.bb, TID, {"seq": 5, "providerThreadId": "session"})
+            observed, values, warnings = watch.read_models(self.bb, TID, {"seq": 5, "providerThreadId": "session", "compactions": 0, "user_messages": []})
         reader.assert_called_once_with("session")
         self.assertEqual(values["actual"], "actual")
         self.assertEqual(observed["seq"], 5)
@@ -465,6 +466,152 @@ class WatchTests(unittest.TestCase):
         self.assertEqual(len(self.bb.tells), 1)
         self.assertIn("opus（high） 变为 opus（low）", self.bb.tells[0][1])
         self.assertIn("新开线程接任", self.bb.tells[0][1])
+
+    def user_said(self, seq, at, text="帮我查一下"):
+        return {"seq": seq, "type": "client/turn/requested", "createdAt": at * 1000,
+                "data": {"initiator": "user", "input": [{"type": "text", "text": text}]}}
+
+    def with_ledger(self, age):
+        ledger = self.dir / "workbook-要求帳.md"
+        ledger.write_text("# 要求帐\n")
+        os.utime(ledger, (NOW - age, NOW - age))
+        self.workbook.write_text(GOOD.replace("更新：2026-10-26", "更新：2026-10-26；[要求帐](workbook-要求帳.md)"))
+        return ledger
+
+    def test_each_new_compaction_asks_for_reread_and_eighth_asks_user_to_hand_over(self):
+        self.workbook.write_text(GOOD)
+        compacted = lambda seq: {"seq": seq, "type": "thread/compacted", "data": {}}
+        self.bb.logs = [compacted(1), compacted(2)]
+        self.tick(NOW)
+        self.assertEqual(self.bb.tells, [])  # 登记前的历史压缩只记基线
+        self.bb.set(status="active")
+        self.bb.logs.append(compacted(3))
+        self.tick(NOW + 60)
+        self.tick(NOW + 120)
+        self.assertEqual(len(self.bb.tells), 1)
+        self.assertIn("重读 bb-steward 的 SKILL.md", self.bb.tells[0][1])
+        self.assertNotIn("告诉用户", self.bb.tells[0][1])
+        self.bb.logs += [compacted(i) for i in range(4, 9)]
+        self.tick(NOW + 180)
+        self.assertIn("已压缩 8 次", self.bb.tells[-1][1])
+        self.assertIn("告诉用户", self.bb.tells[-1][1])
+        self.bb.logs += [compacted(i) for i in range(9, 12)]
+        self.tick(NOW + 240)
+        self.assertNotIn("告诉用户", self.bb.tells[-1][1])  # 提醒过后隔 4 次再提
+        self.bb.logs.append(compacted(12))
+        self.tick(NOW + 300)
+        self.assertIn("已压缩 12 次", self.bb.tells[-1][1])
+        self.assertIn("建议新开线程接任", self.report(NOW + 300))
+        res = watch.summary(self.state, watch.read_events(self.state_path), NOW + 300, 7)
+        self.assertEqual(res["stewards"][TID]["compactions"], 10)
+        self.assertIn("long_lived_steward", [h["hook"] for h in res["hooks"]])
+
+    def test_old_registration_is_rescanned_once_and_long_lived_steward_is_flagged(self):
+        self.workbook.write_text(GOOD)
+        self.state["stewards"][TID]["model_observation"] = {"seq": 9}
+        self.bb.logs = [{"seq": i, "type": "thread/compacted", "data": {}} for i in range(1, 10)]
+        self.tick(NOW)
+        self.tick(NOW + 60)
+        self.assertEqual(self.bb.log_calls, [0, 9])
+        self.assertEqual(len(self.bb.tells), 1)
+        self.assertIn("已压缩 9 次", self.bb.tells[0][1])
+        self.assertNotIn("刚被压缩", self.bb.tells[0][1])
+
+    def test_user_messages_without_ledger_update_are_nudged_until_ledger_moves(self):
+        ledger = self.with_ledger(age=6 * HOUR)
+        self.bb.logs = [self.user_said(i, NOW - 5 * HOUR + i) for i in range(1, 5)]
+        self.bb.logs.append(self.user_said(5, NOW - 4 * HOUR, "[bb-steward 看门狗] 对账"))
+        self.assertEqual(self.tick(NOW)["result"], "ok")  # 脚本消息不算用户要求，只有 4 条
+        self.bb.logs.append(self.user_said(6, NOW - 4 * HOUR))
+        self.assertEqual(self.tick(NOW + 60)["result"], "nudged")
+        self.assertIn("「要求帐」", self.bb.tells[0][1])
+        self.assertIn("5 条消息", self.bb.tells[0][1])
+        os.utime(ledger, (NOW + 100, NOW + 100))
+        self.assertEqual(self.tick(NOW + 120)["result"], "ok")
+
+    def test_recent_messages_are_not_nudged(self):
+        self.with_ledger(age=6 * HOUR)
+        self.bb.logs = [self.user_said(i, NOW - HOUR + i) for i in range(1, 9)]
+        self.assertEqual(self.tick(NOW)["result"], "ok")  # 最早一条不到 3 小时
+
+    def test_history_ledger_and_missing_ledger_link_are_not_nudged(self):
+        self.with_ledger(age=6 * HOUR)
+        standard = self.workbook.read_text()
+        self.bb.logs = [self.user_said(i, NOW - 5 * HOUR + i) for i in range(1, 9)]
+        self.workbook.write_text(standard.replace("[要求帐]", "[要求帐（历史流水账）]"))
+        self.assertEqual(self.tick(NOW)["result"], "ok")
+        self.workbook.write_text(GOOD)
+        self.assertEqual(self.tick(NOW + 60)["result"], "ok")
+        self.workbook.write_text(standard)
+        self.assertEqual(self.tick(NOW + 120)["result"], "nudged")  # 同样的消息，换回标准要求帐就催
+
+    def test_failed_first_rescan_is_retried_instead_of_becoming_a_zero_baseline(self):
+        self.workbook.write_text(GOOD)
+        self.state["stewards"][TID]["model_observation"] = {"seq": 9}
+        self.bb.logs = [{"seq": i, "type": "thread/compacted", "data": {}} for i in range(1, 4)]
+        working = self.bb.log
+        self.bb.log = mock.Mock(side_effect=watch.WatchError("unreadable"))
+        self.tick(NOW)
+        self.assertEqual(self.state["stewards"][TID]["model_observation"], {"seq": 9})
+        self.assertNotIn("compaction", self.state["stewards"][TID])
+        self.bb.log = working
+        self.tick(NOW + 60)
+        self.assertEqual(self.state["stewards"][TID]["compaction"]["seen"], 3)
+        self.assertEqual(self.bb.tells, [])
+
+    def test_compaction_reminder_respects_dry_run_and_is_not_resent_after_failed_send(self):
+        self.workbook.write_text(GOOD)
+        self.tick(NOW)
+        self.bb.logs = [{"seq": 1, "type": "thread/compacted", "data": {}}]
+        self.tick(NOW + 60, dry_run=True)
+        self.assertEqual(self.bb.tells, [])
+        self.assertEqual(watch.load_state(self.state_path)["stewards"][TID]["compaction"]["seen"], 0)
+        self.state = watch.load_state(self.state_path)
+        self.bb.fail_tell = True
+        self.tick(NOW + 120)
+        self.bb.fail_tell = False
+        self.tick(NOW + 180)
+        self.assertEqual(self.bb.tells, [])
+        events = [e for e in watch.read_events(self.state_path) if e["event"] == "compaction"]
+        self.assertEqual([e["ok"] for e in events], [False])
+
+    def test_git_ref_ledger_uses_its_own_last_commit_time(self):
+        repo = self.dir / "repo"
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
+        def commit(name, text, at):
+            (repo / name).write_text(text)
+            subprocess.run(git + ["add", "."], check=True)
+            stamp = f"{int(at)} +0000"
+            subprocess.run(git + ["commit", "-qm", name], check=True,
+                           env={**os.environ, "GIT_COMMITTER_DATE": stamp, "GIT_AUTHOR_DATE": stamp})
+        commit("wb-要求帳.md", "# 要求帐\n", NOW - 6 * HOUR)
+        commit("wb.md", GOOD.replace("更新：2026-10-26", "更新：2026-10-26；[要求帐](wb-要求帳.md)"), NOW - HOUR)
+        subprocess.run(git + ["branch", "-M", "main"], check=True)
+        subprocess.run(git + ["remote", "add", "origin", str(repo)], check=True)
+        watch.register(self.state, self.bb, TID, str(repo / "wb.md"), ref="origin/main", manage_automation=False,
+                       state_path=self.state_path, now=NOW)
+        self.bb.logs = [self.user_said(i, NOW - 5 * HOUR + i) for i in range(1, 60)]
+        self.assertEqual(self.tick(NOW)["result"], "nudged")  # 工作簿一小时前才提交，要求帐六小时没动
+        self.assertIn("至少 50 条消息", self.bb.tells[0][1])
+
+    def test_handover_with_unreadable_old_log_marks_ledger_gap_step_failed(self):
+        self.with_ledger(age=6 * HOUR)
+        self.bb.log = mock.Mock(side_effect=watch.WatchError("unreadable"))
+        res = watch.register(self.state, self.bb, "thr_new00001", str(self.workbook), state_path=self.state_path,
+                             manage_automation=False, now=NOW)
+        steps = {step["step"]: step for step in res["handovers"][0]["steps"]}
+        self.assertFalse(steps["ledger_gap"]["ok"])
+        self.assertTrue(steps["notify"]["ok"])
+
+    def test_handover_reports_user_messages_the_old_steward_never_recorded(self):
+        self.with_ledger(age=6 * HOUR)
+        self.bb.logs = [self.user_said(i, NOW - 5 * HOUR + i) for i in range(1, 4)]
+        res = watch.register(self.state, self.bb, "thr_new00001", str(self.workbook), state_path=self.state_path,
+                             manage_automation=False, now=NOW)
+        self.assertEqual(res["handovers"][0]["ledger_gap"]["messages"], 3)
+        self.assertNotIn("compaction", self.state["stewards"]["thr_new00001"])
+        self.assertIn("缺 3 条用户消息", self.report(NOW))
 
     def test_cancel_retry_without_pending_retry_counts_as_done(self):
         bb = watch.Bb()

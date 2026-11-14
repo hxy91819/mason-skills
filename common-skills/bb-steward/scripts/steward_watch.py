@@ -5,12 +5,16 @@
 - 线程归档或已删除：移除登记。
 - 每轮增量读取 BB 请求模型，Claude Code 管家另读会话记录里的实际模型；首次记基线，新偏离值仅提醒一次，
   回到基线只记事件。
+- 同一次扫描里数上下文压缩：压缩后技能正文不在上下文里，每次新压缩都让管家重读规范、工作簿和要求帐；
+  累计满 8 次（之后每多 4 次）让管家转告用户换管家。压缩次数跟着线程走，接任的新线程从 0 算。
 - 在跑、有排队消息、等待交互或有后台活动：跳过对账与重试。
 - 回合失败且没有排队的重试：`bb thread retry`，间隔 0/30/60/120/240/240 分钟，最多 6 次；
   失败满 60 分钟记为需要用户看一眼。恢复后发一次提醒，让管家核对失败期间到达的通知。
 - 空闲（回合结束满 10 分钟）：读工作簿跑收尾对账（steward_workbook.reconcile_workbook），有 nudge 级
   问题就把问题行发给管家。同一问题最多发 2 次，同一管家两次催办至少隔 2 小时；发满仍未解决的
   记为需要用户看一眼，并要求管家在本回合回复里转告用户。
+- 对账时一并看要求帐：用户发来满 5 条消息、最早一条已过 3 小时，而要求帐在这之后没有更新，按同一套催办规则
+  处理。本地工作簿看要求帐文件的修改时间，Git-ref 模式看它在该分支上的最后提交时间；历史流水账与缺入口的不查。
 
 用法：
   steward_watch.py register --workbook <路径> [--ref origin/main] [--name 简称] [--thread thr_x] [--project proj_x]
@@ -22,7 +26,7 @@
 登记与运行状态在 ${XDG_STATE_HOME:-~/.local/state}/bb-steward/watch.json（可用 BB_STEWARD_WATCH_STATE
 或 --state 改），事件日志在同目录 watch.events.jsonl，超过 2 MB 丢掉较早的一半。首次登记会在当前项目
 创建脚本 automation。模型变化、催满两次、升级过的中断恢复由管家回复转告用户。同工作簿跨线程登记即接任，
-先保存新登记，再独立尝试迁移子线程、取消旧重试及交接通知。run 无事可报时不输出，automation 记为静默跳过。
+先保存新登记，再独立尝试迁移子线程、取消旧重试及交接通知，并在输出的 ledger_gap 里报旧管家没入账的用户消息数。run 无事可报时不输出，automation 记为静默跳过。
 """
 import argparse
 from collections import Counter, defaultdict
@@ -57,6 +61,12 @@ MESSAGE_MAX_PROBLEMS = 8
 SUMMARY_LOW_RESOLVE_SHARE = 0.5
 SUMMARY_MIN_NUDGES = 3
 SUMMARY_FREQUENT_OUTAGES = 3
+LOG_UNREADABLE = "BB 模型日志不可读"
+HANDOVER_COMPACTIONS = 8
+HANDOVER_REPEAT_COMPACTIONS = 4
+LEDGER_STALE_MESSAGES = 5
+LEDGER_STALE_MINUTES = 180
+USER_MESSAGES_KEPT = 50
 TAG = "[bb-steward 看门狗]"
 
 
@@ -242,14 +252,51 @@ def git_toplevel(path):
     return Path(res.stdout.strip())
 
 
-def read_workbook(entry):
+def read_source(entry):
+    """返回（工作簿正文, 固定的 SHA）；本地工作簿的 SHA 为 None。"""
     if not entry.get("ref"):
-        return Path(entry["workbook"]).read_text()
+        return Path(entry["workbook"]).read_text(), None
     try:
         sha = sw.source.pin(entry['repo'], entry['ref'])
-        return sw.source.read(entry['repo'], sha, entry['path'])
+        return sw.source.read(entry['repo'], sha, entry['path']), sha
     except sw.source.SourceError as exc:
         raise WatchError(str(exc)) from exc
+
+
+def read_workbook(entry):
+    return read_source(entry)[0]
+
+
+def ledger_updated_at(entry, text, sha):
+    """要求帐最后更新的时间戳；没有可比的标准要求帐（缺入口、历史流水账、读不到）时返回 None。"""
+    try:
+        target, kind = sw.source.ledger_entry(text)
+        if kind != "standard":
+            return None
+        if sha:
+            path = sw.source.resolve_link(entry["path"], target, True)
+            stamp = sw.source.git(entry["repo"], "log", "-1", "--format=%ct", sha, "--", path).strip()
+            return float(stamp) if stamp else None
+        return Path(sw.source.resolve_link(entry["workbook"], target)).stat().st_mtime
+    except (sw.source.SourceError, OSError, ValueError):
+        return None
+
+
+def ledger_problem(entry, text, sha, now):
+    """用户发了一批消息而要求帐没动：返回一条 nudge 级问题，否则 None。只用时间戳，不读消息正文。"""
+    stamps = (entry.get("model_observation") or {}).get("user_messages") or []
+    if len(stamps) < LEDGER_STALE_MESSAGES:
+        return None
+    updated = ledger_updated_at(entry, text, sha)
+    if updated is None:
+        return None
+    waiting = [t for t in stamps if t > updated]
+    if len(waiting) < LEDGER_STALE_MESSAGES or now - waiting[0] < LEDGER_STALE_MINUTES * 60:
+        return None
+    more = "至少 " if len(stamps) >= USER_MESSAGES_KEPT and len(waiting) == len(stamps) else ""
+    return {"kind": "ledger_stale", "severity": "nudge", "line": None, "label": "要求帐",
+            "detail": f"{hhmm(updated)} 之后没有更新，其后用户发来{more}{len(waiting)} 条消息（最早 {hhmm(waiting[0])}）。"
+                      "按 bb-steward「要求帐」把这段时间交代的事逐项补记并提交，关键决策和用户待办同步进工作簿"}
 
 
 # ---------- 模型观测（只读来源，游标与基线由调用方保存） ----------
@@ -285,15 +332,26 @@ def claude_model(provider_thread_id):
 
 
 def read_models(bb, tid, previous, claude=True):
-    """大页增量扫描；只返回最小事实，不把事件正文存入状态。claude=False 时不找 Claude Code 会话记录。"""
+    """大页增量扫描；只返回最小事实，不把事件正文存入状态。claude=False 时不找 Claude Code 会话记录。
+
+    同一次扫描顺带数上下文压缩次数、记用户消息的时间戳（只留最近 USER_MESSAGES_KEPT 个）。
+    旧登记没有这两项时从头重扫一次，补出线程自创建以来的累计值；重扫中途读不到日志就整轮作废、
+    下轮再扫，免得把历史压缩当成新压缩。
+    """
     observed = dict(previous)
+    rescan = "compactions" not in observed
+    if rescan:
+        observed.update(seq=0, compactions=0, user_messages=[])
     after = observed.get("seq", 0)
     warnings = []
     while True:
         try:
             rows = bb.log(tid, after)
         except (OSError, WatchError) as exc:
-            warnings.append(f"BB 模型日志不可读：{exc}")
+            warnings.append(f"{LOG_UNREADABLE}：{exc}")
+            if rescan:
+                observed = dict(previous)
+                after = observed.get("seq", 0)
             break
         if not isinstance(rows, list):
             raise WatchError("thread log 返回非事件数组")
@@ -303,6 +361,10 @@ def read_models(bb, tid, previous, claude=True):
                 execution = data.get("execution") or {}
                 if execution.get("model"):
                     observed["requested"] = {"model": execution["model"], "reasoningLevel": execution.get("reasoningLevel")}
+                if is_user_message(data) and row.get("createdAt"):
+                    observed["user_messages"] = (observed["user_messages"] + [row["createdAt"] / 1000])[-USER_MESSAGES_KEPT:]
+            elif row.get("type") == "thread/compacted":
+                observed["compactions"] += 1
             elif row.get("type") == "thread/identity" and data.get("providerThreadId"):
                 observed["providerThreadId"] = data["providerThreadId"]
         if not rows:
@@ -325,6 +387,14 @@ def read_models(bb, tid, previous, claude=True):
         except (OSError, WatchError) as exc:
             warnings.append(str(exc))
     return observed, values, warnings
+
+
+def is_user_message(data):
+    """用户键入的消息。看门狗、交接通知等脚本消息在 BB 里同样记为 user，只能靠 `[bb` 开头的标签区分。"""
+    if data.get("initiator") != "user":
+        return False
+    text = next((i.get("text") or "" for i in data.get("input") or [] if i.get("type") == "text"), "")
+    return not text.lstrip().startswith("[bb")
 
 
 MODEL_SOURCES = {"requested": "BB 请求模型", "actual": "Claude Code 实际模型"}
@@ -419,6 +489,8 @@ class Checker:
         entry["model_observation"] = observed
         for detail in warnings:
             self.events.append(event(self.now, tid, "warning", source="models", detail=detail[:200]))
+        if "compactions" in observed:
+            self.check_compactions(tid, entry, observed["compactions"])
         for source, value in values.items():
             tracked = entry.setdefault("models", {})
             if source not in tracked:
@@ -446,6 +518,38 @@ class Checker:
                 except Exception as exc:
                     change.update(ok=False, detail=str(exc)[:200])
             self.events.append(change)
+
+    def check_compactions(self, tid, entry, count):
+        record = entry.get("compaction")
+        if record is None:
+            # 首次观测只记基线：历史压缩不补发重读提醒，但已到阈值的照常提醒换管家。
+            record = entry["compaction"] = {"seen": count, "handover_notified": 0}
+            fresh = 0
+        else:
+            fresh = count - record["seen"]
+            record["seen"] = count
+        last = record["handover_notified"]
+        handover_due = count >= HANDOVER_COMPACTIONS and (not last or count - last >= HANDOVER_REPEAT_COMPACTIONS)
+        if fresh <= 0 and not handover_due:
+            return
+        parts = []
+        if fresh > 0:
+            parts.append(f"你的上下文刚被压缩（累计第 {count} 次）。压缩后技能正文不在上下文里，摘要只留了转述："
+                         "继续之前重读 bb-steward 的 SKILL.md、bb-model-routing 的「判断与调用」，再读工作簿和要求帐，"
+                         "补记压缩前后还没入账的用户要求。")
+        if handover_due:
+            record["handover_notified"] = count
+            parts.append(f"本会话已压缩 {count} 次，规范靠摘要层层转述，遗漏会越来越多。请在本回合回复里告诉用户：建议新开"
+                         "同模型线程接任（bb-steward「接任」），并先把要求帐和工作簿补齐，新管家只能靠它们接手。")
+        self.persist()
+        note = event(self.now, tid, "compaction", count=count, new=max(fresh, 0), handover=handover_due)
+        if not self.dry_run:
+            try:
+                self.bb.tell(tid, f"{TAG} " + "".join(parts) + ("" if handover_due else "不用回复看门狗。"))
+                note["ok"] = True
+            except Exception as exc:
+                note.update(ok=False, detail=str(exc)[:200])
+        self.events.append(note)
 
     def handle_failure(self, tid, entry, info, name):
         outage = entry.get("outage")
@@ -497,7 +601,7 @@ class Checker:
 
     def reconcile(self, tid, entry, name):
         try:
-            text = read_workbook(entry)
+            text, sha = read_source(entry)
         except Exception as exc:
             problems = [{"kind": "workbook_unreadable", "severity": "nudge", "line": None, "label": "工作簿",
                          "detail": f"读不到工作簿，路径变了就重新登记：{str(exc)[:160]}"}]
@@ -513,6 +617,9 @@ class Checker:
                                and sw.thread_state(child, self.now, grace) in ("alive", "recent"))
             problems = sw.reconcile_workbook(text, now=datetime.fromtimestamp(self.now), threads=threads,
                                              unlisted_alive=unlisted)["problems"]
+            stale = ledger_problem(entry, text, sha, self.now)
+            if stale:
+                problems.append(stale)
 
         urgent = {problem_key(p): p for p in problems if p["severity"] == "nudge"}
         tracked = entry.setdefault("problems", {})
@@ -648,7 +755,23 @@ def entry_identity(entry):
     return workbook_identity(entry["workbook"])
 
 
-def handover(bb, old, new, entry, now):
+def ledger_gap(bb, old, old_entry, entry):
+    """旧管家没入账的用户消息：要求帐最后更新之后旧线程收到的用户消息数。没有缺口或无从比较时返回 None。"""
+    observed, _, warnings = read_models(bb, old, old_entry.get("model_observation", {}), claude=False)
+    unreadable = [w for w in warnings if w.startswith(LOG_UNREADABLE)]
+    if unreadable:
+        raise WatchError(f"旧线程日志读不到，无法判断要求帐缺口：{unreadable[0]}")
+    text, sha = read_source(entry)
+    updated = ledger_updated_at(entry, text, sha)
+    stamps = observed["user_messages"]
+    waiting = [t for t in stamps if updated is not None and t > updated]
+    if not waiting:
+        return None
+    return {"since": hhmm(updated), "messages": len(waiting),
+            "capped": len(stamps) >= USER_MESSAGES_KEPT and len(waiting) == len(stamps)}
+
+
+def handover(bb, old, new, entry, now, old_entry=None):
     """每个外部步骤独立失败；登记已由 register 落盘，不回滚。"""
     results = []
 
@@ -674,7 +797,8 @@ def handover(bb, old, new, entry, now):
     if old in infos and not infos[old]["archived"]:
         attempt("notify", lambda: bb.tell(old, f"[bb-steward 交接] 已由 @thread:{new} 接任。停止派发和改工作簿；"
                                           "用户来找时指向新线程，不用回复。"))
-    return {"old": old, "new": new, "steps": results}
+    gap = attempt("ledger_gap", lambda: ledger_gap(bb, old, old_entry or {}, entry))
+    return {"old": old, "new": new, "steps": results, **({"ledger_gap": gap} if gap else {})}
 
 
 def sync_plugin(bb, command, thread, entry=None):
@@ -751,7 +875,7 @@ def register(state, bb, thread, workbook, ref=None, name=None, project=None, scr
     elif not olds and not workbook.is_file():
         raise WatchError(f"工作簿不存在：{workbook}；工作簿以远端分支为准时传 --ref")
     entry["name"] = name if name is not None else inherited.get("name") or (Path(identity[0]).name if identity[0] else workbook.stem)
-    runtime = {k: previous[k] for k in ("problems", "last_nudge", "pending_nudge", "outage", "models", "model_observation") if k in previous}
+    runtime = {k: previous[k] for k in ("problems", "last_nudge", "pending_nudge", "outage", "models", "model_observation", "compaction") if k in previous}
     state["stewards"][thread] = {**entry, **runtime}
     for old, _ in olds:
         del state["stewards"][old]
@@ -759,8 +883,8 @@ def register(state, bb, thread, workbook, ref=None, name=None, project=None, scr
     handovers = []
     if olds:
         save_state(path, state)
-        for old, _ in olds:
-            result = handover(bb, old, thread, entry, now)
+        for old, old_entry in olds:
+            result = handover(bb, old, thread, entry, now, old_entry)
             handovers.append(result)
             append_events(path, [event(now, thread, "handover", **result)])
     if not manage_automation:
@@ -816,7 +940,9 @@ def report(state, events, now, since_minutes):
                 moved = sum(1 for s in e["steps"] if s["step"].startswith("reparent:") and s["ok"])
                 failed = [s["step"] for s in e["steps"] if not s["ok"]]
                 lines.append(f"  {hhmm(e['ts'])} 接任 {e['old']} → {e['new']}：转来 {moved} 个子线程"
-                             + (f"，失败步骤：{'、'.join(failed)}" if failed else ""))
+                             + (f"，失败步骤：{'、'.join(failed)}" if failed else "")
+                             + (f"，要求帐自 {e['ledger_gap']['since']} 起缺 {e['ledger_gap']['messages']} 条用户消息"
+                                if e.get("ledger_gap") else ""))
             elif e["event"] == "model_change":
                 lines.append(f"  {hhmm(e['ts'])} 模型变化，{MODEL_SOURCES.get(e['source'], e['source'])}："
                              f"{model_text(e['before'])} → {model_text(e['value'])}"
@@ -824,9 +950,16 @@ def report(state, events, now, since_minutes):
                              + ("（提醒发送失败）" if e.get("ok") is False else ""))
             elif e["event"] == "recovered":
                 lines.append(f"  {hhmm(e['ts'])} 从失败恢复（约 {e.get('minutes', 0)} 分钟）")
+            elif e["event"] == "compaction":
+                lines.append(f"  {hhmm(e['ts'])} 上下文累计压缩 {e['count']} 次"
+                             + ("，已催重读规范" if e.get("new") else "") + ("，已提醒换管家" if e.get("handover") else "")
+                             + ("（提醒发送失败）" if e.get("ok") is False else ""))
         outage = entry.get("outage")
         if outage and outage.get("escalated"):
             attention.append(f"{name}：回合失败已 {(now - outage['since']) / 60:.0f} 分钟，看门狗已重试 {outage['retries']} 次")
+        compactions = (entry.get("compaction") or {}).get("seen", 0)
+        if compactions >= HANDOVER_COMPACTIONS:
+            attention.append(f"{name}：上下文已压缩 {compactions} 次，建议新开线程接任")
         for key, record in (entry.get("problems") or {}).items():
             if record.get("escalated"):
                 kind, _, label = key.partition("|")
@@ -863,6 +996,8 @@ def summary(state, events, now, days):
             c[COUNTED_EVENTS[kind]] += 1
         elif kind == "recovered":
             c["outage_minutes"] += e.get("minutes", 0)
+        elif kind == "compaction":
+            c["compactions"] += e.get("new", 0)
     stewards, hooks = {}, []
     for tid, c in per.items():
         name = (state["stewards"].get(tid) or {}).get("name") or tid
@@ -872,6 +1007,10 @@ def summary(state, events, now, days):
         if c["nudges"] >= SUMMARY_MIN_NUDGES and share is not None and share < SUMMARY_LOW_RESOLVE_SHARE:
             hooks.append({"hook": "nudge_ignored", "thread": tid,
                           "detail": f"{name} 催办后解决率 {share:.0%}（{c['resolved']}/{handled}）：看对账规则是否过严，或管家没读新版收尾对账"})
+        total = ((state["stewards"].get(tid) or {}).get("compaction") or {}).get("seen", 0)
+        if total >= HANDOVER_COMPACTIONS:
+            hooks.append({"hook": "long_lived_steward", "thread": tid,
+                          "detail": f"{name} 累计压缩 {total} 次（{days} 天内 {c['compactions']} 次）：换管家，或把新目标拆给新管家"})
         if c["outages"] >= SUMMARY_FREQUENT_OUTAGES:
             hooks.append({"hook": "frequent_outage", "thread": tid,
                           "detail": f"{name} {days} 天内回合失败 {c['outages']} 次：查账号额度或模型路由"})
@@ -920,7 +1059,7 @@ def main(argv=None):
                 else:
                     for s in res["stewards"].values():
                         print(f"{s['name']}：检查 {s.get('checks', 0)}，催办 {s.get('nudges', 0)}，解决率 {s['resolve_share']}，"
-                              f"重试 {s.get('retries', 0)}，失败 {s.get('outages', 0)} 次，接任 {s.get('handovers', 0)}，模型变化 {s.get('model_changes', 0)} 次")
+                              f"重试 {s.get('retries', 0)}，失败 {s.get('outages', 0)} 次，接任 {s.get('handovers', 0)}，模型变化 {s.get('model_changes', 0)} 次，压缩 {s.get('compactions', 0)} 次")
                     for h in res["hooks"]:
                         print(f"复盘提示 {h['hook']}：{h['detail']}")
             return 0
