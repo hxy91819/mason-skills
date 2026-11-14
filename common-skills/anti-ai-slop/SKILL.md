@@ -33,6 +33,7 @@ triggers:
 - 没人要的抽象、配置、新依赖、脚手架
 - 手写了标准库或平台已经有的能力
 - 仓库里已有同样的东西，又写了一份
+- Avoid unnecessary secondary labels and descriptions. Let the layout do the explaining.
 
 工具的 allow/block 清单、仍然有效的约束、行为测试，留着。改写用陈述句写要做什么。判不准就留。
 
