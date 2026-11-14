@@ -425,6 +425,7 @@ def normalize_thread(raw: dict) -> dict:
         "updated_at": (raw.get("updatedAt") or 0) / 1000,
         "parent": raw.get("parentThreadId"),
         "provider": raw.get("providerId"),
+        "title": raw.get("title"),
     }
 
 

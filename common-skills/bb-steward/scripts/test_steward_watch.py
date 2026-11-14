@@ -52,6 +52,7 @@ class FakeBb:
         self.updated = []
         self.reparents = []
         self.cancelled = []
+        self.titles = []
         self.logs = []
         self.log_calls = []
         self.plugin_calls = []
@@ -83,6 +84,10 @@ class FakeBb:
 
     def reparent(self, thread, parent=None):
         self.reparents.append((thread, parent))
+
+    def set_title(self, thread, title):
+        self.titles.append((thread, title))
+        self.infos.setdefault(thread, {})["title"] = title
 
     def cancel_retry(self, thread):
         self.cancelled.append(thread)
@@ -311,6 +316,43 @@ class WatchTests(unittest.TestCase):
         self.assertEqual(res["automation"]["status"], "updated")
         self.assertEqual(len(self.bb.created), 1)
         self.assertEqual(set(state["stewards"]), {TID})
+
+    def test_register_marks_steward_title_once(self):
+        self.bb.set(title="接管指定讨论串")
+        first = watch.register(self.state, self.bb, TID, str(self.workbook),
+                               manage_automation=False, state_path=self.state_path)
+        self.assertEqual(first["title"], {"status": "marked", "title": "🎩 接管指定讨论串"})
+        self.assertEqual(self.bb.titles, [(TID, "🎩 接管指定讨论串")])
+        second = watch.register(self.state, self.bb, TID, str(self.workbook),
+                                manage_automation=False, state_path=self.state_path)
+        self.assertEqual(second["title"]["status"], "unchanged")
+        self.assertEqual(len(self.bb.titles), 1)
+
+    def test_watchdog_marks_missing_title_and_keeps_existing_mark(self):
+        self.bb.set(title="梳理安全处理目标并优化方案")
+        self.tick(NOW)
+        self.assertEqual(self.bb.titles, [(TID, "🎩 梳理安全处理目标并优化方案")])
+        self.assertEqual(self.bb.infos[TID]["title"], "🎩 梳理安全处理目标并优化方案")
+        self.bb.titles.clear()
+        self.tick(NOW + 60)
+        self.assertEqual(self.bb.titles, [])
+
+    def test_watchdog_dry_run_does_not_change_title(self):
+        self.bb.set(title="目标")
+        self.tick(NOW, dry_run=True)
+        self.assertEqual(self.bb.titles, [])
+
+    def test_watchdog_leaves_empty_title_alone(self):
+        self.bb.set(title=None)
+        self.tick(NOW)
+        self.assertEqual(self.bb.titles, [])
+
+    def test_title_failure_does_not_stop_reconciliation(self):
+        self.bb.set(title="目标")
+        self.bb.set_title = mock.Mock(side_effect=watch.WatchError("更新失败"))
+        self.assertEqual(self.tick(NOW)["result"], "nudged")
+        events = [e for e in watch.read_events(self.state_path) if e["event"] == "warning"]
+        self.assertIn("title", [e["source"] for e in events])
 
     def test_register_keeps_runtime_state_and_rejects_missing_workbook(self):
         self.tick(NOW)

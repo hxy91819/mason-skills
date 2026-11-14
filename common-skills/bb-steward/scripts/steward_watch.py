@@ -3,6 +3,7 @@
 
 对每个登记的管家：
 - 线程归档或已删除：移除登记。
+- 标题没有统一「🎩」管家标记时补上；已有标记不重复，只加前缀，不改标题目标。
 - 每轮增量读取 BB 请求模型，Claude Code 管家另读会话记录里的实际模型；首次记基线，新偏离值仅提醒一次，
   回到基线只记事件。
 - 同一次扫描里数上下文压缩：压缩后技能正文不在上下文里，每次新压缩都让管家重读规范、工作簿和要求帐；
@@ -67,6 +68,7 @@ HANDOVER_REPEAT_COMPACTIONS = 4
 LEDGER_STALE_MESSAGES = 5
 LEDGER_STALE_MINUTES = 180
 USER_MESSAGES_KEPT = 50
+STEWARD_MARK = "🎩"
 TAG = "[bb-steward 看门狗]"
 
 
@@ -118,6 +120,9 @@ class Bb:
 
     def reparent(self, thread, parent=None):
         self._run(["thread", "update", thread, *(["--parent-thread", parent] if parent else ["--clear-parent-thread"])])
+
+    def set_title(self, thread, title):
+        self._run(["thread", "update", thread, "--title", title])
 
     def cancel_retry(self, thread):
         try:
@@ -463,6 +468,7 @@ class Checker:
             reason = "线程已删除" if info is None else "线程已归档"
             self.events.append(event(self.now, tid, "unregister", reason=reason))
             return {"result": "unregistered", "remove": True, "report": f"{name}：{reason}，已移除登记"}
+        self.mark_title(tid, info)
         self.check_models(tid, entry, info)
         busy = (info["status"] not in sw.SETTLED_STATUSES or info["queued"]
                 or info["interaction"] or info["background"])
@@ -477,6 +483,20 @@ class Checker:
             self.events.append(event(self.now, tid, "check", result="settling"))
             return {"result": "settling"}
         return self.reconcile(tid, entry, name)
+
+    def mark_title(self, tid, info):
+        """看门狗每轮补齐管家标记，标题被改掉或登记时没加上都能自动恢复。"""
+        if self.dry_run:
+            return
+        marked = marked_title(info.get("title"))
+        if marked is None:
+            return
+        try:
+            self.bb.set_title(tid, marked)
+            info["title"] = marked
+            self.events.append(event(self.now, tid, "title_marked", title=marked))
+        except Exception as exc:
+            self.events.append(event(self.now, tid, "warning", source="title", detail=str(exc)[:200]))
 
     def check_models(self, tid, entry, info):
         # 实际模型只有 Claude Code 的会话记录能读到；其他 provider 只看 BB 请求的模型。
@@ -801,6 +821,33 @@ def handover(bb, old, new, entry, now, old_entry=None):
     return {"old": old, "new": new, "steps": results, **({"ledger_gap": gap} if gap else {})}
 
 
+def marked_title(title):
+    """标题前加统一的管家标记；已有标记或标题为空时返回 None。"""
+    text = (title or "").strip()
+    if not text:
+        return None
+    if text.startswith(STEWARD_MARK):
+        return None
+    return f"{STEWARD_MARK} {text}"
+
+
+def mark_thread_title(bb, thread, title=None):
+    """确保线程标题带管家标记；失败只报告，不阻断登记或看门狗。"""
+    try:
+        if title is None:
+            info = (bb.threads([thread]) or {}).get(thread)
+            if info is None:
+                return {"status": "skipped", "reason": "线程不存在"}
+            title = info.get("title")
+        marked = marked_title(title)
+        if marked is None:
+            return {"status": "unchanged"}
+        bb.set_title(thread, marked)
+        return {"status": "marked", "title": marked}
+    except Exception as exc:
+        return {"status": "skipped", "reason": str(exc)[:200]}
+
+
 def sync_plugin(bb, command, thread, entry=None):
     try:
         values = {"thread": thread}
@@ -894,8 +941,9 @@ def register(state, bb, thread, workbook, ref=None, name=None, project=None, scr
     plugin_result = sync_plugin(bb, "register", thread, entry)
     if thread in state.get("pending_plugin_unregistrations", []):
         state["pending_plugin_unregistrations"].remove(thread)
+    title_result = mark_thread_title(bb, thread)
     return {"thread": thread, **entry, "automation": automation, "handovers": handovers,
-            "plugin": plugin_result}
+            "plugin": plugin_result, "title": title_result}
 
 
 # ---------- 汇报与复盘 ----------
