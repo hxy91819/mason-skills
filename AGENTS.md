@@ -6,6 +6,10 @@
 
 不以步骤数、审批或写入分支直接分类；DB/TAPD 查询等能力不能因包含鉴权流程而误设为手动。保留未要求调整的既有策略，配置一致性与执行授权按门禁检查。
 
+## 全局规则
+
+全局规则正文在本仓库 `config/user-agents.md`，通过软链接入 `~/.agents/AGENTS.md`；各宿主全局入口（如 `~/.codex/AGENTS.md`、`~/.claude/CLAUDE.md`）复用该正文，不复制规则。
+
 ## Skill 清单维护
 
 `config/skill-symlinks.yaml` 是本仓库推荐 user-scope 软链的单一事实源：记录哪些 skill 推荐软链到全局（`~/.agents/skills`）。外部项目（如 mattpocock-skills）经 `sources:` 按项目名登记，条目加 `source:` 指向项目；项目位置按 `$SKILL_SOURCE_<NAME>_DIR` > `$SKILL_SOURCES_DIR/<项目名>` > 本仓库同级目录解析，清单里绝不写机器绝对路径。其他电脑拉取本仓库后，依据它即可复现同一套 skill 配置，无需口口相传。
