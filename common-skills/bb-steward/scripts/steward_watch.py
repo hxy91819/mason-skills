@@ -19,7 +19,9 @@
 
 用法：
   steward_watch.py register --workbook <路径> [--ref origin/main] [--name 简称] [--thread thr_x] [--project proj_x]
-  steward_watch.py unregister --thread thr_x
+  steward_watch.py retire [--thread thr_x] --reason <原因> [--successor thr_y]
+  steward_watch.py roster [--thread thr_x]
+  steward_watch.py unregister [--thread thr_x]
   steward_watch.py run [--dry-run]
   steward_watch.py report [--since 60]
   steward_watch.py summary [--days 7] [--json]
@@ -721,6 +723,7 @@ def run(state, state_path, bb, now=None, dry_run=False):
                 checker.events.append(event(now, tid, "error", detail=str(exc)[:300]))
                 outcome = {"result": "error", "report": f"{entry.get('name') or tid}：检查出错：{str(exc)[:200]}"}
             if outcome.get("remove"):
+                remember_retirement(state, tid, entry, "线程已归档或删除", now=now)
                 del stewards[tid]
                 if not dry_run:
                     outcome["plugin"] = unregister_plugin(state, bb, tid, state_path)
@@ -897,6 +900,58 @@ def retry_plugin_unregistrations(state, bb, state_path):
                 save_state(state_path, state)
 
 
+def remember_retirement(state, thread, entry, reason, successor=None, now=None):
+    state.setdefault("retired", {})[thread] = {
+        "name": entry.get("name", thread), "workbook": entry.get("workbook"),
+        "reason": reason, "successor": successor,
+        "retired_at": round(time.time() if now is None else now, 3),
+    }
+
+
+def retire(state, bb, thread, state_path, reason="手动释放看门狗", successor=None):
+    if not thread:
+        raise WatchError("缺少 --thread，且当前不在 BB 线程里（没有 BB_THREAD_ID）")
+    if successor and (successor == thread or successor not in state["stewards"]):
+        raise WatchError("接任者必须是另一位已登记的在任管家")
+    removed = state["stewards"].pop(thread, None)
+    if removed or thread not in state.get("retired", {}):
+        remember_retirement(state, thread, removed or {}, reason, successor)
+    # 先保存退役事实，插件同步失败也不能让下轮继续催办。
+    save_state(state_path, state)
+    plugin = unregister_plugin(state, bb, thread, state_path)
+    try:
+        bb.cancel_retry(thread)
+        retry = {"status": "cancelled"}
+    except Exception as exc:
+        retry = {"status": "skipped", "reason": str(exc)[:200]}
+    if removed:
+        append_events(state_path, [event(time.time(), thread, "unregister", reason=reason, successor=successor)])
+    return {"thread": thread, "removed": bool(removed), "plugin": plugin, "retry": retry,
+            **state["retired"][thread]}
+
+
+def roster(state, bb, thread=None):
+    """本 host 的登记与退役事实；运行状态只读实时 BB，不把 idle 当成退役。"""
+    active = state["stewards"]
+    retired = state.get("retired", {})
+    ids = [thread] if thread else list(dict.fromkeys([*active, *retired]))
+    infos = bb.threads([tid for tid in ids if tid in active]) if any(tid in active for tid in ids) else {}
+    rows = []
+    for tid in ids:
+        if tid in active:
+            info = infos.get(tid)
+            available = info is not None and not info["archived"]
+            rows.append({"thread": tid, "name": active[tid].get("name", tid),
+                         "workbook": active[tid].get("workbook"),
+                         "lifecycle": "serving" if available else "unavailable",
+                         "runtime": info["status"] if info else "missing"})
+        elif tid in retired:
+            rows.append({"thread": tid, "lifecycle": "retired", **retired[tid]})
+        else:
+            rows.append({"thread": tid, "lifecycle": "unknown"})
+    return {"scope": "local-host", "stewards": rows}
+
+
 def register(state, bb, thread, workbook, ref=None, name=None, project=None, script_path=None,
              state_path=None, manage_automation=True, now=None):
     if not thread:
@@ -923,8 +978,10 @@ def register(state, bb, thread, workbook, ref=None, name=None, project=None, scr
         raise WatchError(f"工作簿不存在：{workbook}；工作簿以远端分支为准时传 --ref")
     entry["name"] = name if name is not None else inherited.get("name") or (Path(identity[0]).name if identity[0] else workbook.stem)
     runtime = {k: previous[k] for k in ("problems", "last_nudge", "pending_nudge", "outage", "models", "model_observation", "compaction") if k in previous}
+    state.get("retired", {}).pop(thread, None)
     state["stewards"][thread] = {**entry, **runtime}
-    for old, _ in olds:
+    for old, old_entry in olds:
+        remember_retirement(state, old, old_entry, "已接任", thread, now)
         del state["stewards"][old]
     path = state_path or state_path_from(None)
     handovers = []
@@ -1079,7 +1136,13 @@ def parser():
     reg.add_argument("--project", default=os.environ.get("BB_PROJECT_ID"), help="首次创建 automation 的项目，默认当前项目")
     reg.add_argument("--no-automation", action="store_true", help="只登记，不检查也不创建 automation（测试或手动运行时用）")
     unreg = sub.add_parser("unregister", help="移除一个管家的登记")
-    unreg.add_argument("--thread", required=True)
+    unreg.add_argument("--thread", default=os.environ.get("BB_THREAD_ID"))
+    retirement = sub.add_parser("retire", help="退役并释放检查，保留原因与接任去向；不发消息、不归档线程")
+    retirement.add_argument("--thread", default=os.environ.get("BB_THREAD_ID"))
+    retirement.add_argument("--reason", required=True)
+    retirement.add_argument("--successor", help="已登记的接任管家线程 ID")
+    listing = sub.add_parser("roster", help="查询本 host 在任与退役管家，JSON 输出；不发消息、不写状态")
+    listing.add_argument("--thread", help="只查询该线程；未登记者返回 unknown")
     run_p = sub.add_parser("run", help="检查所有登记的管家（automation 调用）")
     run_p.add_argument("--dry-run", action="store_true", help="只输出判断，不发消息、不重试、不写状态")
     rep = sub.add_parser("report", help="最近一段时间的检查记录与需要用户看一眼的事")
@@ -1095,6 +1158,9 @@ def main(argv=None):
     path = state_path_from(args.state)
     bb = Bb()
     try:
+        if args.cmd == "roster":
+            print(json.dumps(roster(load_state(path), bb, args.thread), ensure_ascii=False, indent=2))
+            return 0
         if args.cmd in ("report", "summary"):
             state = load_state(path)
             events = read_events(path)
@@ -1119,13 +1185,10 @@ def main(argv=None):
                 save_state(path, state)
                 append_events(path, [event(time.time(), res["thread"], "register", workbook=res["workbook"])])
                 print(json.dumps(res, ensure_ascii=False, indent=2))
-            elif args.cmd == "unregister":
-                removed = state["stewards"].pop(args.thread, None)
-                plugin_result = unregister_plugin(state, bb, args.thread, path)
-                if removed:
-                    append_events(path, [event(time.time(), args.thread, "unregister", reason="手动移除")])
-                print(json.dumps({"thread": args.thread, "removed": bool(removed),
-                                  "plugin": plugin_result}, ensure_ascii=False))
+            elif args.cmd in ("unregister", "retire"):
+                res = retire(state, bb, args.thread, path,
+                             getattr(args, "reason", "手动释放看门狗"), getattr(args, "successor", None))
+                print(json.dumps(res, ensure_ascii=False))
             else:
                 started = time.time()
                 results, events = run(state, path, bb, now=started, dry_run=args.dry_run)

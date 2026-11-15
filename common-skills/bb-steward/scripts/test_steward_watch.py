@@ -131,6 +131,58 @@ class WatchTests(unittest.TestCase):
     def report(self, now):
         return watch.report(watch.load_state(self.state_path), watch.read_events(self.state_path), now, 6 * 60)
 
+    def test_retire_stops_checks_and_exposes_successor_without_messaging(self):
+        successor = "thr_successor"
+        self.state["stewards"][successor] = {"name": "新管家", "workbook": str(self.workbook)}
+        self.bb.set(successor, status="active")
+        result = watch.retire(self.state, self.bb, TID, self.state_path, "已交接", successor)
+        self.assertTrue(result["removed"])
+        saved = watch.load_state(self.state_path)
+        self.assertNotIn(TID, saved["stewards"])
+        rows = watch.roster(saved, self.bb)["stewards"]
+        old = next(r for r in rows if r["thread"] == TID)
+        self.assertEqual((old["lifecycle"], old["successor"]), ("retired", successor))
+        watch.run(saved, self.state_path, self.bb, now=NOW)
+        self.assertFalse(self.bb.tells)
+        self.assertFalse(self.bb.retries)
+        self.assertIn(TID, self.bb.cancelled)
+
+    def test_retire_does_not_require_plugin_availability_and_is_repeatable(self):
+        with mock.patch.object(self.bb, "steward", side_effect=watch.WatchError("offline")):
+            watch.retire(self.state, self.bb, TID, self.state_path, "完成")
+        saved = watch.load_state(self.state_path)
+        self.assertNotIn(TID, saved["stewards"])
+        self.assertIn(TID, saved["pending_plugin_unregistrations"])
+        watch.retire(saved, self.bb, TID, self.state_path)
+        self.assertEqual(saved["retired"][TID]["reason"], "完成")
+        self.assertNotIn(TID, saved["pending_plugin_unregistrations"])
+
+    def test_retire_rejects_unknown_successor_before_removing_registration(self):
+        with self.assertRaises(watch.WatchError):
+            watch.retire(self.state, self.bb, TID, self.state_path, "交接", "thr_unknown")
+        self.assertIn(TID, self.state["stewards"])
+
+    def test_roster_distinguishes_idle_retired_and_unknown_without_writes(self):
+        before = json.dumps(self.state)
+        self.assertEqual(watch.roster(self.state, self.bb, TID)["stewards"][0]["lifecycle"], "serving")
+        self.assertEqual(watch.roster(self.state, self.bb, "thr_unknown")["stewards"][0]["lifecycle"], "unknown")
+        self.assertEqual(json.dumps(self.state), before)
+        self.assertFalse(self.state_path.exists())
+        self.assertFalse(self.bb.tells)
+
+    def test_handover_records_retired_route_and_reregister_restores_serving(self):
+        new = "thr_new"
+        watch.register(self.state, self.bb, TID, self.workbook, state_path=self.state_path,
+                       manage_automation=False, now=NOW)
+        self.bb.set(new)
+        watch.register(self.state, self.bb, new, self.workbook, state_path=self.state_path,
+                       manage_automation=False, now=NOW)
+        self.assertEqual(self.state["retired"][TID]["successor"], new)
+        watch.register(self.state, self.bb, TID, self.workbook, state_path=self.state_path,
+                       manage_automation=False, now=NOW + 1)
+        self.assertNotIn(TID, self.state["retired"])
+        self.assertEqual(watch.roster(self.state, self.bb, TID)["stewards"][0]["lifecycle"], "serving")
+
     def test_nudges_once_then_waits_then_escalates_to_user(self):
         self.assertEqual(self.tick(NOW)["result"], "nudged")
         self.assertEqual(len(self.bb.tells), 1)
