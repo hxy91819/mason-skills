@@ -4,6 +4,7 @@
 用法：
   python3 steward_workbook.py --mode ledger-check --file .local/steward/<topic>-要求帳.md
   python3 steward_workbook.py --mode check --file .local/steward/<topic>.md
+  python3 steward_workbook.py --mode format --file .local/steward/<topic>.md
   python3 steward_workbook.py --mode should-commit --file .local/steward/<topic>.md
   python3 steward_workbook.py --mode reconcile [--live] --file .local/steward/<topic>.md
 
@@ -20,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import steward_source as source
+from workbook_timeline import format_timeline
 
 REQUIRED_SECTIONS = ["路线", "关键决策", "用户待办"]
 # 项目文档规范可能要求繁体中文，标题按同义词归一后再比对。
@@ -53,7 +55,7 @@ ALIVE_ACTIVITY_KEYS = ("activeBackgroundAgentCount", "activeBackgroundCommandCou
 
 def visible_length(line: str) -> int:
     """计算剥离 Markdown URL 目标后的可见字符长度。"""
-    s = MD_LINK_RE.sub(r"\1", line)
+    s = MD_LINK_RE.sub(r"\1", re.sub(r"<!--.*?-->", "", line))
     s = WIKI_LINK_RE.sub(r"\1", s)
     return len(s.strip())
 
@@ -751,7 +753,7 @@ def init_workbook(repo=None):
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--mode", required=True, choices=["init", "path", "check", "should-commit", "reconcile", "ledger-check"],
+    p.add_argument("--mode", required=True, choices=["init", "path", "format", "check", "should-commit", "reconcile", "ledger-check"],
                    help="ledger-check=校验要求帐；check=校验结构、容量与要求帐入口；should-commit=校验并判断相对 HEAD 是否有实质状态变化；reconcile=收尾对账")
     p.add_argument("--file", help="工作簿或要求帐 Markdown 文件路径")
     p.add_argument("--repo", help="init/path 的项目路径；其他模式为 Git 来源仓库绝对路径")
@@ -783,6 +785,21 @@ def main():
             return 2
     if not args.file:
         parser().error("此模式需要 --file")
+    if args.mode == "format":
+        if args.repo or args.ref or args.revision:
+            parser().error("format 只写本地编辑文件；Git 来源先在对应分支检出再格式化")
+        try:
+            path = Path(args.file).expanduser().resolve()
+            original = path.read_text()
+            formatted, warnings = format_timeline(original, head_content_for(path))
+            if formatted != original:
+                path.write_text(formatted)
+            print(json.dumps({"ok": True, "file": str(path), "changed": formatted != original,
+                              "timezone": "Asia/Singapore", "warnings": warnings}, ensure_ascii=False, indent=2))
+            return 0
+        except (OSError, ValueError) as exc:
+            print(json.dumps({"ok": False, "errors": [str(exc)]}, ensure_ascii=False))
+            return 2
     if args.ledger_kind != 'standard' and args.mode != 'ledger-check':
         parser().error('--ledger-kind 仅用于 ledger-check')
     fpath = Path(args.file).expanduser()
