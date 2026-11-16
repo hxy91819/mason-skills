@@ -799,27 +799,21 @@ environments:
         self.assertNotIn('SENSITIVE_SECRET_TOKEN_123', m.events_path(self.ledger).read_text())
         # 未知 ID 拒绝
         with self.assertRaisesRegex(m.DispatchError, '拒绝回写未知 ID'):
-            m.record_decision_command(
-                m.parser().parse_args(['--ledger', str(self.ledger), '--record-decision', 'thr_unknown', '--decision', 'accepted']),
+            m.record_outcome_command(
+                m.parser().parse_args(['--ledger', str(self.ledger), '--record-outcome', 'thr_unknown', '--outcome', 'completed']),
                 now=1010,
             )
-        # 首次回写与重复回写同一 ID 覆盖而非追加
-        m.record_decision_command(
-            m.parser().parse_args(['--ledger', str(self.ledger), '--record-decision', tid, '--outcome', 'completed', '--decision', 'rejected']),
-            now=1010,
-        )
-        m.record_decision_command(
-            m.parser().parse_args(['--ledger', str(self.ledger), '--record-decision', tid, '--decision', 'accepted']),
-            now=1020,
-        )
+        # 重复回写同一 ID 覆盖而非追加；旧参数名仍可用
+        for flag, outcome, now in (('--record-outcome', 'failed', 1010), ('--record-decision', 'completed', 1020)):
+            m.record_outcome_command(
+                m.parser().parse_args(['--ledger', str(self.ledger), flag, tid, '--outcome', outcome]), now=now)
         ledger_data = m.load_ledger(self.ledger, strict=True)
         self.assertEqual(len(ledger_data['entries']), 1)
-        self.assertEqual(ledger_data['entries'][0]['decision'], 'accepted')
         self.assertEqual(ledger_data['entries'][0]['outcome'], 'completed')
+        self.assertNotIn('decision', ledger_data['entries'][0])
         summary = m.summarize_ledger(ledger_data, now=1020)
         self.assertEqual(summary['total_dispatches'], 1)
-        self.assertEqual(summary['by_agent']['primary']['decided'], 1)
-        self.assertEqual(summary['by_agent']['primary']['accepted'], 1)
+        self.assertEqual(summary['by_agent']['primary']['outcomes']['completed'], 1)
 
     def test_ledger_rollover_never_double_counts(self):
         ledger = m.empty_ledger()
@@ -833,7 +827,6 @@ environments:
                 'model': 'fast-model',
                 'reasoning': 'max',
                 'outcome': 'completed',
-                'decision': 'accepted',
             }, max_live=200)
         self.assertEqual(len(ledger['entries']), 200)
         summary = m.summarize_ledger(ledger, now=2000)
@@ -841,7 +834,7 @@ environments:
         self.assertEqual(summary['rolled_up_entries'], 5)
         self.assertEqual(summary['total_dispatches'], 205)
         self.assertEqual(summary['by_agent']['primary']['total'], 205)
-        self.assertEqual(summary['by_agent']['primary']['accepted'], 205)
+        self.assertEqual(summary['by_agent']['primary']['outcomes']['completed'], 205)
 
     def test_circuit_breaker_skips_cooled_down_candidate_and_recovers(self):
         self.chain_config(['primary', 'specialist'])
@@ -849,8 +842,8 @@ environments:
         self.assertEqual(first['selection']['agent'], 'primary')
         tid = first['result']['thread']['id']
         # 旧版手动回写的失败类型照样计入，但不再按类型定时长。
-        m.record_decision_command(
-            m.parser().parse_args(['--ledger', str(self.ledger), '--record-decision', tid, '--outcome', 'failed_quota']),
+        m.record_outcome_command(
+            m.parser().parse_args(['--ledger', str(self.ledger), '--record-outcome', tid, '--outcome', 'failed_quota']),
             now=1010,
         )
         # 冷却期内自动跳过 primary，选择 specialist
@@ -973,8 +966,8 @@ environments:
         self.chain_config(['primary', 'specialist'])
         failed = m.dispatch(self.args('--task', 'failed'), self.fake, now=1000)['result']['thread']['id']
         reused = m.dispatch(self.args('--task', 'reused'), self.fake, now=1000)['result']['thread']['id']
-        m.record_decision_command(
-            m.parser().parse_args(['--ledger', str(self.ledger), '--record-decision', failed, '--outcome', 'failed']),
+        m.record_outcome_command(
+            m.parser().parse_args(['--ledger', str(self.ledger), '--record-outcome', failed, '--outcome', 'failed']),
             now=1010,
         )
         self.threads = [{'id': reused, 'status': 'idle', 'queuedWork': 'none', 'updatedAt': 1050 * 1000}]
@@ -1089,20 +1082,6 @@ environments:
         self.assertEqual(cooled['level'], 8)
         self.assertEqual(cooled['until'] - entries[-1]['outcome_ts'], m.BACKOFF_MAX_SECONDS)
 
-    def test_decision_only_record_keeps_failure_time(self):
-        self.chain_config(['primary', 'specialist'])
-        tid = m.dispatch(self.args(), self.fake, now=1000)['result']['thread']['id']
-        m.record_decision_command(
-            m.parser().parse_args(['--ledger', str(self.ledger), '--record-decision', tid, '--outcome', 'failed']),
-            now=1100,
-        )
-        m.record_decision_command(
-            m.parser().parse_args(['--ledger', str(self.ledger), '--record-decision', tid, '--decision', 'rejected']),
-            now=1900,
-        )
-        later = m.dispatch(self.args('--dry-run'), self.fake, now=1100 + m.BACKOFF_BASE_SECONDS + 1)
-        self.assertEqual(later['selection']['agent'], 'primary')
-
     def test_thread_list_failure_is_bypassed(self):
         import contextlib
         import io
@@ -1197,12 +1176,11 @@ environments:
     def test_review_hooks_detect_failure_rates_without_simple_quota(self):
         for _ in range(5):
             res = m.dispatch(self.args('--difficulty', 'medium'), self.fake, now=3000)
-            m.record_decision_command(
+            m.record_outcome_command(
                 m.parser().parse_args([
                     '--ledger', str(self.ledger),
-                    '--record-decision', res['result']['thread']['id'],
+                    '--record-outcome', res['result']['thread']['id'],
                     '--outcome', 'failed_transient',
-                    '--decision', 'rejected',
                 ]),
                 now=3005,
             )
@@ -1210,7 +1188,43 @@ environments:
         hook_names = {h['hook'] for h in summary['review_hooks']}
         self.assertNotIn('simple_share_low', hook_names)
         self.assertIn('high_failure_rate', hook_names)
-        self.assertIn('low_acceptance_rate', hook_names)
+
+    def test_followups_lists_parent_and_user_messages_after_first_delivery(self):
+        events = [
+            {'ts': 100, 'event': 'dispatch', 'thread': 'thr_old', 'difficulty': 'simple', 'agent': 'a', 'model': 'm'},
+            {'ts': 190000, 'event': 'dispatch', 'thread': 'thr_new', 'difficulty': 'medium', 'agent': 'b', 'model': 'n'},
+        ]
+        m.events_path(self.ledger).write_text(''.join(json.dumps(e) + '\n' for e in events))
+
+        def req(seq, initiator, text, sender=None):
+            return {'seq': seq, 'type': 'client/turn/requested',
+                    'data': {'initiator': initiator, 'senderThreadId': sender, 'input': [{'type': 'text', 'text': text}]}}
+        log = [
+            req(1, 'user', '原始任务'),
+            req(2, 'agent', '交付前的补充', 'thr_parent'),
+            {'seq': 3, 'type': 'turn/completed', 'data': {'status': 'completed'}},
+            req(4, 'agent', '[bb message from thread:thr_parent] 还有一处要改', 'thr_parent'),
+            req(5, 'agent', '别的线程发来的', 'thr_other'),
+            req(6, 'system', '[bb system] @thread:thr_child completed'),
+            req(7, 'user', '[bb_long_task] 合入结束'),
+            req(8, 'user', '用户直接纠正'),
+        ]
+
+        def call(*argv):
+            if argv[:2] == ('thread', 'list'):
+                return [{'id': 'thr_new', 'parentThreadId': 'thr_parent'}]
+            if argv[:2] == ('thread', 'log'):
+                self.assertEqual(argv[2], 'thr_new')
+                return log
+            raise AssertionError(argv)
+        args = m.parser().parse_args(['--ledger', str(self.ledger), '--followups', '--days', '1'])
+        result = m.followups_command(args, call=call, now=200000)
+        self.assertEqual(result['threads'], 1)
+        row = result['rows'][0]
+        self.assertEqual((row['difficulty'], row['agent'], row['model']), ('medium', 'b', 'n'))
+        self.assertEqual([(f['seq'], f['from']) for f in row['followups']], [(4, 'parent'), (8, 'user')])
+        self.assertEqual(result['by_agent']['b'], {'threads': 1, 'delivered': 1, 'with_followups': 1, 'followups': 2})
+        self.assertNotIn('还有一处要改', self.ledger.read_text() if self.ledger.exists() else '')
 
 if __name__ == '__main__':
     unittest.main()

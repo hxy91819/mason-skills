@@ -23,8 +23,6 @@ Agent 自行决定使用 subagent，或用户只要求“用 subagent 检查一�
 
 不必先用低档试。返工代价高的（在关键路径上、错了会对外产生影响或要花几小时返工），直接用能一次做对的档位。前序线程失败或返工时，按失败原因重新定档，可以跨档，用 `--escalate-from <前序线程ID>` 记入账本。用户点名某一档时照办。`--unknown` 可选，一句话记下定档原因。
 
-用 `bb-dispatch --history-summary` 看各档接受率。
-
 用户可在 `projects.<BB项目ID>.min_difficulty` 配置项目下限；脚本自动抬升路由并保留请求难度，详见[配置与派发](references/dispatch.md#项目最低难度)。
 
 ```bash
@@ -61,7 +59,7 @@ bb-dispatch --difficulty complex --escalate-from thr_xxx --task '<前序线程�
 
 长任务（等 CI、等审查、分多批执行）每个回合结束都会唤醒父线程。这类任务派发时加 `--parent-notifications stuck`（或在配置顶层写 `parent_notifications: stuck`）：BB 只在子线程失败、被中断或等审批时自动唤醒父线程，脚本改附"只在要审批、要决定或卡住、阶段完成、发现越界问题时 `bb thread tell` 父线程"的回报方式。停摆仍由父线程的对账发现，不靠逐回合通知。
 
-子线程因 provider 不可用、额度耗尽或会话错误而报错时，运行 `bb-dispatch --on-failure <线程ID>`，按返回的 `action` 处理，全程不用判断失败类型。重试分两层：先在原会话退避重试，偶发错误在这一层消化，上下文和已完成的工作都还在；用尽才计入派发冷却。`waiting` 表示已有重试排着：BB 的自动重试（覆盖 provider 过载、5xx/连接中断和带重置时间的额度窗口；用 `bb provider-retry explain` 看它为什么跳过），或上次安排的原会话重试还没执行；`retry-scheduled` 表示脚本已用 BB 定时重试在原会话安排下一次（1、2、4 分钟各一次），两者都结束回合等通知，再报错就再跑同一命令；`cooled` 表示原会话重试用尽，或 BB 已重试到上限、判定额度短期回不来，脚本已记失败并冷却该 provider 与模型，这时用原 difficulty 与完整任务文本重跑 `bb-dispatch` 就会换候选，失败线程已有部分产出时，创建成功后通过 `bb thread tell` 补充进展与位置；`not-failed` 表示线程已恢复，照常等通知。BB 的自动重试要等太久时，先 `bb provider-retry cancel <线程ID>`，再用 `--record-decision <线程ID> --outcome failed` 记失败后改派，免得同一任务做两遍。这区别于任务被拒、正常完成或待处理交互——那些不是路由失败，不重试也不改派。同一任务换过候选仍失败就如实报告，不循环改派。
+子线程因 provider 不可用、额度耗尽或会话错误而报错时，运行 `bb-dispatch --on-failure <线程ID>`，按返回的 `action` 处理，全程不用判断失败类型。重试分两层：先在原会话退避重试，偶发错误在这一层消化，上下文和已完成的工作都还在；用尽才计入派发冷却。`waiting` 表示已有重试排着：BB 的自动重试（覆盖 provider 过载、5xx/连接中断和带重置时间的额度窗口；用 `bb provider-retry explain` 看它为什么跳过），或上次安排的原会话重试还没执行；`retry-scheduled` 表示脚本已用 BB 定时重试在原会话安排下一次（1、2、4 分钟各一次），两者都结束回合等通知，再报错就再跑同一命令；`cooled` 表示原会话重试用尽，或 BB 已重试到上限、判定额度短期回不来，脚本已记失败并冷却该 provider 与模型，这时用原 difficulty 与完整任务文本重跑 `bb-dispatch` 就会换候选，失败线程已有部分产出时，创建成功后通过 `bb thread tell` 补充进展与位置；`not-failed` 表示线程已恢复，照常等通知。BB 的自动重试要等太久时，先 `bb provider-retry cancel <线程ID>`，再用 `--record-outcome <线程ID> --outcome failed` 记失败后改派，免得同一任务做两遍。这区别于任务被拒、正常完成或待处理交互——那些不是路由失败，不重试也不改派。同一任务换过候选仍失败就如实报告，不循环改派。
 
 并行前按任务性质分流：
 
@@ -84,12 +82,12 @@ driver 只传任务文本、难度与已有环境，路由仍由本配置决定�
 
 脚本在本地 Git-ignored 路径 `~/.cache/bb-dispatch/ledger.json`（可通过 `--ledger` 或 `BB_DISPATCH_LEDGER_PATH` 覆盖）维护运行账本与熔断冷却表，读写异常旁路告警、绝不阻塞主派发：
 
-1. **最小事实与滚动折算**：每次派发仅记录 `id`、`ts`、`project`、`parent_thread`、`difficulty`、`requested_difficulty`、`agent`、`provider`、`model`、`reasoning`、`task_chars`、`outcome`、`outcome_ts`、`retries`、`retry_ts`、`decision`，填写时另记 `unknown`（截断到 120 字）与 `escalated_from`，不存任务正文、diff 或线程日志。live 窗口保留最近 200 条，48 小时内的条目还要识别终态、计算冷却，超出也照留；更早的超出部分自动折算进固定维度 `rollups`，live 与 rollup 不重复计数。账本读改写加文件锁，写入前重读合并，并行派发与回写互不覆盖。
-2. **两层退避的熔断冷却与决策回环（Circuit Breaker）**：两层都不读报错文字、不分失败类型。原会话一层由 `--on-failure` 负责：已有重试排着时不插手，否则按 1、2、4 分钟在原会话重试，用尽（或 BB 已重试到上限、判定额度短期回不来）才记 `failed`，成功过又报错从头计，细则见[配置与派发](references/dispatch.md)。派发一层按 provider 与模型冷却，只看 48 小时内的终态：首次失败冷却 15 分钟，冷却期内的失败只顺延，冷却结束后再失败才翻倍，最长 6 小时，成功一次清零；每次派发先读一次 `bb thread list`，把 48 小时内还在等结果（仍记为 `spawned`，或成功过又在原会话重试）、已空闲且没有排队消息和待处理交互的线程记为 `completed`，读不到时告警跳过。spawn 失败和被 `--fallback-from` 跳过的候选另冷却 15 分钟。冷却中的候选优先跳过，全部冷却时仍挑一个试，避免死锁。父 agent 用稳定线程 ID 回写裁决（未知 ID 拒绝报错，重复回写覆盖）；终态有误、或放弃任务要记失败时加 `--outcome`：
+1. **最小事实与滚动折算**：每次派发仅记录 `id`、`ts`、`project`、`parent_thread`、`difficulty`、`requested_difficulty`、`agent`、`provider`、`model`、`reasoning`、`task_chars`、`outcome`、`outcome_ts`、`retries`、`retry_ts`，填写时另记 `unknown`（截断到 120 字）与 `escalated_from`，不存任务正文、diff 或线程日志。live 窗口保留最近 200 条，48 小时内的条目还要识别终态、计算冷却，超出也照留；更早的超出部分自动折算进固定维度 `rollups`，live 与 rollup 不重复计数。账本读改写加文件锁，写入前重读合并，并行派发与回写互不覆盖。
+2. **两层退避的熔断冷却（Circuit Breaker）**：两层都不读报错文字、不分失败类型。原会话一层由 `--on-failure` 负责：已有重试排着时不插手，否则按 1、2、4 分钟在原会话重试，用尽（或 BB 已重试到上限、判定额度短期回不来）才记 `failed`，成功过又报错从头计，细则见[配置与派发](references/dispatch.md)。派发一层按 provider 与模型冷却，只看 48 小时内的终态：首次失败冷却 15 分钟，冷却期内的失败只顺延，冷却结束后再失败才翻倍，最长 6 小时，成功一次清零；每次派发先读一次 `bb thread list`，把 48 小时内还在等结果（仍记为 `spawned`，或成功过又在原会话重试）、已空闲且没有排队消息和待处理交互的线程记为 `completed`，读不到时告警跳过。spawn 失败和被 `--fallback-from` 跳过的候选另冷却 15 分钟。冷却中的候选优先跳过，全部冷却时仍挑一个试，避免死锁。终态有误、或放弃任务要记失败时，按稳定线程 ID 改正（未知 ID 拒绝报错，重复回写覆盖）：
    ```bash
    bb-dispatch --on-failure <线程ID>
-   bb-dispatch --record-decision <线程ID> --decision accepted
-   bb-dispatch --record-decision <线程ID> --outcome failed --decision rejected
+   bb-dispatch --record-outcome <线程ID> --outcome failed
    ```
-3. **聚合复盘**：运行 `bb-dispatch --history-summary`（或 `--stats`）只读输出（同样先按线程状态补齐终态，但不写账本）按难度占比、各候选失败率/接受率、当前活跃冷却及确定性复盘 hooks（`high_failure_rate` 当候选至少 3 次且失败率 $\ge 30\%$、`low_acceptance_rate` 当候选至少 3 次裁决且接受率 $<50\%$）。派发时 `selection.warnings` 携带这些 hook，并逐条写到 stderr，只取 stdout 线程 ID 时也看得到。
+3. **聚合复盘**：运行 `bb-dispatch --history-summary`（或 `--stats`）只读输出（同样先按线程状态补齐终态，但不写账本）按难度占比、各候选失败率、当前活跃冷却及确定性复盘 hook（`high_failure_rate` 当候选至少 3 次且失败率 $\ge 30\%$）。派发时 `selection.warnings` 携带这些 hook，并逐条写到 stderr，只取 stdout 线程 ID 时也看得到。
 4. **复盘日志**：账本旁的 `ledger.events.jsonl` 只追加 `dispatch`（`diverted` 为因冷却绕开的候选）、`deferred`（交给 BB 自动重试）、`retry`、`recovered`、`cooled`（带原因与等级）五类事件，不存任务正文，超过 4 MB 丢掉较早的一半。`--history-summary` 的 `retry_review` 汇总近 7 天的计数、`retry_recovery_rate`（原会话重试过的故障里最终恢复的比例），以及按次数、原因、provider 与模型、日期的分布，用来判断重试是否奏效、冷却是否频繁、走势是否正常。
+5. **交付质量**：不让父线程自评采纳与否。`bb-dispatch --followups [--days 3]` 只读列出近几天派发的线程首次交付后，父线程或用户追加的消息（排除 `[bb_long_task]`、`[bb system]` 通知），按候选汇总有追加的线程数。正文只在输出里，取自 BB 线程记录，不进账本。追加里混有返工、下一项任务、裁决和进度同步，脚本不判断类别；复盘时由模型逐条归类，算出各候选的返工线程占比。缺口：归类靠模型判断，还没有稳定的确定性指标。
