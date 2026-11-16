@@ -91,5 +91,5 @@ driver 只传任务文本、难度与已有环境，路由仍由本配置决定�
    bb-dispatch --record-decision <线程ID> --decision accepted
    bb-dispatch --record-decision <线程ID> --outcome failed --decision rejected
    ```
-3. **聚合复盘与偏斜检测**：运行 `bb-dispatch --history-summary`（或 `--stats`）只读输出（同样先按线程状态补齐终态，但不写账本）按难度占比、各候选失败率/接受率、当前活跃冷却及确定性复盘 hooks（`high_failure_rate` 当候选至少 3 次且失败率 $\ge 30\%$、`low_acceptance_rate` 当候选至少 3 次裁决且接受率 $<50\%$、`complex_share_high` 当某父线程至少 5 次派发、且最近至多 10 次里 `complex` $\ge 3$ 次且占比 $\ge 30\%$），`by_parent` 列出各父线程最近 10 次的分档。全局占比会被其他会话稀释，长会话的分档漂移看本父线程这一项。派发时 `selection.warnings` 携带全局 hook 与本父线程的 `complex_share_high`，并逐条写到 stderr，只取 stdout 线程 ID 时也看得到。
+3. **聚合复盘**：运行 `bb-dispatch --history-summary`（或 `--stats`）只读输出（同样先按线程状态补齐终态，但不写账本）按难度占比、各候选失败率/接受率、当前活跃冷却及确定性复盘 hooks（`high_failure_rate` 当候选至少 3 次且失败率 $\ge 30\%$、`low_acceptance_rate` 当候选至少 3 次裁决且接受率 $<50\%$）。派发时 `selection.warnings` 携带这些 hook，并逐条写到 stderr，只取 stdout 线程 ID 时也看得到。
 4. **复盘日志**：账本旁的 `ledger.events.jsonl` 只追加 `dispatch`（`diverted` 为因冷却绕开的候选）、`deferred`（交给 BB 自动重试）、`retry`、`recovered`、`cooled`（带原因与等级）五类事件，不存任务正文，超过 4 MB 丢掉较早的一半。`--history-summary` 的 `retry_review` 汇总近 7 天的计数、`retry_recovery_rate`（原会话重试过的故障里最终恢复的比例），以及按次数、原因、provider 与模型、日期的分布，用来判断重试是否奏效、冷却是否频繁、走势是否正常。

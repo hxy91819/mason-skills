@@ -768,37 +768,18 @@ environments:
         self.assertEqual(entries[escalated['result']['thread']['id']]['escalated_from'], 'thr_prev_failed')
         self.assertNotIn('unknown', entries[escalated['result']['thread']['id']])
 
-    def test_complex_drift_warns_only_the_drifting_parent(self):
+    def test_high_complex_share_raises_no_warning(self):
         ledger = m.empty_ledger()
-        history = [('parent', 'complex')] * 3 + [('parent', 'medium')] + [('other', 'complex')] * 5
-        for idx, (parent, difficulty) in enumerate(history):
+        for idx in range(10):
             m.append_ledger_entry(ledger, {
-                'id': f'thr_{idx}', 'ts': 900 + idx, 'parent_thread': parent, 'difficulty': difficulty,
+                'id': f'thr_{idx}', 'ts': 900 + idx, 'parent_thread': 'parent', 'difficulty': 'complex',
                 'agent': 'primary', 'provider': 'primary', 'model': 'fast-model', 'reasoning': 'max',
                 'outcome': 'completed', 'decision': 'accepted',
             })
         m.save_ledger(self.ledger, ledger)
-
         result = m.dispatch(self.args(), self.fake, now=1000)
-        warnings = result['selection']['warnings']
-        self.assertTrue(any('父线程 parent 最近 5 次派发里 complex 占 3 次' in w for w in warnings))
-        self.assertFalse(any('父线程 other' in w for w in warnings))
-        summary = m.summarize_ledger(m.load_ledger(self.ledger, strict=True), now=1000)
-        self.assertEqual(summary['by_parent']['parent'], {'recent': 5, 'simple': 1, 'medium': 1, 'complex': 3})
-        drifting = {h['parent_thread'] for h in summary['review_hooks'] if h['hook'] == 'complex_share_high'}
-        self.assertEqual(drifting, {'parent', 'other'})
-
-    def test_parent_with_occasional_complex_gets_no_drift_warning(self):
-        ledger = m.empty_ledger()
-        for idx, difficulty in enumerate(['complex', 'complex'] + ['medium'] * 5 + ['simple'] * 3):
-            m.append_ledger_entry(ledger, {
-                'id': f'thr_{idx}', 'ts': 900 + idx, 'parent_thread': 'parent', 'difficulty': difficulty,
-                'agent': 'primary', 'provider': 'primary', 'model': 'fast-model', 'reasoning': 'max',
-                'outcome': 'completed', 'decision': 'accepted',
-            })
-        summary = m.summarize_ledger(ledger, now=1000)
-        self.assertEqual(summary['by_parent']['parent']['complex'], 2)
-        self.assertFalse(any(h['hook'] == 'complex_share_high' for h in summary['review_hooks']))
+        self.assertNotIn('warnings', result['selection'])
+        self.assertEqual(m.summarize_ledger(m.load_ledger(self.ledger, strict=True), now=1000)['review_hooks'], [])
 
     def test_review_warnings_also_reach_stderr(self):
         receipt = {'dry_run': False, 'selection': {'warnings': ['分档偏斜提醒']}, 'result': {'thread': {'id': 'thr_x'}}}

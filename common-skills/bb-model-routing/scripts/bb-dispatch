@@ -83,11 +83,6 @@ MAX_LIVE_ENTRIES = 200
 # 复盘日志超过上限时丢掉较早的一半；汇总只看近 7 天，正常用量下仍留得下几十天。
 EVENTS_MAX_BYTES = 4 * 1024 * 1024
 UNKNOWN_MAX_CHARS = 120
-# 按父线程最近几次派发看分档是否漂向 complex；全局占比会被其他会话稀释。
-PARENT_WINDOW = 10
-COMPLEX_SHARE_MIN_ENTRIES = 5
-COMPLEX_SHARE_MIN_COUNT = 3
-COMPLEX_SHARE_THRESHOLD = 0.30
 REVIEW_PROMPT_ANCHOR = "# Review agent 提示词"
 DRIVER_PAYLOAD_ANCHORS = (
     "\n执行包：\n",
@@ -717,29 +712,6 @@ def summarize_ledger(ledger, now=None):
         stats["share"] = round(stats["total"] / total_dispatches, 4) if total_dispatches else 0.0
 
     hooks = []
-    recent = {}
-    for entry in sorted(live_entries, key=lambda e: e.get("ts") or 0, reverse=True):
-        parent = entry.get("parent_thread")
-        if parent and len(recent.setdefault(parent, [])) < PARENT_WINDOW:
-            recent[parent].append(entry.get("difficulty"))
-    by_parent = {}
-    for parent, diffs in sorted(recent.items()):
-        if len(diffs) < COMPLEX_SHARE_MIN_ENTRIES:
-            continue
-        counts = {d: diffs.count(d) for d in DIFFICULTIES}
-        by_parent[parent] = {"recent": len(diffs), **counts}
-        if counts["complex"] >= COMPLEX_SHARE_MIN_COUNT and counts["complex"] / len(diffs) >= COMPLEX_SHARE_THRESHOLD:
-            hooks.append({
-                "hook": "complex_share_high",
-                "parent_thread": parent,
-                "numerator": counts["complex"],
-                "denominator": len(diffs),
-                "message": (
-                    f"父线程 {parent} 最近 {len(diffs)} 次派发里 complex 占 {counts['complex']} 次（>=30%），"
-                    "核对分档是否仍按 SKILL.md「判断与调用」。"
-                ),
-            })
-
     for agent, ag in sorted(by_agent.items()):
         total = ag["total"]
         failed = sum(ag["outcomes"][k] for k in FAILED_OUTCOMES)
@@ -778,7 +750,6 @@ def summarize_ledger(ledger, now=None):
         "rolled_up_entries": rolled_up_count,
         "by_difficulty": by_difficulty,
         "by_agent": by_agent,
-        "by_parent": by_parent,
         "active_cooldowns": active_cooldowns,
         "review_hooks": hooks,
     }
@@ -1411,9 +1382,7 @@ def dispatch_unlocked(args, call, now, config, slots):
     merged = persist(entry=entry)
     if entry is not None and merged is not None:
         summary = summarize_ledger(merged, now=now)
-        # 其他父线程的分档偏斜只在 --history-summary 里看，不打扰本次派发。
-        hooks = [h for h in summary["review_hooks"]
-                 if h["hook"] != "complex_share_high" or h["parent_thread"] == parent.get("id")]
+        hooks = summary["review_hooks"]
         if hooks:
             plan.setdefault("warnings", []).extend(h["message"] for h in hooks)
     # 返回完整创建回执，包括排队状态；不把创建成功宣称为任务完成。
