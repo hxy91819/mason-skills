@@ -1189,6 +1189,16 @@ environments:
         self.assertNotIn('simple_share_low', hook_names)
         self.assertIn('high_failure_rate', hook_names)
 
+    def test_dispatch_event_keeps_chain_facts_without_task_text(self):
+        m.dispatch(self.args('--task', 'SECRET_TASK_TEXT', '--escalate-from', 'thr_prev'), self.fake, now=1000)
+        event = [json.loads(l) for l in m.events_path(self.ledger).read_text().splitlines()][-1]
+        self.assertEqual(event['event'], 'dispatch')
+        self.assertEqual(event['escalated_from'], 'thr_prev')
+        self.assertEqual(event['unknown'], '测试用原因')
+        self.assertIn('task_chars', event)
+        self.assertNotIn('requested_difficulty', event)
+        self.assertNotIn('SECRET_TASK_TEXT', json.dumps(event, ensure_ascii=False))
+
     def test_followups_lists_parent_and_user_messages_after_first_delivery(self):
         events = [
             {'ts': 100, 'event': 'dispatch', 'thread': 'thr_old', 'difficulty': 'simple', 'agent': 'a', 'model': 'm'},

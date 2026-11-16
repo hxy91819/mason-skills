@@ -1328,9 +1328,14 @@ def dispatch_unlocked(args, call, now, config, slots):
                 del table[key]
             if entry is not None:
                 append_ledger_entry(fresh, entry, now=now)
+                # 复盘日志比 live 窗口留得久，复盘要串起派发链和定档理由，这里带上同样的最小事实。
+                extra = {k: entry[k] for k in ("parent_thread", "reasoning", "task_chars", "unknown", "escalated_from")
+                         if entry.get(k) is not None}
+                if entry.get("requested_difficulty") != entry["difficulty"]:
+                    extra["requested_difficulty"] = entry.get("requested_difficulty")
                 events.append({"ts": now, "event": "dispatch", "thread": entry["id"], "difficulty": entry["difficulty"],
                                "agent": entry["agent"], "provider": entry["provider"], "model": entry["model"],
-                               **({"diverted": diverted} if diverted else {})})
+                               **extra, **({"diverted": diverted} if diverted else {})})
             return events
         try:
             return update_ledger(lpath, apply, strict=False)
