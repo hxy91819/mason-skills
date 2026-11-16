@@ -794,7 +794,7 @@ class Driver:
         self.ensure_thread_capacity(role)
         command = [*self.dispatch, "--difficulty", difficulty, "--title", title, "--task", task]
         if difficulty == "complex":
-            # 实际创建的首次 complex 要带 --unknown；这里的 complex 只来自 Judge（角色例外）、Story 计划或 Judge 升档。
+            # --unknown 只是账本注记，记下这次 complex 的来源。
             unknown = "裁决 Worker 与 Validator 互相矛盾的结论" if role == "judge" else f"{title}：Story 计划或 Judge 升档定为 complex"
             command += ["--unknown", unknown]
         if self.args.environment:

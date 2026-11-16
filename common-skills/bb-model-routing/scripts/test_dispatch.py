@@ -131,23 +131,6 @@ environments:
         self.assertEqual(selection['difficulty'], 'simple')
         self.assertNotIn('warnings', selection)
 
-    def test_project_floor_allows_closed_scope_and_complex_lift_without_unknown(self):
-        for minimum in ('medium', 'complex'):
-            with self.subTest(minimum=minimum):
-                self.project_floor(minimum)
-                args = self.args('--closed-scope')
-                args.unknown = None
-                self.assertEqual(m.dispatch(args, self.fake)['selection']['difficulty'], minimum)
-
-    def test_project_floor_does_not_change_explicit_complex_gate(self):
-        self.project_floor('medium')
-        args = self.args('--difficulty', 'complex')
-        args.unknown = None
-        with self.assertRaises(m.DispatchError):
-            m.dispatch(args, self.fake)
-        args.unknown = 'Oracle'
-        self.assertEqual(m.dispatch(args, self.fake)['selection']['difficulty'], 'complex')
-
     def test_project_floor_dry_run_warnings_reach_json_and_stderr(self):
         self.project_floor('medium')
         dispatch = m.dispatch
@@ -158,18 +141,6 @@ environments:
         self.assertIn(selection['warnings'][0], err.getvalue())
         self.assertEqual(self.spawn_counter, 0)
         self.assertFalse(self.ledger.exists())
-
-    def test_project_floor_summary_explains_skew_after_rollover(self):
-        self.project_floor('medium')
-        for _ in range(5):
-            m.dispatch(self.args(), self.fake)
-        ledger = json.loads(self.ledger.read_text())
-        for entry in ledger['entries'][:3]:
-            m.rollup_entry(ledger['rollups'], entry)
-        ledger['entries'] = ledger['entries'][3:]
-        hook = next(h for h in m.summarize_ledger(ledger)['review_hooks'] if h['hook'] == 'simple_share_low')
-        self.assertEqual(hook['denominator'], 5)
-        self.assertIn('5 次因项目下限抬升', hook['message'])
 
     def test_invalid_project_floor_fails_without_spawn(self):
         self.project_floor('invalid')
@@ -773,37 +744,25 @@ environments:
         self.assertEqual(result['selection']['agent'], 'specialist')
         self.assertEqual(result['selection']['provider'], 'remote-provider')
 
-    def test_closed_scope_requires_simple_unless_escalated(self):
-        with self.assertRaisesRegex(m.DispatchError, '--closed-scope.*--difficulty simple'):
-            m.dispatch(self.args('--difficulty', 'medium', '--closed-scope', '--dry-run'), self.fake)
-        self.assertEqual(self.calls, [])
-        ok_simple = m.dispatch(self.args('--difficulty', 'simple', '--closed-scope', '--dry-run'), self.fake)
-        self.assertEqual(ok_simple['selection']['difficulty'], 'simple')
-        ok_escalated = m.dispatch(
-            self.args('--difficulty', 'medium', '--closed-scope', '--escalate-from', 'thr_prev_failed', '--dry-run'),
-            self.fake,
-        )
-        self.assertEqual(ok_escalated['selection']['escalated_from'], 'thr_prev_failed')
-        self.assertIn(('thread', 'show', 'thr_prev_failed'), self.calls)
-
     def complex_args(self, *extra):
         return m.parser().parse_args(['--config', str(self.config), '--ledger', str(self.ledger),
                                       '--difficulty', 'complex', '--task', '裁决方案', *extra])
 
-    def test_first_complex_spawn_needs_unknown_unless_escalated(self):
-        with self.assertRaises(m.DispatchError) as caught:
-            m.dispatch(self.complex_args(), self.fake, now=1000)
-        self.assertIn('--unknown', str(caught.exception))
-        self.assertIn(m.MEDIUM_RULE, str(caught.exception))
-        self.assertIn(m.COMPLEX_RULE, str(caught.exception))
-        self.assertEqual(self.calls, [])
-        # 配置自检的 dry-run 不创建线程，不要求写 --unknown。
-        self.assertTrue(m.dispatch(self.complex_args('--dry-run'), self.fake)['dry_run'])
+    def test_direct_medium_or_complex_needs_no_escalation_or_reason(self):
+        long_task = '细化步骤' * 700
+        for diff in ('medium', 'complex'):
+            args = self.args('--difficulty', diff, '--task', long_task)
+            args.unknown = None
+            result = m.dispatch(args, self.fake, now=1000)
+            self.assertEqual(result['selection']['difficulty'], diff)
+            self.assertNotIn('escalated_from', result['selection'])
 
+    def test_optional_reason_and_escalation_are_recorded(self):
         unknown = '不知道故障在网关、调度还是存储哪一层' * 10
         stated = m.dispatch(self.complex_args('--unknown', unknown), self.fake, now=1000)
         self.assertEqual(stated['selection']['unknown'], unknown)
         escalated = m.dispatch(self.complex_args('--escalate-from', 'thr_prev_failed'), self.fake, now=1001)
+        self.assertIn(('thread', 'show', 'thr_prev_failed'), self.calls)
         entries = {e['id']: e for e in m.load_ledger(self.ledger, strict=True)['entries']}
         self.assertEqual(entries[stated['result']['thread']['id']]['unknown'], unknown[:m.UNKNOWN_MAX_CHARS])
         self.assertEqual(entries[escalated['result']['thread']['id']]['escalated_from'], 'thr_prev_failed')
@@ -822,7 +781,7 @@ environments:
 
         result = m.dispatch(self.args(), self.fake, now=1000)
         warnings = result['selection']['warnings']
-        self.assertTrue(any('父线程 parent 最近 5 次派发里 complex 占 3 次' in w and m.COMPLEX_RULE in w and m.MEDIUM_RULE in w for w in warnings))
+        self.assertTrue(any('父线程 parent 最近 5 次派发里 complex 占 3 次' in w for w in warnings))
         self.assertFalse(any('父线程 other' in w for w in warnings))
         summary = m.summarize_ledger(m.load_ledger(self.ledger, strict=True), now=1000)
         self.assertEqual(summary['by_parent']['parent'], {'recent': 5, 'simple': 1, 'medium': 1, 'complex': 3})
@@ -850,42 +809,6 @@ environments:
             self.assertEqual(m.main(), 0)
         self.assertEqual(json.loads(out.getvalue())['result']['thread']['id'], 'thr_x')
         self.assertIn('提醒：分档偏斜提醒', err.getvalue())
-
-    def test_overlong_task_rejected_for_medium_and_complex_but_allowed_for_simple_or_review(self):
-        long_task = '细化步骤' * 700  # 2800 chars > 2500
-        for diff in ('medium', 'complex'):
-            with self.assertRaises(m.DispatchError) as caught:
-                m.dispatch(self.args('--difficulty', diff, '--task', long_task, '--dry-run'), self.fake)
-            self.assertIn('--max-task-chars 0', str(caught.exception))
-            self.assertIn(m.MEDIUM_RULE, str(caught.exception))
-        # simple 允许长任务书
-        simple_ok = m.dispatch(self.args('--difficulty', 'simple', '--task', long_task, '--dry-run'), self.fake)
-        self.assertEqual(simple_ok['selection']['difficulty'], 'simple')
-        # autoreview 附加的审查提示词不计入有效任务指导长度
-        review_task = '只读审查 commit abc123\n\n# Review agent 提示词\n' + ('标准正文' * 800)
-        review_ok = m.dispatch(self.args('--difficulty', 'medium', '--task', review_task, '--dry-run'), self.fake)
-        self.assertEqual(review_ok['selection']['difficulty'], 'medium')
-        # ask-oracle 的 Verified context 证据块与 large-task-orchestrator 的执行包/报告协议块不计入有效指导长度
-        oracle_task = (
-            '你是本次咨询的 Oracle。\n\n# Goal\n评估方案\n\n# Verified context\n'
-            + ('证据行\n' * 900)
-            + '\n# Question for the oracle\n架构是否可行？\n\n# Expected response\n给出结论'
-        )
-        oracle_ok = m.dispatch(self.args('--difficulty', 'complex', '--task', oracle_task, '--dry-run'), self.fake)
-        self.assertEqual(oracle_ok['selection']['difficulty'], 'complex')
-        driver_worker_task = (
-            '实现 Story STORY-01，一次只处理这一张 Story。\n\n执行包：\n```json\n'
-            + ('{"k": "v"}\n' * 300)
-            + '```\n\n完成工作后必须提交结构化报告。\n'
-        )
-        driver_ok = m.dispatch(self.args('--difficulty', 'medium', '--task', driver_worker_task, '--dry-run'), self.fake)
-        self.assertEqual(driver_ok['selection']['difficulty'], 'medium')
-        # 显式传入 --escalate-from 允许豁免
-        esc_ok = m.dispatch(
-            self.args('--difficulty', 'medium', '--task', long_task, '--escalate-from', 'thr_prev', '--dry-run'),
-            self.fake,
-        )
-        self.assertEqual(esc_ok['selection']['escalated_from'], 'thr_prev')
 
     def test_ledger_records_minimal_facts_and_overwrites_on_repeat_decision(self):
         res = m.dispatch(self.args('--task', 'SENSITIVE_SECRET_TOKEN_123'), self.fake, now=1000)
@@ -1290,7 +1213,7 @@ environments:
         nxt = m.dispatch(self.args('--dry-run'), self.fake, now=2100)
         self.assertEqual(nxt['selection']['agent'], 'specialist')
 
-    def test_review_hooks_detect_simple_skew_and_failure_rates(self):
+    def test_review_hooks_detect_failure_rates_without_simple_quota(self):
         for _ in range(5):
             res = m.dispatch(self.args('--difficulty', 'medium'), self.fake, now=3000)
             m.record_decision_command(
@@ -1304,17 +1227,9 @@ environments:
             )
         summary = m.summarize_ledger(m.load_ledger(self.ledger, strict=True), now=3010)
         hook_names = {h['hook'] for h in summary['review_hooks']}
-        self.assertIn('simple_share_low', hook_names)
+        self.assertNotIn('simple_share_low', hook_names)
         self.assertIn('high_failure_rate', hook_names)
         self.assertIn('low_acceptance_rate', hook_names)
-        simple_hook = next(h for h in summary['review_hooks'] if h['hook'] == 'simple_share_low')
-        self.assertIn(m.MEDIUM_RULE, simple_hook['message'])
-        self.assertIn(m.COMPLEX_RULE, simple_hook['message'])
-        help_text = ''.join(m.parser().format_help().split())
-        self.assertIn(''.join(m.MEDIUM_RULE.split()), help_text)
-        self.assertIn(''.join(m.COMPLEX_RULE.split()), help_text)
-        self.assertIn('非--dry-run', help_text)
-
 
 if __name__ == '__main__':
     unittest.main()

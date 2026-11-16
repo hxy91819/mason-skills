@@ -82,19 +82,7 @@ LEDGER_LOCK_WAIT_SECONDS = 5
 MAX_LIVE_ENTRIES = 200
 # 复盘日志超过上限时丢掉较早的一半；汇总只看近 7 天，正常用量下仍留得下几十天。
 EVENTS_MAX_BYTES = 4 * 1024 * 1024
-DEFAULT_MAX_TASK_CHARS = 2500
 UNKNOWN_MAX_CHARS = 120
-# 与 SKILL.md「判断与调用」②③④、①一致。stderr 与 --help 只引用这两句，不另写口径。
-MEDIUM_RULE = (
-    "medium 只用于：测试通过不等于做对（并发、锁与崩溃恢复，租户或安全隔离边界的改动，"
-    "下「可以发布/签字」结论，流程要求且没有第二审查人或 CI 兜底的唯一审查人）；"
-    "父线程写不出验收标准；"
-    "同一任务前序线程失败或返工时用 --escalate-from 升一档（simple→medium→complex，每次一档）。"
-)
-COMPLEX_RULE = (
-    "complex 只用于：Oracle 或 Judge 角色；"
-    "或父线程说不出问题落在哪个系统、也列不出候选方案，且任务跨多个系统。"
-)
 # 按父线程最近几次派发看分档是否漂向 complex；全局占比会被其他会话稀释。
 PARENT_WINDOW = 10
 COMPLEX_SHARE_MIN_ENTRIES = 5
@@ -345,8 +333,6 @@ def rollup_entry(rollups, entry):
         }
         rollups[key] = bucket
     bucket["total"] = int(bucket.get("total", 0)) + 1
-    if entry.get("requested_difficulty", entry.get("difficulty")) != entry.get("difficulty"):
-        bucket["project_floor_raised"] = int(bucket.get("project_floor_raised", 0)) + 1
     outcome = entry.get("outcome") or "spawned"
     if outcome in OUTCOME_KEYS:
         bucket["outcomes"][outcome] = int(bucket["outcomes"].get(outcome, 0)) + 1
@@ -730,22 +716,7 @@ def summarize_ledger(ledger, now=None):
     for diff, stats in by_difficulty.items():
         stats["share"] = round(stats["total"] / total_dispatches, 4) if total_dispatches else 0.0
 
-    floor_raised = sum(int(b.get("project_floor_raised", 0)) for b in (ledger.get("rollups") or {}).values() if isinstance(b, dict))
-    floor_raised += sum(e.get("requested_difficulty", e.get("difficulty")) != e.get("difficulty") for e in live_entries)
     hooks = []
-    if total_dispatches >= 5 and by_difficulty["simple"]["share"] < 0.20:
-        hooks.append({
-            "hook": "simple_share_low",
-            "numerator": by_difficulty["simple"]["total"],
-            "denominator": total_dispatches,
-            "message": (
-                f"simple 难度占比仅 {by_difficulty['simple']['total']}/{total_dispatches} (<20%)，"
-                + (f"其中 {floor_raised} 次因项目下限抬升，占比按实际难度计算，不能直接据此判断误分档。"
-                 if floor_raised else "请核查是否把其余任务误判为 medium/complex。")
-                + MEDIUM_RULE + COMPLEX_RULE
-            ),
-        })
-
     recent = {}
     for entry in sorted(live_entries, key=lambda e: e.get("ts") or 0, reverse=True):
         parent = entry.get("parent_thread")
@@ -764,8 +735,8 @@ def summarize_ledger(ledger, now=None):
                 "numerator": counts["complex"],
                 "denominator": len(diffs),
                 "message": (
-                    f"父线程 {parent} 最近 {len(diffs)} 次派发里 complex 占 {counts['complex']} 次（>=30%）。"
-                    + COMPLEX_RULE + MEDIUM_RULE
+                    f"父线程 {parent} 最近 {len(diffs)} 次派发里 complex 占 {counts['complex']} 次（>=30%），"
+                    "核对分档是否仍按 SKILL.md「判断与调用」。"
                 ),
             })
 
@@ -940,8 +911,7 @@ def model_and_reasoning(agent, alias, route):
     return model, reasoning
 
 
-def validate_contract_gates(args, call):
-    requested = getattr(args, "requested_difficulty", args.difficulty)
+def validate_escalate_from(args, call):
     escalate_from = getattr(args, "escalate_from", None)
     if escalate_from is not None:
         escalate_from = string(escalate_from, "--escalate-from")
@@ -949,34 +919,6 @@ def validate_contract_gates(args, call):
         shown_thread = shown.get("thread") if isinstance(shown.get("thread"), dict) else shown
         if shown_thread.get("id") and shown_thread.get("id") != escalate_from:
             raise DispatchError(f"--escalate-from 线程 {escalate_from!r} 校验不匹配。")
-
-    if getattr(args, "closed_scope", False) and requested != "simple" and not escalate_from:
-        raise DispatchError(
-            f"边界已闭合（--closed-scope）的任务必须使用 --difficulty simple；"
-            f"当前传入 {args.difficulty!r}。若因前序低档线程失败需升档，请提供 --escalate-from <前序线程ID>。"
-        )
-
-    unknown = (getattr(args, "unknown", None) or "").strip()
-    if requested == "complex" and not escalate_from and not unknown and not getattr(args, "dry_run", False):
-        raise DispatchError(
-            "实际创建线程（非 --dry-run）首次派 complex 且未传 --escalate-from 时，必须用 --unknown 写一句原因。"
-            + COMPLEX_RULE
-            + "用户点名 complex 时 --unknown 写「用户点名：<原因>」。"
-            + MEDIUM_RULE
-        )
-
-    max_chars = getattr(args, "max_task_chars", DEFAULT_MAX_TASK_CHARS)
-    if max_chars is None:
-        max_chars = DEFAULT_MAX_TASK_CHARS
-    if max_chars > 0 and args.difficulty in ("medium", "complex") and not escalate_from:
-        chars = effective_task_chars(args.task)
-        if chars > max_chars:
-            raise DispatchError(
-                f"{args.difficulty} 任务指导长达 {chars} 字符（上限 {max_chars}）。"
-                + MEDIUM_RULE
-                + "直接派其中的 medium 条件且任务书确需超长时传 --max-task-chars 0，并在派发报告说明；"
-                "不要为过门禁改传 --escalate-from。"
-            )
     return escalate_from
 
 
@@ -1192,7 +1134,7 @@ def dispatch_unlocked(args, call, now, config, slots):
     # 从子线程首条消息复制回来的任务先去掉回报方式，续派的候选顺序与标题保持不变。
     args.task = string(args.task.split(REPORT_PROTOCOL_ANCHOR, 1)[0], "task")
     args.requested_difficulty = args.difficulty
-    escalate_from = validate_contract_gates(args, call)
+    escalate_from = validate_escalate_from(args, call)
     unknown = (getattr(args, "unknown", None) or "").strip()
 
     environment_path = Path(args.environment).expanduser() if args.environment else None
@@ -1483,12 +1425,10 @@ def parser():
         epilog="示例：\n  bb-dispatch --difficulty simple --task '补充 README' --dry-run\n  bb-dispatch --difficulty simple --task '登录失败可复现，在认证链路定位根因并修复'\n  bb-dispatch --difficulty medium --task '改动租户隔离边界，测试通过不足以证明没有泄漏'\n  bb-dispatch --history-summary\n  bb-dispatch --on-failure thr_xxx\n  bb-dispatch --record-decision thr_xxx --decision accepted\n输出：stdout JSON，stderr 错误；退出码 0 成功，2 失败。")
     p.add_argument("--config", default=os.environ.get("BB_DISPATCH_CONFIG", str(Path.home() / ".config/bb-dispatch/config.yaml")), help="用户 YAML 配置路径，也可设置 BB_DISPATCH_CONFIG")
     p.add_argument("--ledger", default=os.environ.get("BB_DISPATCH_LEDGER_PATH", str(Path.home() / ".cache/bb-dispatch/ledger.json")), help="运行账本与熔断缓存路径，也可设置 BB_DISPATCH_LEDGER_PATH")
-    p.add_argument("--difficulty", choices=["simple", "medium", "complex"], help="任务难度。其余一律 simple。" + MEDIUM_RULE + COMPLEX_RULE)
+    p.add_argument("--difficulty", choices=["simple", "medium", "complex"], help="任务难度，归档标准见 SKILL.md「判断与调用」")
     p.add_argument("--task", help="任务目标、范围和验收要求")
-    p.add_argument("--closed-scope", action="store_true", help="声明目标文件、改法、验证已定；未传 --escalate-from 时强制 simple。命中 medium 条件的任务不要传；用户点名 medium 时也不传。" + MEDIUM_RULE)
-    p.add_argument("--escalate-from", metavar="线程ID", help="同一任务前序失败或返工的线程 ID；升一档时必填。" + MEDIUM_RULE)
-    p.add_argument("--unknown", metavar="原因", help="一句话原因。实际创建线程（非 --dry-run）首次派 complex 且未传 --escalate-from 时必填，截断后记入账本供复盘。用户点名 complex 时写「用户点名：<原因>」。" + COMPLEX_RULE)
-    p.add_argument("--max-task-chars", type=int, default=DEFAULT_MAX_TASK_CHARS, help=f"未传 --escalate-from 的 medium/complex 任务指导最大字符数（默认 {DEFAULT_MAX_TASK_CHARS}，0 为不限制）。直接派且任务书确需超长时传 0，并在派发报告说明。" + MEDIUM_RULE)
+    p.add_argument("--escalate-from", metavar="线程ID", help="同一任务前序失败或返工的线程 ID，记入账本")
+    p.add_argument("--unknown", metavar="原因", help="可选：一句话说明定档原因，截断后记入账本")
     p.add_argument("--fallback-from", metavar="别名", help="从 defaults.<路由> 链中该别名起续派；链上排在它前面的候选按 provider 与模型冷却 15 分钟")
     p.add_argument("--reasoning", help="覆盖推理级别，仍校验模型目录")
     p.add_argument("--project", help="项目 ID；ID 模式默认环境所属项目，路径模式默认当前项目")
