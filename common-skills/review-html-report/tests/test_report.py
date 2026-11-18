@@ -162,7 +162,7 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(self.run_report('--max-width', '0').returncode, 2)
 
     def test_png_fallback_without_pillow(self):
-        self.data['findings'] = [{'id': 'V1', 'page': 'p1', 'severity': 'should', 'resolution': 'fixed', 'fix': 'spacing'}]
+        self.data['findings'] = [{'id': 'V1', 'page': 'p1', 'severity': 'should', 'box': [64, 90, 200, 100], 'fix': 'spacing'}]
         source = self.root / 'input.json'
         source.write_text(json.dumps(self.data))
         result = subprocess.run([sys.executable, '-S', str(SCRIPT), '--data', str(source),
@@ -175,13 +175,13 @@ class ReportTests(unittest.TestCase):
         for bad in ([64, 430, 0, 160], [64, 430], ['x', 430, 100, 100]):
             with self.subTest(bad=bad):
                 self.data['findings'] = [{'id': 'V1', 'severity': 'should', 'page': 'p1',
-                                          'title': 'Gap', 'resolution': 'fixed', 'box': bad, 'fix': 'proposal'}]
+                                          'title': 'Gap', 'resolution': 'open', 'box': bad, 'fix': 'proposal'}]
                 result = self.run_report()
                 self.assertEqual(result.returncode, 0, result.stderr)
                 html = (self.root / 'report.html').read_text()
                 self.assertNotIn('class="rbox"', html)
+                self.assertNotIn('data:image/', html)  # 无效坐标不内嵌无框整页图
                 self.assertIn('红框', html)
-                self.assertNotIn('src=""', html)
 
     def test_box_pixel_coordinates_and_short_line(self):
         self.covered()
@@ -189,7 +189,7 @@ class ReportTests(unittest.TestCase):
             'id': 'V1', 'severity': 'should', 'kind': 'slack', 'page': 'p1',
             'title': 'Bottom band is empty',
             'short': 'A wide empty band sits between the cards and the takeaway.',
-            'label': '空带 160px', 'resolution': 'fixed', 'box': [64, 100, 512, 128],
+            'label': '空带 160px', 'resolution': 'open', 'box': [64, 100, 512, 128],
             'why': 'The band pushes the takeaway to the page edge.',
             'fix': 'Tighten spacing (proposal only).', 'where': 'deck.html:1',
         }]
@@ -200,7 +200,6 @@ class ReportTests(unittest.TestCase):
         self.assertIn('left:10.00%', html)
         self.assertIn('top:27.78%', html)
         self.assertIn('空带 160px', html)
-        self.assertIn('class="mk"', html)
         self.assertIn('A wide empty band sits between', html)
         self.assertNotIn('class="slider"', html)
         self.assertNotIn('src=""', html)
@@ -209,7 +208,7 @@ class ReportTests(unittest.TestCase):
         self.covered()
         # y=430 超出 360 高的截图：top 钳到 100%，高被压到 0 → 视为无效，红框省略并记 limits。
         self.data['findings'] = [{'id': 'V1', 'severity': 'should', 'page': 'p1',
-                                  'title': 'Gap', 'resolution': 'fixed', 'box': [64, 430, 512, 128], 'fix': 'proposal'}]
+                                  'title': 'Gap', 'resolution': 'open', 'box': [64, 430, 512, 128], 'fix': 'proposal'}]
         result = self.run_report()
         self.assertEqual(result.returncode, 0, result.stderr)
         html = (self.root / 'report.html').read_text()
@@ -225,9 +224,12 @@ class ReportTests(unittest.TestCase):
         result = self.run_report()
         self.assertEqual(result.returncode, 0, result.stderr)
         html = (self.root / 'report.html').read_text()
-        self.assertEqual(html.count('class="cmp"'), 1)   # 仅已修项有对照，检查摘要没有图片
+        self.assertEqual(html.count('class="cmp"'), 1)
         self.assertIn('class="slider"', html)
         self.assertIn('已修复', html)
+        # 已修项不再重复旧红框图，并排也复用滑块里的同两张图。
+        self.assertEqual(html.count('data:image/'), 2)
+        self.assertNotIn('class="annotated"', html)
 
     def test_each_repair_comparison_stays_in_its_own_finding_card(self):
         self.covered()
@@ -305,32 +307,19 @@ class ReportTests(unittest.TestCase):
         self.assertNotIn('Unchanged page 28', large)
         self.assertLess(len(large) - len(small), 10000)
 
-    def test_page_compare_shows_changed_pages_and_metrics(self):
+    def test_metrics_render_without_per_page_comparisons(self):
         self.covered()
         self.data['mode'] = 'fix'
         self.data['pages'][0].update(title='Changed page', after=str(self.root / 'after.png'))
         self.data['pages'][0]['review']['after'] = 'Gap closed after moving the conclusion.'
-        self.data['pages'].append(dict(self.data['pages'][0], id='p2', title='Same page',
-                                       after=str(self.root / 'before.png')))
-        self.data['pageCount'] = 2
         self.data['pageCompare'] = True
         self.data['metrics'] = [{'name': 'void flags', 'before': 9, 'after': 2}]
         result = self.run_report()
         self.assertEqual(result.returncode, 0, result.stderr)
         html = (self.root / 'report.html').read_text()
-        self.assertIn('整体前后对照', html)
-        self.assertEqual(html.count('class="fold pagecmp"'), 1)
-        self.assertIn('data-page-id="p1"', html)
-        self.assertIn('1 页无像素变化：p2', html)
         self.assertIn('void flags', html)
-        self.assertIn('Gap closed after moving the conclusion.', html)
-
-    def test_page_compare_requires_fix_mode(self):
-        self.covered()
-        self.data['pageCompare'] = True
-        result = self.run_report()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('pageCompare', result.stderr)
+        self.assertNotIn('data:image/', html)
+        self.assertNotIn('class="slider"', html)
 
     def test_open_and_kept_findings_do_not_embed_images(self):
         self.covered()
@@ -345,6 +334,39 @@ class ReportTests(unittest.TestCase):
         self.assertNotIn('data:image/', html)
         self.assertNotIn('class="slider"', html)
         self.assertIn('Text explanation', html)
+
+    def test_fixed_content_finding_does_not_borrow_page_screenshots(self):
+        self.covered()
+        self.data['mode'] = 'fix'
+        self.data['pages'][0]['after'] = str(self.root / 'after.png')
+        self.data['pages'][0]['review']['after'] = 'Copy rewritten.'
+        self.data['findings'] = [{'id': 'C1', 'page': 'p1', 'severity': 'optional', 'category': 'content',
+                                  'resolution': 'fixed', 'fix': 'Rewritten',
+                                  'textComparison': {'before': 'old copy', 'after': 'new copy'}}]
+        result = self.run_report()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        html = (self.root / 'report.html').read_text()
+        self.assertNotIn('class="slider"', html)
+        self.assertNotIn('data:image/', html)
+        self.assertIn('class="text-compare"', html)
+
+    def test_mixed_evidence_renders_one_comparison(self):
+        self.covered()
+        self.data['mode'] = 'fix'
+        self.data['pages'][0]['after'] = str(self.root / 'after.png')
+        self.data['pages'][0]['review']['after'] = 'Verified.'
+        text = {'before': 'old copy', 'after': 'new copy'}
+        self.data['findings'] = [
+            {'id': 'V1', 'page': 'p1', 'severity': 'should', 'resolution': 'fixed', 'fix': 'x',
+             'beforeBox': [64, 90, 200, 100], 'afterBox': [64, 90, 200, 100], 'textComparison': text},
+            {'id': 'C1', 'page': 'p1', 'severity': 'should', 'category': 'content', 'resolution': 'fixed',
+             'fix': 'x', 'beforeImg': str(self.root / 'before.png'), 'afterImg': str(self.root / 'after.png'),
+             'textComparison': text}]
+        result = self.run_report()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        html = (self.root / 'report.html').read_text()
+        self.assertEqual(html.count('class="cmp"'), 1)
+        self.assertEqual(html.count('class="text-compare"'), 1)
 
     def test_identical_repair_images_do_not_get_slider(self):
         self.covered()
@@ -451,7 +473,7 @@ class ReportTests(unittest.TestCase):
         html = (self.root / 'report.html').read_text()
         self.assertIn('left:10.00%;top:25.00%;width:20.00%;height:25.00%', html)
         self.assertIn('left:50.00%;top:50.00%;width:20.00%;height:25.00%', html)
-        self.assertEqual(html.count('&lt;second&gt;'), 2)
+        self.assertEqual(html.count('&lt;second&gt;'), 1)
         self.assertIn('看这里：Compare the outlined region.', html)
 
     def test_missing_or_invalid_comparison_boxes_limit_check(self):
@@ -525,10 +547,11 @@ class ReportTests(unittest.TestCase):
         self.assertGreater(observations['detailsTotal'], 0)
         self.assertEqual(observations['closedInitially'], observations['detailsTotal'])
         self.assertEqual(observations['openInitially'], 0)
-        self.assertEqual(observations['openAfterExpand'], observations['detailsTotal'])
+        self.assertEqual(observations['openAfterExpand'], observations['findingsTotal'])
         self.assertNotIn('rulersVisible', observations)
         self.assertTrue(observations['imagesDecoded'])
         self.assertEqual(observations['sideLabels'], ['改前', '改后'])
+        self.assertTrue(observations['sideSliderHidden'])
         self.assertAlmostEqual(observations['dragValue'], 70, delta=3)
         source = {name: Image.open(self.root / (name + '.png')).convert('RGB') for name in ('before', 'after')}
         for observation in observations['observations']:
@@ -555,14 +578,14 @@ class ReportTests(unittest.TestCase):
         self.data['findings'] = [{
             'id': 'V1', 'severity': 'should', 'kind': 'slack', 'page': 'p1',
             'title': 'Bottom band is empty', 'label': '空带 160px',
-            'resolution': 'fixed', 'box': [320, 90, 256, 144], 'why': 'gap', 'fix': 'proposal', 'where': 'deck.html:1',
+            'resolution': 'open', 'box': [320, 90, 256, 144], 'why': 'gap', 'fix': 'proposal', 'where': 'deck.html:1',
         }]
         result = self.run_report()
         self.assertEqual(result.returncode, 0, result.stderr)
         observations, shots = self.browser()
         self.assertEqual(observations['errors'], [])
         self.assertEqual(observations['closedInitially'], observations['detailsTotal'])
-        self.assertEqual(observations['openAfterExpand'], observations['detailsTotal'])
+        self.assertEqual(observations['openAfterExpand'], observations['findingsTotal'])
         self.assertTrue(observations['imagesDecoded'])
         annotation = observations['annotation']
         self.assertEqual(annotation['rlabel'], '空带 160px')

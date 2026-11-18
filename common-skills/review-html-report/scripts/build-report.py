@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""统一审查报告渲染器：问题卡、文字建议对照、真实修复滑块和反馈复制。
+"""统一审查报告渲染器：折叠问题卡，每张只含一句问题和一处对比（修复滑块、红框图或逐字文字对照）。
 
 输入契约及 PPT/spec-leak 映射见本 Skill references/report-data.md。
 用法：build-report.py --data findings.json --out report.html [--max-width 1600]
@@ -11,6 +11,7 @@
 
 import argparse
 import base64
+import difflib
 import html
 import io
 import json
@@ -88,6 +89,22 @@ def esc(v) -> str:
     return html.escape("" if v is None else str(v))
 
 
+def text_diff(before, after):
+    """逐字比对，原文删去部分标 <del>、改后新增部分标 <ins>；返回已转义的两段 HTML。"""
+    a, b = ("" if v is None else str(v) for v in (before, after))
+    old, new = [], []
+    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if op == "equal":
+            old.append(esc(a[i1:i2]))
+            new.append(esc(b[j1:j2]))
+            continue
+        if i2 > i1:
+            old.append(f"<del>{esc(a[i1:i2])}</del>")
+        if j2 > j1:
+            new.append(f"<ins>{esc(b[j1:j2])}</ins>")
+    return "".join(old), "".join(new)
+
+
 def box_pct(finding, img_path, fid, problems):
     """把红框坐标换算成 left/top/width/height 百分比；无效输入记入 problems 并返回 None，不猜坐标。"""
     raw = finding.get("boxPct")
@@ -145,25 +162,18 @@ def comparison_boxes(raw, img_path, fid, problems):
     return "".join(rendered)
 
 
-# 对照滑块：图框内竖条切换改前/改后；直接拖图内竖条或下方滑杆都能移动分界。
+# 对照滑块：每张图只内嵌一次；并排由 CSS 把同两层改排为左右两栏，不复制图片。
 COMPARE = Template("""
   <div class="controls">
     <label><input type="checkbox" class="side"> 并排</label>
     <span class="hint">拖动图内竖条或下方滑杆：左侧改前 / 右侧改后</span>
   </div>
-  <div class="compare">
-    <div class="wipe">
-      <div class="before-layer"><img class="img-before" src="$before" alt="$pid 改前">$before_boxes</div>
-      <div class="after-clip"><img class="img-after" src="$after" alt="$pid 改后">$after_boxes</div>
-      <span class="tag l">改前</span><span class="tag r">改后</span>
-      <div class="handle"></div>
-    </div>
-    <input type="range" class="slider" aria-label="$pid 改前改后分界" min="0" max="100" value="50">
+  <div class="wipe">
+    <div class="before-layer"><img class="img-before" src="$before" alt="$pid 改前">$before_boxes<span class="tag l">改前</span></div>
+    <div class="after-clip"><img class="img-after" src="$after" alt="$pid 改后">$after_boxes<span class="tag r">改后</span></div>
+    <div class="handle"></div>
   </div>
-  <div class="sbs">
-    <figure><div class="annotation-image"><img class="img-before" src="$before" alt="$pid 改前">$before_boxes</div><figcaption>改前</figcaption></figure>
-    <figure><div class="annotation-image"><img class="img-after" src="$after" alt="$pid 改后">$after_boxes</div><figcaption>改后</figcaption></figure>
-  </div>
+  <input type="range" class="slider" aria-label="$pid 改前改后分界" min="0" max="100" value="50">
 """)
 
 FINDING_BLOCK = Template("""
@@ -173,18 +183,9 @@ FINDING_BLOCK = Template("""
     <span class="ftitle">$title</span>
     <span class="res res-$res">$resLabel</span></summary>
   <div class="fbody">
-    $annotated
     $short
-    $compare
-    $textCompare
-    <details class="detail"><summary>完整分析与处理记录</summary>
-      <p class="why">$why</p>
-      $delta
-      <p class="fixline"><b>建议 / 实际改动：</b>$fix</p>
-      <p class="mono">$where</p>
-      <p>处理状态：$resText$reason</p>
-    </details>
-    $feedback
+    $evidence
+    <details class="detail"><summary>理由与处理</summary>$detail</details>
   </div>
 </details>
 """)
@@ -211,8 +212,6 @@ DOC = Template("""<!DOCTYPE html>
   dl.kv dd { margin:0; }
   code, .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px; }
   .sev { display:inline-block; min-width:38px; padding:2px 8px; border-radius:4px; color:#fff; font-size:12px; font-weight:700; text-align:center; }
-  .delta { white-space:pre-wrap; overflow-wrap:anywhere; }
-  .delta b { color:var(--ok); }
   /* 折叠块：默认收起；summary 是唯一展开入口。 */
   details.fold { background:var(--card); border:1px solid var(--line); border-radius:10px; margin-bottom:12px; }
   details.fold > summary { cursor:pointer; list-style:none; display:flex; gap:10px; align-items:center;
@@ -241,17 +240,14 @@ DOC = Template("""<!DOCTYPE html>
   .rlabel { position:absolute; left:-3px; top:-28px; background:var(--red); color:#fff; font-size:12.5px;
             font-weight:700; line-height:1.5; padding:2px 9px; border-radius:4px; white-space:nowrap; }
   .rbox.below .rlabel { top:auto; bottom:-28px; }
-  .short { margin:0 0 10px; font-size:14px; }
-  .short .mk { color:var(--red); font-weight:700; }
+  .short { margin:0 0 10px; font-size:14px; font-weight:600; }
   details.detail { border:1px solid var(--line); border-radius:8px; margin:0 0 12px; background:#fafbfc; }
   details.detail > summary { cursor:pointer; padding:8px 12px; font-size:13px; color:var(--muted); }
   details.detail[open] > summary { border-bottom:1px solid var(--line); }
-  details.detail > p { padding:0 12px; margin:10px 0; font-size:13.5px; }
-  .why { white-space:pre-wrap; color:#3f4753; }
-  .fixline { white-space:pre-wrap; }
+  details.detail > p { padding:0 12px; margin:10px 0; font-size:13.5px; white-space:pre-wrap; }
   .controls { display:flex; gap:18px; align-items:center; margin-bottom:10px; font-size:13px; color:var(--muted); flex-wrap:wrap; }
   .controls label { display:inline-flex; gap:6px; align-items:center; cursor:pointer; }
-  .compare { margin-top:6px; }
+  .look-here { margin:0 0 8px; font-size:13.5px; }
   .wipe { position:relative; overflow:hidden; border:1px solid var(--line); background:#fff; line-height:0;
           touch-action:none; cursor:col-resize; }
   .wipe img { width:100%; display:block; user-select:none; -webkit-user-drag:none; }
@@ -264,25 +260,23 @@ DOC = Template("""<!DOCTYPE html>
                    border-radius:50%; background:#d61f69; border:2px solid #fff; box-shadow:0 1px 4px rgba(0,0,0,.3); }
   .tag { position:absolute; top:8px; padding:2px 8px; background:rgba(26,29,33,.82); color:#fff; font-size:11px; font-weight:700; line-height:16px; }
   .tag.l { left:8px; } .tag.r { right:8px; }
-  .slider { width:100%; margin:10px 0 0; }
-  .sbs { display:none; grid-template-columns:1fr 1fr; gap:12px; }
-  .sbs figure { margin:0; }
-  .sbs img { width:100%; display:block; border:1px solid var(--line); }
-  .sbs figcaption { color:var(--muted); font-size:12px; padding-top:6px; }
-  .is-side .compare { display:none; }
-  .is-side .sbs { display:grid; }
+  .slider { width:100%; margin:10px 0 12px; }
+  .is-side .wipe { display:grid; grid-template-columns:1fr 1fr; gap:12px; border:0; overflow:visible; cursor:default; }
+  .is-side .before-layer, .is-side .after-clip { position:relative; inset:auto; clip-path:none; border:1px solid var(--line); }
+  .is-side .after-clip img { height:auto; }
+  .is-side .handle, .is-side .slider, .is-side .hint { display:none; }
+  .is-side .tag { display:inline-block !important; }
   .annotated figcaption { color:var(--muted); font-size:12px; padding-top:6px; line-height:1.5; }
-  .review { white-space:pre-wrap; color:var(--muted); font-size:13px; margin:0 0 10px; }
   .status.incomplete, .status.reviewed { background:#9a6700; }
   ul.plain { margin:0; padding-left:18px; }
   ul.plain li { margin-bottom:6px; }
-  .text-compare { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:12px; margin:12px 0; }
-  .text-compare pre, .draft { white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; }
+  .text-compare { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:12px; margin:0 0 12px; }
+  .text-compare pre { white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; margin:6px 0 0; }
   .text-compare > div { padding:12px; border:1px solid var(--line); border-radius:8px; }
   .text-compare > div:first-child { background:#fff8f7; }
   .text-compare > div:last-child { background:#f4fbf7; }
-  .feedback { display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-top:12px; }
-  #feedback-export { width:100%; min-height:160px; }
+  .text-compare del { background:#fbd5d1; color:#9b1c13; }
+  .text-compare ins { background:#c9ecd9; color:#05603a; text-decoration:none; }
   .coverage { width:100%; border-collapse:collapse; }
   .coverage th, .coverage td { border-bottom:1px solid var(--line); padding:8px; text-align:left; overflow-wrap:anywhere; }
   @media (max-width:640px) {
@@ -296,22 +290,15 @@ DOC = Template("""<!DOCTYPE html>
 <body>
 <main>
   <h1>$reportTitle · $targetName</h1>
-  <p class="sub"><span class="status $status">$statusText</span> &nbsp;$modeText &nbsp;·&nbsp; 被审文件 <code>$target</code> &nbsp;·&nbsp; 覆盖记录 $pageCount 项 &nbsp;·&nbsp; $generated</p>
-
-  $summary
+  <p class="sub"><span class="status $status">$statusText</span> &nbsp;$modeText &nbsp;·&nbsp; 被审文件 <code>$target</code> &nbsp;·&nbsp; $findingCount 个问题 &nbsp;·&nbsp; $generated</p>
+  $limits
   <div class="toolbar">
     <button type="button" id="expand-all">全部展开</button>
     <button type="button" id="collapse-all">全部收起</button>
-    <button type="button" id="copy-all">复制全部反馈</button>
   </div>
-  $contract
-  $coverage
-  $overview
   $findings
-  $draft
-  $limits
-  <p id="feedback-status" role="status"></p>
-  <textarea id="feedback-export" aria-label="可复制反馈" hidden></textarea>
+  $metrics
+  $contract
 </main>
 <script>
   const setSplit = (cmp, value) => {
@@ -338,7 +325,7 @@ DOC = Template("""<!DOCTYPE html>
         setSplit(cmp, slider.value);
       };
       wipe.addEventListener('pointerdown', (event) => {
-        if (event.button !== 0) return;
+        if (event.button !== 0 || cmp.classList.contains('is-side')) return;
         dragging = true;
         try { wipe.setPointerCapture(event.pointerId); } catch {}
         move(event);
@@ -352,36 +339,14 @@ DOC = Template("""<!DOCTYPE html>
   }
   for (const card of document.querySelectorAll('.cmp')) {
     card.querySelector('.side')?.addEventListener('change', (e) => card.classList.toggle('is-side', e.target.checked));
-
   }
+  // 问题卡多时只展开/收起问题卡，卡内「理由与处理」保持收起，便于逐张浏览对比。
   document.getElementById('expand-all')?.addEventListener('click', () => {
-    document.querySelectorAll('details').forEach((d) => { d.open = true; });
+    document.querySelectorAll('details.finding').forEach((d) => { d.open = true; });
   });
   document.getElementById('collapse-all')?.addEventListener('click', () => {
     document.querySelectorAll('details').forEach((d) => { d.open = false; });
   });
-  // 反馈是本次报告的审阅意见，不改变审查/修复状态，也不发送给外部服务。
-  const feedbackText = (card) => '[' + card.dataset.findingId + ' ' +
-    card.querySelector('.feedback-state').selectedOptions[0].textContent + '] ' +
-    card.querySelector('.ftitle').textContent + '\\n' +
-    (card.querySelector('.short')?.textContent || '');
-  const copyFeedback = async (text) => {
-    const output = document.getElementById('feedback-export');
-    output.value = text;
-    output.hidden = false;
-    try {
-      await navigator.clipboard.writeText(text);
-      document.getElementById('feedback-status').textContent = '已复制反馈';
-    } catch {
-      output.focus(); output.select();
-      document.getElementById('feedback-status').textContent = '请复制下方已选中的反馈';
-    }
-  };
-  document.querySelectorAll('.finding').forEach(card => {
-    card.querySelector('.copy-feedback').addEventListener('click', () => copyFeedback(feedbackText(card)));
-  });
-  document.getElementById('copy-all').addEventListener('click', () =>
-    copyFeedback(Array.from(document.querySelectorAll('.finding'), feedbackText).join('\\n\\n')));
 </script>
 </body>
 </html>
@@ -487,12 +452,15 @@ def build(data: dict, max_width: int) -> tuple[str, dict]:
         return None
 
     def annotated_figure(finding):
-        """问题卡上半部：红框标注截图。无图时降级为空；坐标无效时省略红框并记入 limits，不猜坐标。"""
+        """未修项的问题图：已标注局部图，或带有效红框的截图；坐标无效时只记 limits，不嵌无框整页图。"""
         fid = str(finding.get("id"))
         if finding.get("annotatedImg"):
             uri = img(finding["annotatedImg"], f"{fid} annotatedImg", required=True)
             return (f'<figure class="annotated"><img src="{uri}" alt="{esc(fid)} 标注证据">'
                     f'<figcaption>{esc(finding.get("where"))}</figcaption></figure>')
+        has_coords = finding.get("box") is not None or finding.get("boxPct") is not None
+        if not has_coords:
+            return ""
         img_path = finding.get("img")
         if not img_path:
             page = page_by_id(str(finding.get("page", "")).split(",")[0].strip())
@@ -502,62 +470,52 @@ def build(data: dict, max_width: int) -> tuple[str, dict]:
         uri = img(img_path, f"finding {fid} img")
         if not uri:
             return ""
-        has_coords = finding.get("box") is not None or finding.get("boxPct") is not None
-        geo = box_pct(finding, img_path, fid, problems) if has_coords else None
-        if geo is not None:
-            left, top, width, height = geo
-            label = esc(finding.get("label") or fid or "问题")
-            below = " below" if top < 8 else ""
-            box_html = (f'<div class="rbox{below}" style="left:{left:.2f}%;top:{top:.2f}%;'
-                        f'width:{width:.2f}%;height:{height:.2f}%">'
-                        f'<span class="rlabel">{label}</span></div>')
-            where = f" · {esc(finding['where'])}" if finding.get("where") else ""
-            caption = f"红框 = 问题位置{where}"
-            alt = f"{esc(fid)} 问题位置"
-        elif has_coords:
-            box_html, caption, alt = "", "红框坐标无效，已省略红框（见覆盖范围限制）", f"{esc(fid)} 所在页截图"
-        else:
-            box_html, caption, alt = "", "未提供红框坐标，仅显示所在页截图", f"{esc(fid)} 所在页截图"
-        return (f'<figure class="annotated"><div class="annotation-image"><img src="{uri}" alt="{alt}">{box_html}</div>'
-                f'<figcaption>{caption}</figcaption></figure>')
+        geo = box_pct(finding, img_path, fid, problems)
+        if geo is None:
+            return ""
+        left, top, width, height = geo
+        label = esc(finding.get("label") or fid or "问题")
+        below = " below" if top < 8 else ""
+        box_html = (f'<div class="rbox{below}" style="left:{left:.2f}%;top:{top:.2f}%;'
+                    f'width:{width:.2f}%;height:{height:.2f}%">'
+                    f'<span class="rlabel">{label}</span></div>')
+        where = f" · {esc(finding['where'])}" if finding.get("where") else ""
+        return (f'<figure class="annotated"><div class="annotation-image"><img src="{uri}" alt="{esc(fid)} 问题位置">'
+                f'{box_html}</div><figcaption>红框 = 问题位置{where}</figcaption></figure>')
 
     def compare_block(cid, before_uri, after_uri, before_boxes="", after_boxes=""):
         body = COMPARE.substitute(pid=cid, before=before_uri, after=after_uri,
                                   before_boxes=before_boxes, after_boxes=after_boxes)
         return f'<div class="cmp">{body}</div>'
 
-    # ---- 问题与修复（主结构）----
-    findings = data.get("findings", [])
-    findings_html = ""
-    if findings:
-        cards = {category: [] for category in CATEGORIES}
-        ordered = [(sev, f) for sev in SEV for f in findings if f.get("severity") == sev]
-        for sev, f in ordered:
+    # ---- 问题卡：一句问题 + 一处对比；理由折叠 ----
+    cards = {category: [] for category in CATEGORIES}
+    for sev in SEV:
+        for f in (f for f in data.get("findings", []) if f.get("severity") == sev):
             sev_label, color = SEV[sev]
             fid = str(f.get("id"))
-            esc_fid = esc(fid)
             resolution = f.get("resolution", "open")
             page = page_by_id(str(f.get("page", "")).split(",")[0].strip())
-            annotated = annotated_figure(f) if resolution == "fixed" or f.get("annotatedImg") else ""
             short = f.get("changeSummary") or f.get("short") or ""
-            short_html = (f'<p class="short"><span class="mk">问题：</span>{esc(short)}</p>'
-                          if short and short != f.get("title") else "")
-            compare = ""
+            short_html = f'<p class="short">{esc(short)}</p>' if short and short != f.get("title") else ""
             steps = f.get("steps")
             if steps is not None and (not isinstance(steps, list) or not steps or
                                       any(not isinstance(step, dict) for step in steps)):
                 raise ValueError(f"finding {fid}: steps 必须是非空对象数组")
-            comparisons = steps if steps is not None else [f]
-            if resolution == "fixed":
-                for index, item in enumerate(comparisons, 1):
+            # 前后滑块与文字对照只出一种：内容项用文字，视觉项有滑块时不再叠文字。
+            evidence = ""
+            text_first = finding_category(f) == "content" and bool(f.get("textComparison"))
+            if resolution == "fixed" and not text_first:
+                for index, item in enumerate(steps if steps is not None else [f], 1):
                     cid = f"{fid} 步骤 {index}" if steps is not None else fid
-                    # 步骤图不回落到页级，避免把同一静态页误当操作序列。
-                    fb = item.get("beforeImg") or ((page or {}).get("before") if steps is None else None)
-                    fa = item.get("afterImg") or ((page or {}).get("after") if steps is None else None)
-                    fb_uri = img(fb, f"{cid} beforeImg") if fb else ""
-                    fa_uri = img(fa, f"{cid} afterImg") if fa else ""
                     visual = (finding_category(f) == "visual" and
                               (page or {}).get("evidenceMode", data.get("evidenceMode", "visual")) == "visual")
+                    # 只有单组视觉对照回落页级截图：步骤回落会把同一静态页冒充操作序列，内容项回落会出无关滑块。
+                    fallback = (page or {}) if visual and steps is None else {}
+                    fb = item.get("beforeImg") or fallback.get("before")
+                    fa = item.get("afterImg") or fallback.get("after")
+                    fb_uri = img(fb, f"{cid} beforeImg") if fb else ""
+                    fa_uri = img(fa, f"{cid} afterImg") if fa else ""
                     if fb_uri and fa_uri:
                         before_boxes = comparison_boxes(item.get("beforeBox"), fb, cid + " beforeBox", problems)
                         after_boxes = comparison_boxes(item.get("afterBox"), fa, cid + " afterBox", problems)
@@ -568,49 +526,40 @@ def build(data: dict, max_width: int) -> tuple[str, dict]:
                             before_size, after_size = image_size(pathlib.Path(fb)), image_size(pathlib.Path(fa))
                             if not before_size or not after_size or before_size != after_size:
                                 problems.append(f"finding {cid}: 前后图尺寸不同或无法读取：{before_size} / {after_size}")
-                        heading = f'<h3>{index}. {esc(item.get("title", ""))}</h3>' if steps is not None else ""
-                        look = f'<p class="look-here">看这里：{esc(item["lookHere"])}</p>' if item.get("lookHere") else ""
-                        compare += heading + look
+                        if steps is not None:
+                            evidence += f'<h3>{index}. {esc(item.get("title", ""))}</h3>'
+                        if item.get("lookHere"):
+                            evidence += f'<p class="look-here">看这里：{esc(item["lookHere"])}</p>'
                         if fb_uri != fa_uri:
-                            compare += compare_block(esc(cid), fb_uri, fa_uri, before_boxes, after_boxes)
+                            evidence += compare_block(esc(cid), fb_uri, fa_uri, before_boxes, after_boxes)
                     elif visual:
                         problems.append(f"finding {cid}: 对照图需要改前改后两张真实截图，当前缺少其一，仅显示红框现状")
-            delta = ""
-            if f.get("before") or f.get("after"):
-                delta = (f"<p class='mono delta'>现状 → 复验结果：{esc(f.get('before'))} → "
-                         f"<b>{esc(f.get('after'))}</b></p>")
-            text_compare = ""
-            if f.get("textComparison"):
+            has_slider = bool(evidence)
+            if not evidence:
+                evidence = annotated_figure(f)
+            if f.get("textComparison") and not has_slider:
                 text = f["textComparison"]
                 repaired_text = resolution == "fixed" and audit["mode"] == "fix"
                 if repaired_text and "after" not in text:
                     raise ValueError(f"finding {fid}: 已修文字对照缺少真实 after")
                 label = "改后 · 已执行" if repaired_text else "建议 · 尚未执行"
-                value = text.get("after") if repaired_text else text.get("suggested")
-                text_compare = (
-                    '<div class="text-compare"><div><b>原文</b><pre>' + esc(text.get("before")) +
-                    '</pre></div><div><b>' + label + '</b><pre>' + esc(value) +
-                    '</pre></div></div>')
-            feedback = ('<div class="feedback"><label>审阅意见 <select class="feedback-state" '
-                        'aria-label="' + esc_fid + ' 审阅意见">'
-                        '<option value="pending">待定</option><option value="accept">采纳</option>'
-                        '<option value="discuss">讨论</option><option value="reject">驳回</option>'
-                        '</select></label><button type="button" class="copy-feedback">复制此项反馈</button></div>')
-            reason = f"（{esc(f['resolutionReason'])}）" if f.get("resolutionReason") else ""
+                old, new = text_diff(text.get("before"), text.get("after") if repaired_text else text.get("suggested"))
+                evidence += (f'<div class="text-compare"><div><b>原文</b><pre>{old}</pre></div>'
+                             f'<div><b>{label}</b><pre>{new}</pre></div></div>')
+            why = "\n".join(str(f[k]) for k in ("kind", "action", "why", "audienceReason") if f.get(k))
+            rows = [("", why), ("建议 / 实际改动：", f.get("fix")), ("位置：", f.get("where")),
+                    ("复验：", " → ".join(str(f[k]) for k in ("before", "after") if f.get(k))),
+                    (f"{RES[resolution]}：", f.get("resolutionReason"))]
+            detail = "".join(f"<p>{label and f'<b>{label}</b>'}{esc(value)}</p>" for label, value in rows if value)
             cards[finding_category(f)].append(FINDING_BLOCK.substitute(
                 sev=esc(sev), color=color, sevLabel=sev_label,
-                fid=esc_fid, fpage=esc(f.get("page", "")), title=esc(f.get("title")),
+                fid=esc(fid), fpage=esc(f.get("page", "")), title=esc(f.get("title")),
                 res=esc(resolution), resLabel=RES[resolution],
-                annotated=annotated, short=short_html, compare=compare, textCompare=text_compare, feedback=feedback,
-                why=esc("\n".join(str(f[k]) for k in ("kind", "action", "why", "audienceReason") if f.get(k))), delta=delta, fix=esc(f.get("fix")),
-                where=esc(f.get("where")), resText=RES[resolution], reason=reason,
+                short=short_html, evidence=evidence, detail=detail or "<p>无</p>",
             ))
-    else:
-        cards = {category: [] for category in CATEGORIES}
     findings_html = "".join(
-        f'<section id="{category}-findings"><h2>{title}</h2>'
-        + ("".join(cards[category]) or '<p class="sub">本轮无此类记录。</p>') + '</section>'
-        for category, title in CATEGORIES.items())
+        f'<section id="{category}-findings"><h2>{title}（{len(cards[category])}）</h2>{"".join(cards[category])}</section>'
+        for category, title in CATEGORIES.items() if cards[category])
 
     # 核对本地证据，不将逐页记录加入报告。
     for pg in data.get("pages", []):
@@ -627,42 +576,17 @@ def build(data: dict, max_width: int) -> tuple[str, dict]:
                     verify_image(pathlib.Path(path))
                 except (OSError, ValueError, SyntaxError) as error:
                     missing.append(f"{pid} {key}: 图片读取失败 ({error})")
-    # ---- 整体前后对照：逐页真实 before/after，只展开有像素变化的页 ----
-    overview = ""
+
+    metrics_html = ""
     metrics = data.get("metrics") or []
     if metrics:
         if not isinstance(metrics, list) or any(not isinstance(m, dict) or not m.get("name") for m in metrics):
             raise ValueError("metrics 必须是含 name/before/after 的对象列表")
         rows = "".join(f"<tr><td>{esc(m['name'])}</td><td>{esc(m.get('before'))}</td><td><b>{esc(m.get('after'))}</b></td></tr>"
                        for m in metrics)
-        overview += ('<table class="coverage metrics"><thead><tr><th>指标</th><th>改前</th><th>改后</th></tr></thead>'
-                     f'<tbody>{rows}</tbody></table>')
-    if data.get("pageCompare"):
-        if audit["mode"] != "fix":
-            raise ValueError("pageCompare 需要 mode=fix 且各页提供真实 after 截图")
-        changed, unchanged = [], []
-        for pg in data.get("pages", []):
-            if pg.get("evidenceMode", data.get("evidenceMode", "visual")) == "text":
-                continue
-            pid = str(pg["id"])
-            b_uri = img(pg.get("before"), f"{pid} before", required=True)
-            a_uri = img(pg.get("after"), f"{pid} after", required=True)
-            if not (b_uri and a_uri):
-                continue
-            if b_uri == a_uri:
-                unchanged.append(pid)
-                continue
-            note = (pg.get("review") or {}).get("after", "")
-            changed.append(
-                f'<details class="fold pagecmp" data-page-id="{esc(pid)}"><summary><code>{esc(pid)}</code>'
-                f'<span class="ftitle">{esc(pg.get("title", ""))}</span></summary><div class="fbody">'
-                + (f'<p class="review">{esc(note)}</p>' if note else "")
-                + compare_block(esc(pid), b_uri, a_uri) + '</div></details>')
-        overview += (f'<p class="sub">{len(changed)} 页有变化'
-                     + (f"，{len(unchanged)} 页无像素变化：{esc('、'.join(unchanged))}" if unchanged else "")
-                     + '</p>' + "".join(changed))
-    if overview:
-        overview = f'<section id="overview"><h2>整体前后对照</h2>{overview}</section>'
+        metrics_html = ("<details class='fold'><summary>整体指标</summary><div class='fbody'>"
+                        '<table class="coverage metrics"><thead><tr><th>指标</th><th>改前</th><th>改后</th></tr></thead>'
+                        f'<tbody>{rows}</tbody></table></div></details>')
 
     if missing:
         raise ValueError("报告图片不完整：\n  " + "\n  ".join(missing))
@@ -673,54 +597,25 @@ def build(data: dict, max_width: int) -> tuple[str, dict]:
             group["status"] = "incomplete"
 
     contract = ""
-    context = {**data.get("context", {}), **data.get("contract", {})}
-    if context:
-        rows = "".join(f"<dt>{esc(k)}</dt><dd class='mono'>{esc(v)}</dd>" for k, v in context.items())
+    if data.get("context"):
+        rows = "".join(f"<dt>{esc(k)}</dt><dd class='mono'>{esc(v)}</dd>" for k, v in data["context"].items())
         contract = (f"<details class='fold'><summary>审查背景</summary>"
                     f"<div class='fbody'><dl class='kv'>{rows}</dl></div></details>")
 
-    group_status = {"clean": "无待处理项", "fixed": "已修复并复验",
-                    "reviewed": "有待处理项", "incomplete": "检查覆盖不足"}
-    summary = "".join(
-        f"<div class='card group-summary' data-category='{category}'><b>{CATEGORIES[category]}</b> · "
-        f"{group_status[group['status']]} · {group['findings']} 项，"
-        f"已修复 {group['fixed']} 项，待处理 {group['unresolved']} 项</div>"
-        for category, group in audit["groups"].items())
-
-    def listing(title, items, render):
-        if not items:
-            return ""
-        lis = "".join(f"<li>{render(i)}</li>" for i in items)
-        return (f"<details class='fold'><summary>{title}（{len(items)}）</summary>"
-                f"<div class='fbody'><ul class='plain'>{lis}</ul></div></details>")
-
-    limits = listing("覆盖范围限制", audit["limits"], esc)
-
-    coverage = ""
-    if data.get("showCoverage"):
-        rows = "".join('<tr><td>' + esc(p["id"]) + '</td><td>' + esc(p.get("title", p.get("where", ""))) +
-                       '</td><td>' + esc("\n".join(str(v) for v in p.get("review", {}).values())) + '</td></tr>'
-                       for p in data["pages"])
-        coverage = ('<details class="fold"><summary>证据与覆盖范围</summary><div class="fbody">'
-                    '<table class="coverage"><thead><tr><th>页面／文件</th><th>位置／用途</th><th>观察与检查结果</th>'
-                    '</tr></thead><tbody>' + rows + '</tbody></table></div></details>')
-    draft = ('<details class="fold"><summary>建议稿 · 尚未执行</summary><div class="fbody"><pre class="draft">'
-             + esc(data["suggestedCopy"]) + '</pre></div></details>') if data.get("suggestedCopy") else ""
-    if data.get("fixedCopy") is not None:
-        if audit["mode"] != "fix":
-            raise ValueError("fixedCopy 需要 mode=fix")
-        draft += ('<details class="fold"><summary>实际改后全文</summary><div class="fbody"><pre class="draft">'
-                  + esc(data["fixedCopy"]) + '</pre></div></details>')
+    limits = ""
+    if audit["limits"]:
+        lis = "".join(f"<li>{esc(i)}</li>" for i in audit["limits"])
+        limits = (f"<details class='fold'><summary>覆盖范围限制（{len(audit['limits'])}）</summary>"
+                  f"<div class='fbody'><ul class='plain'>{lis}</ul></div></details>")
     status_text = {"clean": "clean · 覆盖范围内无待修项", "fixed": "已修改 · 已复验",
-                   "reviewed": "分项结论见下方", "incomplete": "未完成验收 · 覆盖不足"}
+                   "reviewed": "有待处理项", "incomplete": "未完成验收 · 覆盖不足"}
     return DOC.substitute(
         reportTitle=esc(data.get("title", "审查报告")), targetName=esc(target.name or target),
         statusText=status_text[audit["status"]], status=audit["status"],
         modeText="只读审查 · 本轮未修改被审文件" if audit["mode"] == "review" else "修复复验",
-        target=esc(target), pageCount=len(data.get("pages", [])),
+        target=esc(target), findingCount=audit["findings"],
         generated=esc(data.get("generated", "")),
-        summary=summary, contract=contract, overview=overview,
-        findings=findings_html, limits=limits, coverage=coverage, draft=draft,
+        limits=limits, findings=findings_html, metrics=metrics_html, contract=contract,
     ), audit
 
 

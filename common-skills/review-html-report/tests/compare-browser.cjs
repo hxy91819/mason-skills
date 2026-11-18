@@ -26,12 +26,14 @@ if (process.argv.includes('--help') || process.argv.includes('-h')) {
     const detailsTotal = await page.locator('details').count();
     const closedInitially = await page.locator('details:not([open])').count();
     const openInitially = detailsTotal - closedInitially;
-    // 工具栏展开，而不是直接改 DOM，验证按钮接线。
+    // 工具栏展开，而不是直接改 DOM，验证按钮接线；之后打开全部折叠以便截图。
     await page.click('#expand-all');
     const openAfterExpand = await page.locator('details[open]').count();
+    const findingsTotal = await page.locator('details.finding').count();
+    await page.locator('details').evaluateAll(nodes => nodes.forEach(node => { node.open = true; }));
     await page.locator('img').evaluateAll(imgs => Promise.all(imgs.map(img => img.decode())));
     fs.mkdirSync(out, { recursive: true });
-    const result = { errors, detailsTotal, closedInitially, openInitially, openAfterExpand, observations: [] };
+    const result = { errors, detailsTotal, closedInitially, openInitially, openAfterExpand, findingsTotal, observations: [] };
     const slider = page.locator('.slider').first();
     if (await slider.count()) {
       const shot = async (name) => {
@@ -62,16 +64,19 @@ if (process.argv.includes('--help') || process.argv.includes('-h')) {
       await page.mouse.up();
       result.dragValue = Number(await slider.inputValue());
       await shot('drag');
+      // 并排复用滑块的两层图片：同一 .wipe 改为左右两栏。
       const side = page.locator('.side').first();
       await side.check();
-      result.sideBoxCounts = await page.locator('.sbs').first().locator('.annotation-image').evaluateAll(nodes => nodes.map(node => node.querySelectorAll('.rbox').length));
+      const wipe = page.locator('.wipe').first();
+      result.sideBoxCounts = await wipe.locator('.before-layer, .after-clip').evaluateAll(nodes => nodes.map(node => node.querySelectorAll('.rbox').length));
       result.sideStates = await page.locator('.cmp').evaluateAll(nodes => nodes.map(node => node.classList.contains('is-side')));
-      result.sideLabels = await page.locator('.sbs').first().locator('figcaption').allTextContents();
-      const sideBox = await page.locator('.sbs').first().boundingBox();
-      const sideImages = await page.locator('.sbs').first().locator('img').evaluateAll(imgs => imgs.map(img => {
+      result.sideLabels = await wipe.locator('.tag').evaluateAll(tags => tags.filter(t => t.offsetParent).map(t => t.textContent));
+      result.sideSliderHidden = !(await slider.isVisible());
+      const sideBox = await wipe.boundingBox();
+      const sideImages = await wipe.locator('img').evaluateAll(imgs => imgs.map(img => {
         const r = img.getBoundingClientRect(); return { x:r.x, y:r.y, width:r.width, height:r.height };
       }));
-      await page.locator('.sbs').first().screenshot({ path: path.join(out, 'side.png') });
+      await wipe.screenshot({ path: path.join(out, 'side.png') });
       await side.uncheck();
       await page.setViewportSize({ width: 840, height: 760 });
       await shot('hidden-resize');

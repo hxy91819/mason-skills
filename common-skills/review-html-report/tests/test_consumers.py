@@ -24,15 +24,14 @@ class ConsumerTests(unittest.TestCase):
         self.script = self.installed / 'build-report.py'
         self.data = {
             'target': 'rules.md', 'title': '内容审查', 'mode': 'review',
-            'evidenceMode': 'text', 'pageCount': 1, 'showCoverage': True,
+            'evidenceMode': 'text', 'pageCount': 1,
             'context': {'受众': '维护者', '决策': '执行长期规范'},
             'pages': [{'id': 'f1', 'where': 'rules.md:1-20', 'review': {'before': '已读 1–20 行'}}],
             'findings': [{'id': 'F1', 'page': 'f1', 'severity': 'should', 'category': 'content',
                           'title': '移除制作说明', 'changeSummary': '[删除] 内部待办',
                           'textComparison': {'before': '<script>window.INJECTED=true</script>',
                                              'suggested': '删除，不替换。'},
-                          'fix': '建议删除，尚未执行', 'resolution': 'open'}],
-            'suggestedCopy': '完整建议稿\n尚未执行'}
+                          'fix': '建议删除，尚未执行', 'resolution': 'open'}]}
 
     def run_report(self, *args, no_site=False):
         data = self.root / 'findings.json'
@@ -50,24 +49,22 @@ class ConsumerTests(unittest.TestCase):
         self.assertNotIn('data:image/', html)
         self.assertNotIn('class="slider"', html)
         self.assertIn('建议 · 尚未执行', html)
-        self.assertIn('完整建议稿', html)
-        self.assertIn('rules.md:1-20', html)
         self.assertNotIn('已修改 · 已复验', html)
 
     def test_fixed_text_displays_actual_after_and_fixed_copy(self):
-        self.data.update(mode='fix', fixedCopy='实际改后正文')
-        self.data.pop('suggestedCopy')
+        self.data['mode'] = 'fix'
         self.data['pages'][0]['review']['after'] = '已重读，制作说明已删除'
         finding = self.data['findings'][0]
         finding.update(resolution='fixed', fix='已删除制作说明')
-        finding['textComparison']['after'] = '实际结果文案'
+        finding['textComparison'] = {'before': '请保留原句，删除内部待办。', 'after': '请保留原句。'}
         result = self.run_report()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)['status'], 'fixed')
         html = (self.root / 'report.html').read_text()
         self.assertIn('改后 · 已执行', html)
-        self.assertIn('实际结果文案', html)
-        self.assertIn('实际改后正文', html)
+        # 逐字标出删除部分，相同部分不标。
+        self.assertIn('请保留原句<del>，删除内部待办</del>。', html)
+        self.assertNotIn('<ins>', html)
         self.assertNotIn('建议 · 尚未执行', html)
         self.assertNotIn('class="slider"', html)
         # 删除也是真实修改，空 after 不得回落为未执行建议。
@@ -135,7 +132,7 @@ class ConsumerTests(unittest.TestCase):
         del self.data['pages'][1]['review']['interaction']
         self.assertEqual(json.loads(self.run_report('--check').stdout)['status'], 'incomplete')
 
-    def test_browser_feedback_text_safety_and_responsive_layout(self):
+    def test_browser_text_safety_folding_and_responsive_layout(self):
         second = dict(self.data['findings'][0], id='F2', title='第二项')
         self.data['findings'].append(second)
         result = self.run_report()
@@ -150,11 +147,10 @@ class ConsumerTests(unittest.TestCase):
         self.assertEqual(seen['errors'], [])
         self.assertEqual(seen['original'], self.data['findings'][0]['textComparison']['before'])
         self.assertEqual(seen['suggested'], '删除，不替换。')
-        self.assertIn('[F1 采纳]', seen['single'])
-        self.assertNotIn('F2', seen['single'])
-        self.assertIn('[F1 采纳]', seen['all'])
-        self.assertIn('[F2 待定]', seen['all'])
-        self.assertEqual(seen['pending'], 2)  # 采纳意见不等于已经修复。
+        self.assertEqual(seen['cardsOpen'], 2)
+        self.assertEqual(seen['detailsOpen'], 0)  # 全部展开只开问题卡，理由保持折叠。
+        self.assertEqual(seen['pending'], 2)
+        self.assertFalse(seen['feedbackControls'])
         self.assertEqual(seen['sliders'], 0)
         self.assertFalse(seen['overflow'])
         self.assertFalse(seen['injected'])

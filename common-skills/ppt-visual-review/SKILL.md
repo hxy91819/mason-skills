@@ -89,11 +89,11 @@ bb-dispatch --difficulty simple --title 'PPT 布局审查 rN' --task '<交接材
 由宿主按名称加载 `$review-html-report`，按其数据契约用 `findings.json` 生成 HTML，并在浏览器里验证展示（折叠、红框、滑块极值/中点/并排/resize）。本技能的固定设置：
 
 - `title: PPT 版式视觉验收`，`evidenceMode: visual`，修复模式 `mode: fix`。
-- **整体前后对照**：`pageCompare: true`；`pages[].before` 为 r1 截图，`pages[].after` 为最终轮截图，`review.after` 写该页的复验结论。
+- `pages[].before` 为 r1 截图，`pages[].after` 为最终轮截图，`review.after` 写该页的复验结论。
 - `metrics`：以看图结论为主、脚本计数为辅。首先列 finding 总数/已修/保留/待处理、复审轮次，以及 `flagRulings` 中 valid/dismissed/threshold 的数量；其后列布局类线索按 kind 的改前/改后计数（arrow、void、box-style、role-style、title、font-family、font-size、color、align、widow、kinsoku、half-punct、cjk-spacing、line-length、leading、density、min-size、edge），指标名注明"脚本线索"，不把它当验收结果。
-- 每条 fixed finding 带红框 `box`/`label` 与真实前后对照；`limits` 记录缺图、未操作的交互、覆盖缺口。
+- 每条 fixed finding 用 `beforeBox`/`afterBox` 在真实前后对照上标改动点；open finding 用 `img`/`box`/`label` 标问题位置；`limits` 记录缺图、未操作的交互、覆盖缺口。
 
-只读模式同样出 HTML（`mode: review`，不设 pageCompare）；用户明确只要文字时改为 Markdown。
+只读模式同样出 HTML（`mode: review`）；用户明确只要文字时改为 Markdown。
 
 完成标准：HTML 生成且浏览器验证通过；回复给出报告链接、结论状态、剩余待处理项。状态以证据为准：覆盖缺口为 `incomplete`，有待处理项为 `reviewed`，全部核对且已修复复验为 `fixed`，无发现为 `clean`。
 

@@ -104,7 +104,7 @@ node <本技能根目录>/scripts/measure-deck.js --file <deck.html> --out <产�
 ## 4. 复审轮
 
 - 全量重跑第 1–2 节，包括未直接改动的页；对照上一轮 flags 看变化，每条残留线索都要有视觉裁决。把本轮修法与同类未改页并置判断：同一种构图问题应采用一致尺度，不能只确认已报项变好。线索消失不代表修好（可能只是绕开了检测），线索残留也不代表没修好，以画面为准。
-- 已修项：看真实 after 确认解决且无回归，才设 `resolution: fixed`，写 `afterImg`（与 before 同视口同尺寸的整页截图）和 `after`（复验结论）。
+- 已修项：看真实 after 确认解决且无回归，才设 `resolution: fixed`，写 `afterImg`（与 before 同视口同尺寸的整页截图）、`beforeBox`/`afterBox`（两张图各自的改动点红框）和 `after`（复验结论）。
 - 未解决项：保持 `open`，在 `why` 追加本轮观察；连续两轮未改善时补充定位证据（元素选择器、坐标、截图裁剪）和可验证的修复方向。
 - 新问题/回归：追加新 finding，使用其首次出现轮次的真实截图；已修问题不从清单删除。
 - 返回：本轮是否 clean（全部页已覆盖，无 `blocking`/`should` 级 `open` 项，`optional` 项已修或 `kept`）、待修 ID、覆盖缺口。
