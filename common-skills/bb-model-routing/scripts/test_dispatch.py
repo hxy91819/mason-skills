@@ -1203,6 +1203,9 @@ environments:
         events = [
             {'ts': 100, 'event': 'dispatch', 'thread': 'thr_old', 'difficulty': 'simple', 'agent': 'a', 'model': 'm'},
             {'ts': 190000, 'event': 'dispatch', 'thread': 'thr_new', 'difficulty': 'medium', 'agent': 'b', 'model': 'n'},
+            {'ts': 190500, 'event': 'dispatch', 'thread': 'thr_stopped', 'difficulty': 'simple', 'agent': 'a', 'model': 'm'},
+            {'ts': 191000, 'event': 'dispatch', 'thread': 'thr_retry', 'difficulty': 'medium', 'agent': 'b', 'model': 'n',
+             'escalated_from': 'thr_stopped'},
         ]
         m.events_path(self.ledger).write_text(''.join(json.dumps(e) + '\n' for e in events))
 
@@ -1220,20 +1223,33 @@ environments:
             req(8, 'user', '用户直接纠正'),
         ]
 
+        stopped_log = [
+            req(1, 'user', '原始任务'),
+            {'seq': 2, 'type': 'system/thread/interrupted', 'data': {'reason': 'manual-stop'}},
+            {'seq': 3, 'type': 'turn/completed', 'data': {'status': 'interrupted'}},
+            req(4, 'agent', '已停掉并改派', 'thr_parent'),
+        ]
+
         def call(*argv):
             if argv[:2] == ('thread', 'list'):
-                return [{'id': 'thr_new', 'parentThreadId': 'thr_parent'}]
+                return [{'id': 'thr_new', 'parentThreadId': 'thr_parent', 'title': '🟡 修复'},
+                        {'id': 'thr_stopped', 'parentThreadId': 'thr_parent'}, {'id': 'thr_retry'}]
             if argv[:2] == ('thread', 'log'):
-                self.assertEqual(argv[2], 'thr_new')
-                return log
+                return {'thr_new': log, 'thr_stopped': stopped_log}.get(argv[2], [])
             raise AssertionError(argv)
         args = m.parser().parse_args(['--ledger', str(self.ledger), '--followups', '--days', '1'])
         result = m.followups_command(args, call=call, now=200000)
-        self.assertEqual(result['threads'], 1)
-        row = result['rows'][0]
-        self.assertEqual((row['difficulty'], row['agent'], row['model']), ('medium', 'b', 'n'))
+        rows = {r['thread']: r for r in result['rows']}
+        self.assertEqual(set(rows), {'thr_new', 'thr_stopped', 'thr_retry'})
+        row = rows['thr_new']
+        self.assertEqual((row['title'], row['difficulty'], row['agent'], row['model']), ('🟡 修复', 'medium', 'b', 'n'))
         self.assertEqual([(f['seq'], f['from']) for f in row['followups']], [(4, 'parent'), (8, 'user')])
-        self.assertEqual(result['by_agent']['b'], {'threads': 1, 'delivered': 1, 'with_followups': 1, 'followups': 2})
+        stopped = rows['thr_stopped']
+        self.assertEqual((stopped['delivered'], stopped['stopped_before_delivery'], stopped['redispatched_as']),
+                         (False, True, ['thr_retry']))
+        self.assertEqual(stopped['followups'], [])
+        self.assertEqual(result['by_agent']['a'], {'threads': 1, 'delivered': 0, 'stopped_before_delivery': 1,
+                                                   'redispatched': 1, 'with_followups': 0, 'followups': 0})
         self.assertNotIn('还有一处要改', self.ledger.read_text() if self.ledger.exists() else '')
 
 if __name__ == '__main__':

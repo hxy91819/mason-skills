@@ -753,7 +753,7 @@ def followups_command(args, call=bb, now=None):
     """近几天派发的线程首次交付后，父线程或用户追加的消息；正文只在输出里，不写账本。"""
     now = int(time.time() if now is None else now)
     since = now - args.days * 86400
-    dispatched = {}
+    dispatched, redispatched = {}, {}
     try:
         lines = events_path(ledger_path_from(args)).read_text().splitlines()
     except OSError:
@@ -763,12 +763,17 @@ def followups_command(args, call=bb, now=None):
             event = json.loads(line)
         except ValueError:
             continue
-        if isinstance(event, dict) and event.get("event") == "dispatch" and int(event.get("ts") or 0) >= since:
+        if not isinstance(event, dict) or event.get("event") != "dispatch":
+            continue
+        if event.get("escalated_from"):
+            redispatched.setdefault(event["escalated_from"], []).append(event.get("thread"))
+        if int(event.get("ts") or 0) >= since:
             dispatched[event.get("thread")] = event
     threads = call("thread", "list", "--include-hidden", "--include-archived")
     if not isinstance(threads, list):
         raise DispatchError("bb thread list 返回格式未知")
     parents = {t.get("id"): t.get("parentThreadId") for t in threads if isinstance(t, dict)}
+    titles = {t.get("id"): t.get("title") for t in threads if isinstance(t, dict)}
     rows, unreadable = [], []
     for thread_id, event in sorted(dispatched.items(), key=lambda kv: kv[1].get("ts") or 0):
         try:
@@ -776,11 +781,14 @@ def followups_command(args, call=bb, now=None):
         except DispatchError:
             unreadable.append(thread_id)
             continue
-        delivered, followups = False, []
+        # 只有正常结束的回合才算交付；被手动停掉的回合以 interrupted 结束。
+        delivered, stopped, followups = False, False, []
         for item in log if isinstance(log, list) else []:
             kind, data = item.get("type"), item.get("data") or {}
-            if kind == "turn/completed":
+            if kind == "turn/completed" and data.get("status") == "completed":
                 delivered = True
+            elif kind == "system/thread/interrupted" and data.get("reason") == "manual-stop" and not delivered:
+                stopped = True
             elif kind == "client/turn/requested" and delivered:
                 initiator = data.get("initiator")
                 text = "".join(part.get("text", "") for part in data.get("input") or [] if isinstance(part, dict))
@@ -788,13 +796,18 @@ def followups_command(args, call=bb, now=None):
                 if (from_parent or initiator == "user") and not text.lstrip().startswith(NOTICE_PREFIXES):
                     followups.append({"seq": item.get("seq"), "from": "parent" if from_parent else "user",
                                       "text": text.strip()[:FOLLOWUP_TEXT_MAX_CHARS]})
-        rows.append({"thread": thread_id, "parent": parents.get(thread_id), "delivered": delivered,
+        rows.append({"thread": thread_id, "title": titles.get(thread_id), "parent": parents.get(thread_id),
+                     "delivered": delivered, "stopped_before_delivery": stopped,
+                     "redispatched_as": redispatched.get(thread_id, []),
                      **{k: event.get(k) for k in ("difficulty", "agent", "model")}, "followups": followups})
     by_agent = {}
     for row in rows:
-        stats = by_agent.setdefault(row["agent"], {"threads": 0, "delivered": 0, "with_followups": 0, "followups": 0})
+        stats = by_agent.setdefault(row["agent"], {"threads": 0, "delivered": 0, "stopped_before_delivery": 0,
+                                                   "redispatched": 0, "with_followups": 0, "followups": 0})
         stats["threads"] += 1
         stats["delivered"] += row["delivered"]
+        stats["stopped_before_delivery"] += row["stopped_before_delivery"]
+        stats["redispatched"] += bool(row["redispatched_as"])
         stats["with_followups"] += bool(row["followups"])
         stats["followups"] += len(row["followups"])
     return {"window_days": args.days, "threads": len(rows), "unreadable": unreadable,
