@@ -52,6 +52,7 @@ environments:
         self.retry_diagnostics = {}
         self.retry_error = None
         self.turns = {}
+        self.provider_errors = {}
         self.providers =[{'id': name, 'available': True, 'capabilities': {'permissionModes': ['accept-edits']}} for name in ['primary', 'specialist', 'remote-provider']]
 
     def fake(self, *args):
@@ -74,6 +75,7 @@ environments:
                 events.append({'seq': len(events) + 1, 'type': 'turn/started', 'createdAt': at * 1000 - 500, 'data': {}})
                 events.append({'seq': len(events) + 1, 'type': 'turn/completed', 'createdAt': at * 1000,
                                'data': {'status': status}})
+            events.extend(self.provider_errors.get(args[2], []))
             return events
         if args[:2] == ('provider-retry', 'status'):
             return {'retries': self.pending_retries.get(args[2], [])}
@@ -876,6 +878,16 @@ environments:
         lines = m.events_path(self.ledger).read_text().splitlines()
         return [event for event in map(json.loads, lines) if event['event'] == kind]
 
+    def provider_error(self, tid, detail, at=1090, http=429):
+        """线程日志里的 provider/error。detail 用真实事故的 JSON，而不是报错句子。"""
+        self.provider_errors.setdefault(tid, []).append({
+            'type': 'provider/error', 'createdAt': at * 1000,
+            'data': {
+                'message': 'Provider error', 'detail': detail,
+                'errorInfo': {'category': 'rate-limit', 'providerCode': None, 'httpStatusCode': http},
+            },
+        })
+
     def test_on_failure_retries_in_session_then_cools_provider_and_model(self):
         config = m.yaml.safe_load(self.config.read_text())
         config['defaults']['medium'] = ['specialist', 'primary']
@@ -1251,6 +1263,111 @@ environments:
         self.assertEqual(result['by_agent']['a'], {'threads': 1, 'delivered': 0, 'stopped_before_delivery': 1,
                                                    'redispatched': 1, 'with_followups': 0, 'followups': 0})
         self.assertNotIn('还有一处要改', self.ledger.read_text() if self.ledger.exists() else '')
+
+    def test_resource_exhausted_skips_session_retry_and_cools_for_an_hour(self):
+        """事故：pi 每次 429 RESOURCE_EXHAUSTED，provider-retry 判 no-rate-limit-state，仍重试 1、2、4 分钟。"""
+        self.chain_config(['primary', 'specialist'])
+        tid = m.dispatch(self.args(), self.fake, now=1000)['result']['thread']['id']
+        self.turn_ended(tid, 1095)
+        self.provider_error(tid, '429: {"code":429,"message":"Resource has been exhausted (e.g. check quota).","status":"RESOURCE_EXHAUSTED"}')
+        self.retry_diagnostics[tid] = {'decision': {'kind': 'decline', 'reason': 'no-rate-limit-state'},
+                                       'availability': {'kind': 'not-routed'}}
+        cooled = self.on_failure(tid, now=1100)
+        self.assertEqual(cooled['action'], 'cooled')
+        self.assertTrue(cooled['cooldown'].get('quota'))
+        self.assertGreaterEqual(cooled['cooldown']['until'] - 1100, m.QUOTA_BACKOFF_BASE_SECONDS)
+        self.assertFalse([c for c in self.calls if c[:2] == ('thread', 'retry')])
+        self.assertTrue(self.ledger_entry(tid).get('quota'))
+        nxt = m.dispatch(self.args('--task', 'next'), self.fake, now=1200)
+        self.assertEqual(nxt['selection']['agent'], 'specialist')
+        review = m.summarize_events(self.ledger, now=1200)
+        self.assertEqual(review['quota_cooldown_skips'], 1)
+
+    def test_model_cooldown_json_is_quota_and_ignores_short_reset_seconds(self):
+        """事故：model_cooldown 的 reset_seconds 只有几十秒，按它冷却会马上再派到同一模型。"""
+        self.chain_config(['primary', 'specialist'])
+        tid = m.dispatch(self.args(), self.fake, now=1000)['result']['thread']['id']
+        self.turn_ended(tid, 1095)
+        detail = json.dumps({'code': 'model_cooldown', 'message': 'All credentials for model gemini-3.8-flash-high are cooling down',
+                             'reset_seconds': 30, 'reset_time': '30s'})
+        self.provider_error(tid, '429: ' + detail)
+        # 同一批里另一条线程还没报错；一条额度失败就应让后续派发跳过，不必等它也失败。
+        other = m.dispatch(self.args('--task', 'other'), self.fake, now=1000)['result']['thread']['id']
+        cooled = self.on_failure(tid, now=1100)
+        self.assertEqual(cooled['action'], 'cooled')
+        self.assertEqual(cooled['cooldown']['until'] - 1100, m.QUOTA_BACKOFF_BASE_SECONDS)
+        self.assertFalse([c for c in self.calls if c[:2] == ('thread', 'retry')])
+        self.assertEqual(self.ledger_entry(other).get('outcome', 'spawned'), 'spawned')
+        later = m.dispatch(self.args('--task', 'later'), self.fake, now=1300)
+        self.assertEqual(later['selection']['agent'], 'specialist')
+        self.assertEqual(m.summarize_events(self.ledger, now=1300)['quota_cooldown_skips'], 1)
+
+    def test_quota_cooldown_doubles_after_it_expires_and_plain_429_still_retries(self):
+        self.chain_config(['primary', 'specialist'])
+        first = m.dispatch(self.args('--task', 'first'), self.fake, now=1000)['result']['thread']['id']
+        self.turn_ended(first, 1095)
+        self.retry_diagnostics[first] = {'decision': {'kind': 'decline', 'reason': 'not-resettable'}}
+        self.on_failure(first, now=1100)
+        opened = 1100 + m.QUOTA_BACKOFF_BASE_SECONDS + 1
+        self.assertEqual(m.dispatch(self.args('--task', 'retry-window', '--dry-run'), self.fake, now=opened)['selection']['agent'], 'primary')
+        second = m.dispatch(self.args('--task', 'second'), self.fake, now=opened)['result']['thread']['id']
+        self.turn_ended(second, opened + 10)
+        self.retry_diagnostics[second] = {'decision': {'kind': 'decline', 'reason': 'no-rate-limit-state'}}
+        again = self.on_failure(second, now=opened + 20)
+        self.assertEqual((again['cooldown']['level'], again['cooldown']['until'] - (opened + 20)),
+                         (2, 2 * m.QUOTA_BACKOFF_BASE_SECONDS))
+        # 只有 429 和句子、没有结构化额度码，也没有额度类 decline：仍走原会话重试。
+        plain = m.dispatch(self.args('--task', 'plain'), self.fake, now=opened + 30)['result']['thread']['id']
+        self.turn_ended(plain, opened + 40)
+        self.provider_error(plain, '429 RESOURCE_EXHAUSTED', at=opened + 35)
+        scheduled = self.on_failure(plain, now=opened + 50)
+        self.assertEqual(scheduled['action'], 'retry-scheduled')
+        self.assertEqual(scheduled['delay_seconds'], 60)
+
+    def test_subscription_window_cooldown_lasts_until_reset(self):
+        tid = m.dispatch(self.args(), self.fake, now=1000)['result']['thread']['id']
+        self.turn_ended(tid, 1095)
+        reset = (1000 + 10 * 3600) * 1000
+        self.retry_diagnostics[tid] = {
+            'decision': {'kind': 'decline', 'reason': 'beyond-maximum-wait'},
+            'availability': {'kind': 'blocked', 'retryAt': reset},
+        }
+        cooled = self.on_failure(tid, now=1100)
+        self.assertEqual(cooled['cooldown']['until'], 1000 + 10 * 3600)
+        self.assertFalse([c for c in self.calls if c[:2] == ('thread', 'retry')])
+
+    def test_long_quota_window_is_cleared_by_success_and_stays_clear(self):
+        self.chain_config(['primary', 'specialist'])
+        failed = m.dispatch(self.args('--task', 'failed'), self.fake, now=1000)['result']['thread']['id']
+        other = m.dispatch(self.args('--task', 'other'), self.fake, now=1000)['result']['thread']['id']
+        self.turn_ended(failed, 1095)
+        reset = (1000 + 8 * 24 * 3600) * 1000
+        self.retry_diagnostics[failed] = {
+            'decision': {'kind': 'decline', 'reason': 'beyond-maximum-wait'},
+            'availability': {'kind': 'blocked', 'retryAt': reset},
+        }
+        cooled = self.on_failure(failed, now=1100)
+        self.assertGreater(cooled['cooldown']['until'], 1100 + m.RECENT_WINDOW_SECONDS)
+        self.threads = [{'id': other, 'status': 'idle', 'queuedWork': 'none', 'updatedAt': 1200 * 1000}]
+        recovered = m.dispatch(self.args('--task', 'after success'), self.fake, now=1300)
+        self.assertEqual(recovered['selection']['agent'], 'primary')
+        saved = m.load_ledger(self.ledger, strict=True)
+        self.assertNotIn('primary|fast-model', saved['cooldowns'])
+        # 成功记录还在账本里，但已经离开 48 小时视野；残留的额度窗口不能复活。
+        saved['cooldowns']['primary|fast-model'] = {
+            'provider': 'primary', 'model': 'fast-model', 'reason': '额度窗口',
+            'since': 1100, 'until': 1000 + 8 * 24 * 3600, 'quota': True,
+        }
+        later = 1200 + m.RECENT_WINDOW_SECONDS + 10
+        self.assertNotIn('primary|fast-model', m.health_cooldowns(saved, now=later))
+
+    def test_quota_error_before_recovery_does_not_classify_the_next_failure(self):
+        tid = m.dispatch(self.args(), self.fake, now=1000)['result']['thread']['id']
+        self.provider_error(tid, '429: {"status":"RESOURCE_EXHAUSTED","code":429}', at=1050)
+        self.turn_ended(tid, 1100, 'completed')
+        self.turn_ended(tid, 1295)
+        scheduled = self.on_failure(tid, now=1300)
+        self.assertEqual(scheduled['action'], 'retry-scheduled')
 
 if __name__ == '__main__':
     unittest.main()
