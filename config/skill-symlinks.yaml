@@ -114,6 +114,9 @@ skills:
 - name: research
   source: mattpocock-skills
   note: 高可信一手来源调研并沉淀 Markdown
+- name: retro
+  source: mattpocock-skills
+  note: 会话回顾：把一次编码会话的卡点变成环境改进候选（导航、自动化检查、审查标准）
 - name: review-html-report
   note: 审查结果的共享 HTML 输出：文字对照、真实修复滑块和反馈复制
 - name: safe-refactor
