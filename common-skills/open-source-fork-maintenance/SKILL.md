@@ -34,6 +34,8 @@ Use `main` / `origin/main` for ordinary checkouts, clones, and starting branches
 
 Upstream issues, comments, and PRs always need the user's confirmation per item. Rewriting feature/fix branches (rebase onto a new base, stack repair) uses `--force-with-lease` against the observed remote SHA without asking again; `aggregate` is published by ordinary fast-forward push. Never push to `upstream`.
 
+Before any force push, fetch first and read what the remote holds that you are about to overwrite (`git fetch origin`, then `git log --oneline HEAD..origin/<branch>`); after a rebase that list is never empty, so confirm every entry is a pre-rebase version you mean to replace, not new work pushed from elsewhere. A lease only proves the remote SHA, not that you saw what you are overwriting.
+
 ## Setup
 
 1. Confirm the remotes and pick the base: the newest tag of the upstream release channel (use upstream `main` only when the user asks or no release tags exist). Inspect existing build/package commands, release workflows, and the installation targets stated in the task or repository.
