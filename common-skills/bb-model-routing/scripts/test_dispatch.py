@@ -52,6 +52,7 @@ environments:
         self.retry_diagnostics = {}
         self.retry_error = None
         self.turns = {}
+        self.requests = {}
         self.provider_errors = {}
         self.providers =[{'id': name, 'available': True, 'capabilities': {'permissionModes': ['accept-edits']}} for name in ['primary', 'specialist', 'remote-provider']]
 
@@ -65,12 +66,14 @@ environments:
             # 真实 show 只给排队数，queuedWork 与 hasPendingInteraction 只在 list 里有。
             known = next((t for t in self.threads if t.get('id') == args[2]), {})
             return {'thread': {'id': args[2], 'projectId': 'proj', 'status': known.get('status', 'error'),
+                               'environmentId': known.get('environmentId', 'env'),
+                               'parentNotifications': known.get('parentNotifications'),
                                'queuedMessageCount': int(known.get('queuedWork') == 'waiting'),
                                'updatedAt': known.get('updatedAt')}}
         if args == ('thread', 'list'):
             return self.threads
         if args[:2] == ('thread', 'log'):
-            events = []
+            events = list(self.requests.get(args[2], []))
             for at, status in self.turns.get(args[2], []):
                 events.append({'seq': len(events) + 1, 'type': 'turn/started', 'createdAt': at * 1000 - 500, 'data': {}})
                 events.append({'seq': len(events) + 1, 'type': 'turn/completed', 'createdAt': at * 1000,
@@ -929,6 +932,76 @@ environments:
         self.assertEqual(m.dispatch(self.args('--difficulty', 'medium', '--dry-run'), self.fake, now=at + 100)['selection']['agent'], 'primary')
         later = m.dispatch(self.args('--task', 'other', '--dry-run'), self.fake, now=at + m.BACKOFF_BASE_SECONDS + 1)
         self.assertEqual(later['selection']['agent'], 'specialist')
+
+    def test_redispatch_recovers_first_task_and_requested_difficulty_after_quota_cooldown(self):
+        self.project_floor('medium')
+        config = m.yaml.safe_load(self.config.read_text())
+        config['defaults']['medium'] = ['primary', 'specialist']
+        self.config.write_text(m.yaml.safe_dump(config))
+        task = '  目标\n\n保留完整任务 $(literal)\n'
+        original = m.dispatch(self.args('--task', task, '--environment', 'env_other',
+                                        '--parent-notifications', 'stuck'), self.fake, now=1000)
+        tid = original['result']['thread']['id']
+        spawn = next(call for call in self.calls if call[:2] == ('thread', 'spawn'))
+        prompt = spawn[spawn.index('--prompt') + 1]
+        self.requests[tid] = [
+            {'type': 'thread/created', 'data': {}},
+            {'type': 'client/turn/requested', 'data': {'source': 'spawn', 'input': [
+                {'type': 'text', 'text': prompt[:7]}, {'type': 'text', 'text': prompt[7:]},
+            ]}},
+            {'type': 'client/turn/requested', 'data': {'source': 'message', 'input': [
+                {'type': 'text', 'text': '后续消息不能成为任务正文'},
+            ]}},
+        ]
+        self.turn_ended(tid, 1095)
+        self.threads[0].update(environmentId='env_other', parentNotifications='stuck')
+        self.retry_diagnostics[tid] = {'decision': {'kind': 'decline', 'reason': 'not-resettable'}}
+        self.assertEqual(self.on_failure(tid, now=1100)['action'], 'cooled')
+
+        argv = ['bb-dispatch', '--config', str(self.config), '--ledger', str(self.ledger), '--redispatch', tid]
+        dispatch = m.dispatch
+        with mock.patch.object(m, 'dispatch', side_effect=lambda args: dispatch(args, self.fake, now=1200)), \
+                mock.patch('sys.argv', argv), mock.patch('sys.stdout', new_callable=io.StringIO) as out, \
+                mock.patch('sys.stderr', new_callable=io.StringIO):
+            self.assertEqual(m.main(), 0)
+        result = json.loads(out.getvalue())
+        selection = result['selection']
+        self.assertEqual((selection['requested_difficulty'], selection['difficulty']), ('simple', 'medium'))
+        self.assertEqual((selection['provider'], selection['escalated_from']), ('remote-provider', tid))
+        respawn = [call for call in self.calls if call[:2] == ('thread', 'spawn')][-1]
+        self.assertEqual(respawn[respawn.index('--environment') + 1], 'env_other')
+        self.assertEqual(respawn[respawn.index('--parent-notifications') + 1], 'stuck')
+        self.assertEqual(respawn[respawn.index('--prompt') + 1], task + m.REPORT_PROTOCOL_ANCHOR + m.QUIET_REPORT_PROTOCOL)
+        self.assertIn(('thread', 'log', tid, '--all'), self.calls)
+        self.assertEqual(self.ledger_entry(result['result']['thread']['id'])['escalated_from'], tid)
+        self.assertNotIn('保留完整任务', self.ledger.read_text())
+
+    def test_redispatch_keeps_review_purpose_exempt_from_project_floor(self):
+        self.project_floor('medium')
+        tid = m.dispatch(self.args('--purpose', 'review'), self.fake, now=1000)['result']['thread']['id']
+        spawn = next(call for call in self.calls if call[:2] == ('thread', 'spawn'))
+        self.requests[tid] = [{'type': 'client/turn/requested', 'data': {'source': 'spawn', 'input': [
+            {'type': 'text', 'text': spawn[spawn.index('--prompt') + 1]},
+        ]}}]
+        argv = ['bb-dispatch', '--config', str(self.config), '--ledger', str(self.ledger), '--redispatch', tid]
+        dispatch = m.dispatch
+        with mock.patch.object(m, 'dispatch', side_effect=lambda args: dispatch(args, self.fake, now=1200)), \
+                mock.patch('sys.argv', argv), mock.patch('sys.stdout', new_callable=io.StringIO) as out, \
+                mock.patch('sys.stderr', new_callable=io.StringIO):
+            self.assertEqual(m.main(), 0)
+        selection = json.loads(out.getvalue())['selection']
+        self.assertEqual((selection['purpose'], selection['difficulty']), ('review', 'simple'))
+
+    def test_redispatch_requires_known_difficulty_and_initial_spawn_text(self):
+        tid = m.dispatch(self.args(), self.fake, now=1000)['result']['thread']['id']
+        self.requests[tid] = [{'type': 'client/turn/requested', 'data': {'source': 'message', 'input': [
+            {'type': 'text', 'text': '仅有后续消息'},
+        ]}}]
+        prefix = ['--config', str(self.config), '--ledger', str(self.ledger), '--redispatch']
+        for source_id, message in [(tid, '首轮派发任务文本'), ('missing', '有效原始难度')]:
+            with self.subTest(source_id=source_id), self.assertRaisesRegex(m.DispatchError, message):
+                m.dispatch(m.parser().parse_args([*prefix, source_id]), self.fake, now=1100)
+        self.assertEqual(self.spawn_counter, 1)
 
     def test_on_failure_waits_while_a_retry_is_queued_but_not_for_deferred_messages(self):
         tid = m.dispatch(self.args(), self.fake, now=1000)['result']['thread']['id']

@@ -1069,15 +1069,52 @@ def model_and_reasoning(agent, alias, route):
     return model, reasoning
 
 
-def validate_escalate_from(args, call):
-    escalate_from = getattr(args, "escalate_from", None)
-    if escalate_from is not None:
-        escalate_from = string(escalate_from, "--escalate-from")
-        shown = mapping(call("thread", "show", escalate_from), "escalate-from thread")
-        shown_thread = shown.get("thread") if isinstance(shown.get("thread"), dict) else shown
-        if shown_thread.get("id") and shown_thread.get("id") != escalate_from:
-            raise DispatchError(f"--escalate-from 线程 {escalate_from!r} 校验不匹配。")
-    return escalate_from
+def resolve_escalation(args, call):
+    redispatch = getattr(args, "redispatch", None)
+    flag = "--redispatch" if redispatch is not None else "--escalate-from"
+    source_id = redispatch if redispatch is not None else getattr(args, "escalate_from", None)
+    if source_id is None:
+        return None
+    source_id = string(source_id, flag)
+    shown = mapping(call("thread", "show", source_id), f"{flag} thread")
+    thread = shown.get("thread") if isinstance(shown.get("thread"), dict) else shown
+    if thread.get("id") and thread["id"] != source_id:
+        raise DispatchError(f"{flag} 线程 {source_id!r} 校验不匹配。")
+    if redispatch is not None:
+        restore_redispatch(args, call, source_id, thread)
+    return source_id
+
+
+def restore_redispatch(args, call, source_id, thread):
+    if args.difficulty is not None or args.task is not None or args.escalate_from is not None:
+        raise DispatchError("--redispatch 会恢复原始用途、难度和任务，不能与 --difficulty、--task 或 --escalate-from 同用。")
+    ledger = load_ledger(ledger_path_from(args), strict=True)
+    entry = next((item for item in ledger["entries"]
+                  if isinstance(item, dict) and item.get("id") == source_id), {})
+    difficulty = entry.get("requested_difficulty", entry.get("difficulty"))
+    if difficulty not in DIFFICULTIES:
+        raise DispatchError(f"运行账本中没有线程 {source_id!r} 的有效原始难度。")
+
+    events = call("thread", "log", source_id, "--all")
+    if not isinstance(events, list):
+        raise DispatchError("bb thread log 返回格式未知。")
+    first = next((event for event in events if isinstance(event, dict)
+                  and event.get("type") == "client/turn/requested"), {})
+    data = first.get("data")
+    parts = data.get("input") if isinstance(data, dict) and data.get("source") == "spawn" else None
+    if not isinstance(parts, list) or not parts or any(
+        not isinstance(part, dict) or part.get("type") != "text" or not isinstance(part.get("text"), str)
+        for part in parts
+    ):
+        raise DispatchError(f"线程 {source_id!r} 的日志中没有可恢复的首轮派发任务文本。")
+
+    args.task = "".join(part["text"] for part in parts)
+    args.difficulty = difficulty
+    if entry.get("purpose") in ("work", "review"):
+        args.purpose = entry["purpose"]
+    if args.environment is None:
+        args.environment = string(thread.get("environmentId"), "原线程环境 ID")
+    args.parent_notifications = args.parent_notifications or thread.get("parentNotifications")
 
 
 # 独立于 --ledger/--config：同一 OS 用户的派发进程共用锁与未决占位。
@@ -1273,6 +1310,7 @@ def dispatch(args, call=bb, now=None):
         raise DispatchError(f"无法读取配置 {args.config}：{exc}") from exc
     if config.get("version") != 2:
         raise DispatchError("配置必须包含 version: 2。")
+    escalate_from = resolve_escalation(args, call)
     # 各环境的限制也决定是否进入锁；实际限额在解析目标环境后计算。
     configured = bool(provider_limits(config.get("agents", {})))
     provider_model_scopes(config.get("agents", {}))
@@ -1280,19 +1318,18 @@ def dispatch(args, call=bb, now=None):
         configured = bool(provider_limits(mapping(override, "environment config").get("agents", {}))) or configured
         provider_model_scopes(mapping(override, "environment config").get("agents", {}))
     if not configured:
-        return dispatch_unlocked(args, call, now, config, None)
+        return dispatch_unlocked(args, call, now, config, None, escalate_from)
     if args.dry_run:
-        return dispatch_unlocked(args, call, now, config, ConcurrencySlots(call, read_only=True))
+        return dispatch_unlocked(args, call, now, config, ConcurrencySlots(call, read_only=True), escalate_from)
     with concurrency_lock():
-        return dispatch_unlocked(args, call, now, config, ConcurrencySlots(call))
+        return dispatch_unlocked(args, call, now, config, ConcurrencySlots(call), escalate_from)
 
 
-def dispatch_unlocked(args, call, now, config, slots):
+def dispatch_unlocked(args, call, now, config, slots, escalate_from):
     now = int(time.time() if now is None else now)
     # 从子线程首条消息复制回来的任务先去掉回报方式，续派的候选顺序与标题保持不变。
     args.task = string(args.task.split(REPORT_PROTOCOL_ANCHOR, 1)[0], "task")
     args.requested_difficulty = args.difficulty
-    escalate_from = validate_escalate_from(args, call)
     unknown = (getattr(args, "unknown", None) or "").strip()
 
     environment_path = Path(args.environment).expanduser() if args.environment else None
@@ -1608,13 +1645,15 @@ def parser():
                    help="子线程哪些回合结果唤醒父线程：auto 每回合；stuck 只在失败、卡住或等审批时，其余由子线程显式 tell；"
                         "off 不自动唤醒。省略时读配置顶层 parent_notifications，默认 auto")
     p.add_argument("--dry-run", action="store_true", help="只读校验并输出启动参数，不创建线程；配合 --on-failure 只给出动作，不安排重试、不写账本")
-    p.add_argument("--concurrency-status", action="store_true", help="只读查看 provider 当前占用与未决并发占位，不依赖统计账本")
-    p.add_argument("--release-reservation", metavar="占位ID", help="确认创建结果后移除指定占位；活跃线程仍按 BB 实时状态计数")
-    p.add_argument("--on-failure", metavar="线程ID", help="子线程报错后调用：先在原会话按 1、2、4 分钟退避重试，用尽才记失败并冷却该 provider 与模型")
-    p.add_argument("--history-summary", "--stats", dest="history_summary", action="store_true", help="只读输出运行账本的聚合统计、当前冷却、确定性复盘 hooks，以及复盘日志近 7 天的重试与冷却汇总")
-    p.add_argument("--followups", action="store_true", help="只读列出近 --days 天派发的线程首次交付后，父线程或用户追加的消息，供复盘归类返工")
+    modes = p.add_mutually_exclusive_group()
+    modes.add_argument("--redispatch", metavar="线程ID", help="按原始难度和首轮任务文本改派已冷却的失败线程，自动记录 --escalate-from")
+    modes.add_argument("--concurrency-status", action="store_true", help="只读查看 provider 当前占用与未决并发占位，不依赖统计账本")
+    modes.add_argument("--release-reservation", metavar="占位ID", help="确认创建结果后移除指定占位；活跃线程仍按 BB 实时状态计数")
+    modes.add_argument("--on-failure", metavar="线程ID", help="子线程报错后调用：先在原会话按 1、2、4 分钟退避重试，用尽才记失败并冷却该 provider 与模型")
+    modes.add_argument("--history-summary", "--stats", dest="history_summary", action="store_true", help="只读输出运行账本的聚合统计、当前冷却、确定性复盘 hooks，以及复盘日志近 7 天的重试与冷却汇总")
+    modes.add_argument("--followups", action="store_true", help="只读列出近 --days 天派发的线程首次交付后，父线程或用户追加的消息，供复盘归类返工")
     p.add_argument("--days", type=int, default=3, help="配合 --followups 的回看天数（默认 3）")
-    p.add_argument("--record-outcome", "--record-decision", dest="record_outcome", metavar="线程ID", help="按稳定线程 ID 改正运行终态（覆盖而非追加）")
+    modes.add_argument("--record-outcome", "--record-decision", dest="record_outcome", metavar="线程ID", help="按稳定线程 ID 改正运行终态（覆盖而非追加）")
     p.add_argument("--outcome", choices=list(OUTCOME_KEYS), help="配合 --record-outcome 改正运行终态；completed 按线程状态自动记录，failed 由 --on-failure 在重试用尽后记录，放弃任务也可手动记；各 failed* 取值都计入连续失败")
     return p
 
@@ -1643,9 +1682,10 @@ def main():
         if args.record_outcome is not None:
             print(json.dumps(record_outcome_command(args), ensure_ascii=False, indent=2))
             return 0
-        if not args.difficulty or args.task is None:
-            raise DispatchError("派发模式必须提供 --difficulty 与 --task。")
-        string(args.task, "task")
+        if args.redispatch is None:
+            if not args.difficulty or args.task is None:
+                raise DispatchError("派发模式必须提供 --difficulty 与 --task。")
+            string(args.task, "task")
         result = dispatch(args)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         # 调用方常只取 stdout 里的线程 ID，复盘提醒另写 stderr，过滤输出时也看得到。
