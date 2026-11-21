@@ -4,7 +4,7 @@
 用法：
   python3 steward_workbook.py --mode ledger-check --file .local/steward/<topic>-要求帳.md
   python3 steward_workbook.py --mode check --file .local/steward/<topic>.md
-  python3 steward_workbook.py --mode format --file .local/steward/<topic>.md
+  python3 steward_workbook.py --mode verify --file .local/steward/<topic>.md
   python3 steward_workbook.py --mode should-commit --file .local/steward/<topic>.md
   python3 steward_workbook.py --mode reconcile [--live] --file .local/steward/<topic>.md
 
@@ -751,11 +751,65 @@ def init_workbook(repo=None):
             "ignored_by": result.stdout.strip(), "imported": sorted(imported)}
 
 
+def format_workbook(path, *, dry_run=False, verbose_warnings=False):
+    original = path.read_text()
+    formatted, warnings = format_timeline(original, head_content_for(path))
+    changed = formatted != original
+    if changed and not dry_run:
+        path.write_text(formatted)
+    if not verbose_warnings:
+        historical = "：历史完成时间待核实"
+        count = sum(warning.endswith(historical) for warning in warnings)
+        warnings = [warning for warning in warnings if not warning.endswith(historical)]
+        if count:
+            warnings.append(f"历史完成时间待核实：{count} 条（--verbose-warnings 展开）")
+    return formatted, {"ok": True, "file": str(path), "changed": changed,
+                       "timezone": "Asia/Singapore", "warnings": warnings}
+
+
+def reconcile_local(text, live):
+    threads = fetch_threads(reconcile_workbook(text)["referenced_threads"]) if live else None
+    return reconcile_workbook(text, threads=threads)
+
+
+def verify_workbook(path, args, check_args):
+    steps = {}
+    stage = "format"
+    try:
+        text, steps[stage] = format_workbook(path, dry_run=args.dry_run,
+                                             verbose_warnings=args.verbose_warnings)
+        stage = "check"
+        ledger_path = Path(args.ledger).expanduser().resolve() if args.ledger else None
+        if ledger_path is None:
+            steps[stage] = check_workbook_source(str(path), text, lambda p: Path(p).read_text(), **check_args)
+        else:
+            steps[stage] = check_workbook(text, **check_args)
+            steps[stage]["ledger"] = {"path": str(ledger_path), "kind": "standard"}
+        if steps[stage]["ok"]:
+            stage = "ledger-check"
+            ledger = steps["check"]["ledger"]
+            if ledger["kind"] == "history":
+                steps[stage] = {"ok": False, "applicable": False, "errors": ["历史流水账；请通过 --ledger 指定标准要求帐"]}
+            else:
+                steps[stage] = check_ledger(Path(ledger["path"]).read_text())
+            if steps[stage]["ok"]:
+                stage = "reconcile"
+                steps[stage] = reconcile_local(text, args.live)
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+        steps[stage] = {"ok": False, "errors": [str(exc)]}
+    ok = steps[stage]["ok"]
+    return {"ok": ok, "file": str(path), "dry_run": args.dry_run, "steps": steps,
+            **({"failed_step": stage} if not ok else {})}
+
+
 def parser():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--mode", required=True, choices=["init", "path", "format", "check", "should-commit", "reconcile", "ledger-check"],
-                   help="ledger-check=校验要求帐；check=校验结构、容量与要求帐入口；should-commit=校验并判断相对 HEAD 是否有实质状态变化；reconcile=收尾对账")
+    p.add_argument("--mode", required=True, choices=["init", "path", "format", "check", "should-commit", "reconcile", "ledger-check", "verify"],
+                   help="verify=顺序执行 format、check、ledger-check、reconcile；ledger-check=校验要求帐；check=校验结构、容量与要求帐入口；should-commit=校验并判断相对 HEAD 是否有实质状态变化；reconcile=收尾对账")
     p.add_argument("--file", help="工作簿或要求帐 Markdown 文件路径")
+    p.add_argument("--ledger", help="verify 时覆盖工作簿标头的要求帐入口（本地路径）")
+    p.add_argument("--dry-run", action="store_true", help="verify 时在内存中格式化，不写工作簿")
+    p.add_argument("--verbose-warnings", action="store_true", help="verify/format 时逐条显示历史时间 warning")
     p.add_argument("--repo", help="init/path 的项目路径；其他模式为 Git 来源仓库绝对路径")
     revision = p.add_mutually_exclusive_group()
     revision.add_argument("--ref", help="核实远端并固定 SHA，如 origin/main")
@@ -770,7 +824,14 @@ def parser():
 
 
 def main():
-    args = parser().parse_args()
+    cli = parser()
+    args = cli.parse_args()
+    if (args.ledger is not None or args.dry_run) and args.mode != "verify":
+        cli.error("--ledger/--dry-run 仅用于 verify")
+    if args.verbose_warnings and args.mode not in ("format", "verify"):
+        cli.error("--verbose-warnings 仅用于 format/verify")
+    if args.ledger_kind != "standard" and args.mode != "ledger-check":
+        cli.error("--ledger-kind 仅用于 ledger-check")
     if args.mode in ("init", "path"):
         if args.file or args.ref or args.revision:
             parser().error("init/path 不使用 --file、--ref 或 --revision")
@@ -785,23 +846,16 @@ def main():
             return 2
     if not args.file:
         parser().error("此模式需要 --file")
+    if args.mode in ("format", "verify") and (args.repo or args.ref or args.revision):
+        cli.error("format/verify 只接受本地编辑文件；Git 来源先在对应分支检出")
     if args.mode == "format":
-        if args.repo or args.ref or args.revision:
-            parser().error("format 只写本地编辑文件；Git 来源先在对应分支检出再格式化")
         try:
-            path = Path(args.file).expanduser().resolve()
-            original = path.read_text()
-            formatted, warnings = format_timeline(original, head_content_for(path))
-            if formatted != original:
-                path.write_text(formatted)
-            print(json.dumps({"ok": True, "file": str(path), "changed": formatted != original,
-                              "timezone": "Asia/Singapore", "warnings": warnings}, ensure_ascii=False, indent=2))
-            return 0
+            _, res = format_workbook(Path(args.file).expanduser().resolve(),
+                                     verbose_warnings=args.verbose_warnings)
         except (OSError, ValueError) as exc:
-            print(json.dumps({"ok": False, "errors": [str(exc)]}, ensure_ascii=False))
-            return 2
-    if args.ledger_kind != 'standard' and args.mode != 'ledger-check':
-        parser().error('--ledger-kind 仅用于 ledger-check')
+            res = {"ok": False, "errors": [str(exc)]}
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 0 if res["ok"] else 2
     fpath = Path(args.file).expanduser()
     if not args.repo and not fpath.is_file():
         print(json.dumps({"ok": False, "file": str(fpath), "errors": [f"文件不存在：{fpath}"]}, ensure_ascii=False, indent=2))
@@ -812,13 +866,18 @@ def main():
         "max_route_items": args.max_route_items,
         "max_decisions": args.max_decisions,
     }
-    if args.repo or args.ref or args.revision:
+    if args.mode == "verify":
+        res = verify_workbook(fpath.resolve(), args, check_args)
+    elif args.repo or args.ref or args.revision:
         try:
             if not args.repo or not Path(args.repo).is_absolute() or not (args.ref or args.revision) or args.mode == 'should-commit':
                 raise source.SourceError('Git 来源需要 --repo 与 --ref/--revision；不支持 should-commit')
             sha = source.pin(args.repo, args.ref) if args.ref else args.revision
             file = source.relative_path(args.file)
-            read = lambda path: source.read(args.repo, sha, path)
+
+            def read(path):
+                return source.read(args.repo, sha, path)
+
             text = read(file)
             if args.mode == 'check':
                 res = check_workbook_source(file, text, read, True, **check_args)

@@ -1,0 +1,6 @@
+interface:
+  display_name: "Steward Sync"
+  short_description: "定期同步管家/子线程进展与卡点：状态探测、二次核实、emoji+表格短报告"
+  default_prompt: "使用 $steward-sync 对指定线程做一轮进展与卡点同步，按其格式规范输出短报告。"
+policy:
+  allow_implicit_invocation: false
