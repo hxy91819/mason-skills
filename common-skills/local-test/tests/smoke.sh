@@ -19,7 +19,9 @@ bad()  { FAIL=$((FAIL + 1)); echo "FAIL: $*"; }
 check(){ if [[ "$2" == "$3" ]]; then ok "$1 ($2)"; else bad "$1: 期望 [$3] 实得 [$2]"; fi; }
 
 cleanup() {
-  for d in "$TMP/main" "$TMP/wt-alpha" "$TMP/wt-beta"; do
+  for d in "$TMP/main" "$TMP/wt-alpha" "$TMP/wt-beta" \
+      "$TMP/slow-port" "$TMP/dead-port" "$TMP/health-url" "$TMP/health-tcp" \
+      "$TMP/health-fail" "$TMP/compose-flags" "$TMP/compose-plain" "$TMP/compose-missing"; do
     [[ -d "$d" ]] && (cd "$d" && "$LT" destroy >/dev/null 2>&1)
   done
   "$LT" gc >/dev/null 2>&1 || true
@@ -38,6 +40,16 @@ http_code() {
   echo "${code:-000}"
 }
 lt_in() { local dir="$1"; shift; (cd "$dir" && "$LT" "$@"); }
+make_repo() {
+  local dir="$1"
+  mkdir -p "$dir"
+  git -C "$dir" init -q -b main
+  git -C "$dir" config user.email smoke@example.com
+  git -C "$dir" config user.name smoke
+}
+once_up() {
+  curl -s -o /dev/null -m 1 -w '%{http_code}' "$1" 2>/dev/null || true
+}
 
 echo "=== 准备临时仓库 $TMP ==="
 mkdir -p "$TMP/main"
@@ -211,7 +223,7 @@ cat >"$TMP/scan.json" <<'JSON'
   },
   "external": { "mode_env": "PARTNER_API_MODE" },
   "services": {
-    "api": { "port": 8080, "cmd": "node server.js --port $LOCAL_TEST_PORT_API" },
+    "api": { "port": 8080, "health": "http://127.0.0.1:$LOCAL_TEST_PORT_API/health", "cmd": "node server.js --port $LOCAL_TEST_PORT_API" },
     "css": { "cmd": "npm run watch:css" }
   },
   "preview_url": "http://127.0.0.1:$LOCAL_TEST_PORT_API/"
@@ -243,6 +255,170 @@ for MODE in perl monitor; do
   "$LT" stop >/dev/null 2>&1
   check "spawn=$MODE stop 后端口释放" "$(curl -s -o /dev/null -m 2 "http://127.0.0.1:$MAIN_PORT/" && echo up || echo down)" "down"
 done
+
+echo
+echo "=== 11. 端口、health 与 compose 参数 ==="
+mkdir -p "$TMP/docroot"
+echo hi >"$TMP/docroot/index.html"
+cat >"$TMP/lt-smoke-sleep.sh" <<'SH'
+#!/usr/bin/env bash
+exec sleep 60
+SH
+chmod +x "$TMP/lt-smoke-sleep.sh"
+cat >"$TMP/lt-smoke-health.py" <<'PY'
+import sys, time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+port, delay, mode = int(sys.argv[1]), float(sys.argv[2]), sys.argv[3]
+started = time.time()
+class H(BaseHTTPRequestHandler):
+    def do_GET(self):
+        ready = mode == "flip" and (time.time() - started) >= delay
+        self.send_response(200 if ready else 503)
+        self.end_headers()
+    def log_message(self, *args):
+        pass
+HTTPServer(("127.0.0.1", port), H).serve_forever()
+PY
+
+make_repo "$TMP/slow-port"
+cat >"$TMP/slow-port/.local-test.yml" <<YML
+project: slowport
+services:
+  web:
+    port: 47931
+    cmd: sleep 3 && python3 -m http.server \$LOCAL_TEST_PORT_WEB --bind 127.0.0.1 --directory $TMP/docroot
+YML
+OUT="$(LOCAL_TEST_HEALTH_TIMEOUT=15 lt_in "$TMP/slow-port" start 2>&1)"; RC=$?
+check "慢端口 start 退出码" "$RC" "0"
+check "start 返回时端口已可访问" "$(once_up http://127.0.0.1:47931/)" "200"
+lt_in "$TMP/slow-port" stop >/dev/null 2>&1 || true
+
+make_repo "$TMP/dead-port"
+cat >"$TMP/dead-port/.local-test.yml" <<YML
+project: deadport
+services:
+  web:
+    port: 47932
+    cmd: $TMP/lt-smoke-sleep.sh
+YML
+OUT="$(LOCAL_TEST_HEALTH_TIMEOUT=2 lt_in "$TMP/dead-port" start 2>&1)"; RC=$?
+check "端口从不开启的退出码" "$RC" "3"
+if echo "$OUT" | grep -q '.local-test/logs/web.log'; then ok "超时指出日志"; else bad "超时未指出日志: $OUT"; fi
+if echo "$OUT" | grep -q '环境已就绪'; then bad "未就绪仍报就绪: $OUT"; else ok "未就绪不报就绪"; fi
+lt_in "$TMP/dead-port" stop >/dev/null 2>&1 || true
+
+make_repo "$TMP/health-url"
+cat >"$TMP/health-url/.local-test.yml" <<YML
+project: healthurl
+services:
+  api:
+    port: 47933
+    health: http://127.0.0.1:\$LOCAL_TEST_PORT_API/api/health
+    cmd: python3 $TMP/lt-smoke-health.py \$LOCAL_TEST_PORT_API 4 flip
+YML
+OUT="$(LOCAL_TEST_HEALTH_TIMEOUT=15 lt_in "$TMP/health-url" start 2>&1)"; RC=$?
+check "health URL start 退出码" "$RC" "0"
+check "start 返回时 health 已是 2xx" "$(once_up http://127.0.0.1:47933/api/health)" "200"
+lt_in "$TMP/health-url" stop >/dev/null 2>&1 || true
+
+make_repo "$TMP/health-tcp"
+cat >"$TMP/health-tcp/.local-test.yml" <<YML
+project: healthtcp
+services:
+  web:
+    health: tcp:47937
+    cmd: sleep 3 && python3 -m http.server 47937 --bind 127.0.0.1 --directory $TMP/docroot
+YML
+OUT="$(LOCAL_TEST_HEALTH_TIMEOUT=15 lt_in "$TMP/health-tcp" start 2>&1)"; RC=$?
+check "tcp health start 退出码" "$RC" "0"
+check "start 返回时 tcp 端口已开" "$(once_up http://127.0.0.1:47937/)" "200"
+lt_in "$TMP/health-tcp" stop >/dev/null 2>&1 || true
+
+make_repo "$TMP/health-fail"
+cat >"$TMP/health-fail/.local-test.yml" <<YML
+project: healthfail
+services:
+  web:
+    port: 47934
+    health: http://127.0.0.1:\$LOCAL_TEST_PORT_WEB/api/health
+    cmd: python3 $TMP/lt-smoke-health.py \$LOCAL_TEST_PORT_WEB 999 fail
+YML
+OUT="$(LOCAL_TEST_HEALTH_TIMEOUT=3 lt_in "$TMP/health-fail" start 2>&1)"; RC=$?
+check "health 失败退出码" "$RC" "3"
+if echo "$OUT" | grep -q '.local-test/logs/web.log'; then ok "health 失败指出日志"; else bad "health 失败未指出日志: $OUT"; fi
+if echo "$OUT" | grep -q '环境已就绪'; then bad "health 失败仍报就绪"; else ok "health 失败不报就绪"; fi
+check "health 失败后停掉本次拉起的进程" "$(once_up http://127.0.0.1:47934/api/health)" "000"
+lt_in "$TMP/health-fail" stop >/dev/null 2>&1 || true
+
+fake_docker() {
+  local dir="$1"
+  mkdir -p "$dir/bin"
+  cat >"$dir/bin/docker" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$TMP/docker-args"
+exit 0
+SH
+  chmod +x "$dir/bin/docker"
+  printf 'services: {}\n' >"$dir/compose.yml"
+}
+lt_path() { local dir="$1"; shift; (cd "$dir" && PATH="$dir/bin:$PATH" "$LT" "$@"); }
+
+make_repo "$TMP/compose-flags"
+fake_docker "$TMP/compose-flags"
+printf 'X=1\n' >"$TMP/compose-flags/.env.local"
+cat >"$TMP/compose-flags/.local-test.yml" <<YML
+project: composeflags
+middleware: compose.yml
+middleware_project: demo-dev
+middleware_env_file: .env.local
+services:
+  web:
+    port: 47935
+    cmd: python3 -m http.server \$LOCAL_TEST_PORT_WEB --bind 127.0.0.1 --directory $TMP/docroot
+YML
+rm -f "$TMP/docker-args"
+OUT="$(lt_path "$TMP/compose-flags" start 2>&1)"; RC=$?
+check "带上项目名与 env 档的 start" "$RC" "0"
+if grep -q "health: 'http://127.0.0.1:\$LOCAL_TEST_PORT_API/health'" "$TMP/fresh/.local-test.yml"; then ok "init 写出 health"; else bad "init 未写出 health"; fi
+if grep -Fxq 'compose -p demo-dev -f compose.yml --env-file .env.local up -d' "$TMP/docker-args"; then ok "compose up 与项目调用一致"; else bad "compose up 参数不一致: $(cat "$TMP/docker-args" 2>/dev/null)"; fi
+rm -f "$TMP/docker-args"
+lt_path "$TMP/compose-flags" status >/dev/null 2>&1 || true
+if grep -q -- '--env-file .env.local ps' "$TMP/docker-args"; then ok "status 也带 env 档与项目名"; else bad "status 未带 compose 参数: $(cat "$TMP/docker-args" 2>/dev/null)"; fi
+rm -f "$TMP/docker-args"
+lt_path "$TMP/compose-flags" stop >/dev/null 2>&1 || true
+if grep -Fxq 'compose -p demo-dev -f compose.yml --env-file .env.local stop' "$TMP/docker-args"; then ok "stop 也带 env 档与项目名"; else bad "stop 参数不一致: $(cat "$TMP/docker-args" 2>/dev/null)"; fi
+
+make_repo "$TMP/compose-plain"
+fake_docker "$TMP/compose-plain"
+cat >"$TMP/compose-plain/.local-test.yml" <<YML
+project: composeplain
+middleware: compose.yml
+services:
+  web:
+    port: 47936
+    cmd: python3 -m http.server \$LOCAL_TEST_PORT_WEB --bind 127.0.0.1 --directory $TMP/docroot
+YML
+rm -f "$TMP/docker-args"
+OUT="$(lt_path "$TMP/compose-plain" start 2>&1)"; RC=$?
+check "旧配置 start 仍成功" "$RC" "0"
+if grep -Fxq 'compose -f compose.yml up -d' "$TMP/docker-args" && ! grep -e '--env-file' -e ' -p ' "$TMP/docker-args"; then ok "未声明时不额外传 -p 与 --env-file"; else bad "旧调用被改变: $(cat "$TMP/docker-args" 2>/dev/null)"; fi
+lt_path "$TMP/compose-plain" stop >/dev/null 2>&1 || true
+
+make_repo "$TMP/compose-missing"
+fake_docker "$TMP/compose-missing"
+cat >"$TMP/compose-missing/.local-test.yml" <<YML
+project: composemissing
+middleware: compose.yml
+middleware_env_file: missing.env
+services:
+  web:
+    cmd: $TMP/lt-smoke-sleep.sh
+YML
+rm -f "$TMP/docker-args"
+OUT="$(lt_path "$TMP/compose-missing" start 2>&1)"; RC=$?
+check "env 档缺失退出码" "$RC" "2"
+if [[ ! -f "$TMP/docker-args" ]]; then ok "env 档缺失时不调用 docker"; else bad "env 档缺失仍调用了 docker: $(cat "$TMP/docker-args")"; fi
+if echo "$OUT" | grep -q 'missing.env'; then ok "缺失 env 档的路径可见"; else bad "未指出缺失的 env 档: $OUT"; fi
 
 echo
 echo "=== 结果: PASS=$PASS FAIL=$FAIL ==="

@@ -8,9 +8,11 @@ set -euo pipefail
 #   - 中间件全机一份（compose），业务服务裸进程且以独立进程组启动，stop 杀整组；
 #   - 全机登记目录让 status 可见、gc 回收孤儿、软上限防资源耗尽，不做槽位租借；
 #   - 端口被未知进程占用即保守失败，不抢端口——那可能是其他 agent 的现场；
+#   - 报「环境已就绪」前必须通过 health，未声明时至少等到端口可连；超时非零并指出日志；
+#   - docker compose 可带 middleware_project / middleware_env_file，与项目自己的调用一致；
 #   - YAML/JSON 自己解析：CLI 要能在任意技术栈的仓库里直接跑，不引入 ruby/python/yq 依赖；
 #   - 只用 bash 3.2 语法（无关联数组、无 mapfile），保证 macOS 自带 bash 可用。
-LT_VERSION="1.2.1"
+LT_VERSION="1.3.0"
 STATE_DIR=".local-test"
 RUN_DIR="$STATE_DIR/run"
 LOG_DIR="$STATE_DIR/logs"
@@ -42,16 +44,17 @@ usage() {
   destroy          stop 后确保 drop 本环境开发库并删登记；供 worktree teardown 调用，无环境时 no-op
   reset --yes      停止并清理数据卷；仅用户明确要求"彻底重置"时使用
 环境变量:
-  LOCAL_TEST_NAMESPACE    覆盖 namespace（默认 linked worktree 取目录名，主 checkout 为空）
-  LOCAL_TEST_REGISTRY_DIR 全机登记目录（默认 ~/.local-test/registry）
-  LOCAL_TEST_MAX_ENVS     同时运行的环境软上限（默认 5）
-  LOCAL_TEST_SPAWN_MODE   强制进程组隔离方案 setsid|perl|monitor（默认自动探测）
+  LOCAL_TEST_NAMESPACE      覆盖 namespace（默认 linked worktree 取目录名，主 checkout 为空）
+  LOCAL_TEST_REGISTRY_DIR   全机登记目录（默认 ~/.local-test/registry）
+  LOCAL_TEST_MAX_ENVS       同时运行的环境软上限（默认 5）
+  LOCAL_TEST_HEALTH_TIMEOUT 就绪轮询秒数（默认 120）
+  LOCAL_TEST_SPAWN_MODE     强制进程组隔离方案 setsid|perl|monitor（默认自动探测）
 输出结果定义:
   运行状态: .local-test/run/<service>.pid（进程组 id）、.local-test/run/port-offset
   服务日志: .local-test/logs/<service>.log
   全机登记: $LOCAL_TEST_REGISTRY_DIR/<project>--<namespace>
   退出码:   0 成功; 1 参数或配置错误; 2 环境预检失败（端口被未知进程占用、超软上限、
-            real 模式却不在主 checkout）; 3 服务启动失败
+            real 模式却不在主 checkout）; 3 服务启动失败（含就绪超时）
 示例:
   lt doctor
   cat scan.json | lt init
@@ -182,6 +185,8 @@ load_config() {
   PROJECT_NAME="$(cfg_get project)"
   [[ -n "$PROJECT_NAME" ]] || PROJECT_NAME="$(basename "$REPO_ROOT")"
   COMPOSE_FILE="$(cfg_get middleware)"
+  COMPOSE_PROJECT="$(cfg_get middleware_project)"
+  COMPOSE_ENV_FILE="$(cfg_get middleware_env_file)"
   DB_MODE="$(cfg_get database.mode)"
   DB_PREPARE_CMD="$(cfg_get database.prepare)"
   DB_SEED_CMD="$(cfg_get database.seed)"
@@ -194,11 +199,25 @@ load_config() {
   local svc
   for svc in $SVC_NAMES; do
     [[ -n "$(cfg_get "services.$svc.cmd")" ]] || die "服务 $svc 缺少 cmd" 1
+    validate_health "$svc"
   done
+}
+validate_health() {
+  local svc="$1" health
+  health="$(svc_health "$svc")"
+  [[ -n "$health" ]] || return 0
+  case "$health" in
+    http://*|https://*|tcp:*) ;;
+    *) [[ "$health" =~ ^[0-9]+$ ]] || die "服务 $svc 的 health 必须是 http(s) URL、tcp:端口或数字端口" 1 ;;
+  esac
+  if [[ "$health" == tcp:* && -z "${health#tcp:}" ]]; then
+    die "服务 $svc 的 health tcp 端口为空" 1
+  fi
 }
 
 svc_port_base() { cfg_get "services.$1.port"; }
 svc_cmd()       { cfg_get "services.$1.cmd"; }
+svc_health()    { cfg_get "services.$1.health"; }
 svc_port() {
   local base; base="$(svc_port_base "$1")"
   [[ -n "$base" ]] || return 0
@@ -214,6 +233,7 @@ is_up() {
 }
 pgid_of()    { cat "$RUN_DIR/$1.pid" 2>/dev/null || echo ""; }
 pgid_alive() { [[ -n "$1" ]] && kill -0 -- "-$1" 2>/dev/null; }
+pid_alive()  { [[ -n "$1" ]] && kill -0 "$1" 2>/dev/null; }
 upper_ident() { printf '%s' "$1" | tr '[:lower:]-' '[:upper:]_' | tr -c 'A-Z0-9_\n' '_'; }
 reverse_list() { printf '%s\n' $1 | awk '{ a[NR] = $0 } END { for (k = NR; k >= 1; k--) print a[k] }'; }
 
@@ -379,36 +399,99 @@ spawn_service() {
   esac
   echo $!
 }
+probe_ready() {
+  local health="$1" port="$2" target code
+  if [[ -z "$health" ]]; then
+    if is_up "$port"; then return 0; fi
+    return 1
+  fi
+  health="$(expand_lt_vars "$health")"
+  case "$health" in
+    http://*|https://*)
+      code="$(curl -s -o /dev/null -m 2 --connect-timeout 1 -w '%{http_code}' "$health" 2>/dev/null || true)"
+      if [[ "$code" =~ ^2[0-9][0-9]$ ]]; then return 0; fi
+      return 1
+      ;;
+    tcp:*)
+      target="${health#tcp:}"
+      if [[ "$target" =~ ^[0-9]+$ ]] && is_up "$target"; then return 0; fi
+      return 1
+      ;;
+    *)
+      if [[ "$health" =~ ^[0-9]+$ ]] && is_up "$health"; then return 0; fi
+      return 1
+      ;;
+  esac
+}
+wait_until_ready() {
+  local svc="$1" pgid="$2" spawned="$3"
+  local port health timeout deadline now logpath desc
+  port="$(svc_port "$svc")"
+  health="$(svc_health "$svc")"
+  logpath="$LOG_DIR/$svc.log"
+  timeout="${LOCAL_TEST_HEALTH_TIMEOUT:-120}"
+  case "$health" in
+    http://*|https://*)
+      command -v curl >/dev/null 2>&1 || { log_error "服务 $svc 的 health URL 需要 curl"; return 3; }
+      ;;
+  esac
+  if [[ -n "$health" ]]; then desc="$(expand_lt_vars "$health")"; else desc="127.0.0.1:$port"; fi
+  deadline=$(( $(date +%s) + timeout ))
+  while true; do
+    if probe_ready "$health" "$port"; then return 0; fi
+    # 进程组可能晚一拍才建立（perl / bash job control）；进程还在就继续等，进程没了才算退出。
+    if ! pid_alive "$pgid"; then
+      log_error "$svc 启动后退出，查看 $logpath"
+      rm -f "$RUN_DIR/$svc.pid"
+      return 3
+    fi
+    now="$(date +%s)"
+    if (( now >= deadline )); then
+      log_error "$svc 在 ${timeout}s 内未就绪（${desc}），查看 $logpath"
+      if [[ "$spawned" == 1 ]]; then
+        stop_pgid "$pgid" || true
+        rm -f "$RUN_DIR/$svc.pid"
+      fi
+      return 3
+    fi
+    sleep 0.5
+  done
+}
 start_one() {
-  local svc="$1" port cmd pgid
+  local svc="$1" port cmd pgid="" spawned=0 health
   port="$(svc_port "$svc")"
   cmd="$(svc_cmd "$svc")"
+  health="$(svc_health "$svc")"
   if [[ -n "$port" ]] && is_up "$port"; then
     pgid="$(pgid_of "$svc")"
     if pgid_alive "$pgid"; then
       log_info "$svc 已在运行 (pgid $pgid, 端口 $port)，跳过"
-      return 0
+    else
+      log_error "$svc 端口 $port 被未知进程占用，非本环境拉起；请人工确认后处理"
+      return 2
     fi
-    log_error "$svc 端口 $port 被未知进程占用，非本环境拉起；请人工确认后处理"
-    return 2
-  fi
-  if [[ -z "$port" ]]; then
+  elif pgid_alive "$(pgid_of "$svc")"; then
     pgid="$(pgid_of "$svc")"
-    if pgid_alive "$pgid"; then
-      log_info "$svc 已在运行 (pgid $pgid, 无端口)，跳过"
-      return 0
+    log_info "$svc 已在运行 (pgid $pgid, 无端口)，跳过"
+  else
+    mkdir -p "$RUN_DIR" "$LOG_DIR"
+    log_info "启动 $svc${port:+ (127.0.0.1:$port)}"
+    pgid="$(spawn_service "$cmd" "$LOG_DIR/$svc.log")"
+    echo "$pgid" >"$RUN_DIR/$svc.pid"
+    spawned=1
+  fi
+  if [[ -z "$port" && -z "$health" ]]; then
+    if [[ "$spawned" == 1 ]]; then
+      sleep 1
+      if ! pgid_alive "$pgid"; then
+        log_error "$svc 启动后立即退出，查看 $LOG_DIR/$svc.log"
+        rm -f "$RUN_DIR/$svc.pid"
+        return 3
+      fi
     fi
+    return 0
   fi
-  mkdir -p "$RUN_DIR" "$LOG_DIR"
-  log_info "启动 $svc${port:+ (127.0.0.1:$port)}"
-  pgid="$(spawn_service "$cmd" "$LOG_DIR/$svc.log")"
-  echo "$pgid" >"$RUN_DIR/$svc.pid"
-  sleep 1
-  if ! pgid_alive "$pgid"; then
-    log_error "$svc 启动后立即退出，查看 $LOG_DIR/$svc.log"
-    rm -f "$RUN_DIR/$svc.pid"
-    return 3
-  fi
+  wait_until_ready "$svc" "$pgid" "$spawned"
 }
 stop_pgid() {
   local pgid="$1" waited=0
@@ -435,21 +518,41 @@ stop_one() {
 compose_action() {
   [[ -n "$COMPOSE_FILE" ]] || return 0
   [[ -f "$COMPOSE_FILE" ]] || { log_error "找不到中间件配置 $COMPOSE_FILE"; return 2; }
+  if [[ -n "$COMPOSE_ENV_FILE" && ! -f "$COMPOSE_ENV_FILE" ]]; then
+    log_error "找不到中间件 env 档 $COMPOSE_ENV_FILE"
+    return 2
+  fi
   # 共享中间件用 stop 不用 down：项目数据库由 drop 命令精确回收，避免误删其他环境的卷。
-  docker compose -f "$COMPOSE_FILE" "$@"
+  # 参数顺序与常见项目调用一致：-p、-f、--env-file。未声明的项不传。
+  if [[ -n "$COMPOSE_PROJECT" && -n "$COMPOSE_ENV_FILE" ]]; then
+    docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" --env-file "$COMPOSE_ENV_FILE" "$@"
+  elif [[ -n "$COMPOSE_PROJECT" ]]; then
+    docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" "$@"
+  elif [[ -n "$COMPOSE_ENV_FILE" ]]; then
+    docker compose -f "$COMPOSE_FILE" --env-file "$COMPOSE_ENV_FILE" "$@"
+  else
+    docker compose -f "$COMPOSE_FILE" "$@"
+  fi
 }
 
 # ---- 子命令 -----------------------------------------------------------
 cmd_start() {
-  local svc rc=0 live
+  local svc rc=0 live timeout
+  timeout="${LOCAL_TEST_HEALTH_TIMEOUT:-120}"
+  if [[ ! "$timeout" =~ ^[0-9]+$ ]] || (( timeout <= 0 )); then
+    log_error "LOCAL_TEST_HEALTH_TIMEOUT 必须是正整数秒"
+    return 1
+  fi
   guard_external_mode || return 2
   live="$(count_live_envs)"
   if (( live >= MAX_ENVS )); then
     log_error "全机已有 $live 个环境在运行，达到软上限 LOCAL_TEST_MAX_ENVS=$MAX_ENVS；先 lt status 查看并停止不需要的环境"
     return 2
   fi
-  compose_action up -d || rc=3
-  (( rc == 0 )) || return $rc
+  compose_action up -d || rc=$?
+  # 2 是缺文件等预检失败；compose 本身失败仍算启动失败。
+  if (( rc == 2 )); then return 2; fi
+  if (( rc != 0 )); then return 3; fi
   mkdir -p "$RUN_DIR" "$LOG_DIR"
   if [[ -n "$DB_PREPARE_CMD" && ! -f "$RUN_DIR/db-prepared" ]]; then
     log_info "准备本地开发库 (namespace: ${NAMESPACE:-<none>})"
@@ -502,7 +605,7 @@ cmd_status() {
   [[ -n "$EXTERNAL_MODE_ENV" ]] && echo "  外部系统: $EXTERNAL_MODE_ENV=${EXTERNAL_MODE:-mock}"
   echo "== 中间件 =="
   if [[ -n "$COMPOSE_FILE" ]]; then
-    docker compose -f "$COMPOSE_FILE" ps --format '{{.Name}}: {{.Status}}' 2>/dev/null || echo "  (docker 不可用)"
+    compose_action ps --format '{{.Name}}: {{.Status}}' 2>/dev/null || echo "  (docker 不可用)"
   else
     echo "  (未配置)"
   fi
@@ -627,7 +730,7 @@ cmd_reset() {
   cmd_stop || true
   rm -f "$RUN_DIR/db-prepared"
   if [[ -n "$COMPOSE_FILE" && -f "$COMPOSE_FILE" ]]; then
-    docker compose -f "$COMPOSE_FILE" down -v || true
+    compose_action down -v || true
   fi
   log_info "数据卷已清理，执行 lt start 重建环境"
 }
@@ -665,7 +768,10 @@ cmd_doctor() {
   echo "  $CONFIG_FILE: 解析通过"
   echo "  project: $PROJECT_NAME"
   echo "  middleware: ${COMPOSE_FILE:-<none>}"
+  echo "  middleware_project: ${COMPOSE_PROJECT:-<none>}"
+  echo "  middleware_env_file: ${COMPOSE_ENV_FILE:-<none>}"
   if [[ -n "$COMPOSE_FILE" && ! -f "$COMPOSE_FILE" ]]; then echo "  警告: 找不到 $COMPOSE_FILE"; rc=1; fi
+  if [[ -n "$COMPOSE_ENV_FILE" && ! -f "$COMPOSE_ENV_FILE" ]]; then echo "  警告: 找不到 middleware env 档 $COMPOSE_ENV_FILE"; rc=1; fi
   echo "  database.mode: ${DB_MODE:-<none>}"
   echo "  database.prepare: ${DB_PREPARE_CMD:-<none>}"
   echo "  database.seed: ${DB_SEED_CMD:-<none>}"
@@ -743,6 +849,8 @@ cmd_init() {
     echo "# 由 lt init 生成；受限 YAML 子集，详见 local-test skill"
     emit "project: " "$(jget project)"
     emit "middleware: " "$(jget middleware)"
+    emit "middleware_project: " "$(jget middleware_project)"
+    emit "middleware_env_file: " "$(jget middleware_env_file)"
     if [[ -n "$(jget database.mode)$(jget database.prepare)$(jget database.seed)$(jget database.verify)$(jget database.drop)" ]]; then
       echo "database:"
       emit "  mode: " "$(jget database.mode)"
@@ -761,6 +869,7 @@ cmd_init() {
       for svc in $names; do
         echo "  $svc:"
         emit "    port: " "$(jget "services.$svc.port")"
+        emit "    health: " "$(jget "services.$svc.health")"
         emit "    cmd: " "$(jget "services.$svc.cmd")"
       done
     fi
@@ -815,7 +924,7 @@ main() {
   esac
 
   if [[ "$cmd" == "doctor" && ! -f "$CONFIG_FILE" ]]; then
-    PROJECT_NAME="$(basename "$REPO_ROOT")"; COMPOSE_FILE=""; DB_MODE=""; DB_PREPARE_CMD=""; DB_SEED_CMD=""; DB_VERIFY_CMD=""; DB_DROP_CMD=""
+    PROJECT_NAME="$(basename "$REPO_ROOT")"; COMPOSE_FILE=""; COMPOSE_PROJECT=""; COMPOSE_ENV_FILE=""; DB_MODE=""; DB_PREPARE_CMD=""; DB_SEED_CMD=""; DB_VERIFY_CMD=""; DB_DROP_CMD=""
     EXTERNAL_MODE_ENV=""; PREVIEW_URL_TPL=""; GATEWAY_CONF=""; SVC_NAMES=""; CFG=""
     PORT_OFFSET=0
     cmd_doctor; return $?

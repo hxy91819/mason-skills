@@ -34,6 +34,8 @@ description: Use when explicitly managing a local multi-service integration or p
 ```yaml
 project: saiens                      # 可选，默认仓库目录名
 middleware: docker-compose.yml       # 可选
+middleware_project: my-dev           # 可选
+middleware_env_file: .env.local      # 可选
 database:
   mode: rebuildable                  # 默认；retained 仅用于明确不可重建的例外
   prepare: bin/rails db:prepare      # schema/migrations，可读 $LOCAL_TEST_NAMESPACE
@@ -45,11 +47,16 @@ external:
 services:
   web:
     port: 4777                       # 基准端口；实际端口 = 基准 + namespace 偏移
+    health: http://127.0.0.1:$LOCAL_TEST_PORT_WEB/health
     cmd: bin/rails server -p $LOCAL_TEST_PORT_WEB
   css:
-    cmd: bin/rails tailwindcss:watch # 无 port 的服务不做端口守卫
+    cmd: bin/rails tailwindcss:watch # 可不设 port
 preview_url: http://127.0.0.1:$LOCAL_TEST_PORT_WEB
 ```
+
+`health` 可选。`http://` / `https://` 要 curl 得到 2xx；`tcp:<端口>` 或纯数字要能连上 `127.0.0.1` 的该端口。值里的 `$LOCAL_TEST_NAMESPACE` 与 `$LOCAL_TEST_PORT_<服务名大写>` 会替换，字面端口不跟随 namespace 偏移。未写 `health` 但写了 `port` 时，至少等到该端口能连上；两者都没有时仍只确认进程还在。轮询默认 120 秒（`LOCAL_TEST_HEALTH_TIMEOUT`）；超时退出码 3，错误信息给出 `.local-test/logs/<服务>.log`，并停掉这次拉起的进程。
+
+`middleware_project` 与 `middleware_env_file` 可选，用于每一条 `docker compose`（`start` / `stop` / `status` / `reset`），顺序为 `-p`、`-f`、`--env-file`。不写则不传。env 档不存在时命令失败，且不调用 docker。
 
 `cmd` 运行时由 `bash -c` 求值，可引用 `$LOCAL_TEST_NAMESPACE` 与 `$LOCAL_TEST_PORT_<服务名大写>`；`preview_url` 只做同名变量替换，不执行。服务顺序即配置顺序：`start` 按序、`stop` 逆序。配置原则：中间件容器化且全机一份、按 namespace 分库；业务服务默认裸进程（利于热重载与断点），不为每个 worktree 复制中间件，不用固定槽位环境池，不把未验证代码合入主干来借环境。
 
@@ -59,11 +66,11 @@ preview_url: http://127.0.0.1:$LOCAL_TEST_PORT_WEB
 
 ## 三、命令与退出码
 
-`doctor` 体检并检查数据库重建闭环 | `init` 生成配置 | `start` 按 prepare → seed → verify 拉起 | `stop` 逆序收敛；`rebuildable` 同时 drop 本环境库，最后一个环境停止共享中间件 | `status` 本环境加全机登记 | `logs <svc>` | `gc` 回收孤儿环境 | `destroy` 确保 drop 库并删登记 | `reset --yes` 清共享数据卷，仅用户明确要求"彻底重置"时用。
+`doctor` 体检并检查数据库重建闭环 | `init` 生成配置 | `start` 按 prepare → seed → verify 拉起，并按上一节的就绪条件确认后才算成功 | `stop` 逆序收敛；`rebuildable` 同时 drop 本环境库，最后一个环境停止共享中间件 | `status` 本环境加全机登记 | `logs <svc>` | `gc` 回收孤儿环境 | `destroy` 确保 drop 库并删登记 | `reset --yes` 清共享数据卷，仅用户明确要求"彻底重置"时用。
 
 任意子命令后带 `-h`／`--help` 都只打印帮助，优先于配置读取与执行；未知选项或多余参数在执行前报错。
 
-退出码：`0` 成功；`1` 参数或配置错误；`2` 环境预检失败（端口被未知进程占用、超 `LOCAL_TEST_MAX_ENVS`、`real` 却不在主 checkout）；`3` 服务启动失败。
+退出码：`0` 成功；`1` 参数或配置错误；`2` 环境预检失败（端口被未知进程占用、超 `LOCAL_TEST_MAX_ENVS`、`real` 却不在主 checkout、中间件 env 档缺失）；`3` 服务启动失败（含就绪超时）。
 
 `lt status` 末尾有机器可读段，直接 grep 取值，别解析上面的人读排版：`LT_PROJECT` / `LT_NAMESPACE` / `LT_PORT_OFFSET` / `LT_EXTERNAL_MODE` / `LT_PORT_<SVC>` / `LT_URL` / `LT_LOGIN_URL`。
 
