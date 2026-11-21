@@ -61,9 +61,9 @@ defaults:
 
 `--escalate-from <线程ID>` 与 `--unknown <原因>` 都是可选的账本注记：前者记下同一任务失败或返工的前序线程（脚本会核对线程存在），后者记一句定档原因。分档以 SKILL.md「判断与调用」为准，本文不复述条件。
 
-`--on-failure <线程ID>` 处理报错的子线程，只看 BB 的结构化信息：线程不在 `error` 状态返回 `not-failed`；`bb provider-retry status` 列出 BB 自动重试时返回 `waiting`。报错线程上的排队消息要等线程被重试才送出，不算已有重试。账本 `retries` 记当前这次故障已安排的原会话重试次数，`retry_ts` 记最近一次安排的时间；`retries` 大于 0 时读 `bb thread log`：那之后还没有回合结束，说明上次的重试还没执行，返回 `waiting`；那之后有回合成功结束，说明那次故障已恢复，这次从头计（派发补记 `completed` 时也清零）。`bb provider-retry explain` 的结论是 `attempts-exhausted`（BB 已在原会话重试到上限）或 `beyond-maximum-wait`（额度重置超过它的最长等待）时不再重试；否则用 `bb thread retry --send-at` 在原会话安排下一次重试（1、2、4 分钟），返回 `retry-scheduled`；BB 回复该回合已有排队的重试（`retry_already_queued`）时返回 `waiting`。重试用尽或无法重试时记 `failed`，返回 `cooled` 与当前冷却；重试期间不改终态，线程之前的成功照样为冷却清零。读不到线程状态或日志时报错退出，稍后重跑同一命令。只处理账本里的线程；配合 `--dry-run` 只给出动作，不安排重试、不写账本。
+`--on-failure <线程ID>` 处理报错的子线程，只看 BB 的结构化信息：线程不在 `error` 状态返回 `not-failed`；`bb provider-retry status` 列出 BB 自动重试时返回 `waiting`。报错线程上的排队消息要等线程被重试才送出，不算已有重试。账本 `retries` 记当前这次故障已安排的原会话重试次数，`retry_ts` 记最近一次安排的时间；`retries` 大于 0 时读 `bb thread log`：那之后还没有回合结束，说明上次的重试还没执行，返回 `waiting`；那之后有回合成功结束，说明那次故障已恢复，这次从头计（派发补记 `completed` 时也清零）。`bb provider-retry explain` 的 decline 原因是 `no-rate-limit-state`、`not-resettable` 或 `beyond-maximum-wait` 时，视为额度耗尽：不安排原会话重试，记 `failed` 并带 `quota`。线程日志里这次故障的 `provider/error`，在 HTTP 429（`errorInfo.httpStatusCode`，或 detail 以 `429` 开头）且 JSON 的 `code`、`status` 或 `type` 为 `RESOURCE_EXHAUSTED`、`model_cooldown`、`quota`、`insufficient_quota`、`quota_exceeded` 时同样处理；只看这些字段，不扫 `message`。`attempts-exhausted` 仍表示原会话重试已用尽。其余失败用 `bb thread retry --send-at` 安排下一次（1、2、4 分钟），返回 `retry-scheduled`；BB 回复该回合已有排队的重试（`retry_already_queued`）时返回 `waiting`。额度冷却的时长见 SKILL.md「可观测性」。`availability.kind` 为 `blocked` 的 `retryAt`，或 `provider/rateLimits/updated` 里被挡住的订阅窗口 `resetsAtMs`，会把冷却拉到该时刻；`model_cooldown` 的 `reset_seconds` 不用。重试用尽、无法重试或已确定额度耗尽时返回 `cooled`；重试期间不改终态，线程之前的成功照样为冷却清零。读不到线程状态，或确认上次重试有没有执行时读不到日志，报错退出，稍后重跑同一命令；判断额度码时读不到日志则当作判不出。只处理账本里的线程；配合 `--dry-run` 只给出动作，不安排重试、不写账本。
 
-`completed` 由脚本按 BB 线程状态自动记录，`failed` 由 `--on-failure` 在重试用尽后记录；识别有误或放弃任务时用 `--record-outcome <线程ID> --outcome <终态>` 改正（旧名 `--record-decision` 仍可用），写入本地账本（默认 `~/.cache/bb-dispatch/ledger.json`）；旧值 `failed_quota`、`failed_transient`、`failed_other` 仍可写，与 `failed` 一样计入连续失败。`--history-summary`（别名 `--stats`）只读输出按难度与候选的聚合统计、活跃冷却、确定性复盘 hooks，以及复盘日志 `ledger.events.jsonl` 近 7 天的重试与冷却汇总 `retry_review`（字段见 SKILL.md「可观测性」）。
+`completed` 由脚本按 BB 线程状态自动记录，`failed` 由 `--on-failure` 在重试用尽或确定额度耗尽后记录；识别有误或放弃任务时用 `--record-outcome <线程ID> --outcome <终态>` 改正（旧名 `--record-decision` 仍可用），写入本地账本（默认 `~/.cache/bb-dispatch/ledger.json`）；旧值 `failed_quota`、`failed_transient`、`failed_other` 仍可写，与 `failed` 一样计入连续失败。只有脚本写入的 `quota: true` 才按额度冷却计时，手动的 `failed_quota` 不拉长。`--history-summary`（别名 `--stats`）只读输出按难度与候选的聚合统计、活跃冷却、确定性复盘 hooks，以及复盘日志 `ledger.events.jsonl` 近 7 天的重试与冷却汇总 `retry_review`（字段见 SKILL.md「可观测性」）。
 
 默认从 `bb status` 解析环境，项目使用该环境的所属项目。`--environment` 接受现有环境 ID 或本机已存在的目录路径：ID 模式下 `--project` 与环境所属项目必须匹配；路径模式下目录会解析为绝对路径并原样交给 BB 创建 project-checkout 附着环境，项目取 `--project` 或当前 `bb status`，两者都没有时须显式提供 `--project`。在 BB 线程里派发时关联当前父线程，跨环境、跨项目都保留关联。
 
@@ -110,7 +110,7 @@ bb-dispatch --release-reservation <占位ID>
 
 ## 路由不可用
 
-候选切换只覆盖派发前校验：provider 不存在或不可用、权限不兼容、模型或 reasoning 不在目录时，记录该候选错误并试下一个；全部失败时汇总各候选错误。spawn 一旦发出即不重试，失败的候选随即冷却：失败或结果不明时先 `bb thread list`/`bb thread show` 确认是否已创建，确认未创建后保持难度与任务文本重跑同一命令。线程运行期报错（额度耗尽、provider 中断、会话错误）按 SKILL.md「等待与并发」运行 `--on-failure`：原会话退避重试用尽才记失败、冷却该候选，再重跑同一命令换候选；确定性调用方（如编排 driver）也可持久化 `selection.fallbacks`，用 `--fallback-from` 自行点名。继续已有线程前，确认原回合结束并核对已完成工作，按该 provider 支持的续接方式操作；不要以重新创建整个任务冒充续接。
+候选切换只覆盖派发前校验：provider 不存在或不可用、权限不兼容、模型或 reasoning 不在目录时，记录该候选错误并试下一个；全部失败时汇总各候选错误。spawn 一旦发出即不重试，失败的候选随即冷却：失败或结果不明时先 `bb thread list`/`bb thread show` 确认是否已创建，确认未创建后保持难度与任务文本重跑同一命令。线程运行期报错（额度耗尽、provider 中断、会话错误）按 SKILL.md「等待与并发」运行 `--on-failure`，按其返回的 `action` 等待或换候选；确定性调用方（如编排 driver）也可持久化 `selection.fallbacks`，用 `--fallback-from` 自行点名。继续已有线程前，确认原回合结束并核对已完成工作，按该 provider 支持的续接方式操作；不要以重新创建整个任务冒充续接。
 
 ## 会话标题
 

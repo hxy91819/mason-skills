@@ -4,8 +4,9 @@
 defaults.<路由> 可为有序 fallback 链，也可配置 load-balance 候选。脚本只在
 spawn 前校验候选（provider 可用性、权限、模型目录与熔断冷却），首个通过者派发；
 spawn 发出后任何失败都中止并冷却该候选，由调用方确认线程未创建后重跑。
-熔断冷却不读报错文字，分两层退避：子线程报错时由 --on-failure 在原会话按退避重试，
-偶发错误在这一层消化；重试用尽才记为失败，按 provider 与模型的连续失败退避派发。
+熔断冷却默认不读报错文字。子线程报错时由 --on-failure 在原会话按退避重试，
+偶发错误在这一层消化；重试用尽才记为失败。结构化额度讯号则跳过原会话重试，
+直接按 provider 与模型进入更长的额度冷却。
 每次派发先按 BB 线程状态把账本里已做完的线程记为 completed，成功一次清零。
 关联父线程时在任务末尾附加固定的回报方式，让子线程把回报留到回合结束。
 
@@ -71,13 +72,20 @@ FAILED_OUTCOMES = ("failed", "failed_quota", "failed_transient", "failed_other")
 NOTICE_PREFIXES = ("[bb_long_task]", "[bb system]")
 FOLLOWUP_TEXT_MAX_CHARS = 600
 BACKOFF_BASE_SECONDS = 15 * 60
+# 没有重置窗口时，额度冷却从 1 小时起翻倍；已知订阅窗口更晚则冷却到该时刻。
+QUOTA_BACKOFF_BASE_SECONDS = 60 * 60
 BACKOFF_MAX_SECONDS = 6 * 3600
 SPAWN_COOLDOWN_SECONDS = 15 * 60
-# 原会话重试：1、2、4 分钟各一次，用尽才计入派发冷却。
+# 原会话重试：1、2、4 分钟各一次，用尽才计入派发冷却。额度类失败不排这三次。
 SESSION_RETRY_LIMIT = 3
 SESSION_RETRY_BASE_SECONDS = 60
-# BB 自动重试给出这两种结论时，原会话再试也是白等：已重试到上限，或额度重置超过它的最长等待。
-BB_RETRY_GAVE_UP = ("attempts-exhausted", "beyond-maximum-wait")
+# BB 已在原会话重试到上限时，再排 1、2、4 分钟也是白等。额度类 decline 见 QUOTA_DECLINE_REASONS。
+BB_RETRY_GAVE_UP = ("attempts-exhausted",)
+# provider-retry 已把这些 decline 判成额度类，并且不会在原会话里等它恢复。
+QUOTA_DECLINE_REASONS = ("no-rate-limit-state", "not-resettable", "beyond-maximum-wait")
+# 只认 JSON 里的这些字段值，不在报错句子里找同名单词。
+QUOTA_CODE_FIELDS = ("code", "status", "type")
+QUOTA_CODES = frozenset({"resource_exhausted", "model_cooldown", "insufficient_quota", "quota_exceeded", "quota"})
 # 识别终态、计算冷却和保留账本条目共用的近期窗口。
 RECENT_WINDOW_SECONDS = 48 * 3600
 LEDGER_LOCK_WAIT_SECONDS = 5
@@ -368,8 +376,9 @@ def health_key(provider, model):
     return f"{provider}|{model}"
 
 
-def backoff_seconds(level):
-    return min(BACKOFF_MAX_SECONDS, BACKOFF_BASE_SECONDS * 2 ** (level - 1))
+def backoff_seconds(level, quota=False):
+    base = QUOTA_BACKOFF_BASE_SECONDS if quota else BACKOFF_BASE_SECONDS
+    return min(BACKOFF_MAX_SECONDS, base * 2 ** (level - 1))
 
 
 def set_explicit_cooldown(ledger, provider, model, reason, now):
@@ -389,11 +398,48 @@ def set_explicit_cooldown(ledger, provider, model, reason, now):
     }
 
 
-def health_cooldowns(ledger, now):
-    """按 provider 与模型计算当前冷却，不区分失败类型，只看近期窗口内的终态。
+def set_quota_window(ledger, provider, model, now, until):
+    """订阅窗口的重置时刻晚于按等级算出的冷却时，把冷却拉到那个时刻。"""
+    table = ledger.setdefault("cooldowns", {})
+    key = health_key(provider, model)
+    current = table.get(key)
+    if isinstance(current, dict) and int(current.get("until") or 0) >= until:
+        return
+    table[key] = {
+        "provider": provider, "model": model, "reason": "额度窗口", "since": now, "until": until, "quota": True,
+    }
 
-    连续失败从 BACKOFF_BASE_SECONDS 起翻倍，封顶 BACKOFF_MAX_SECONDS，成功一次清零。
-    冷却期内的失败只把冷却顺延到这次失败之后，冷却结束后再失败才升级。
+
+def latest_success_at(ledger):
+    """每个 provider+模型在账本里最晚的成功时间，不受 48 小时视野限制。"""
+    latest = {}
+    for entry in ledger.get("entries") or []:
+        if not isinstance(entry, dict) or entry.get("outcome") != "completed":
+            continue
+        if not entry.get("provider") or not entry.get("model"):
+            continue
+        key = health_key(entry["provider"], entry["model"])
+        latest[key] = max(latest.get(key, 0), outcome_time(entry))
+    return latest
+
+
+def forget_cleared_cooldowns(ledger):
+    """成功一次就删掉此前记下的显式冷却，避免成功滚出 48 小时视野后窗口复活。"""
+    table = ledger.get("cooldowns")
+    if not isinstance(table, dict):
+        return
+    latest = latest_success_at(ledger)
+    for key in [k for k, cd in table.items()
+                if isinstance(cd, dict) and latest.get(k, 0) > int(cd.get("since") or 0)]:
+        del table[key]
+
+
+def health_cooldowns(ledger, now):
+    """按 provider 与模型计算当前冷却，只看近期窗口内的终态。
+
+    普通失败从 BACKOFF_BASE_SECONDS 起翻倍，带 quota 标记的失败从 QUOTA_BACKOFF_BASE_SECONDS 起翻倍，
+    两者都封顶 BACKOFF_MAX_SECONDS，成功一次清零。冷却期内的失败只顺延，冷却结束后再失败才升级。
+    手动回写的 failed_quota 没有 quota 标记，仍按普通失败计。
     """
     horizon = now - RECENT_WINDOW_SECONDS
     events = {}
@@ -407,37 +453,44 @@ def health_cooldowns(ledger, now):
         if at < horizon:
             continue
         key = health_key(entry["provider"], entry["model"])
-        events.setdefault(key, []).append((at, str(entry.get("id") or ""), outcome))
+        events.setdefault(key, []).append((at, str(entry.get("id") or ""), outcome, entry.get("quota") is True))
     state = {}
     for key, items in events.items():
-        level = until = last_success = 0
+        level = until = last_success = quota_until = 0
         thread_id = None
-        for at, thread, outcome in sorted(items):
+        for at, thread, outcome, is_quota in sorted(items):
             if outcome == "completed":
-                level = until = 0
+                level = until = quota_until = 0
                 last_success = at
                 continue
             if at >= until:
                 level += 1
-            until = max(until, at + backoff_seconds(level))
+            step_until = at + backoff_seconds(level, quota=is_quota)
+            until = max(until, step_until)
+            if is_quota:
+                quota_until = max(quota_until, step_until)
             thread_id = thread
-        state[key] = {"until": until, "level": level, "reason": f"连续失败 {level} 次",
+        quota = quota_until == until and quota_until > 0
+        reason = f"额度冷却，连续失败 {level} 次" if quota else f"连续失败 {level} 次"
+        state[key] = {"until": until, "level": level, "reason": reason, "quota": quota,
                       "thread_id": thread_id, "last_success": last_success}
+    # 显式冷却用账本里全部成功来清零，不只用 48 小时内的终态。
+    successes = latest_success_at(ledger)
     for key, cd in (ledger.get("cooldowns") or {}).items():
         # 旧版按 路由|别名 记的冷却没有 provider 字段，不再生效，到期后随派发清理。
         if not isinstance(cd, dict) or "provider" not in cd:
             continue
-        current = state.setdefault(key, {"until": 0, "level": 0, "reason": None, "thread_id": None, "last_success": 0})
-        # 冷却记下之后又有成功，说明已恢复。
-        if current["last_success"] > int(cd.get("since") or 0):
+        current = state.setdefault(
+            key, {"until": 0, "level": 0, "reason": None, "thread_id": None, "last_success": 0, "quota": False})
+        if max(current["last_success"], successes.get(key, 0)) > int(cd.get("since") or 0):
             continue
         if int(cd.get("until") or 0) > current["until"]:
-            current.update(until=int(cd["until"]), reason=cd.get("reason"), thread_id=None)
+            current.update(until=int(cd["until"]), reason=cd.get("reason"), thread_id=None, quota=bool(cd.get("quota")))
     cooled = {}
     for key, value in state.items():
         if value["until"] > now:
             provider, model = key.split("|", 1)
-            cooled[key] = {"provider": provider, "model": model, "reason": value["reason"],
+            cooled[key] = {"provider": provider, "model": model, "reason": value["reason"], "quota": bool(value.get("quota")),
                            "level": value["level"], "until": value["until"], "thread_id": value["thread_id"]}
     return cooled
 
@@ -506,6 +559,7 @@ def record_outcome_command(args, now=None):
             if args.outcome in FAILED_OUTCOMES:
                 events.append(cooled_event(ledger, matched, "manual", now, int(matched.get("retries") or 0)))
         matched["updated_ts"] = now
+        forget_cleared_cooldowns(ledger)
         recorded.update(matched)
         return events
 
@@ -537,11 +591,108 @@ def turns_ended_since(call, thread_id, since):
             and int(event.get("createdAt") or 0) >= since * 1000]
 
 
+def json_object(text):
+    """从文本里取出第一个 JSON 对象；对不上就当没有结构化字段。"""
+    if not isinstance(text, str) or "{" not in text:
+        return None
+    try:
+        value = json.loads(text[text.find("{") :])
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def payload_has_quota_code(payload):
+    """只看 code、status、type 和 error 对象，不看 message 句子。"""
+    if not isinstance(payload, dict):
+        return False
+    for field in QUOTA_CODE_FIELDS:
+        value = payload.get(field)
+        if isinstance(value, str) and value.strip().casefold() in QUOTA_CODES:
+            return True
+        if payload_has_quota_code(json_object(value) if isinstance(value, str) else None):
+            return True
+    error = payload.get("error")
+    if isinstance(error, dict) and payload_has_quota_code(error):
+        return True
+    if isinstance(error, str) and payload_has_quota_code(json_object(error)):
+        return True
+    return False
+
+
+def looks_like_http_429(detail, error_info, payload):
+    if isinstance(error_info, dict) and error_info.get("httpStatusCode") == 429:
+        return True
+    head = detail.lstrip() if isinstance(detail, str) else ""
+    if head.startswith("429") and (len(head) == 3 or not head[3].isdigit()):
+        return True
+    if not isinstance(payload, dict):
+        return False
+    if any(payload.get(field) == 429 for field in ("code", "status", "httpStatusCode")):
+        return True
+    error = payload.get("error")
+    return isinstance(error, dict) and any(error.get(field) == 429 for field in ("code", "status"))
+
+
+def provider_error_is_quota(event):
+    data = event.get("data") if isinstance(event.get("data"), dict) else event
+    if not isinstance(data, dict):
+        return False
+    detail = data.get("detail") if isinstance(data.get("detail"), str) else ""
+    payload = json_object(detail)
+    if not looks_like_http_429(detail, data.get("errorInfo"), payload):
+        return False
+    return payload_has_quota_code(payload)
+
+
+def current_failure_events(events):
+    """这次故障的日志：上次成功回合之后的事件。更早的额度报错不算这次。"""
+    last_success_at = 0
+    for event in events or []:
+        if not isinstance(event, dict) or event.get("type") != "turn/completed":
+            continue
+        if (event.get("data") or {}).get("status") != "completed":
+            continue
+        last_success_at = max(last_success_at, int(event.get("createdAt") or 0))
+    return [event for event in events or [] if isinstance(event, dict) and int(event.get("createdAt") or 0) >= last_success_at]
+
+
+def quota_classified(diagnostic, events):
+    decision = diagnostic.get("decision") if isinstance(diagnostic, dict) else None
+    if isinstance(decision, dict) and decision.get("kind") == "decline" and decision.get("reason") in QUOTA_DECLINE_REASONS:
+        return True
+    return any(event.get("type") == "provider/error" and provider_error_is_quota(event) for event in current_failure_events(events))
+
+
+def quota_window_reset(diagnostic, events, now):
+    """订阅额度窗口的重置时刻（秒）。model_cooldown 的 reset_seconds 不是这个窗口。"""
+    resets = []
+    availability = diagnostic.get("availability") if isinstance(diagnostic, dict) else None
+    if isinstance(availability, dict) and availability.get("kind") == "blocked":
+        retry_at = availability.get("retryAt")
+        if isinstance(retry_at, (int, float)):
+            resets.append(int(retry_at) // 1000)
+    for event in events or []:
+        if not isinstance(event, dict) or event.get("type") != "provider/rateLimits/updated":
+            continue
+        data = event.get("data") if isinstance(event.get("data"), dict) else event
+        limits = data.get("rateLimits") if isinstance(data, dict) else None
+        if not isinstance(limits, dict) or limits.get("kind") != "subscription-window" or limits.get("status") != "blocked":
+            continue
+        for window in limits.get("windows") or []:
+            if not isinstance(window, dict) or window.get("status") != "blocked":
+                continue
+            if isinstance(window.get("resetsAtMs"), (int, float)):
+                resets.append(int(window["resetsAtMs"]) // 1000)
+    future = [item for item in resets if item > now]
+    return max(future) if future else None
+
+
 def on_failure_command(args, call=bb, now=None):
     """子线程报错后由父线程调用：先在原会话按退避重试，重试用尽才记失败、冷却该 provider 与模型。
 
-    只看 BB 的结构化信息：线程状态、BB 自动重试的结论和线程日志里回合的结束状态，不读报错文字。
-    报错线程上的排队消息要等线程被重试才送出，所以排队数不当作"已有重试"。
+    额度类只认 provider-retry 的 decline 原因，以及 HTTP 429 上的结构化错误码；对不上就仍按原会话重试。
+    不扫报错句子。报错线程上的排队消息要等线程被重试才送出，所以排队数不当作"已有重试"。
     """
     target_id = string(args.on_failure, "--on-failure")
     now = int(time.time() if now is None else now)
@@ -601,9 +752,21 @@ def on_failure_command(args, call=bb, now=None):
     attempt = 1 if recovered else retries + 1
     events = [recovered_event(entry, retries, now)] if recovered else []
     diagnostic = optional("provider-retry", "explain", target_id).get("diagnostic")
+    if not isinstance(diagnostic, dict):
+        diagnostic = {}
+    try:
+        logged = call("thread", "log", target_id, "--all")
+    except DispatchError:
+        logged = None
+    if not isinstance(logged, list):
+        logged = None
     decision = diagnostic.get("decision") if isinstance(diagnostic, dict) else None
-    if isinstance(decision, dict) and decision.get("kind") == "decline" and decision.get("reason") in BB_RETRY_GAVE_UP:
-        code, reason = "bb-gave-up", "BB 已在原会话重试到上限，或判定额度短期回不来"
+    quota = quota_classified(diagnostic, logged)
+    reset = quota_window_reset(diagnostic, logged, now) if quota else None
+    if quota:
+        code, reason = "quota", "额度耗尽"
+    elif isinstance(decision, dict) and decision.get("kind") == "decline" and decision.get("reason") in BB_RETRY_GAVE_UP:
+        code, reason = "bb-gave-up", "BB 已在原会话重试到上限"
     elif attempt > SESSION_RETRY_LIMIT:
         code, reason = "exhausted", f"原会话重试 {SESSION_RETRY_LIMIT} 次仍失败"
     else:
@@ -635,6 +798,11 @@ def on_failure_command(args, call=bb, now=None):
         matched = find(data)
         matched["outcome"], matched["outcome_ts"], matched["updated_ts"] = "failed", now, now
         matched["retries"] = attempt - 1
+        if code == "quota":
+            matched["quota"] = True
+            computed = health_cooldowns(data, now).get(health_key(matched.get("provider"), matched.get("model"))) or {}
+            if reset and reset > int(computed.get("until") or 0):
+                set_quota_window(data, matched.get("provider"), matched.get("model"), now, reset)
         return [*events, cooled_event(data, matched, code, now, attempt - 1)]
     return cooled(reason, update_ledger(lpath, mark_failed, strict=True))
 
@@ -709,8 +877,8 @@ def summarize_events(ledger_path, now, days=7):
     """按复盘日志汇总近几天的派发、原会话重试与冷却：重试是否奏效、冷却是否频繁、走势是否正常。"""
     counters = {"dispatch": "dispatches", "deferred": "deferred_to_bb", "retry": "retries",
                 "recovered": "recovered", "cooled": "cooled"}
-    totals = dict.fromkeys(("dispatches", "diverted_dispatches", "deferred_to_bb", "retries", "recovered", "cooled",
-                            "retried_then_cooled"), 0)
+    totals = dict.fromkeys(("dispatches", "diverted_dispatches", "quota_cooldown_skips", "deferred_to_bb", "retries",
+                            "recovered", "cooled", "retried_then_cooled"), 0)
     recovered_by_attempt, cooled_by_reason, by_target, daily = {}, {}, {}, {}
     try:
         lines = events_path(ledger_path).read_text().splitlines()
@@ -732,6 +900,10 @@ def summarize_events(ledger_path, now, days=7):
         if event.get("diverted"):
             totals["diverted_dispatches"] += 1
             day["diverted_dispatches"] += 1
+        skips = int(event.get("quota_diverted") or 0)
+        if skips:
+            totals["quota_cooldown_skips"] += skips
+            day["quota_cooldown_skips"] += skips
         if key == "recovered":
             attempt = str(event.get("retries"))
             recovered_by_attempt[attempt] = recovered_by_attempt.get(attempt, 0) + 1
@@ -1204,6 +1376,7 @@ def dispatch_unlocked(args, call, now, config, slots):
     all_cooled = all(cooldown_for(alias) for alias in chain)
     attempts = []
     diverted = []
+    quota_diverted = []
     catalogs = {}
     choice = None
     for index, alias in enumerate(chain):
@@ -1211,6 +1384,8 @@ def dispatch_unlocked(args, call, now, config, slots):
             cd = None if all_cooled else cooldown_for(alias)
             if cd:
                 diverted.append(alias)
+                if cd.get("quota"):
+                    quota_diverted.append(alias)
                 rem = int(cd["until"]) - now
                 raise DispatchError(f"候选 {alias} 处于熔断冷却中（原因：{cd.get('reason')}，剩余 {rem}s）。")
             agent = mapping(agents.get(alias), f"agents.{alias}")
@@ -1336,6 +1511,7 @@ def dispatch_unlocked(args, call, now, config, slots):
                 set_explicit_cooldown(fresh, target_provider, target_model, reason, now)
                 events.append({"ts": now, "event": "cooled", "provider": target_provider,
                                "model": target_model, "reason": reason})
+            forget_cleared_cooldowns(fresh)
             table = fresh.setdefault("cooldowns", {})
             for key in [k for k, cd in table.items() if not isinstance(cd, dict) or int(cd.get("until") or 0) <= now]:
                 del table[key]
@@ -1348,7 +1524,8 @@ def dispatch_unlocked(args, call, now, config, slots):
                     extra["requested_difficulty"] = entry.get("requested_difficulty")
                 events.append({"ts": now, "event": "dispatch", "thread": entry["id"], "difficulty": entry["difficulty"],
                                "agent": entry["agent"], "provider": entry["provider"], "model": entry["model"],
-                               **extra, **({"diverted": diverted} if diverted else {})})
+                               **extra, **({"diverted": diverted} if diverted else {}),
+                               **({"quota_diverted": len(quota_diverted)} if quota_diverted else {})})
             return events
         try:
             return update_ledger(lpath, apply, strict=False)
