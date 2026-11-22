@@ -120,12 +120,28 @@ environments:
         self.project_floor('medium')
         result = m.dispatch(self.args(), self.fake)
         selection = result['selection']
+        self.assertEqual(selection['purpose'], 'work')
         self.assertEqual(selection['difficulty'], 'medium')
         self.assertEqual(selection['requested_difficulty'], 'simple')
         self.assertEqual(selection['model'], 'medium-model')
         self.assertTrue(selection['warnings'])
         entry = json.loads(self.ledger.read_text())['entries'][0]
+        self.assertEqual(entry['purpose'], 'work')
         self.assertEqual((entry['difficulty'], entry['requested_difficulty']), ('medium', 'simple'))
+
+    def test_review_skips_project_floor_and_records_purpose(self):
+        self.project_floor('medium')
+        result = m.dispatch(self.args('--purpose', 'review'), self.fake)
+        selection = result['selection']
+        self.assertEqual(selection['purpose'], 'review')
+        self.assertEqual(selection['difficulty'], 'simple')
+        self.assertEqual(selection['requested_difficulty'], 'simple')
+        self.assertEqual(selection['model'], 'fast-model')
+        self.assertNotIn('warnings', selection)
+        entry = json.loads(self.ledger.read_text())['entries'][0]
+        self.assertEqual((entry['purpose'], entry['difficulty']), ('review', 'simple'))
+        event = json.loads(m.events_path(self.ledger).read_text().splitlines()[-1])
+        self.assertEqual((event['event'], event['purpose']), ('dispatch', 'review'))
 
     def test_unconfigured_project_keeps_request(self):
         self.config.write_text(self.config.read_text() + '\nprojects: {other: {min_difficulty: complex}}\n')

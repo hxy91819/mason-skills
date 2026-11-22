@@ -1317,15 +1317,16 @@ def dispatch_unlocked(args, call, now, config, slots):
         if not project or env.get("projectId") != project or env.get("id") != environment:
             raise DispatchError("项目与环境不匹配；环境 ID 必须精确匹配现有环境。")
         validation_environment = environment
-    projects = mapping(config.get("projects", {}), "projects")
-    project_config = mapping(projects.get(project, {}), f"projects.{project}")
-    minimum = project_config.get("min_difficulty", "simple")
-    if minimum not in DIFFICULTIES:
-        raise DispatchError(f"projects.{project}.min_difficulty 必须为 simple、medium 或 complex。")
     floor_warnings = []
-    if DIFFICULTIES.index(args.difficulty) < DIFFICULTIES.index(minimum):
-        args.difficulty = minimum
-        floor_warnings.append(f"按项目下限从 {args.requested_difficulty} 抬到 {minimum}（项目 {project}）。")
+    if args.purpose == "work":
+        projects = mapping(config.get("projects", {}), "projects")
+        project_config = mapping(projects.get(project, {}), f"projects.{project}")
+        minimum = project_config.get("min_difficulty", "simple")
+        if minimum not in DIFFICULTIES:
+            raise DispatchError(f"projects.{project}.min_difficulty 必须为 simple、medium 或 complex。")
+        if DIFFICULTIES.index(args.difficulty) < DIFFICULTIES.index(minimum):
+            args.difficulty = minimum
+            floor_warnings.append(f"按项目下限从 {args.requested_difficulty} 抬到 {minimum}（项目 {project}）。")
     # 环境块中的同名别名整体替换，避免混用另一台机器的模型和推理设置。
     override = {} if path_mode else mapping(
         mapping(config.get("environments", {}), "environments").get(environment, {}), "environment config"
@@ -1472,7 +1473,7 @@ def dispatch_unlocked(args, call, now, config, slots):
                 agent=alias, provider=provider,
                 model=model, reasoning=reasoning, permission_mode=permission,
                 service_tier=service_tier,
-                difficulty=args.difficulty, requested_difficulty=args.requested_difficulty, title=title,
+                purpose=args.purpose, difficulty=args.difficulty, requested_difficulty=args.requested_difficulty, title=title,
                 routing_mode=routing_mode, candidate_weights=candidate_weights,
                 candidates=chain, fallbacks=fallbacks, attempts=attempts,
                 parent_notifications=notifications if parent.get("id") else None)
@@ -1518,7 +1519,7 @@ def dispatch_unlocked(args, call, now, config, slots):
             if entry is not None:
                 append_ledger_entry(fresh, entry, now=now)
                 # 复盘日志比 live 窗口留得久，复盘要串起派发链和定档理由，这里带上同样的最小事实。
-                extra = {k: entry[k] for k in ("parent_thread", "reasoning", "task_chars", "unknown", "escalated_from")
+                extra = {k: entry[k] for k in ("purpose", "parent_thread", "reasoning", "task_chars", "unknown", "escalated_from")
                          if entry.get(k) is not None}
                 if entry.get("requested_difficulty") != entry["difficulty"]:
                     extra["requested_difficulty"] = entry.get("requested_difficulty")
@@ -1562,6 +1563,7 @@ def dispatch_unlocked(args, call, now, config, slots):
             "ts": now,
             "project": project,
             "parent_thread": parent.get("id"),
+            "purpose": args.purpose,
             "difficulty": args.difficulty,
             "requested_difficulty": args.requested_difficulty,
             "agent": alias,
@@ -1591,6 +1593,8 @@ def parser():
     p.add_argument("--config", default=os.environ.get("BB_DISPATCH_CONFIG", str(Path.home() / ".config/bb-dispatch/config.yaml")), help="用户 YAML 配置路径，也可设置 BB_DISPATCH_CONFIG")
     p.add_argument("--ledger", default=os.environ.get("BB_DISPATCH_LEDGER_PATH", str(Path.home() / ".cache/bb-dispatch/ledger.json")), help="运行账本与熔断缓存路径，也可设置 BB_DISPATCH_LEDGER_PATH")
     p.add_argument("--difficulty", choices=["simple", "medium", "complex"], help="任务难度，归档标准见 SKILL.md「判断与调用」")
+    p.add_argument("--purpose", choices=["work", "review"], default="work",
+                   help="派发用途，默认 work；review 跳过项目最低难度，按请求难度路由")
     p.add_argument("--task", help="任务目标、范围和验收要求")
     p.add_argument("--escalate-from", metavar="线程ID", help="同一任务前序失败或返工的线程 ID，记入账本")
     p.add_argument("--unknown", metavar="原因", help="可选：一句话说明定档原因，截断后记入账本")

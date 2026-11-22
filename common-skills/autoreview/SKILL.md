@@ -15,10 +15,10 @@ description: "交付前独立代码审查。代码改动准备提交或发布时
 
 确定准确的审查目标：未提交改动、分支相对指定 base 的差异，或指定 commit；同时整理原始需求和验收条件。读取[审查提示词](references/review-prompt.md)，把其中完整的审查标准、输出格式与本次具体范围一起写入 `--task`。
 
-临时档位策略（所有项目）：首审、增量复审和失败后的重新派发一律使用 `--difficulty simple`。派发前用 `--dry-run` 核对 `selection.difficulty`；若项目下限将档位抬升，报告冲突并停止派发。模型和 fallback 仍由 `$bb-model-routing` 选择。
+临时档位策略（所有项目）：首审、增量复审和失败后的重新派发一律传 `--purpose review --difficulty simple`。审查标记豁免项目下限，档位以本技能的规则为准。派发前用 `--dry-run` 核对 `selection.difficulty`。模型和 fallback 仍由 `$bb-model-routing` 选择。
 
 ```bash
-bb-dispatch --difficulty simple --task '<仓库、Git 审查范围、原始需求、验收条件，以及 references/review-prompt.md 的完整审查标准和输出格式>'
+bb-dispatch --purpose review --difficulty simple --task '<仓库、Git 审查范围、原始需求、验收条件，以及 references/review-prompt.md 的完整审查标准和输出格式>'
 ```
 
 将占位文本换成实际路径、ref、需求和提示词内容；不要只把提示词文件路径交给 reviewer，因为派发环境可能无法读取该文件。模型或推理级别不写入 `--task`；目标环境和失败续派按 `$bb-model-routing` 的规则处理。向用户报告线程 ID、实际选择和状态；通过 BB 完成通知接收结果。创建线程不等于审查完成。

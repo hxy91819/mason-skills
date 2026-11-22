@@ -12,7 +12,9 @@
 
 用户配置可增加 `projects: {<project-id>: {min_difficulty: medium}}`，取值为 `simple`、`medium` 或 `complex`。项目 ID 沿用 `--project` 解析：ID 模式默认目标环境所属项目，路径模式默认当前项目。未配置时保持原难度；低于下限时自动抬升，按实际难度选择路由、模型和标题。
 
-`selection.difficulty` 与账本 `difficulty` 为实际难度，`requested_difficulty` 保留原请求；抬升提示同时出现在 stderr 和 `selection.warnings`，dry-run 也可见。历史统计按实际难度计数。
+项目下限只作用于工作线程（默认 `--purpose work`）。审查线程用 `--purpose review` 豁免项目下限，按请求难度路由。重新派发时沿用原用途和请求难度。
+
+`selection`、账本和派发事件均记录 `purpose`。`selection.difficulty` 与账本 `difficulty` 为实际难度，`requested_difficulty` 保留原请求；抬升提示同时出现在 stderr 和 `selection.warnings`，dry-run 也可见。历史统计按实际难度计数。
 
 ## 派发与配置规则
 
