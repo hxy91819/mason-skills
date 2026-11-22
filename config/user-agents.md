@@ -28,6 +28,7 @@ alwaysApply: true
 # 上下文工程: Skills，AGENTS.md 和 docs
 
 - 项目约定、历史决策和对外契约查项目级 `AGENTS.md` 及其指定文档；运行现状查实时状态、脚本和探针，文档与实测冲突时明确指出。
+- 本机专属上下文（本地预览入口、网关与端口、凭据位置、项目目录索引）在 `~/code/workspace/`（存在时）：先读其 `AGENTS.md` 的项目目录索引；团队共享的约定仍放各项目仓库。
 - 用户引用的技能（`$name` / `/name`），或 Skill 正文以 `$name` 声明的依赖，在当前环境的技能列表里找不到时，按顺序查找其 `SKILL.md`：先 `~/.agents/skills/<name>/`，再当前仓库 `.agents/skills/<name>/`。直接读这两个路径；技能目录多为软链，`rg --files`、`find` 默认不跟随软链，搜不到不代表缺失
 
 ## 共享工作区
