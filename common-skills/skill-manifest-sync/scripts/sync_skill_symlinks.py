@@ -19,6 +19,7 @@ r"""按仓库清单同步本机 user-scope skill 软链。
     --manifest <path>                    清单路径（默认 <repo>/config/skill-symlinks.yaml）
     --skills-dir <path>                  user-scope skills 目录（默认 $AGENTS_HOME/skills，再退 ~/.agents/skills）
     --whitelist <path>                   本机白名单（默认 <skills 目录同级>/skill-sync-whitelist.yaml）
+    --bb-dispatch-only                   POSIX check/apply 只处理 ~/.local/bin/bb-dispatch
     --yes                                apply 模式非交互：删除候选直接删除，不写白名单
     -h, --help                           帮助
 
@@ -396,6 +397,27 @@ def prompt_extra(name: str, detail: str, whitelist: Path) -> str:
     return read_answer(f"  {name}: delete [d], keep and whitelist [k], skip this run [n]? ")
 
 
+def sync_bb_dispatch(apply: bool) -> int:
+    script = COMMON_SKILLS / "bb-model-routing" / "scripts" / "bb-dispatch"
+    link = Path.home() / ".local" / "bin" / "bb-dispatch"
+    try:
+        if not os.access(script, os.X_OK):
+            raise OSError(f"missing or non-executable source: {script}")
+        if link.is_symlink() and link.resolve() == script.resolve():
+            print(f"[ok] bb-dispatch: {link} -> {script}")
+            return 0
+        if apply:
+            link.parent.mkdir(parents=True, exist_ok=True)
+            link.symlink_to(script)
+            print(f"[created] bb-dispatch: {link} -> {script}")
+            return 0
+        kind = "conflict" if link.is_symlink() or link.exists() else "create"
+        print(f"[{kind}] bb-dispatch: {link} -> {script}")
+    except (OSError, RuntimeError) as exc:
+        print(f"[conflict] bb-dispatch: {exc}", file=sys.stderr)
+    return 1
+
+
 def run_apply(args: argparse.Namespace) -> int:
     root = skills_root(args)
     manifest = Path(args.manifest).expanduser().resolve()
@@ -572,20 +594,28 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--skills-dir", default="", help="user-scope skills dir (default: $AGENTS_HOME/skills or ~/.agents/skills)")
     parser.add_argument("--whitelist", default="", help="local whitelist file (default: <skills dir parent>/skill-sync-whitelist.yaml)")
     parser.add_argument("--yes", action="store_true", help="apply mode: delete extra links without prompting")
+    parser.add_argument("--bb-dispatch-only", action="store_true",
+                        help="check/apply only the POSIX CLI link in ~/.local/bin")
     args = parser.parse_args(argv)
     if args.mode in {"register", "remove"} and not args.skill:
         parser.error(f"--skill is required for --mode {args.mode}")
     if args.mode != "apply" and args.yes:
         parser.error("--yes is only valid with --mode apply")
+    if args.bb_dispatch_only and (os.name != "posix" or args.mode not in {"check", "apply"}):
+        parser.error("--bb-dispatch-only requires check/apply on POSIX")
     return args
 
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
-    if args.mode == "check":
-        return run_check(args)
-    if args.mode == "apply":
-        return run_apply(args)
+    if args.mode in {"check", "apply"}:
+        apply = args.mode == "apply"
+        if args.bb_dispatch_only:
+            return sync_bb_dispatch(apply)
+        skills_result = run_apply(args) if apply else run_check(args)
+        if os.name == "posix" and not args.skills_dir and Path(args.manifest).expanduser().resolve() == DEFAULT_MANIFEST:
+            return max(skills_result, sync_bb_dispatch(apply))
+        return skills_result
     if args.mode == "register":
         return run_register(args)
     return run_remove(args)

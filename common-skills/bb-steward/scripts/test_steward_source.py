@@ -92,7 +92,7 @@ class GitSourceTests(unittest.TestCase):
                 source.resolve_link('docs/workbook.md', target, True)
         result = subprocess.run([sys.executable, str(Path(watch.sw.__file__)), '--mode', 'ledger-check',
                                  '--repo', str(self.repo), '--revision', sha, '--file', 'docs/history/README.md',
-                                 '--ledger-kind', 'history'], capture_output=True, text=True)
+                                 '--ledger-kind', 'history', '--json'], capture_output=True, text=True)
         self.assertEqual(result.returncode, 2)
         checked = json.loads(result.stdout)
         self.assertFalse(checked['applicable'])

@@ -182,9 +182,11 @@ def check_ledger(text: str):
     summary = dict.fromkeys(sorted(LEDGER_STATES), 0)
     in_period, tables, header, separator = False, 0, False, False
     fenced = False
+    lines = text.splitlines()
 
     def error(lineno, message):
-        errors.append(f"第 {lineno} 行：{message}")
+        raw = lines[lineno - 1]
+        errors.append(f"第 {lineno} 行：{message} 原文：{raw}")
 
     def close_period(lineno):
         if in_period and tables != 1:
@@ -193,7 +195,7 @@ def check_ledger(text: str):
             error(lineno, "表头后缺少五列 Markdown 分隔行。")
 
     last_line = 1
-    for lineno, raw in enumerate(text.splitlines(), 1):
+    for lineno, raw in enumerate(lines, 1):
         last_line = lineno
         line = raw.strip()
         if line.startswith(("```", "~~~")):
@@ -809,7 +811,8 @@ def parser():
     p.add_argument("--file", help="工作簿或要求帐 Markdown 文件路径")
     p.add_argument("--ledger", help="verify 时覆盖工作簿标头的要求帐入口（本地路径）")
     p.add_argument("--dry-run", action="store_true", help="verify 时在内存中格式化，不写工作簿")
-    p.add_argument("--verbose-warnings", action="store_true", help="verify/format 时逐条显示历史时间 warning")
+    p.add_argument("--json", action="store_true", help="verify/ledger-check 输出完整 JSON")
+    p.add_argument("--verbose-warnings", action="store_true", help="verify --json/format 时逐条显示历史时间 warning")
     p.add_argument("--repo", help="init/path 的项目路径；其他模式为 Git 来源仓库绝对路径")
     revision = p.add_mutually_exclusive_group()
     revision.add_argument("--ref", help="核实远端并固定 SHA，如 origin/main")
@@ -821,6 +824,23 @@ def parser():
     p.add_argument("--max-route-items", type=int, default=DEFAULT_MAX_ROUTE_ITEMS)
     p.add_argument("--max-decisions", type=int, default=DEFAULT_MAX_DECISIONS)
     return p
+
+
+def report_result(args, res):
+    if args.json or args.mode not in ("verify", "ledger-check"):
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+    else:
+        steps = res.get("steps", {})
+        results = steps.values() if steps else [res]
+        errors = [error for result in results for error in result.get("errors", [])]
+        problems = sum(len(result.get("problems", [])) for result in results)
+        warnings = sum(len(result.get("warnings", [])) for result in results)
+        status = "ok" if res["ok"] else f"失败（{res.get('failed_step', args.mode)}）"
+        summary = f"{args.mode} {status}，问题 {len(errors) + problems} 项，提醒 {warnings} 项"
+        if errors:
+            summary += "。 " + " ".join(errors[0].splitlines())
+        print(summary)
+    return 0 if res["ok"] else 2
 
 
 def main():
@@ -858,8 +878,7 @@ def main():
         return 0 if res["ok"] else 2
     fpath = Path(args.file).expanduser()
     if not args.repo and not fpath.is_file():
-        print(json.dumps({"ok": False, "file": str(fpath), "errors": [f"文件不存在：{fpath}"]}, ensure_ascii=False, indent=2))
-        return 2
+        return report_result(args, {"ok": False, "file": str(fpath), "errors": [f"文件不存在：{fpath}"]})
     check_args = {
         "max_nonempty_lines": args.max_nonempty_lines,
         "max_line_chars": args.max_line_chars,
@@ -892,7 +911,12 @@ def main():
     elif args.mode == "check":
         res = {"file": str(fpath), **check_workbook_file(fpath, **check_args)}
     elif args.mode == "ledger-check":
-        res = {"file": str(fpath), **(check_ledger(fpath.read_text()) if args.ledger_kind == "standard" else {"ok": False, "applicable": False, "errors": ["历史流水账；标准五列表统计不适用"]})}
+        try:
+            res = check_ledger(fpath.read_text()) if args.ledger_kind == "standard" else {
+                "ok": False, "applicable": False, "errors": ["历史流水账；标准五列表统计不适用"]}
+        except (OSError, ValueError) as exc:
+            res = {"ok": False, "errors": [str(exc)]}
+        res["file"] = str(fpath)
     elif args.mode == "reconcile":
         text = fpath.read_text()
         threads, warnings = None, []
@@ -906,8 +930,7 @@ def main():
             res["warnings"] = warnings
     else:
         res = should_commit_workbook(fpath, check_args)
-    print(json.dumps(res, ensure_ascii=False, indent=2))
-    return 0 if res["ok"] else 2
+    return report_result(args, res)
 
 
 if __name__ == "__main__":

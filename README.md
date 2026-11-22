@@ -141,6 +141,11 @@ Agents that discover user-scoped skills from `~/.agents/skills` can link individ
 python3 common-skills/skill-manifest-sync/scripts/sync_skill_symlinks.py --mode apply --yes
 ```
 
+On POSIX, the default manifest sync also links `bb-dispatch` into `~/.local/bin`.
+Use `--mode apply --bb-dispatch-only` to install just this command. If the shell
+omits that directory from `PATH`, invoke it with
+`PATH="$HOME/.local/bin:$PATH" bb-dispatch --help`.
+
 ## Available skills
 
 ### Project-scoped groups

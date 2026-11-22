@@ -56,7 +56,10 @@ def format_timeline(text, baseline=None, now=None):
     old_sections = dict(sections(baseline or ""))
     warnings = []
     output = []
+    input_lines = 0
     for name, lines in sections(text):
+        first_lineno = input_lines + 1
+        input_lines += len(lines)
         old_lines = old_sections.get(name, [])
         if name == "路线":
             old = {route_identity(line): line for line in old_lines if CHECKBOX.match(line)}
@@ -112,7 +115,10 @@ def format_timeline(text, baseline=None, now=None):
                 while end < len(lines) and lines[end].strip().startswith("|"):
                     row = cells(lines[end])
                     if len(row) != len(header):
-                        raise ValueError("用户待办表列数不一致")
+                        raise ValueError(
+                            f"第 {first_lineno + end} 行：用户待办表列数不一致"
+                            f"（应为 {len(header)} 列，实际 {len(row)} 列）：{lines[end]}"
+                        )
                     rows.append(dict(zip(header, row)))
                     end += 1
                 columns = header + [c for c in ("提出", "完成") if c not in header]

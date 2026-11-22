@@ -32,14 +32,44 @@ class VerifyTests(unittest.TestCase):
         self.with_link = WORKBOOK.replace("## 路线", "[要求帳](要求帳.md)\n\n## 路线")
         self.book.write_text(self.with_link)
 
-    def cli(self, *flags, mode="verify"):
+    def run_cli(self, *flags, mode="verify"):
         proc = subprocess.run(
             [sys.executable, "-B", str(SCRIPTS / "steward_workbook.py"),
              "--mode", mode, "--file", str(self.book), *flags],
             capture_output=True, text=True, timeout=10,
         )
         self.assertFalse(proc.stderr, proc.stderr)
+        return proc
+
+    def cli(self, *flags, mode="verify"):
+        proc = self.run_cli("--json", *flags, mode=mode)
         return proc.returncode, json.loads(proc.stdout)
+
+    def test_summary_reports_success_and_reconcile_problems(self):
+        proc = self.run_cli("--dry-run")
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(len(proc.stdout.splitlines()), 1)
+        self.assertIn("ok，问题 0 项", proc.stdout)
+
+        self.book.write_text(self.with_link.replace("- [x]", "- [ ]", 1))
+        proc = self.run_cli("--dry-run")
+        problems = self.cli("--dry-run")[1]["steps"]["reconcile"]["problems"]
+        self.assertEqual(proc.returncode, 2)
+        self.assertEqual(len(proc.stdout.splitlines()), 1)
+        self.assertIn(f"失败（reconcile），问题 {len(problems)} 项", proc.stdout)
+
+    def test_bad_todo_row_reports_original_line_without_writing(self):
+        row = "| 待办 | 缺列 |"
+        self.book.write_text(self.with_link + f"\n| 状态 | 事项 | 挡住 |\n| --- | --- | --- |\n{row}\n")
+        before = self.book.read_text()
+        lineno = before.splitlines().index(row) + 1
+        proc = self.run_cli()
+        self.assertEqual(proc.returncode, 2)
+        self.assertEqual(len(proc.stdout.splitlines()), 1)
+        self.assertIn("失败（format）", proc.stdout)
+        self.assertIn(f"第 {lineno} 行", proc.stdout)
+        self.assertIn(row, proc.stdout)
+        self.assertEqual(self.book.read_text(), before)
 
     def test_dry_run_uses_formatted_text_without_writing(self):
         before = self.book.read_bytes()

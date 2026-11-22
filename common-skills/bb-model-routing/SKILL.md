@@ -11,7 +11,11 @@ description: 用户显式调用 $bb-model-routing 要求通过 BB 派发时，�
 
 Agent 自行决定使用 subagent，或用户只要求“用 subagent 检查一下”时，沿用宿主默认机制。查看或继续已有线程沿用现有上下文。
 
-为用户已要求的任务调用 `scripts/bb-dispatch`。工具别名、模型、推理级别和环境映射以用户配置为准。派发前确认配置文件存在，`bb-dispatch` 报“无法读取配置”时也先核对该路径：文件确实不存在才进入 bootstrap，按[首次配置引导](references/bootstrap.md)边汇报进度边检测可用 provider 与模型，给出建议配置，经用户确认后写入并 dry-run 验证，再回到派发；文件存在但读不了是配置损坏，报告并修复，不新建覆盖。调整已有映射时读取[配置与派发](references/dispatch.md)。参数细节查 `bb-dispatch --help`。
+为用户已要求的任务调用 `bb-dispatch`。工具别名、模型、推理级别和环境映射以用户配置为准。派发前确认配置文件存在，`bb-dispatch` 报“无法读取配置”时也先核对该路径：文件确实不存在才进入 bootstrap，按[首次配置引导](references/bootstrap.md)边汇报进度边检测可用 provider 与模型，给出建议配置，经用户确认后写入并 dry-run 验证，再回到派发；文件存在但读不了是配置损坏，报告并修复，不新建覆盖。调整已有映射时读取[配置与派发](references/dispatch.md)。参数细节查 `bb-dispatch --help`。
+
+默认的 skill-manifest-sync 安装将命令放在 `~/.local/bin`。如果当前宿主的 `PATH` 省略该目录，用
+`PATH="$HOME/.local/bin:$PATH" bb-dispatch ...` 执行下文命令。只安装了本技能目录时，可直接执行宿主加载的本技能根目录下的
+`scripts/bb-dispatch`。命令依赖 Python 3.10+、PyYAML 和可在 `PATH` 中找到的 `bb`。
 
 ## 判断与调用
 
@@ -33,7 +37,7 @@ bb-dispatch --difficulty complex --escalate-from thr_xxx --task '<前序线程�
 
 `--task` 依 [派发任务模板](references/task-template.md) 填：目标、先读、开工前对齐远端、授权范围与根因位置、自行引入的决定必须单列、交付与验证、回复格式。`--task` 只写任务目标、范围、输入和验收要求。provider、模型、推理级别和可用性检查是派发元数据：由 `bb-dispatch` 根据配置和目录决定，不写入子线程 prompt，也不要求子 agent 在开始前重新查询或确认。用户明确要求改变 provider 或模型时，调整用户配置后再派发，仍不把路由要求带入 `--task`。
 
-每次派发按 `defaults.<难度>` 选择候选；父 agent 只选择任务难度，provider 和模型由用户配置决定。脚本不接受 `--agent`，已有工具上下文也不构成绕过配置的例外。只有用户明确指定推理级别时才传 `--reasoning`；其余由脚本读取配置。配置未指定时省略该参数，使用 provider 默认值。`fast` 只看用户配置（省略默认 `false`，可在顶层配置也可在 `agents.<别名>.fast` 针对特定账号单独配置；周期临近重置或需临时突击使用时可在配置中加 `force_fast: true` 强制开启并豁免巡检熔断），人手改文件即可开关 Fast service tier；脚本不提供命令行覆盖。命令未安装时直接执行本技能的 `scripts/bb-dispatch`。需要预览用 `--dry-run`，脚本已完成的环境与模型校验无需重复查询。
+每次派发按 `defaults.<难度>` 选择候选；父 agent 只选择任务难度，provider 和模型由用户配置决定。脚本不接受 `--agent`，已有工具上下文也不构成绕过配置的例外。只有用户明确指定推理级别时才传 `--reasoning`；其余由脚本读取配置。配置未指定时省略该参数，使用 provider 默认值。`fast` 只看用户配置（省略默认 `false`，可在顶层配置也可在 `agents.<别名>.fast` 针对特定账号单独配置；周期临近重置或需临时突击使用时可在配置中加 `force_fast: true` 强制开启并豁免巡检熔断），人手改文件即可开关 Fast service tier；脚本不提供命令行覆盖。需要预览用 `--dry-run`，脚本已完成的环境与模型校验无需重复查询。
 
 ## 派发边界
 

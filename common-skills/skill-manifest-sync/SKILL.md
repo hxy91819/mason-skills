@@ -46,6 +46,9 @@ python3 "$AUTOREVIEW_SYNC" --mode remove --skill my-skill
 
 依赖 PyYAML（`pip install pyyaml`）；缺失时脚本以退出码 2 给出安装提示。
 
+POSIX 上，默认清单的同步也检查或安装 `~/.local/bin/bb-dispatch`。仅处理命令入口时，在
+`--mode check` 或 `--mode apply` 后加 `--bb-dispatch-only`，跳过技能软链同步。
+
 ## 外部项目来源
 
 清单 `sources:` 只声明项目名（如 `mattpocock-skills`），条目用 `source: <项目名>` 指向它，绝不写机器绝对路径。外部项目里的 skill 约定位于 `skills/<bucket>/<name>` 且含 `SKILL.md`，脚本自动定位；同名出现在多个 bucket 视为歧义，保守失败。项目根按序解析：

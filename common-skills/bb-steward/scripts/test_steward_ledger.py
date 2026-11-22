@@ -98,10 +98,23 @@ class LedgerTests(unittest.TestCase):
             path = Path(tmp) / '要求帳.md'
             for text, expected in ((FIXTURE, 0), (ledger_row('未知'), 2)):
                 path.write_text(text)
-                proc = subprocess.run([sys.executable, str(Path(sw.__file__)), '--mode', 'ledger-check',
-                                       '--file', str(path)], capture_output=True, text=True)
+                command = [sys.executable, str(Path(sw.__file__)), '--mode', 'ledger-check',
+                           '--file', str(path)]
+                proc = subprocess.run([*command, '--json'], capture_output=True, text=True)
                 self.assertEqual(proc.returncode, expected, proc.stderr)
-                self.assertEqual(json.loads(proc.stdout)['ok'], expected == 0)
+                result = json.loads(proc.stdout)
+                self.assertEqual(result['ok'], expected == 0)
+                summary = subprocess.run(command, capture_output=True, text=True)
+                self.assertEqual(summary.returncode, expected)
+                self.assertEqual(len(summary.stdout.splitlines()), 1)
+                self.assertIn(f"问题 {len(result['errors'])} 项", summary.stdout)
+
+    def test_bad_column_count_includes_original_line(self):
+        row = '| 2026-11-01 | 缺列 |'
+        text = FIXTURE.rstrip() + '\n' + row + '\n'
+        line = len(text.splitlines())
+        self.assertTrue(any(f"第 {line} 行" in error and row in error
+                            for error in sw.check_ledger(text)['errors']))
 
     def test_workbook_entry_resolves_relative_to_workbook_not_cwd(self):
         with tempfile.TemporaryDirectory() as tmp:
