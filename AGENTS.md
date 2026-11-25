@@ -2,60 +2,60 @@
 
 ## Skill invocation policy
 
-修改 Skill 时先读取 [skill-authoring-gate](common-skills/skill-authoring-gate/SKILL.md)。按用户维护偏好，新技能默认手动；只有当前任务中 Agent 必须自行选用的能力，或已启动流程确实依赖的自动下游，才开放自动发现并说明调用上下文。
+Before modifying a Skill, read [skill-authoring-gate](common-skills/skill-authoring-gate/SKILL.md). Per the user's maintenance preference, new skills are manual by default; enable automatic discovery, and state the invocation context, only for capabilities the agent must pick on its own during the current task, or for automatic downstreams that an already-started workflow genuinely depends on.
 
-不以步骤数、审批或写入分支直接分类；DB/TAPD 查询等能力不能因包含鉴权流程而误设为手动。保留未要求调整的既有策略，配置一致性与执行授权按门禁检查。
+Do not classify by step count, approvals or write branches; capabilities such as DB/TAPD queries must not be wrongly set to manual just because they include an authentication flow. Keep existing policies the task did not ask to change; check configuration consistency and execution authorization against the gate.
 
-## 全局规则
+## Global rules
 
-全局规则正文在本仓库 `config/user-agents.md`，通过软链接入 `~/.agents/AGENTS.md`；各宿主全局入口（如 `~/.codex/AGENTS.md`、`~/.claude/CLAUDE.md`）复用该正文，不复制规则。
+The global rules body lives in this repository at `config/user-agents.md`, symlinked into `~/.agents/AGENTS.md`; each host's global entry point (e.g. `~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`) reuses that body rather than copying the rules.
 
-## Skill 清单维护
+## Skill manifest maintenance
 
-`config/skill-symlinks.yaml` 是本仓库推荐 user-scope 软链的单一事实源：记录哪些 skill 推荐软链到全局（`~/.agents/skills`）。外部项目（如 mattpocock-skills）经 `sources:` 按项目名登记，条目加 `source:` 指向项目；项目位置按 `$SKILL_SOURCE_<NAME>_DIR` > `$SKILL_SOURCES_DIR/<项目名>` > 本仓库同级目录解析，清单里绝不写机器绝对路径。其他电脑拉取本仓库后，依据它即可复现同一套 skill 配置，无需口口相传。
+`config/skill-symlinks.yaml` is the single source of truth for this repository's recommended user-scope symlinks: it records which skills are recommended to be symlinked globally (`~/.agents/skills`). External projects (such as mattpocock-skills) are registered by project name under `sources:`, and their entries add `source:` pointing to the project; a project's location resolves as `$SKILL_SOURCE_<NAME>_DIR` > `$SKILL_SOURCES_DIR/<project name>` > a sibling directory of this repository, and the manifest never contains machine-absolute paths. After pulling this repository on another machine, the same skill setup can be reproduced from it, with no word-of-mouth needed.
 
-- 在 `common-skills/` 新增 skill 且用户要求软链到 user scope 时，必须同步登记清单：
+- When adding a skill under `common-skills/` and the user asks to symlink it to user scope, register it in the manifest in the same change:
   `python3 common-skills/skill-manifest-sync/scripts/sync_skill_symlinks.py --mode register --skill <name> [--note "..."]`
-- 登记外部项目 skill 用 `--mode register --source <项目名> --skill <name>`；项目须已在 `sources:` 声明（缺省自动补一条）。
-- 删除或重命名 skill 时用 `--mode remove --skill <name>` 同步清单，避免留下悬空条目。
-- 交付涉及 skill 增删的改动前，跑一次 `--mode check` 确认清单与本机实际软链一致。
-- 本机同步入口是 `$skill-manifest-sync`：`--mode check` 预览、`--mode apply` 执行。apply 对「指向本仓库或已声明来源项目但不在清单里」的软链逐个提示删除；用户明确说保留时写入本机白名单 `~/.agents/skill-sync-whitelist.yaml`。白名单属于本机环境偏好，不提交 Git，也不得加进仓库的 `.gitignore` 之外的任何清单文件。
-- 脚本只管理直接指向本仓库或已声明来源项目的软链：真实目录和经其他工作区中转的链接一律不碰，冲突只报告。
+- Register an external project's skill with `--mode register --source <project name> --skill <name>`; the project must already be declared under `sources:` (one entry is added automatically if missing).
+- When deleting or renaming a skill, sync the manifest with `--mode remove --skill <name>` so no dangling entries remain.
+- Before delivering changes that add or remove skills, run `--mode check` once to confirm the manifest matches the actual symlinks on this machine.
+- The local sync entry point is `$skill-manifest-sync`: `--mode check` previews, `--mode apply` executes. apply prompts one by one to delete symlinks that "point to this repository or a declared source project but are not in the manifest"; when the user explicitly says to keep one, write it to the local whitelist `~/.agents/skill-sync-whitelist.yaml`. The whitelist is a local environment preference: it is not committed to Git, and must not be added to any manifest file other than this repository's `.gitignore`.
+- The script only manages symlinks pointing directly to this repository or a declared source project: real directories and links relayed through other workspaces are never touched; conflicts are only reported.
 
-## 非开源 Skill
+## Non-open-source Skills
 
-有些 skill 含内部账号映射、内网系统信息等明显不适合开源的内容（如 tccli 账号选择器）。这类 skill：
+Some skills contain content clearly unsuitable for open source, such as internal account mappings or intranet system information (e.g. the tccli account selector). For such skills:
 
-- 不得提交到本仓库或推送到远程；发现已落在 `common-skills/` 时，交付前移出。
-- 直接以真实目录放在 `~/.agents/skills/<name>/`：触发行为与软链版一致，且天然在仓库、清单（`config/skill-symlinks.yaml`）和 `git add -A` 之外。
-- 分类与触发策略仍按「Skill invocation policy」执行；若发现此类内容已进入 Git 历史，停止并报告用户，不得自行改写历史。
+- They must not be committed to this repository or pushed to the remote; if one is found under `common-skills/`, move it out before delivery.
+- Place them directly as real directories in `~/.agents/skills/<name>/`: they trigger the same as the symlinked versions, and naturally stay outside the repository, the manifest (`config/skill-symlinks.yaml`) and `git add -A`.
+- Classification and trigger policy still follow "Skill invocation policy"; if such content is found to have entered Git history, stop and report to the user; do not rewrite history on your own.
 
-## 复杂 Skill 的可观测设计
+## Observable design for complex Skills
 
-新建或大改难以观测的 skill 时，必须按本仓库标准内置可观测设计。难以观测的判定：调用外部引擎/子进程、长时运行且内部有重试/fallback 状态迁移、输出是建议性结果且依赖人工裁决、或失败难以事后定位。参考实现：`droid-config` 的 `scripts/droid_config_audit.py`、`autoreview` 的 review history（`--history-summary`）。
+When creating or heavily changing a hard-to-observe skill, build in observable design per this repository's standard. A skill is hard to observe when it calls external engines/subprocesses, runs long with internal retry/fallback state transitions, produces advisory output that depends on human rulings, or fails in ways that are hard to locate afterwards. Reference implementations: `droid-config`'s `scripts/droid_config_audit.py` and `autoreview`'s review history (`--history-summary`).
 
-标准组件（六项，全部落在已验证的两个参考实现上）。例外：当外部系统已经持久化同等事实（如 BB 线程记录）时，可以不建独立账本，但必须在 SKILL.md 写明用什么命令回看以及剩余缺口：
+Standard components (six items, all present in the two verified reference implementations). Exception: when an external system already persists equivalent facts (such as BB thread records), a separate ledger may be skipped, but SKILL.md must state which command to review them with and the remaining gaps:
 
-1. **单一事实源**：本地、Git-ignored 的运行历史缓存，只由脚本维护，不用手改；存放在被审仓库或用户主目录之外，永不提交。
-2. **最小事实**：只记复盘必需字段（engine/model/耗时/outcome/稳定 id）；prompt、正文、diff、日志、密钥一律不入库。
-3. **决策回环**：主 Agent 的裁决（接受/拒绝等）用稳定 id 回写，使结果质量可度量；重复回写同一 id 是覆盖而非追加。
-4. **聚合复盘**：提供只读聚合命令，输出按固定维度的统计与确定性复盘 hook（如低接受率、高 fallback 率），复盘基于明确的分子/分母。
-5. **保留上限与折算**：滚动窗口 + 固定维度 rollup，防止无限增长；live 窗口与 rollup 不得重复计数。
-6. **旁路失败**：记录失败只警告、绝不改变主流程结果；self-test 必须覆盖记账语义（滚动、覆盖、双计、未知 id 拒绝）。
+1. **Single source of truth**: a local, Git-ignored run-history cache, maintained only by scripts, never hand-edited; stored outside the reviewed repository or in the user's home directory, never committed.
+2. **Minimal facts**: record only fields needed for retrospectives (engine/model/duration/outcome/stable id); prompts, bodies, diffs, logs and secrets never enter the store.
+3. **Decision loop**: the main agent's rulings (accept/reject etc.) are written back by stable id, so result quality is measurable; writing back the same id again overwrites rather than appends.
+4. **Aggregate review**: provide a read-only aggregate command that outputs statistics along fixed dimensions plus deterministic review hooks (such as low acceptance rate, high fallback rate), with each based on an explicit numerator/denominator.
+5. **Retention cap and rollup**: rolling window + fixed-dimension rollup to prevent unbounded growth; the live window and rollup must not double-count.
+6. **Bypass on failure**: failure to record only warns and never changes the main flow's result; the self-test must cover the bookkeeping semantics (rolling, overwrite, double counting, unknown-id rejection).
 
-无法全部满足时按保守处理：至少提供 check/show 式的只读聚合命令，并在 SKILL.md 说明缺口。
+When all six cannot be met, be conservative: at least provide a read-only check/show-style aggregate command, and state the gaps in SKILL.md.
 
-## 强制收尾动作
+## Mandatory wrap-up
 
-当前任务的改动完成且验证通过后，必须立即完成交付闭环；未完成闭环不得宣称任务完成：
+Once the current task's changes are complete and verified, immediately close the delivery loop; the task must not be declared complete until the loop is closed:
 
-1. 再次检查当前分支、`git status --short` 和 `git worktree list`，确认要交付的文件范围。将本次任务及用户明确要求交付的现有改动全部提交；本次用户要求“提交当前仓库所有内容”时，核对后使用 `git add -A`，不得遗漏未跟踪文件，也不得覆盖或丢弃并发改动。暂存前核对「非开源 Skill」边界，此类内容不得进入提交。
-2. 将提交推送到其对应远端分支。
-3. 若提交不在 `main`，切换到 `main`，将该分支合并到 `main`（优先快进；出现冲突时停止并报告），再推送 `main`。若提交本就在 `main`，确认 `main` 已推送即可视为合并步骤完成。
-4. 收尾时必须停留在 `main`，并确认 `git status --short` 为空、没有未跟踪文件；这两项及推送成功共同构成完成标准。任何一项未满足，都继续处理或明确报告阻塞原因。
+1. Check the current branch, `git status --short` and `git worktree list` again to confirm the scope of files to deliver. Commit all changes from this task and any existing changes the user explicitly asked to deliver; when the user asks to "commit everything in the current repository", use `git add -A` after checking, without missing untracked files and without overwriting or discarding concurrent changes. Before staging, check the "Non-open-source Skills" boundary; such content must not enter a commit.
+2. Push the commits to their corresponding remote branch.
+3. If the commits are not on `main`, switch to `main`, merge the branch into `main` (fast-forward preferred; stop and report on conflicts), then push `main`. If the commits are already on `main`, confirming `main` has been pushed completes the merge step.
+4. Wrap-up must end on `main`, with `git status --short` empty and no untracked files; these two plus a successful push together form the completion criteria. If any is not met, keep working or report the blocker explicitly.
 
-## Owner 交付权限
+## Owner delivery permission
 
-当当前用户明确是该仓库的 owner，或已由当前认证身份和远端仓库归属确认是 owner 时，完成用户要求的改动并通过必要校验后，可以直接提交并推送到当前目标分支，不再额外询问确认。推送前仍必须检查分支、工作区和 worktree，只暂存本次任务范围内的文件，并保留并发产生的无关改动。
+When the current user is explicitly the repository owner, or ownership has been confirmed via the current authenticated identity and the remote repository's owner, after completing the user's requested changes and passing the necessary checks, you may commit and push directly to the current target branch without asking for further confirmation. Before pushing, still check the branch, workspace and worktrees, stage only files within this task's scope, and preserve unrelated concurrent changes.
 
-这项权限只覆盖用户明确要求的仓库改动交付，不扩大修改范围，也不授权删除数据、改写历史或推送无关内容。无法确认 owner 身份时，提交可以继续，但推送前必须向用户确认。
+This permission covers only delivering repository changes the user explicitly asked for; it does not expand the scope of changes, nor authorize deleting data, rewriting history or pushing unrelated content. When owner identity cannot be confirmed, committing may proceed, but confirm with the user before pushing.
