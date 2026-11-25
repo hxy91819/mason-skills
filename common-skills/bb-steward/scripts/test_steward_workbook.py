@@ -277,6 +277,14 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(details["阶段 5"], "after <item> without the dependent output")
         self.assertEqual(details["阶段 6"], "no state")
 
+    def test_created_comment_time_is_not_read_as_schedule(self):
+        for line in ("- [ ] Stage 7: retry ← scheduled rerun later <!-- steward-created: 2026-10-26 18:00 -->",
+                     "- [ ] 阶段 7：重试 ← 定时 稍后重跑 <!-- steward-created: 2026-10-26 18:00 -->"):
+            res = sw.reconcile_workbook(RECONCILED_WORKBOOK.replace("- [ ] 阶段 3：真机验收 ← 等用户",
+                                                                    "- [ ] 阶段 3：真机验收 ← 等用户\n" + line), now=NOW)
+            details = [p["detail"] for p in res["problems"] if p["kind"] == "no_state"]
+            self.assertEqual(details, ["scheduled without MM-DD HH:MM"], line)
+
     def test_passed_schedule_is_flagged_after_grace(self):
         res = sw.reconcile_workbook(RECONCILED_WORKBOOK, now=datetime(2026, 10, 26, 22, 30))
         self.assertTrue(res["ok"])

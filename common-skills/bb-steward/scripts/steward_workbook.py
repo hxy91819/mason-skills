@@ -334,9 +334,15 @@ def parse_schedule(text: str, now: datetime):
     return min(candidates, key=lambda c: abs((c - now).total_seconds()))
 
 
+def strip_comments(body: str) -> str:
+    """Drop HTML comments (e.g. the formatter's `<!-- steward-created: ... -->`) so their timestamps are not read as state."""
+    return re.sub(r"<!--.*?-->", "", body)
+
+
 def parse_marker(body: str, now: datetime):
     """Parse the state after `←` on an open line. Returns (state, detail): state is one of the four canonical
     states, or None with detail giving the reason."""
+    body = strip_comments(body)
     if "←" not in body:
         return None, "no state"
     marker = body.rsplit("←", 1)[1].strip()
@@ -356,6 +362,7 @@ def parse_marker(body: str, now: datetime):
 def state_signature(body: str):
     """State signature: in progress / waiting on user compare the state only (a new thread ID is not a transition),
     scheduled compares the time, after compares the dependency."""
+    body = strip_comments(body)
     if "←" not in body:
         return None
     marker = body.rsplit("←", 1)[1].strip()
