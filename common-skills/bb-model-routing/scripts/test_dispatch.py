@@ -1485,6 +1485,121 @@ environments:
         scheduled = self.on_failure(tid, now=1300)
         self.assertEqual(scheduled['action'], 'retry-scheduled')
 
+    # Advisors.
+    def advisor_config(self):
+        config = m.yaml.safe_load(self.config.read_text())
+        config['defaults']['advisor'] = {'mode': 'weighted-load-balance', 'candidates': {'sage': 1, 'muse': 1}}
+        config['agents']['sage'] = {'provider': 'specialist', 'routes': {'advisor': {'model': 'deep-model', 'reasoning': 'high'}}}
+        config['agents']['muse'] = {'provider': 'primary', 'routes': {'advisor': {'model': 'medium-model', 'reasoning': 'high'}}}
+        self.config.write_text(m.yaml.safe_dump(config))
+
+    def advise(self, *extra, task='Which cache design fits?'):
+        return m.parser().parse_args(['--config', str(self.config), '--ledger', str(self.ledger),
+                                      '--purpose', 'advise', '--task', task, *extra])
+
+    def test_blind_advisor_dispatch_uses_advisor_route_only(self):
+        self.advisor_config()
+        result = m.dispatch(self.advise(), self.fake, now=1000)
+        selection = result['selection']
+        self.assertIn(selection['agent'], ('sage', 'muse'))
+        self.assertEqual(sorted(selection['candidates']), ['muse', 'sage'])
+        self.assertEqual((selection['purpose'], selection['difficulty']), ('advise', 'advisor'))
+        self.assertTrue(selection['title'].startswith('🟣 '))
+        entry = json.loads(self.ledger.read_text())['entries'][0]
+        self.assertEqual((entry['purpose'], entry['difficulty']), ('advise', 'advisor'))
+        self.assertEqual(m.summarize_ledger(json.loads(self.ledger.read_text()), now=1000)['by_difficulty']['advisor']['total'], 1)
+        # Worker routes never pick an advisor.
+        for difficulty in ('simple', 'medium', 'complex'):
+            args = self.args('--dry-run')
+            args.difficulty = difficulty
+            self.assertNotIn(m.dispatch(args, self.fake, now=1000)['selection']['agent'], ('sage', 'muse'))
+
+    def test_named_advisor_is_used_without_falling_back(self):
+        self.advisor_config()
+        for name in ('sage', 'muse'):
+            with self.subTest(name):
+                selection = m.dispatch(self.advise('--advisor', name, '--dry-run'), self.fake)['selection']
+                self.assertEqual((selection['agent'], selection['candidates'], selection['fallbacks']), (name, [name], []))
+        self.providers = [p for p in self.providers if p['id'] != 'specialist']
+        with self.assertRaisesRegex(m.DispatchError, 'sage'):
+            m.dispatch(self.advise('--advisor', 'sage', '--dry-run'), self.fake)
+
+    def test_advisor_arguments_are_rejected_when_misused(self):
+        self.advisor_config()
+        cases = [
+            self.advise('--advisor', 'primary', '--dry-run'),
+            self.advise('--difficulty', 'complex', '--dry-run'),
+            self.args('--advisor', 'sage', '--dry-run'),
+            self.advise('--advisor', 'sage', '--fallback-from', 'muse', '--dry-run'),
+        ]
+        for args in cases:
+            with self.subTest(argv=vars(args)), self.assertRaises(m.DispatchError):
+                m.dispatch(args, self.fake)
+
+    def test_advisor_only_agent_in_worker_chain_is_skipped(self):
+        self.advisor_config()
+        config = m.yaml.safe_load(self.config.read_text())
+        config['defaults']['simple'] = ['sage', 'primary']
+        config['defaults']['medium'] = 'sage'
+        self.config.write_text(m.yaml.safe_dump(config))
+        selection = m.dispatch(self.args('--dry-run'), self.fake)['selection']
+        self.assertEqual(selection['agent'], 'primary')
+        self.assertIn('sage', selection['attempts'][0]['agent'])
+        args = self.args('--dry-run')
+        args.difficulty = 'medium'
+        with self.assertRaisesRegex(m.DispatchError, 'sage'):
+            m.dispatch(args, self.fake)
+
+    def test_advisor_ignores_project_floor(self):
+        self.advisor_config()
+        self.project_floor('complex')
+        selection = m.dispatch(self.advise('--dry-run'), self.fake)['selection']
+        self.assertEqual(selection['difficulty'], 'advisor')
+        self.assertIn(selection['agent'], ('sage', 'muse'))
+
+    def redispatch_args(self, tid, *extra):
+        spawn = [call for call in self.calls if call[:2] == ('thread', 'spawn')][-1]
+        self.requests[tid] = [{'type': 'client/turn/requested', 'data': {'source': 'spawn', 'input': [
+            {'type': 'text', 'text': spawn[spawn.index('--prompt') + 1]},
+        ]}}]
+        return m.parser().parse_args(['--config', str(self.config), '--ledger', str(self.ledger),
+                                      '--redispatch', tid, *extra])
+
+    def test_redispatch_keeps_named_advisor_and_blind_stays_blind(self):
+        self.advisor_config()
+        named = m.dispatch(self.advise('--advisor', 'sage'), self.fake, now=1000)['result']['thread']['id']
+        self.assertEqual(self.ledger_entry(named)['advisor'], 'sage')
+        again = m.dispatch(self.redispatch_args(named, '--dry-run'), self.fake, now=1100)['selection']
+        self.assertEqual((again['purpose'], again['agent'], again['candidates']), ('advise', 'sage', ['sage']))
+        self.providers = [p for p in self.providers if p['id'] != 'specialist']
+        with self.assertRaisesRegex(m.DispatchError, 'sage'):
+            m.dispatch(self.redispatch_args(named, '--dry-run'), self.fake, now=1100)
+        blind = m.dispatch(self.advise(), self.fake, now=1000)['result']['thread']['id']
+        self.assertNotIn('advisor', self.ledger_entry(blind))
+        again = m.dispatch(self.redispatch_args(blind, '--dry-run'), self.fake, now=1100)['selection']
+        self.assertEqual((again['purpose'], sorted(again['candidates'])), ('advise', ['muse', 'sage']))
+
+    def test_redispatch_rejects_misused_advisor_flags(self):
+        self.advisor_config()
+        named = m.dispatch(self.advise('--advisor', 'sage'), self.fake, now=1000)['result']['thread']['id']
+        worker = m.dispatch(self.args(), self.fake, now=1000)['result']['thread']['id']
+        for args in (self.redispatch_args(named, '--fallback-from', 'muse', '--dry-run'),
+                     self.redispatch_args(named, '--advisor', 'sage', '--fallback-from', 'muse', '--dry-run'),
+                     self.redispatch_args(worker, '--advisor', 'sage', '--dry-run')):
+            with self.subTest(argv=vars(args)), self.assertRaises(m.DispatchError):
+                m.dispatch(args, self.fake, now=1100)
+
+    def test_advisor_without_configured_route_reports_missing_config(self):
+        with self.assertRaisesRegex(m.DispatchError, 'defaults.advisor'):
+            m.dispatch(self.advise('--dry-run'), self.fake)
+
+    def test_overlay_can_pin_advisor_route(self):
+        self.advisor_config()
+        with self.overlay_env():
+            self.set_overlay('defaults: {advisor: sage}\n')
+            selection = m.dispatch(self.advise('--dry-run'), self.fake, now=1100)['selection']
+        self.assertEqual(selection['agent'], 'sage')
+
     # Temporary routing overlays.
     OVERLAY = '''defaults: {simple: [trial, primary], complex: trial}
 agents:

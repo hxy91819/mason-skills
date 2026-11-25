@@ -21,7 +21,8 @@ The project floor applies only to work threads (default `--purpose work`). Revie
 ```bash
 bb-dispatch --difficulty simple --task 'Add README examples' --dry-run
 bb-dispatch --difficulty medium --task 'Change the tenant isolation boundary; passing tests is not enough to prove there is no leak'
-bb-dispatch --difficulty complex --task 'Oracle: rule on the specified technical question' --dry-run
+bb-dispatch --difficulty complex --task 'Judge: rule on the failed validation of story X' --dry-run
+bb-dispatch --purpose advise --task 'Oracle: propose a plan for the specified technical question' --dry-run
 ```
 
 `--task` carries only the task itself: goal, scope, necessary inputs, and acceptance requirements. Provider, model, reasoning level, permissions, and catalog validation are handled by the script and configuration; they must not be written into the child-thread prompt, and the child agent is not asked to re-check them. When the user directly gives a provider or model requirement, the caller installs a temporary overlay (SKILL.md "Temporary routing") unless the user explicitly asks to change the main configuration.
@@ -51,7 +52,7 @@ defaults:
       paused-quota: 0  # restore a positive weight once quota recovers
 ```
 
-`weighted-load-balance` accepts non-negative finite numbers; `0` pauses that candidate: sampling, fallback, and `--fallback-from` never use it, and its provider or model is not validated. Each tier needs at least one positive-weight candidate; all `0` is an explicit error. Long-run selection probability is proportional to positive weight; weights express only relative proportion, not a concurrency cap. Neither load mode maintains counters; different tasks spread out, and the same task keeps a stable selection and fallback order. All modes continue to same-tier candidates when the first choice fails validation. Each `agents.<alias>` writes `provider` once, and writes `model` and optional `reasoning` in `routes.<difficulty>` or `routes.default`; candidates lacking both are skipped, and switching candidates does not change difficulty. The same provider can thus pick different models by difficulty without creating aliases for model combinations. Explicit reasoning must still pass model catalog validation; when omitted or set to null the provider default is used.
+`weighted-load-balance` accepts non-negative finite numbers; `0` pauses that candidate: sampling, fallback, and `--fallback-from` never use it, and its provider or model is not validated. Each tier needs at least one positive-weight candidate; all `0` is an explicit error. Long-run selection probability is proportional to positive weight; weights express only relative proportion, not a concurrency cap. Neither load mode maintains counters; different tasks spread out, and the same task keeps a stable selection and fallback order. All modes continue to same-tier candidates when the first choice fails validation. Each `agents.<alias>` writes `provider` once, and writes `model` and optional `reasoning` in `routes.<difficulty>` (or `routes.advisor` for the advisor route) or `routes.default`; candidates lacking both are skipped, and switching candidates does not change difficulty. The same provider can thus pick different models by difficulty without creating aliases for model combinations. Explicit reasoning must still pass model catalog validation; when omitted or set to null the provider default is used.
 
 Each dispatch creates an independent BB session; load balancing does not split or migrate the context of one session. Whether a provider's prefix cache hits across independent sessions depends on the provider, account, and model; when candidates land on different providers or models, do not assume they share cache.
 

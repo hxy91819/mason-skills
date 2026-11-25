@@ -46,14 +46,19 @@ class DispatchError(Exception):
         self.code = code
 
 
-ROUTE_KEYS = frozenset(("simple", "medium", "complex", "default"))
 DIFFICULTIES = ("simple", "medium", "complex")
-TITLE_PREFIXES = {"simple": "🟢", "medium": "🟡", "complex": "🔴"}
+# Advisors answer questions and propose plans rather than do Worker tasks; they have their own route, chosen
+# by --purpose advise instead of a difficulty.
+ADVISOR_ROUTE = "advisor"
+PURPOSES = ("work", "review", "advise")
+ROUTES = (*DIFFICULTIES, ADVISOR_ROUTE)
+ROUTE_KEYS = frozenset((*ROUTES, "default"))
+TITLE_PREFIXES = {"simple": "🟢", "medium": "🟡", "complex": "🔴", "advisor": "🟣"}
 SHAPED_TITLE_PREFIXES = {
-    "circle": {"simple": "🟢", "medium": "🟡", "complex": "🔴"},
-    "square": {"simple": "🟩", "medium": "🟨", "complex": "🟥"},
-    "heart": {"simple": "💚", "medium": "💛", "complex": "❤️"},
-    "book": {"simple": "📗", "medium": "📒", "complex": "📕"},
+    "circle": {"simple": "🟢", "medium": "🟡", "complex": "🔴", "advisor": "🟣"},
+    "square": {"simple": "🟩", "medium": "🟨", "complex": "🟥", "advisor": "🟪"},
+    "heart": {"simple": "💚", "medium": "💛", "complex": "❤️", "advisor": "💜"},
+    "book": {"simple": "📗", "medium": "📒", "complex": "📕", "advisor": "📔"},
 }
 AGENT_SHAPES = {
     "codex": "circle",
@@ -843,7 +848,7 @@ def on_failure_command(args, call=bb, now=None):
 
 def summarize_ledger(ledger, now=None):
     now = int(time.time() if now is None else now)
-    by_difficulty = {d: {"total": 0, "failed": 0} for d in DIFFICULTIES}
+    by_difficulty = {d: {"total": 0, "failed": 0} for d in ROUTES}
     by_agent = {}
 
     def ensure_agent(agent):
@@ -1128,7 +1133,7 @@ def restore_redispatch(args, call, source_id, thread):
     entry = next((item for item in ledger["entries"]
                   if isinstance(item, dict) and item.get("id") == source_id), {})
     difficulty = entry.get("requested_difficulty", entry.get("difficulty"))
-    if difficulty not in DIFFICULTIES:
+    if difficulty not in ROUTES:
         raise DispatchError(f"the run ledger has no valid original difficulty for thread {source_id!r}.")
 
     events = call("thread", "log", source_id, "--all")
@@ -1146,8 +1151,15 @@ def restore_redispatch(args, call, source_id, thread):
 
     args.task = "".join(part["text"] for part in parts)
     args.difficulty = difficulty
-    if entry.get("purpose") in ("work", "review"):
+    if entry.get("purpose") in PURPOSES:
         args.purpose = entry["purpose"]
+    if difficulty == ADVISOR_ROUTE:
+        args.purpose = "advise"
+        # A named advisor stays named: redispatch retries it rather than picking another advisor.
+        if getattr(args, "advisor", None) is None and isinstance(entry.get("advisor"), str):
+            args.advisor = entry["advisor"]
+        if getattr(args, "advisor", None) is not None and args.fallback_from is not None:
+            raise DispatchError("--fallback-from cannot be combined with a named advisor.")
     if args.environment is None:
         args.environment = string(thread.get("environmentId"), "original thread environment ID")
     args.parent_notifications = args.parent_notifications or thread.get("parentNotifications")
@@ -1371,9 +1383,9 @@ def parse_overlay(body, where):
     if unknown:
         raise DispatchError(f"{where} only overrides defaults and agents; unknown keys: {unknown}.")
     defaults = mapping(body.get("defaults", {}), f"{where} defaults")
-    bad = sorted(set(defaults) - set(DIFFICULTIES))
+    bad = sorted(set(defaults) - set(ROUTES))
     if bad:
-        raise DispatchError(f"{where} defaults only takes simple, medium or complex; got {bad}.")
+        raise DispatchError(f"{where} defaults only takes {', '.join(ROUTES)}; got {bad}.")
     agents = mapping(body.get("agents", {}), f"{where} agents")
     if not defaults and not agents:
         raise DispatchError(f"{where} must set defaults or agents.")
@@ -1446,7 +1458,7 @@ def overlay_set_command(args, now=None):
                     **mapping(env.get("defaults", {}), "environment defaults"), **overlay_defaults}
         agents = {**mapping(config.get("agents", {}), "agents"),
                   **mapping(env.get("agents", {}), "environment agents"), **overlay_agents}
-        for route in DIFFICULTIES:
+        for route in ROUTES:
             if route not in defaults:
                 continue
             chain = candidate_chain(probe, defaults, route)[3]
@@ -1518,7 +1530,24 @@ def overlay_clear_command(args):
     return {"cleared": str(path)}
 
 
+def normalize_purpose(args):
+    """Advisor dispatches route by defaults.advisor, so the advisor route takes the place of a difficulty."""
+    advisor = getattr(args, "advisor", None)
+    if advisor is not None and args.fallback_from is not None:
+        raise DispatchError("--fallback-from cannot be combined with --advisor.")
+    if args.redispatch is not None:
+        return
+    if advisor is not None and args.purpose != "advise":
+        raise DispatchError("--advisor requires --purpose advise.")
+    if args.purpose != "advise":
+        return
+    if args.difficulty not in (None, ADVISOR_ROUTE):
+        raise DispatchError("--purpose advise routes by defaults.advisor; do not pass --difficulty.")
+    args.difficulty = ADVISOR_ROUTE
+
+
 def dispatch(args, call=bb, now=None):
+    normalize_purpose(args)
     try:
         config = mapping(yaml.safe_load(Path(args.config).expanduser().read_text()), "config")
     except (OSError, yaml.YAMLError) as exc:
@@ -1604,6 +1633,14 @@ def dispatch_unlocked(args, call, now, config, slots, escalate_from, overlay=Non
     route = args.difficulty
     fast = configured_bool(override, config, "fast", False, "fast")
     chain, routing_mode, candidate_weights, full_chain = candidate_chain(args, defaults, route)
+    advisor = getattr(args, "advisor", None)
+    if advisor is not None and route != ADVISOR_ROUTE:
+        raise DispatchError("--advisor only applies to advisor dispatches (--purpose advise).")
+    if advisor is not None:
+        # A named advisor is the user's choice: no other advisor is substituted when it is unavailable.
+        if advisor not in full_chain:
+            raise DispatchError(f"--advisor {advisor!r} is not among defaults.{ADVISOR_ROUTE} candidates {full_chain}.")
+        chain, candidate_weights, routing_mode = [advisor], {advisor: candidate_weights.get(advisor, 1)}, "named"
 
     def route_target(alias):
         """(provider, model) the alias resolves to on this route; None on bad config, left for the validation loop to report."""
@@ -1793,7 +1830,7 @@ def dispatch_unlocked(args, call, now, config, slots, escalate_from, overlay=Non
             if entry is not None:
                 append_ledger_entry(fresh, entry, now=now)
                 # The review log outlives the live window and must link dispatch chains and grading reasons, so it carries the same minimal facts.
-                extra = {k: entry[k] for k in ("purpose", "parent_thread", "reasoning", "task_chars", "unknown", "escalated_from", "overlay")
+                extra = {k: entry[k] for k in ("purpose", "parent_thread", "reasoning", "task_chars", "unknown", "escalated_from", "overlay", "advisor")
                          if entry.get(k) is not None}
                 if entry.get("requested_difficulty") != entry["difficulty"]:
                     extra["requested_difficulty"] = entry.get("requested_difficulty")
@@ -1853,6 +1890,8 @@ def dispatch_unlocked(args, call, now, config, slots, escalate_from, overlay=Non
             entry["escalated_from"] = escalate_from
         if overlay_active:
             entry["overlay"] = True
+        if advisor is not None:
+            entry["advisor"] = advisor
     merged = persist(entry=entry)
     if entry is not None and merged is not None:
         summary = summarize_ledger(merged, now=now)
@@ -1869,8 +1908,10 @@ def parser():
     p.add_argument("--config", default=os.environ.get("BB_DISPATCH_CONFIG", str(Path.home() / ".config/bb-dispatch/config.yaml")), help="user YAML config path; can also be set via BB_DISPATCH_CONFIG")
     p.add_argument("--ledger", default=os.environ.get("BB_DISPATCH_LEDGER_PATH", str(Path.home() / ".cache/bb-dispatch/ledger.json")), help="run ledger and circuit-breaker cache path; can also be set via BB_DISPATCH_LEDGER_PATH")
     p.add_argument("--difficulty", choices=["simple", "medium", "complex"], help="task difficulty; grading criteria in SKILL.md \"Judgment and invocation\"")
-    p.add_argument("--purpose", choices=["work", "review"], default="work",
-                   help="dispatch purpose, default work; review skips the project minimum difficulty and routes by the requested difficulty")
+    p.add_argument("--purpose", choices=PURPOSES, default="work",
+                   help="dispatch purpose, default work; review skips the project minimum difficulty and routes by the requested difficulty; "
+                        "advise routes by defaults.advisor instead of a difficulty, for consulting and proposing plans")
+    p.add_argument("--advisor", metavar="ALIAS", help="with --purpose advise: use this advisor from defaults.advisor instead of the configured selection; never falls back to another advisor")
     p.add_argument("--task", help="task goal, scope and acceptance requirements")
     p.add_argument("--escalate-from", metavar="THREAD_ID", help="ID of an earlier thread where the same task failed or needed rework; recorded in the ledger")
     p.add_argument("--unknown", metavar="REASON", help="optional one-sentence grading reason; truncated and recorded in the ledger")
@@ -1938,9 +1979,10 @@ def main():
         if args.record_outcome is not None:
             print(json.dumps(record_outcome_command(args), ensure_ascii=False, indent=2))
             return 0
+        normalize_purpose(args)
         if args.redispatch is None:
             if not args.difficulty or args.task is None:
-                raise DispatchError("dispatch mode requires --difficulty and --task.")
+                raise DispatchError("dispatch mode requires --difficulty (or --purpose advise) and --task.")
             string(args.task, "task")
         result = dispatch(args)
         print(json.dumps(result, ensure_ascii=False, indent=2))

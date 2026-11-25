@@ -23,6 +23,9 @@ defaults:
   simple: primary
   medium: primary
   complex: primary
+  # Optional: advisors for --purpose advise (consulting, proposing plans; never Workers). Each advisor alias
+  # configures only routes.advisor so difficulty tiers never select it; --advisor <alias> picks one by name.
+  # advisor: {mode: load-balance, candidates: [<advisor-alias>]}
 agents:
   primary:
     provider: <provider-id>

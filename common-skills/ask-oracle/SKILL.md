@@ -46,7 +46,8 @@ triggers:
 调用 `$bb-model-routing`，由宿主在 project scope、user scope 或其他已安装来源中解析该 Skill。按它的 "Dispatch entry" 提交以下参数：
 
 ```text
-difficulty: complex
+purpose: advise
+advisor: <仅当用户点名某个顾问时填写其别名，如 fable；否则省略，盲选>
 unknown: <请 Oracle 裁决的核心问题，一句话>
 permission-mode: full
 title: Oracle: <简短问题>
@@ -55,7 +56,7 @@ task: <角色边界 + 上述咨询任务>
 
 由 `bb-model-routing` 从自己的 Skill 根目录运行内部派发器；`full` 让 Oracle 可自主使用环境中的命令与工具完成调查。宿主无法加载该 Skill 时报告依赖缺失，不猜测任何安装路径。
 
-Oracle 使用用户配置的 `complex` 路由。不在任务正文中重复 provider、模型或 reasoning。派发失败时报告原路由错误，不静默改用其他模型。
+Oracle 使用用户配置的顾问路由（`defaults.advisor`），不传 `difficulty`。不在任务正文中重复 provider、模型或 reasoning。派发失败时报告原路由错误，不静默改用其他模型。
 
 记录返回的线程 ID、实际模型与状态。创建成功只是开始：等待 BB 的父线程完成通知，不轮询；通知到达后用 `bb thread output <线程 ID>` 读取最终输出。向用户返回 Oracle 的结论、关键依据和仍未解决的不确定性，并附线程链接或 ID。专家要求补充关键信息时，把具体缺口转告用户，不替专家猜测。
 
