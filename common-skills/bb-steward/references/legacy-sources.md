@@ -39,7 +39,7 @@ python3 scripts/steward_watch.py register --workbook <workbook path> --ref origi
 ## Historical running log
 
 When an existing Markdown historical running log is kept with the user's confirmation, the workbook header is marked
-exactly `[要求帐（历史流水账）](relative-index.md)` (the label is a literal the script matches), keeping the old ledger
+exactly `[Requirements ledger (history log)](relative-index.md)` (the label is a literal the script matches), keeping the old ledger
 and index links, not rewriting them into the five-column table or inventing status statistics. The platform can view
 the index and its relative ledger links, and marks standard statistics as not applicable.
 

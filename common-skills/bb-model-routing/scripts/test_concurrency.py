@@ -1,4 +1,4 @@
-"""容量控制的行为与真实跨进程互斥；不调用线上 BB。"""
+"""Capacity control behavior and real cross-process mutual exclusion; never calls live BB."""
 import json
 import multiprocessing
 import os
@@ -12,11 +12,11 @@ import test_dispatch as fixtures
 m = fixtures.m
 
 
-# 独立进程使用不同账本，唯一共享的是用户级并发状态。
+# Separate processes use different ledgers; the only shared state is the user-level concurrency state.
 def dispatch_worker(config, ledger, state, start, results, difficulty="simple"):
     m.CONCURRENCY_PATH = Path(state)
     args = m.parser().parse_args(['--config', config, '--ledger', ledger,
-                                  '--difficulty', difficulty, '--task', '并行任务', '--unknown', '测试用原因',
+                                  '--difficulty', difficulty, '--task', 'parallel task', '--unknown', 'test reason',
                                   '--project', 'proj', '--environment', 'env'])
 
     def bb(*argv):
@@ -29,9 +29,9 @@ def dispatch_worker(config, ledger, state, start, results, difficulty="simple"):
         if argv[:2] == ('thread', 'show'):
             return {'thread': {'id': 'parent'}}
         if argv[:2] == ('thread', 'list'):
-            return []  # 模拟创建成功后线程尚未出现在列表中。
+            return []  # Simulate a created thread that is not yet visible in the list.
         if argv[:2] == ('thread', 'spawn'):
-            time.sleep(0.15)  # 扩大无锁实现会超发的窗口。
+            time.sleep(0.15)  # Widen the window in which a lock-free implementation would over-dispatch.
             return {'id': f'created_{os.getpid()}', 'status': 'active'}
         raise AssertionError(argv)
 
@@ -57,7 +57,7 @@ class ConcurrencyTests(unittest.TestCase):
         self.config.write_text(m.yaml.safe_dump(config))
 
     def fake(self, *args):
-        # 真实 bb thread list 默认不含归档线程；漏传 --include-archived 会让归档线程的占位永不释放。
+        # Real bb thread list omits archived threads by default; without --include-archived their reservations never release.
         if args == ('thread', 'list', '--include-hidden', '--include-archived'):
             return self.threads
         return fixtures.DispatchTests.fake(self, *args)
@@ -69,11 +69,11 @@ class ConcurrencyTests(unittest.TestCase):
     def test_shared_across_difficulties_and_ledgers_then_releases_after_turn(self):
         first = m.dispatch(self.args(), self.fake)
         self.assertEqual(first['selection']['provider'], 'primary')
-        # 列表尚未可见也占位；不同账本与不同难度不能绕过。
+        # Not-yet-visible threads still hold a slot; other ledgers and difficulties cannot bypass it.
         other_ledger = str(Path(self.temp.name) / 'other-ledger.json')
-        with self.assertRaisesRegex(m.DispatchError, '并发已满'):
+        with self.assertRaisesRegex(m.DispatchError, 'at concurrency capacity'):
             m.dispatch(self.args('--difficulty', 'medium', '--ledger', other_ledger), self.fake)
-        # 初始 idle 没有回合结束事件，仍占位。
+        # An initial idle state without a turn-end event still holds the slot.
         self.threads = [self.running(status='idle')]
         second = m.dispatch(self.args(), self.fake)
         self.assertEqual(second['selection']['provider'], 'specialist')
@@ -90,7 +90,7 @@ class ConcurrencyTests(unittest.TestCase):
                 self.threads = [self.running(status, queued, interaction)]
                 result = m.dispatch(self.args('--dry-run'), self.fake)
                 self.assertEqual(result['selection']['provider'], 'specialist')
-                self.assertIn('并发已满', result['selection']['attempts'][0]['error'])
+                self.assertIn('at concurrency capacity', result['selection']['attempts'][0]['error'])
         self.assertFalse(self.state.exists())
         self.assertFalse(any(c[:2] == ('thread', 'spawn') for c in self.calls))
 
@@ -125,7 +125,7 @@ class ConcurrencyTests(unittest.TestCase):
     def test_error_queued_reservation_releases_after_failed_turn(self):
         m.dispatch(self.args(), self.fake)
         self.threads = [self.running('error', 'waiting')]
-        # 没有结束事件的已登记创建仍保守占位。
+        # A recorded creation without a turn-end event still holds its slot conservatively.
         self.assertEqual(m.dispatch(self.args('--dry-run'), self.fake)['selection']['provider'], 'specialist')
         self.turns['created_1'] = [(int(time.time()) + 1, 'failed')]
         self.assertEqual(m.dispatch(self.args('--dry-run'), self.fake)['selection']['provider'], 'primary')
@@ -137,22 +137,22 @@ class ConcurrencyTests(unittest.TestCase):
 
         def oversized(*args):
             if args[:2] == ('thread', 'log'):
-                raise m.DispatchError('bb thread log 失败：event_data_too_large：HTTP 413', code='event_data_too_large')
+                raise m.DispatchError('bb thread log failed: event_data_too_large: HTTP 413', code='event_data_too_large')
             return fake(*args)
         self.assertEqual(m.dispatch(self.args('--dry-run'), oversized)['selection']['provider'], 'primary')
 
         def broken(*args):
             if args[:2] == ('thread', 'log'):
-                raise m.DispatchError('bb thread log 失败：其他错误', code='internal')
+                raise m.DispatchError('bb thread log failed: other error', code='internal')
             return fake(*args)
         result = m.dispatch(self.args('--dry-run'), broken)
         self.assertNotEqual(result['selection']['provider'], 'primary')
 
     def test_capacity_does_not_cool_or_change_ledger_and_cannot_be_bypassed(self):
         self.threads = [self.running()]
-        with self.assertRaisesRegex(m.DispatchError, '并发已满'):
+        with self.assertRaisesRegex(m.DispatchError, 'at concurrency capacity'):
             m.dispatch(self.args('--difficulty', 'medium'), self.fake)
-        with self.assertRaisesRegex(m.DispatchError, '并发已满'):
+        with self.assertRaisesRegex(m.DispatchError, 'at concurrency capacity'):
             m.dispatch(self.args('--fallback-from', 'primary', '--difficulty', 'medium'), self.fake)
         self.assertFalse(self.ledger.exists())
         self.assertFalse(any(c[:2] == ('thread', 'spawn') for c in self.calls))
@@ -174,7 +174,7 @@ class ConcurrencyTests(unittest.TestCase):
             with self.subTest(limit=limit):
                 config['agents']['primary']['max_concurrency'] = limit
                 self.config.write_text(m.yaml.safe_dump(config))
-                with self.assertRaisesRegex(m.DispatchError, '正整数'):
+                with self.assertRaisesRegex(m.DispatchError, 'positive integer'):
                     m.dispatch(self.args(), self.fake)
         config['agents']['primary'].pop('max_concurrency')
         self.config.write_text(m.yaml.safe_dump(config))
@@ -186,10 +186,10 @@ class ConcurrencyTests(unittest.TestCase):
     def test_unknown_spawn_keeps_reservation_until_explicit_release(self):
         def timeout(*args):
             if args[:2] == ('thread', 'spawn'):
-                raise m.DispatchError('创建结果未知')
+                raise m.DispatchError('creation result unknown')
             return self.fake(*args)
 
-        with self.assertRaisesRegex(m.DispatchError, '占位.*已保留'):
+        with self.assertRaisesRegex(m.DispatchError, 'reservation .* kept'):
             m.dispatch(self.args(), timeout)
         before = self.state.read_bytes()
         status = m.concurrency_command(self.args('--concurrency-status'), self.fake)
@@ -198,7 +198,7 @@ class ConcurrencyTests(unittest.TestCase):
         reservation = status['reservations'][0]['id']
         m.concurrency_command(self.args('--release-reservation', reservation, '--dry-run'), self.fake)
         self.assertEqual(before, self.state.read_bytes())
-        with self.assertRaisesRegex(m.DispatchError, '未知'):
+        with self.assertRaisesRegex(m.DispatchError, 'unknown concurrency reservation'):
             m.concurrency_command(self.args('--release-reservation', 'unknown'), self.fake)
         m.concurrency_command(self.args('--release-reservation', reservation), self.fake)
         self.assertEqual(json.loads(self.state.read_text())['reservations'], [])
@@ -210,16 +210,16 @@ class ConcurrencyTests(unittest.TestCase):
         self.assertEqual(status['usage']['primary'], 1)
         self.threads = [self.running(status='error')]
         self.turns['created_1'] = [(int(time.time()) + 1, 'failed')]
-        # 清空故障冷却无关：这次仅按槽位释放判断。
+        # Fault cooldowns are irrelevant here: only slot release is under test.
         self.assertEqual(m.dispatch(self.args(), self.fake)['selection']['provider'], 'primary')
 
     def test_state_lock_and_thread_query_failures_do_not_overdispatch(self):
         for contents in ['{', '{"version": 1, "reservations": [null]}']:
             self.state.write_text(contents)
-            with self.assertRaisesRegex(m.DispatchError, '并发状态'):
+            with self.assertRaisesRegex(m.DispatchError, 'concurrency state'):
                 m.dispatch(self.args(), self.fake)
         self.state.unlink()
-        with mock.patch.object(m, 'fcntl', None), self.assertRaisesRegex(m.DispatchError, '文件锁'):
+        with mock.patch.object(m, 'fcntl', None), self.assertRaisesRegex(m.DispatchError, 'file lock'):
             m.dispatch(self.args(), self.fake)
 
         def no_list(*args):
@@ -286,7 +286,7 @@ agents:
             worker.join(timeout=5)
             self.assertEqual(worker.exitcode, 0)
         self.assertEqual(outcomes.count('spawned'), 1, outcomes)
-        self.assertTrue(all(x == 'spawned' or '并发已满' in x for x in outcomes), outcomes)
+        self.assertTrue(all(x == 'spawned' or 'at concurrency capacity' in x for x in outcomes), outcomes)
 
 
     def scoped_config(self):
@@ -295,7 +295,7 @@ agents:
         config['agents']['primary']['routes']['complex'] = {'model': 'deep-model'}
         config['defaults']['complex'] = 'primary'
         self.config.write_text(m.yaml.safe_dump(config))
-        # 同 provider 的 medium/complex 模型目录。
+        # Model catalog for medium/complex on the same provider.
         def scoped_bb(*args):
             if args[:3] == ('provider', 'models', 'primary'):
                 return [{'id': name, 'supportedReasoningEfforts': [{'reasoningEffort': 'max'},
@@ -311,7 +311,7 @@ agents:
         limited = m.dispatch(self.args('--difficulty', 'medium'), bb)
         self.assertEqual(limited['selection']['concurrency']['used'], 0)
         self.threads.append({**self.running(), 'id': 'created_3'})
-        with self.assertRaisesRegex(m.DispatchError, '并发已满'):
+        with self.assertRaisesRegex(m.DispatchError, 'at concurrency capacity'):
             m.dispatch(self.args('--difficulty', 'complex', '--ledger', str(self.ledger.with_name('other.json'))), bb)
         simple = m.dispatch(self.args(), bb)
         self.assertEqual(simple['selection']['provider'], 'primary')
@@ -324,25 +324,25 @@ agents:
         bb = self.scoped_config()
         def broken(*args):
             if args[:2] == ('thread', 'spawn'):
-                raise m.DispatchError('创建结果未知')
+                raise m.DispatchError('creation result unknown')
             return bb(*args)
         with self.assertRaises(m.DispatchError):
             m.dispatch(self.args('--difficulty', 'medium'), broken)
-        # 受限 medium 的未知占位不能阻止 simple；禁用统计冷却以隔离容量行为。
+        # An unknown reservation for limited medium must not block simple; statistics cooldowns are disabled to isolate capacity.
         self.ledger.unlink(missing_ok=True)
         self.assertEqual(m.dispatch(self.args(), bb)['selection']['provider'], 'primary')
-        with self.assertRaisesRegex(m.DispatchError, '并发已满'):
+        with self.assertRaisesRegex(m.DispatchError, 'at concurrency capacity'):
             m.dispatch(self.args('--difficulty', 'complex'), bb)
 
     def test_unknown_legacy_models_and_external_threads_count_conservatively(self):
         bb = self.scoped_config()
         self.threads = [self.running()]
-        with self.assertRaisesRegex(m.DispatchError, '并发已满'):
+        with self.assertRaisesRegex(m.DispatchError, 'at concurrency capacity'):
             m.dispatch(self.args('--difficulty', 'medium'), bb)
         self.threads = []
         self.state.write_text(json.dumps({'version': 1, 'reservations': [
             {'id': 'legacy', 'provider': 'primary', 'ts': int(time.time()), 'thread': None}]}))
-        with self.assertRaisesRegex(m.DispatchError, '并发已满'):
+        with self.assertRaisesRegex(m.DispatchError, 'at concurrency capacity'):
             m.dispatch(self.args('--difficulty', 'complex'), bb)
         self.assertEqual(m.dispatch(self.args(), bb)['selection']['provider'], 'primary')
 
@@ -362,7 +362,7 @@ agents:
         self.assertEqual(m.dispatch(self.args('--dry-run'), self.fake)['selection']['provider'], 'specialist')
         config['agents']['primary'].pop('max_concurrency')
         self.config.write_text(m.yaml.safe_dump(config))
-        with self.assertRaisesRegex(m.DispatchError, '需要同时配置'):
+        with self.assertRaisesRegex(m.DispatchError, 'requires max_concurrency'):
             m.dispatch(self.args(), self.fake)
 
     def test_scoped_cross_process_dispatch_allows_simple_and_one_shared_limited_task(self):
@@ -396,4 +396,4 @@ agents:
             self.assertEqual(worker.exitcode, 0)
         self.assertEqual(outcomes[:2], ['spawned', 'spawned'], outcomes)
         self.assertEqual(outcomes[2:].count('spawned'), 1, outcomes)
-        self.assertTrue(any('并发已满' in result for result in outcomes[2:]), outcomes)
+        self.assertTrue(any('at concurrency capacity' in result for result in outcomes[2:]), outcomes)

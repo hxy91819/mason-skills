@@ -1,9 +1,12 @@
+"""Read workbooks and ledgers from a local file or a pinned Git revision."""
 import posixpath
 from pathlib import Path
 import os
 import re
 import subprocess
 from urllib.parse import unquote, urlsplit
+
+import steward_vocab as vocab
 
 
 class SourceError(RuntimeError):
@@ -15,27 +18,27 @@ def git(repo, *args):
         result = subprocess.run(['git', '-C', str(repo), *args], capture_output=True,
                                 text=True, timeout=15, env={**os.environ, 'GIT_TERMINAL_PROMPT': '0'})
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise SourceError('Git 来源无法核实（离线或超时）') from exc
+        raise SourceError('Git source cannot be verified (offline or timed out)') from exc
     if result.returncode:
-        raise SourceError('Git 来源无法核实（远端不可达、ref 已删除或文件不存在）：' + result.stderr.strip()[:200])
+        raise SourceError('Git source cannot be verified (remote unreachable, ref deleted or file missing): ' + result.stderr.strip()[:200])
     return result.stdout
 
 
 def relative_path(path):
     if not path or '\\' in path or '\0' in path or path.startswith('/') or re.match(r'^[A-Za-z]:', path) or any(p in ('', '.', '..') for p in path.split('/')):
-        raise SourceError('请使用仓库内规范相对路径')
+        raise SourceError('Use a normalized repository-relative path')
     return path
 
 
 def pin(repo, ref):
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_./-]*', ref) or '..' in ref or '//' in ref or ref.endswith('/'):
-        raise SourceError('--ref 必须为远端/分支')
+        raise SourceError('--ref must be <remote>/<branch>')
     remote, branch = ref.split('/', 1)
     branch = 'refs/heads/' + branch
     git(repo, 'check-ref-format', branch)
     lines = git(repo, 'ls-remote', '--exit-code', '--refs', remote, branch).split()
     if not lines or not re.fullmatch('[a-f0-9]{40}', lines[0]):
-        raise SourceError('远端未返回可核实 SHA')
+        raise SourceError('The remote returned no verifiable SHA')
     sha = lines[0]
     git(repo, 'fetch', '--no-tags', '--no-write-fetch-head', remote, sha)
     return sha
@@ -43,27 +46,27 @@ def pin(repo, ref):
 
 def read(repo, sha, path):
     if not re.fullmatch('[a-f0-9]{40}', sha):
-        raise SourceError('无效 SHA')
+        raise SourceError('Invalid SHA')
     return git(repo, 'show', f'{sha}:{relative_path(path)}')
 
 
 def resolve_link(file, target, git_source=False):
     url = urlsplit(target.strip().strip('<>'))
     if url.scheme or url.netloc:
-        raise SourceError('要求帐必须指向同来源文件')
+        raise SourceError('The requirement ledger must point to a file in the same source')
     path = unquote(url.path)
     if git_source:
         if path.startswith('/') or '\\' in path:
-            raise SourceError('要求帐必须位于仓库内')
+            raise SourceError('The requirement ledger must live inside the repository')
         return relative_path(posixpath.normpath(posixpath.join(posixpath.dirname(file), path)) if path else file)
     if not path:
-        raise SourceError('要求帐链接缺少路径')
+        raise SourceError('The requirement ledger link has no path')
     return str((Path(file).parent / path).resolve())
 
 
 def ledger_entry(text):
     header = re.split(r'^## ', text, maxsplit=1, flags=re.M)[0]
     for label, target in re.findall(r'\[([^\]]+)\]\(([^)]+)\)', header):
-        if re.search(r'要求[帳帐]', label) or re.search(r'-要求[帳帐]\.md(?:[#?]|$)', target):
-            return target, 'history' if label == '要求帐（历史流水账）' else 'standard'
-    raise SourceError('工作簿标头缺少要求帐入口；check 通过不代表入口齐全')
+        if vocab.LEDGER_LABEL_RE.search(label) or vocab.LEDGER_TARGET_RE.search(target):
+            return target, 'history' if label in vocab.HISTORY_LABELS else 'standard'
+    raise SourceError('The workbook header has no requirement ledger entry; a passing check does not mean the entry is present')

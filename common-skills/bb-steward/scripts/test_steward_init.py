@@ -68,9 +68,9 @@ class InitTests(unittest.TestCase):
         legacy = self.repo / 'docs/steward'
         legacy.mkdir(parents=True)
         (legacy / 'topic.md').write_text('workbook')
-        (legacy / 'topic-要求帳.md').write_text('ledger')
+        (legacy / 'topic-requirements.md').write_text('ledger')
         result = sw.init_workbook(self.repo)
-        self.assertEqual(result['imported'], ['topic-要求帳.md', 'topic.md'])
+        self.assertEqual(result['imported'], ['topic-requirements.md', 'topic.md'])
         target = Path(result['path']) / 'topic.md'
         self.assertEqual(target.read_text(), 'workbook')
         target.write_text('local changes')

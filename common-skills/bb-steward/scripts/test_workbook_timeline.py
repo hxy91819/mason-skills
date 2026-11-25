@@ -1,4 +1,5 @@
-"""验证可见时间、排序、稳定编号与真实 CLI 提交流程。"""
+"""Visible times, ordering, stable numbering and the real CLI commit flow on a legacy Chinese workbook, whose
+formatting must stay Chinese (backward compatibility). English formatting is covered in test_steward_english.py."""
 from datetime import datetime, timezone
 from pathlib import Path
 import subprocess

@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""BB 管家工作簿（Workbook）结构、容量、提交节流与收尾对账门禁。
+"""BB steward workbook gates: structure, size, commit throttling and closing reconciliation.
 
-用法：
-  python3 steward_workbook.py --mode ledger-check --file .local/steward/<topic>-要求帳.md
+Usage:
+  python3 steward_workbook.py --mode ledger-check --file .local/steward/<topic>-requirements.md
   python3 steward_workbook.py --mode check --file .local/steward/<topic>.md
   python3 steward_workbook.py --mode verify --file .local/steward/<topic>.md
   python3 steward_workbook.py --mode should-commit --file .local/steward/<topic>.md
   python3 steward_workbook.py --mode reconcile [--live] --file .local/steward/<topic>.md
 
-reconcile 检查路线未完成行的状态标记与用户待办的原因类别；--live 另经 `bb thread list`
-核对「进行中」的线程是否还活着。
-stdout 输出 JSON；退出码 0 表示通过，2 表示门禁未通过或参数错误。
+reconcile checks the state marker of every open route line and the category of every user to-do; --live also
+checks through `bb thread list` that threads marked "in progress" are still alive.
+Prints JSON on stdout; exit code 0 means pass, 2 means the gate failed or the arguments are invalid.
 """
 import argparse
 from datetime import datetime
@@ -21,40 +21,44 @@ import shutil
 import subprocess
 import sys
 import steward_source as source
-from workbook_timeline import format_timeline
+import steward_vocab as vocab
+from steward_vocab import DECISIONS, REQUIRED_SECTIONS, ROUTE, TODOS
+from workbook_timeline import HISTORICAL_WARNING, format_timeline
 
-REQUIRED_SECTIONS = ["路线", "关键决策", "用户待办"]
-# 项目文档规范可能要求繁体中文，标题按同义词归一后再比对。
-SECTION_ALIASES = {"路線": "路线", "關鍵決策": "关键决策", "用戶待辦": "用户待办"}
+HISTORY_NOT_APPLICABLE = "History log; standard five-column statistics do not apply"
 DEFAULT_MAX_NONEMPTY_LINES = 45
 DEFAULT_MAX_LINE_CHARS = 180
-DEFAULT_MAX_ROUTE_ITEMS = None  # 路线阶段数暂不设上限；需要时用 --max-route-items 显式指定
+DEFAULT_MAX_ROUTE_ITEMS = None  # No cap on route stages by default; set one explicitly with --max-route-items.
 DEFAULT_MAX_DECISIONS = 12
 
 MD_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
 WIKI_LINK_RE = re.compile(r"\[\[(?:[^|\]]+\|)?([^\]]+)\]\]")
 CHECKBOX_RE = re.compile(r"^-\s*\[([ xX])\]\s*(.+)$")
 
-# 收尾对账：路线未完成行 `←` 之后的四种状态，与用户待办「为什么只能用户做」的五个类别。
-STATE_RUNNING, STATE_WAITING_USER, STATE_SCHEDULED, STATE_QUEUED_AFTER = "进行中", "等用户", "定时", "排在"
-STATE_KEYWORDS = (STATE_RUNNING, STATE_WAITING_USER, STATE_SCHEDULED, STATE_QUEUED_AFTER)
-STATE_HINT = "← 进行中 thr_xxx / 等用户 / 定时 MM-DD HH:MM / 排在 X 后：依赖的产出"
-TODO_CATEGORIES = ("凭据账号", "真机线下", "对外沟通", "不可逆上线", "用户保留")
-NON_BLOCKING = {"", "-", "无", "不挡"}
+# Closing reconciliation: the four states after `←` on open route lines, and the user to-do categories.
+STATE_RUNNING, STATE_WAITING_USER, STATE_SCHEDULED, STATE_QUEUED_AFTER = vocab.STATES
+STATE_KEYWORDS = vocab.STATES
+STATE_HINT = vocab.STATE_HINT
+TODO_CATEGORIES = vocab.TODO_CATEGORIES
+STATE_STATS = {STATE_RUNNING: "in_progress", STATE_WAITING_USER: "waiting_on_user",
+               STATE_SCHEDULED: "scheduled", STATE_QUEUED_AFTER: "queued_after"}
 THREAD_ID_RE = re.compile(r"(?<![A-Za-z0-9_])thr_[a-z0-9]{6,}")
 SCHEDULE_RE = re.compile(r"(?:(\d{4})-)?(\d{1,2})-(\d{1,2})\s*(\d{1,2})[:：](\d{2})")
-# 阶段编号：「阶段5」「发布 1–6」「阶段1–4、9、12–14」「Stage 2」，用来把待办的“挡住”栏和依赖对象对到路线行。
-STAGE_ID_RE = re.compile(
-    r"(阶段|发布|stage)\s*(\d+(?:\s*[–—\-~～至到]\s*\d+)?(?:\s*[、,，/和]\s*\d+(?:\s*[–—\-~～至到]\s*\d+)?)*)", re.I)
-# BB 线程状态里只有 idle 和 error 是停着的；pending/starting/active/stopping 都算在动。
+# Stage numbers such as "Stage 5", "Release 1-6", "Stage 1-4, 9, 12-14" (legacy Chinese prefixes too), used to
+# match a to-do's Blocks cell or a dependency to route lines.
+_RANGE = r"\d+(?:\s*(?:[–—\-~～至到]|to\b)\s*\d+)?"
+_LIST_SEP = r"\s*(?:[、,，/和]|and\b)\s*"
+STAGE_ID_RE = re.compile(rf"(阶段|發佈|发布|階段|stage|phase|release)\s*({_RANGE}(?:{_LIST_SEP}{_RANGE})*)", re.I)
+STAGE_PREFIXES = {"阶段": "stage", "階段": "stage", "发布": "release", "發佈": "release"}
+# Only idle and error are settled BB thread states; pending/starting/active/stopping count as moving.
 SETTLED_STATUSES = ("idle", "error")
 DEFAULT_GRACE_MINUTES = 30
-# 这些后台活动在跑时，空闲线程仍算在干活；Plan 模式等审批不算。
+# While any of these background activities run, an idle thread still counts as working; plan approvals do not.
 ALIVE_ACTIVITY_KEYS = ("activeBackgroundAgentCount", "activeBackgroundCommandCount", "activeGoalCount", "activeWorkflowCount")
 
 
 def visible_length(line: str) -> int:
-    """计算剥离 Markdown URL 目标后的可见字符长度。"""
+    """Visible character count after stripping Markdown link targets."""
     s = MD_LINK_RE.sub(r"\1", re.sub(r"<!--.*?-->", "", line))
     s = WIKI_LINK_RE.sub(r"\1", s)
     return len(s.strip())
@@ -75,7 +79,7 @@ def parse_workbook(text: str):
             continue
         if stripped.startswith("## "):
             sec_name = stripped[3:].strip()
-            sec_name = SECTION_ALIASES.get(sec_name, sec_name)
+            sec_name = vocab.section_name(sec_name)
             section_order.append(sec_name)
             current_section = sec_name
             sections.setdefault(sec_name, [])
@@ -103,28 +107,29 @@ def check_workbook(text: str, max_nonempty_lines=DEFAULT_MAX_NONEMPTY_LINES,
     nonempty_lines = [ln for ln in parsed["lines"] if ln.strip()]
 
     if not parsed["title"]:
-        errors.append("缺少一级标题（# <目标一句话>）。")
+        errors.append("Missing the level-1 title (# <goal in one sentence>).")
 
     if parsed["section_order"] != REQUIRED_SECTIONS:
         errors.append(
-            f"二级标题必须且只能按顺序为 {REQUIRED_SECTIONS}，当前为 {parsed['section_order']}。"
+            f"Level-2 headings must be exactly {REQUIRED_SECTIONS} in that order; found {parsed['section_order']}."
         )
 
     if parsed["subheadings"]:
         first_ln, first_h = parsed["subheadings"][0]
-        errors.append(f"第 {first_ln} 行出现不允许的子标题 {first_h!r}；工作簿保持三段扁平结构。")
+        errors.append(f"Line {first_ln}: subheading {first_h!r} is not allowed; the workbook keeps three flat sections.")
 
-    todo_linenos = {ln for ln, _ in parsed["sections"].get("用户待办", [])}
+    todo_linenos = {ln for ln, _ in parsed["sections"].get(TODOS, [])}
     for lineno, raw in enumerate(parsed["lines"], start=1):
         if lineno in todo_linenos:
-            continue  # 待办要写背景与建议，不受单行字数限制
+            continue  # To-dos carry background and recommendations; no per-line limit.
         vlen = visible_length(raw)
         if vlen > max_line_chars:
             errors.append(
-                f"第 {lineno} 行可见字符数 {vlen} 超过上限 {max_line_chars}；路线与决策每条只留结论，不塞过程流水账。"
+                f"Line {lineno}: {vlen} visible characters exceed the limit of {max_line_chars}; route and decision "
+                "lines keep only the conclusion, not a running log."
             )
 
-    route_lines = parsed["sections"].get("路线", [])
+    route_lines = parsed["sections"].get(ROUTE, [])
     route_items = []
     for lineno, raw in route_lines:
         s = raw.strip()
@@ -132,28 +137,31 @@ def check_workbook(text: str, max_nonempty_lines=DEFAULT_MAX_NONEMPTY_LINES,
             continue
         if s.startswith("|") and s.endswith("|"):
             errors.append(
-                f"第 {lineno} 行在「路线」中使用了表格；子任务矩阵应放在项目 Issue 或计划文档中，路线只留阶段行与当前位置。"
+                f"Line {lineno}: a table in \"{ROUTE}\"; sub-task matrices belong in a project issue or plan "
+                "document, the route keeps only stage lines and the current position."
             )
         m = CHECKBOX_RE.match(s)
         if m:
             route_items.append((lineno, m.group(1).lower() == "x", "←" in s, m.group(2)))
 
     if max_route_items is not None and len(route_items) > max_route_items:
-        errors.append(f"「路线」阶段数 {len(route_items)} 超过上限 {max_route_items}。")
+        errors.append(f"\"{ROUTE}\" has {len(route_items)} stages, over the limit of {max_route_items}.")
 
-    decision_lines = parsed["sections"].get("关键决策", [])
+    decision_lines = parsed["sections"].get(DECISIONS, [])
     decisions = [raw.strip() for _, raw in decision_lines if raw.strip().startswith("- ")]
     warnings = []
-    # 行数与决策条数只作提醒：目的是不乱加东西，不是压缩必要事实。
+    # Line and decision counts only warn: the goal is to keep clutter out, not to squeeze out necessary facts.
     if len(nonempty_lines) > max_nonempty_lines:
         warnings.append(
-            f"非空行总数 {len(nonempty_lines)} 超过建议值 {max_nonempty_lines}；检查有没有过程流水账或细碎矩阵该移回项目文档/Issue，"
-            "已完成阶段与仍有约束力的条目照留。"
+            f"{len(nonempty_lines)} non-empty lines exceed the suggested {max_nonempty_lines}; check for running "
+            "logs or detailed matrices that belong back in project docs/issues. Completed stages and entries that "
+            "still bind stay."
         )
     if len(decisions) > max_decisions:
         warnings.append(
-            f"「关键决策」条数 {len(decisions)} 超过建议值 {max_decisions}；逐条复核：所影响阶段已全部完成、"
-            "或已写进项目文档/ADR 的移出（要求帐留有原始记录），仍约束未完成工作的照留。"
+            f"\"{DECISIONS}\" has {len(decisions)} entries, over the suggested {max_decisions}; review each: move out "
+            "those whose affected stages are all complete or that are written into project docs/ADRs (the "
+            "requirement ledger keeps the original record); keep those that still constrain unfinished work."
         )
 
     return {
@@ -168,31 +176,52 @@ def check_workbook(text: str, max_nonempty_lines=DEFAULT_MAX_NONEMPTY_LINES,
     }
 
 
-LEDGER_COLUMNS = ["日期", "要求", "狀態", "結果", "材料"]
-LEDGER_STATES = {"完成", "採納", "部分採納", "進行中", "待使用者", "被覆蓋", "排除"}
-EMPTY_CELL = {"", "-", "—", "无", "無", "待补", "待補", "...", "…"}
-EMPTY_RESULTS = {"完成", "已完成", "已採納", "採納", "已采纳", "采纳", "已處理", "已处理",
-                 "處理完畢", "处理完毕", "已落實", "已落实", "已解决", "已解決", "done", "ok"}
+# Chinese alternatives in the sets and patterns below are legacy aliases kept for existing ledgers.
+LEDGER_COLUMNS = vocab.LEDGER_COLUMNS
+LEDGER_STATES = set(vocab.LEDGER_STATES)
+EMPTY_CELL = {"", "-", "—", "...", "…", "none", "n/a", "tbd", "无", "無", "待补", "待補"}
+EMPTY_RESULTS = {"ok", "done", "完成", "已完成", "已採納", "採納", "已采纳", "采纳", "已處理", "已处理",
+                 "處理完畢", "处理完毕", "已落實", "已落实", "已解决", "已解決"}
+# Results that only restate the status ("done", "all completed", "has been handled") say nothing concrete.
+VACUOUS_RESULT_RE = re.compile(
+    r"(?:it|this|everything|all)?(?:is|was|has|have|been|already|fully|all)*"
+    r"(?:done|complete|completed|handled|adopted|accepted|resolved|finished|implemented)(?:already)?"
+    r"|(?:已|已经|已經)?(?:全部|全數|全部都|均|都)?(?:完成|處理|处理|採納|采纳|落實|落实|解决|解決)(?:了|完畢|完毕)?")
+SUPERSEDED_RE = re.compile(
+    r"(?:superseded|replaced|overridden|covered)\s+by\s+(.+)|^by\s+(.+)"
+    r"|(?:replacement|successor|replaced with|changed to|switched to)[:：]?\s+(.+)"
+    r"|(?:被|由)\s*(.+?)\s*(?:取代|替代|覆蓋|覆盖)|(?:取代者|替代者|覆蓋者|覆盖者|改為|改为|改由)[:：]?\s*(.+)", re.I)
+VAGUE_TARGETS = {"a later requirement", "later requirement", "later requirements", "a later request", "later request",
+                 "follow-up", "a follow-up", "follow-up requirement", "other requirement", "other requirements",
+                 "another requirement", "後續要求", "后续要求", "後續需求", "后续需求", "其他要求", "其他需求"}
+NO_REASON_RE = re.compile(
+    r"(?:already)?(?:excluded|cancell?ed|dropped|rejected|skipped|notdoing|wontdo|won'tdo|notadopted|notpursued)"
+    r"(?:this|the|that)?(?:requirement|request|item|task)?|noactionneeded|nothingtodo"
+    r"|(?:已|已经|已經)?(?:排除|取消|不做|不採納|不采纳|不執行|不执行)"
+    r"(?:(?:這|这|該|该|此)(?:個|个)?(?:要求|需求|事項|事项|任務|任务))?|無需處理|无需处理")
 LEDGER_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+LOCATED_RE = re.compile(r"https?://\S+|(?:/|\./|\.\./|~/)[^\s、；;]+|\bPR\s*#?\d+|\b[0-9a-f]{7,40}\b|"
+                        + vocab.SESSION_REPLY_RE)
 
 
 def check_ledger(text: str):
-    """检查时期表与逐项结果；不推断业务真实性或要求是否记全。"""
+    """Check periods, tables and per-row results; does not judge business truth or whether every request is recorded."""
     errors, rows, periods = [], 0, 0
-    summary = dict.fromkeys(sorted(LEDGER_STATES), 0)
+    counts = dict.fromkeys(vocab.LEDGER_STATES, 0)
     in_period, tables, header, separator = False, 0, False, False
     fenced = False
     lines = text.splitlines()
+    columns_hint = " | ".join(LEDGER_COLUMNS)
 
     def error(lineno, message):
         raw = lines[lineno - 1]
-        errors.append(f"第 {lineno} 行：{message} 原文：{raw}")
+        errors.append(f"Line {lineno}: {message} Original: {raw}")
 
     def close_period(lineno):
         if in_period and tables != 1:
-            error(lineno, "每个时期必须且只能有一张要求表。")
+            error(lineno, "Each period must have exactly one requirement table.")
         if header and not separator:
-            error(lineno, "表头后缺少五列 Markdown 分隔行。")
+            error(lineno, "The header row needs a five-column Markdown separator row.")
 
     last_line = 1
     for lineno, raw in enumerate(lines, 1):
@@ -205,70 +234,66 @@ def check_ledger(text: str):
             continue
         if line.startswith("## "):
             close_period(lineno)
-            in_period = bool(re.fullmatch(r"## \d{4}-\d{2}-\d{2} 起[（(].+?[）)]", line))
+            in_period = bool(vocab.PERIOD_RE.fullmatch(line))
             if not in_period:
-                error(lineno, "时期标题应为 ## <YYYY-MM-DD> 起（主题）。")
+                error(lineno, f"Period headings must read {vocab.PERIOD_HINT}.")
             periods += int(in_period)
             tables, header, separator = 0, False, False
             continue
         if not line.startswith("|"):
             if header and not separator:
-                error(lineno, "表头后缺少五列 Markdown 分隔行。")
+                error(lineno, "The header row needs a five-column Markdown separator row.")
             header, separator = False, False
             continue
         cells = [c.strip() for c in re.split(r"(?<!\\)\|", line.strip("|"))]
         if not in_period:
-            error(lineno, "要求表必须位于时期标题下。")
+            error(lineno, "Requirement tables must sit under a period heading.")
         if not header:
             tables += 1
             header = True
             separator = False
-            if cells != LEDGER_COLUMNS:
-                error(lineno, f"表头必须为 {' | '.join(LEDGER_COLUMNS)}。")
+            if cells not in (LEDGER_COLUMNS, vocab.LEDGER_COLUMN_ALIASES):
+                error(lineno, f"The header must be | {columns_hint} |.")
             continue
         if not separator:
             separator = True
             if len(cells) == 5 and all(re.fullmatch(r":?-{3,}:?", c) for c in cells):
                 continue
-            error(lineno, "表头后缺少五列 Markdown 分隔行。")
+            error(lineno, "The header row needs a five-column Markdown separator row.")
         if len(cells) != 5:
-            error(lineno, f"要求行必须有五列，当前 {len(cells)} 列。")
+            error(lineno, f"Requirement rows need five columns; found {len(cells)}.")
             continue
         rows += 1
-        date, requirement, status, result, material = cells
-        if date in EMPTY_CELL or requirement in EMPTY_CELL:
-            error(lineno, "日期与要求不能为空。")
-        if status in summary:
-            summary[status] += 1
-        if status not in LEDGER_STATES:
-            error(lineno, f"未知状态「{status}」；仅允许 {'、'.join(sorted(LEDGER_STATES))}。")
+        date, requirement, raw_status, result, material = cells
+        if date.lower() in EMPTY_CELL or requirement.lower() in EMPTY_CELL:
+            error(lineno, "Date and requirement must not be empty.")
+        status = vocab.ledger_state(raw_status)
+        if status is None:
+            error(lineno, f"Unknown status \"{raw_status}\"; allowed: {', '.join(vocab.LEDGER_STATES)}.")
+        else:
+            counts[status] += 1
         normalized = re.sub(r"[\s`*。.!！；;]+", "", result).lower()
-        vacuous = (normalized in EMPTY_RESULTS or bool(re.fullmatch(
-            r"(?:已|已经|已經)?(?:全部|全數|全部都|均|都)?(?:完成|處理|处理|採納|采纳|落實|落实|解决|解決)(?:了|完畢|完毕)?",
-            normalized)))
-        if result in EMPTY_CELL or vacuous:
-            error(lineno, "结果须写具体结论，不能只写完成／已完成等空话。")
-        if status in {"完成", "採納"}:
-            # 文件地址也可定位本机材料；裸预览名不是地址。
-            located = (any(m.group(2).strip() not in EMPTY_CELL for m in LEDGER_LINK_RE.finditer(material))
-                       or re.search(r"https?://\S+|(?:/|\./|\.\./|~/)[^\s、；;]+|\bPR\s*#?\d+|\b[0-9a-f]{7,40}\b|[會会][話话]回[覆复]", material))
+        vacuous = normalized in EMPTY_RESULTS or bool(VACUOUS_RESULT_RE.fullmatch(normalized))
+        if result.lower() in EMPTY_CELL or vacuous:
+            error(lineno, "The result must state a concrete conclusion, not just \"done\" or \"completed\".")
+        if status in {vocab.DONE, vocab.ADOPTED}:
+            # A file path also locates local material; a bare preview name is not an address.
+            located = (any(m.group(2).strip().lower() not in EMPTY_CELL for m in LEDGER_LINK_RE.finditer(material))
+                       or LOCATED_RE.search(material))
             if not located:
-                error(lineno, f"{status}须有材料链接、文件地址、commit、PR 或明确写會話回覆。")
-        if status == "被覆蓋":
-            target = re.search(
-                r"(?:被|由)\s*(.+?)\s*(?:取代|替代|覆蓋|覆盖)|"
-                r"(?:取代者|替代者|覆蓋者|覆盖者|改為|改为|改由)[:：]?\s*(.+)", result)
-            if not target or next((g for g in target.groups() if g), "").strip() in EMPTY_CELL | {"後續要求", "后续要求", "後續需求", "后续需求", "其他要求", "其他需求"}:
-                error(lineno, "被覆蓋的结果须指出被哪一列或哪件事取代。")
-        if status == "排除":
-            no_reason = re.fullmatch(
-                r"(?:已|已经|已經)?(?:排除|取消|不做|不採納|不采纳|不執行|不执行)"
-                r"(?:(?:這|这|該|该|此)(?:個|个)?(?:要求|需求|事項|事项|任務|任务))?", normalized)
-            if result in EMPTY_CELL or vacuous or no_reason or normalized in {"無需處理", "无需处理"}:
-                error(lineno, "排除须在结果写原因。")
+                error(lineno, f"{status} needs a material link, file path, commit, PR, or the literal \"session reply\".")
+        if status == vocab.SUPERSEDED:
+            target = SUPERSEDED_RE.search(result)
+            named = next((g for g in target.groups() if g), "").strip().rstrip(".。").lower() if target else ""
+            if named in EMPTY_CELL | VAGUE_TARGETS:
+                error(lineno, "A superseded result must name the row or matter that replaced it, e.g. \"replaced by <X>\".")
+        if status == vocab.EXCLUDED:
+            if result.lower() in EMPTY_CELL or vacuous or NO_REASON_RE.fullmatch(normalized):
+                error(lineno, "An excluded result must state the reason.")
     close_period(last_line)
     if not periods:
-        errors.append("缺少时期标题：## <YYYY-MM-DD> 起（主题）。")
+        errors.append(f"Missing period heading: {vocab.PERIOD_HINT}.")
+    summary = {**counts, **{legacy: counts[state] for state, legacy in vocab.PLUGIN_SUMMARY_KEYS.items()}}
     return {"ok": not errors, "stats": {"periods": periods, "rows": rows}, "summary": summary, "errors": errors}
 
 
@@ -290,12 +315,12 @@ def check_workbook_file(file_path: Path, **check_args):
 
 
 def route_stem(body: str) -> str:
-    """路线行冒号或左括号前的阶段主干名称，作为跨编辑稳定的行标识。"""
+    """Stage name before the first colon or opening parenthesis; a row identity that survives edits."""
     return re.split(r"[（(—\-:：]", body.split("←", 1)[0].strip(), maxsplit=1)[0].strip()
 
 
 def parse_schedule(text: str, now: datetime):
-    """解析 `MM-DD HH:MM`（可带年份）为本地时间；省略年份时取离 now 最近的那一年。"""
+    """Parse `MM-DD HH:MM` (optionally with a year) as local time; without a year pick the year closest to now."""
     m = SCHEDULE_RE.search(text)
     if not m:
         return None
@@ -310,40 +335,41 @@ def parse_schedule(text: str, now: datetime):
 
 
 def parse_marker(body: str, now: datetime):
-    """解析未完成行 `←` 之后的状态。返回 (state, detail)：state 为四种关键词之一，无效时为 None、detail 写原因。"""
+    """Parse the state after `←` on an open line. Returns (state, detail): state is one of the four canonical
+    states, or None with detail giving the reason."""
     if "←" not in body:
-        return None, "缺状态"
+        return None, "no state"
     marker = body.rsplit("←", 1)[1].strip()
-    for keyword in STATE_KEYWORDS:
-        if not marker.startswith(keyword):
-            continue
-        rest = marker[len(keyword):]
-        if keyword == STATE_RUNNING and not THREAD_ID_RE.search(body):
-            return None, "进行中但没写线程 ID"
-        if keyword == STATE_SCHEDULED and parse_schedule(rest, now) is None:
-            return None, "定时没写 MM-DD HH:MM"
-        if keyword == STATE_QUEUED_AFTER:
-            reason = re.split(r"[:：]", rest, maxsplit=1)
-            if "后" not in reason[0] or len(reason) < 2 or not reason[1].strip():
-                return None, "排在…后 没写依赖的产出"
-        return keyword, marker
-    return None, f"状态「{marker[:12]}」不在四种之内"
+    matched = vocab.match_state(marker)
+    if matched is None:
+        return None, f"state \"{marker[:16]}\" is not one of the four"
+    state, literal, rest = matched
+    if state == STATE_RUNNING and not THREAD_ID_RE.search(body):
+        return None, "in progress without a thread ID"
+    if state == STATE_SCHEDULED and parse_schedule(rest, now) is None:
+        return None, "scheduled without MM-DD HH:MM"
+    if state == STATE_QUEUED_AFTER and vocab.queued_target(literal, rest) is None:
+        return None, "after <item> without the dependent output"
+    return state, marker
 
 
 def state_signature(body: str):
-    """状态签名：进行中/等用户只看关键词（换线程 ID 不算跃迁），定时看时间，排在看依赖对象。"""
+    """State signature: in progress / waiting on user compare the state only (a new thread ID is not a transition),
+    scheduled compares the time, after compares the dependency."""
     if "←" not in body:
         return None
     marker = body.rsplit("←", 1)[1].strip()
-    if marker.startswith(STATE_SCHEDULED):
+    matched = vocab.match_state(marker)
+    if matched is None:
+        return ("other", marker)
+    state, literal, rest = matched
+    if state == STATE_SCHEDULED:
         m = SCHEDULE_RE.search(marker)
-        return (STATE_SCHEDULED, m.group(0) if m else marker)
-    if marker.startswith(STATE_QUEUED_AFTER):
-        return (STATE_QUEUED_AFTER, re.split(r"[:：]", marker, maxsplit=1)[0])
-    for keyword in (STATE_RUNNING, STATE_WAITING_USER):
-        if marker.startswith(keyword):
-            return (keyword,)
-    return ("其他", marker)
+        return (state, m.group(0) if m else marker)
+    if state == STATE_QUEUED_AFTER:
+        target = vocab.queued_target(literal, rest)
+        return (state, target[0] if target else rest)
+    return (state,)
 
 
 def table_cells(line: str):
@@ -351,18 +377,19 @@ def table_cells(line: str):
 
 
 def parse_todos(parsed):
-    """解析用户待办表格；按表头名取列，缺表头时按模板列序。"""
-    columns = {"状态": 0, "事项": 1, "为什么只能用户做": 2, "挡住": 3, "提出": 4}
+    """Parse the user to-do table by header name (Chinese headers map to English); without a header use template order."""
+    columns = {"Status": 0, "Item": 1, "Why only the user": 2, "Blocks": 3, "Raised": 4}
     todos = []
-    for lineno, raw in parsed["sections"].get("用户待办", []):
+    for lineno, raw in parsed["sections"].get(TODOS, []):
         s = raw.strip()
         if not (s.startswith("|") and s.endswith("|")):
             continue
         cells = table_cells(s)
         if all(set(c) <= {"-", ":", " "} for c in cells):
             continue
-        if "状态" in cells and "事项" in cells:
-            columns = {name: idx for idx, name in enumerate(cells)}
+        names = [vocab.todo_column(c) for c in cells]
+        if "Status" in names and "Item" in names:
+            columns = {name: idx for idx, name in enumerate(names)}
             continue
 
         def cell(name):
@@ -371,12 +398,16 @@ def parse_todos(parsed):
 
         todos.append({
             "line": lineno,
-            "status": cell("状态"),
-            "item": cell("事项"),
-            "reason": cell("为什么只能用户做"),
-            "blocks": cell("挡住"),
+            "status": cell("Status"),
+            "item": cell("Item"),
+            "reason": cell("Why only the user"),
+            "blocks": cell("Blocks"),
         })
     return todos
+
+
+def is_open_todo(todo) -> bool:
+    return vocab.todo_status(todo["status"]) == vocab.TODO_OPEN
 
 
 def plain_label(text: str, limit=24) -> str:
@@ -385,7 +416,7 @@ def plain_label(text: str, limit=24) -> str:
 
 
 def row_head(body: str) -> str:
-    """路线行第一个冒号前的标题部分（先展开 Markdown 链接，免得 URL 里的冒号截断）。"""
+    """Title part before the route line's first colon (links expanded first so URL colons do not cut it)."""
     head = MD_LINK_RE.sub(r"\1", body.split("←", 1)[0])
     return re.split(r"[:：]", head, maxsplit=1)[0]
 
@@ -393,8 +424,8 @@ def row_head(body: str) -> str:
 def stage_ids(text: str):
     ids = set()
     for m in STAGE_ID_RE.finditer(text):
-        prefix = m.group(1).lower()
-        for part in re.split(r"[、,，/和]", m.group(2)):
+        prefix = STAGE_PREFIXES.get(m.group(1), m.group(1).lower())
+        for part in re.split(_LIST_SEP, m.group(2), flags=re.I):
             nums = [int(n) for n in re.findall(r"\d+", part)]
             if len(nums) >= 2 and 0 <= nums[1] - nums[0] < 100:
                 ids.update((prefix, n) for n in range(nums[0], nums[1] + 1))
@@ -408,7 +439,8 @@ def squash(text: str) -> str:
 
 
 def refers_to(text: str, head: str) -> bool:
-    """text（待办“挡住”栏或依赖对象）是否指向标题为 head 的路线行：有阶段编号时比编号，否则比去空白后的标题。"""
+    """Whether text (a to-do's Blocks cell or a dependency) points at the route line titled head: compare stage
+    numbers when present, otherwise the whitespace-free title."""
     ids = stage_ids(head)
     if ids:
         return bool(ids & stage_ids(text))
@@ -422,7 +454,7 @@ def normalize_thread(raw: dict) -> dict:
         "id": raw.get("id"),
         "status": raw.get("status"),
         "archived": bool(raw.get("archivedAt")),
-        # queuedWork 为 waiting 才是还有消息等着送达；failed 是送达失败，不算在动。
+        # Only queuedWork == waiting means messages still await delivery; failed is a failed delivery, not motion.
         "queued": raw.get("queuedWork") == "waiting",
         "interaction": bool(raw.get("hasPendingInteraction")),
         "background": any((activity.get(k) or 0) > 0 for k in ALIVE_ACTIVITY_KEYS),
@@ -434,7 +466,8 @@ def normalize_thread(raw: dict) -> dict:
 
 
 def thread_state(info, now_ts: float, grace_seconds: float) -> str:
-    """alive=在跑/排队/有后台活动；recent=刚结束不到宽限期（完成通知可能还在路上）。"""
+    """alive = running, queued or with background activity; recent = finished within the grace period (the
+    completion notice may still be on its way)."""
     if info is None:
         return "missing"
     if info["archived"]:
@@ -453,29 +486,29 @@ def thread_state(info, now_ts: float, grace_seconds: float) -> str:
 def describe_thread(tid: str, state: str, info, now_ts: float) -> str:
     if state == "stopped":
         hours = (now_ts - info["updated_at"]) / 3600
-        return f"{tid} 已空闲 {hours:.1f} 小时"
-    return f"{tid} " + {"missing": "找不到", "archived": "已归档", "failed": "失败且没有排队的重试",
-                        "interaction": "在等待交互"}.get(state, state)
+        return f"{tid} idle for {hours:.1f} h"
+    return f"{tid} " + {"missing": "not found", "archived": "archived", "failed": "failed with no retry queued",
+                        "interaction": "waiting for interaction"}.get(state, state)
 
 
 def bb_thread_list(*args):
-    """调用 `bb thread list ... --json`，返回规范化线程列表；失败抛 RuntimeError。"""
+    """Run `bb thread list ... --json` and return normalized threads; raises RuntimeError on failure."""
     try:
         res = subprocess.run(["bb", "thread", "list", *args, "--json"], capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise RuntimeError(f"bb thread list 调用失败：{exc}") from exc
+        raise RuntimeError(f"bb thread list could not run: {exc}") from exc
     try:
         data = json.loads(res.stdout)
     except ValueError as exc:
-        raise RuntimeError(f"bb thread list 返回非 JSON：{res.stderr.strip()[:300]}") from exc
+        raise RuntimeError(f"bb thread list returned non-JSON: {res.stderr.strip()[:300]}") from exc
     if res.returncode or not isinstance(data, list):
-        raise RuntimeError(f"bb thread list 失败：{res.stdout.strip()[:300] or res.stderr.strip()[:300]}")
+        raise RuntimeError(f"bb thread list failed: {res.stdout.strip()[:300] or res.stderr.strip()[:300]}")
     return [normalize_thread(t) for t in data]
 
 
 def fetch_threads(ids):
-    """按 ID 批量查线程，返回 {id: info}；查不到的 ID 不出现在结果里。"""
-    # bb thread list 没有按 ID 过滤的参数；整表拉取后筛选，未命中的再查一次归档表。
+    """Look up threads by ID and return {id: info}; IDs not found are absent."""
+    # bb thread list cannot filter by ID: fetch the whole list, then look up misses in the archived list.
     wanted = set(ids)
     if not wanted:
         return {}
@@ -491,10 +524,12 @@ def fetch_threads(ids):
 
 
 def waiting_on_background(tid: str) -> bool:
-    """空闲线程是否在等会叫醒它的东西；这两类在 activity 里都看不到，不查就会误报停摆。
+    """Whether an idle thread waits on something that will wake it; neither shows in activity, so skipping this
+    check would report a false stall.
 
-    - 在跑的子线程，例如它派出的独立审查，完成后回报给它；
-    - 没人键入过、仍在跑的线程级持久终端（bb terminal），长等待托管在这里。人开着的交互 shell 有键入记录，不算。
+    - a running child thread, e.g. an independent review it dispatched, which reports back on completion;
+    - a running thread-level persistent terminal (bb terminal) nobody has typed into, hosting a long wait. An
+      interactive shell a person opened has typed input and does not count.
     """
     try:
         children = bb_thread_list("--parent-thread", tid, "--include-hidden")
@@ -507,7 +542,8 @@ def waiting_on_background(tid: str) -> bool:
 
 
 def bb_terminal_sessions(tid: str):
-    """`bb terminal list --thread <id> --json` 的会话列表（只列未结束的）；查询失败返回空表，照旧按停着判断。"""
+    """Sessions from `bb terminal list --thread <id> --json` (unfinished only); on failure return an empty list
+    and keep judging the thread as settled."""
     try:
         res = subprocess.run(["bb", "terminal", "list", "--thread", tid, "--json"],
                              capture_output=True, text=True, timeout=30)
@@ -518,9 +554,9 @@ def bb_terminal_sessions(tid: str):
 
 
 def running_thread_ids(text: str):
-    """仅提取未完成且标为「进行中」的路线引用；不改变对账的 referenced_threads 口径。"""
+    """Thread IDs on open route lines marked "in progress" only; reconcile's referenced_threads is unchanged."""
     ids = set()
-    for _, raw in parse_workbook(text)["sections"].get("路线", []):
+    for _, raw in parse_workbook(text)["sections"].get(ROUTE, []):
         match = CHECKBOX_RE.match(raw.strip())
         if match and match.group(1).lower() != "x":
             body = match.group(2)
@@ -531,29 +567,32 @@ def running_thread_ids(text: str):
 
 def reconcile_workbook(text: str, now: datetime | None = None, threads: dict | None = None,
                        unlisted_alive: int = 0, grace_minutes: int = DEFAULT_GRACE_MINUTES):
-    """收尾对账。threads 为 None 时只做静态检查；给出时核对「进行中」线程的存活。
+    """Closing reconciliation. With threads None only static checks run; otherwise "in progress" threads are
+    checked for liveness.
 
-    unlisted_alive>0 表示管家另有未写进路线的在跑子线程（工作簿取自远端、可能还没提交新线程 ID），
-    这时「进行中但线程已停」降为 minor。problems 里 severity=nudge 的项让 ok 为 False。
+    unlisted_alive > 0 means the steward has running child threads not yet written into the route (the workbook
+    comes from a remote and may lack the new thread IDs); "in progress but the thread stopped" then drops to
+    minor. Any problem with severity nudge makes ok False.
     """
     now = now or datetime.now()
     now_ts = now.timestamp()
     grace = grace_minutes * 60
     parsed = parse_workbook(text)
     problems = []
-    stats = {"open_rows": 0, STATE_RUNNING: 0, STATE_WAITING_USER: 0, STATE_SCHEDULED: 0, STATE_QUEUED_AFTER: 0}
+    stats = {"open_rows": 0, **{key: 0 for key in STATE_STATS.values()}}
     referenced = set()
 
     def add(kind, severity, line, label, detail):
         problems.append({"kind": kind, "severity": severity, "line": line, "label": label, "detail": detail})
 
     rows = []
-    for lineno, raw in parsed["sections"].get("路线", []):
+    for lineno, raw in parsed["sections"].get(ROUTE, []):
         m = CHECKBOX_RE.match(raw.strip())
         if m:
             rows.append({"line": lineno, "done": m.group(1).lower() == "x", "body": m.group(2), "head": row_head(m.group(2))})
     todos = parse_todos(parsed)
-    blocking = [t for t in todos if t["status"] == "待办" and t["blocks"] not in NON_BLOCKING]
+    open_todos = [t for t in todos if is_open_todo(t)]
+    blocking = [t for t in open_todos if vocab.is_blocking(t["blocks"])]
 
     for row in rows:
         lineno, body = row["line"], row["body"]
@@ -566,44 +605,53 @@ def reconcile_workbook(text: str, now: datetime | None = None, threads: dict | N
         if state is None:
             add("no_state", "nudge", lineno, label, detail)
             continue
-        stats[state] += 1
+        stats[STATE_STATS[state]] += 1
         if state == STATE_WAITING_USER:
             if not any(refers_to(t["blocks"], row["head"]) for t in blocking):
-                add("user_wait_unbacked", "nudge", lineno, label, "标等用户，但没有“挡住”栏指向这一行的未完成待办")
+                add("user_wait_unbacked", "nudge", lineno, label,
+                    "marked waiting on user, but no open to-do has a Blocks cell pointing at this line")
         elif state == STATE_QUEUED_AFTER:
-            target = re.split(r"[:：]", detail, maxsplit=1)[0][len(STATE_QUEUED_AFTER):].rsplit("后", 1)[0].strip()
-            # 依赖对上本簿路线行且都已完成时，这一行已经可以推进；对不上的视为外部依赖，不判。
+            _, literal, rest = vocab.match_state(detail)
+            target = vocab.queued_target(literal, rest)[0]
+            # When the dependency matches route lines here and all are done, this line can move; unmatched
+            # dependencies are external and not judged.
             matched = [r for r in rows if r is not row and refers_to(target, r["head"])]
             if matched and all(r["done"] for r in matched):
-                add("dependency_done", "nudge", lineno, label, f"前置「{plain_label(target)}」已完成，这一行该推进了")
+                add("dependency_done", "nudge", lineno, label,
+                    f"prerequisite \"{plain_label(target)}\" is done; this line should move")
         elif state == STATE_SCHEDULED:
-            due = parse_schedule(detail[len(STATE_SCHEDULED):], now)
+            due = parse_schedule(vocab.match_state(detail)[2], now)
             if due is not None and now_ts - due.timestamp() > grace:
-                add("schedule_passed", "nudge", lineno, label, f"定时 {due:%m-%d %H:%M} 已过")
+                add("schedule_passed", "nudge", lineno, label, f"scheduled time {due:%m-%d %H:%M} has passed")
         elif state == STATE_RUNNING and threads is not None:
             ids = THREAD_ID_RE.findall(body)
             states = {tid: thread_state(threads.get(tid), now_ts, grace) for tid in ids}
             waiting = [tid for tid, st in states.items() if st == "interaction"]
             if waiting:
-                add("child_waiting", "nudge", lineno, label, "、".join(f"{tid} 在等待交互" for tid in waiting))
+                add("child_waiting", "nudge", lineno, label, "; ".join(f"{tid} waiting for interaction" for tid in waiting))
             if not waiting and not any(st in ("alive", "recent") for st in states.values()):
-                detail = "标进行中，但" + "、".join(describe_thread(tid, st, threads.get(tid), now_ts) for tid, st in states.items())
+                detail = "marked in progress, but " + "; ".join(
+                    describe_thread(tid, st, threads.get(tid), now_ts) for tid, st in states.items())
                 if unlisted_alive:
-                    add("stale_running", "minor", lineno, label, detail + f"（另有 {unlisted_alive} 条未写进路线的子线程在跑）")
+                    add("stale_running", "minor", lineno, label,
+                        detail + f" ({unlisted_alive} more child threads not in the route are running)")
                 else:
                     add("stale_running", "nudge", lineno, label, detail)
             elif not waiting:
-                # 一行挂多个线程时，只要有一个在跑整行就像是健康的；停下的那个会被掩盖，逐个报出来。
+                # With several threads on one line, one running thread makes the line look healthy and hides
+                # the stopped ones; report each of them.
                 stopped = {tid: st for tid, st in states.items() if st not in ("alive", "recent")}
                 if stopped:
-                    detail = "同行有线程在跑，但" + "、".join(describe_thread(tid, st, threads.get(tid), now_ts) for tid, st in stopped.items())
-                    add("stale_sibling", "minor" if unlisted_alive else "nudge", lineno, label, detail + "；拆成各自一行或更新这一行")
+                    detail = "a thread on this line is running, but " + "; ".join(
+                        describe_thread(tid, st, threads.get(tid), now_ts) for tid, st in stopped.items())
+                    add("stale_sibling", "minor" if unlisted_alive else "nudge", lineno, label,
+                        detail + "; split them into separate lines or update this line")
 
-    for todo in (t for t in todos if t["status"] == "待办"):
-        if not todo["reason"].startswith(TODO_CATEGORIES):
+    for todo in open_todos:
+        if not vocab.has_category(todo["reason"]):
             severity = "nudge" if todo in blocking else "minor"
             add("todo_category_missing", severity, todo["line"], plain_label(todo["item"]),
-                "用户待办原因没以类别开头（" + "、".join(TODO_CATEGORIES) + "）")
+                "the user to-do reason does not start with a category (" + ", ".join(TODO_CATEGORIES) + ")")
 
     return {
         "ok": not any(p["severity"] == "nudge" for p in problems),
@@ -614,10 +662,11 @@ def reconcile_workbook(text: str, now: datetime | None = None, threads: dict | N
 
 
 def extract_state_signature(text: str):
-    """提取决定工作簿是否发生实质状态跃迁的签名，忽略括号内的过程文字微调。"""
+    """Signature that decides whether the workbook made a real state transition; ignores wording tweaks in
+    parentheses."""
     parsed = parse_workbook(text)
     route_sig = []
-    for _, raw in parsed["sections"].get("路线", []):
+    for _, raw in parsed["sections"].get(ROUTE, []):
         s = raw.strip()
         m = CHECKBOX_RE.match(s)
         if m:
@@ -625,12 +674,12 @@ def extract_state_signature(text: str):
             route_sig.append((route_stem(m.group(2)), checked, state_signature(m.group(2))))
 
     decision_sig = []
-    for _, raw in parsed["sections"].get("关键决策", []):
+    for _, raw in parsed["sections"].get(DECISIONS, []):
         s = raw.strip()
         if s.startswith("- "):
             decision_sig.append(re.sub(r"\s+", " ", s[2:].strip()))
 
-    todo_sig = [(t["status"], t["item"], t["blocks"]) for t in parse_todos(parsed)]
+    todo_sig = [(vocab.todo_status(t["status"]), t["item"], t["blocks"]) for t in parse_todos(parsed)]
 
     return {
         "route": route_sig,
@@ -684,11 +733,11 @@ def should_commit_workbook(file_path: Path, check_args: dict, baseline_text: str
     new_sig = extract_state_signature(text)
     changed = []
     if old_sig["route"] != new_sig["route"]:
-        changed.append("路线")
+        changed.append(ROUTE)
     if old_sig["decisions"] != new_sig["decisions"]:
-        changed.append("关键决策")
+        changed.append(DECISIONS)
     if old_sig["todos"] != new_sig["todos"]:
-        changed.append("用户待办")
+        changed.append(TODOS)
 
     return {
         **check_res,
@@ -730,7 +779,7 @@ def init_workbook(repo=None):
             handle.write(("\n" if old and not old.endswith("\n") else "") + "/.local/\n")
         result = ignored()
     if result.returncode:
-        raise RuntimeError("无法确认项目忽略 .local/steward：" + result.stderr.strip())
+        raise RuntimeError("Cannot confirm the project ignores .local/steward: " + result.stderr.strip())
     imported = []
     legacy = root / "docs" / "steward"
     if not any(child.name != ".git" for child in path.iterdir()) and legacy.is_dir():
@@ -744,7 +793,7 @@ def init_workbook(repo=None):
                 shutil.copy2(child, target)
             imported.append(child.name)
         if imported:
-            print("仓库副本请经 MR 删除、AGENTS.md 路由改指 .local/steward/", file=sys.stderr)
+            print("Delete the repository copies via MR and point the AGENTS.md routing line at .local/steward/", file=sys.stderr)
     # rev-parse alone would find the enclosing project; require a git marker here.
     if not (path / ".git").exists():
         subprocess.run(["git", "-C", str(path), "init"], capture_output=True,
@@ -760,11 +809,11 @@ def format_workbook(path, *, dry_run=False, verbose_warnings=False):
     if changed and not dry_run:
         path.write_text(formatted)
     if not verbose_warnings:
-        historical = "：历史完成时间待核实"
+        historical = HISTORICAL_WARNING
         count = sum(warning.endswith(historical) for warning in warnings)
         warnings = [warning for warning in warnings if not warning.endswith(historical)]
         if count:
-            warnings.append(f"历史完成时间待核实：{count} 条（--verbose-warnings 展开）")
+            warnings.append(f"historical completion time unverified: {count} items (expand with --verbose-warnings)")
     return formatted, {"ok": True, "file": str(path), "changed": changed,
                        "timezone": "Asia/Singapore", "warnings": warnings}
 
@@ -791,7 +840,7 @@ def verify_workbook(path, args, check_args):
             stage = "ledger-check"
             ledger = steps["check"]["ledger"]
             if ledger["kind"] == "history":
-                steps[stage] = {"ok": False, "applicable": False, "errors": ["历史流水账；请通过 --ledger 指定标准要求帐"]}
+                steps[stage] = {"ok": False, "applicable": False, "errors": ["History log; pass a standard requirement ledger with --ledger"]}
             else:
                 steps[stage] = check_ledger(Path(ledger["path"]).read_text())
             if steps[stage]["ok"]:
@@ -807,18 +856,20 @@ def verify_workbook(path, args, check_args):
 def parser():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--mode", required=True, choices=["init", "path", "format", "check", "should-commit", "reconcile", "ledger-check", "verify"],
-                   help="verify=顺序执行 format、check、ledger-check、reconcile；ledger-check=校验要求帐；check=校验结构、容量与要求帐入口；should-commit=校验并判断相对 HEAD 是否有实质状态变化；reconcile=收尾对账")
-    p.add_argument("--file", help="工作簿或要求帐 Markdown 文件路径")
-    p.add_argument("--ledger", help="verify 时覆盖工作簿标头的要求帐入口（本地路径）")
-    p.add_argument("--dry-run", action="store_true", help="verify 时在内存中格式化，不写工作簿")
-    p.add_argument("--json", action="store_true", help="verify/ledger-check 输出完整 JSON")
-    p.add_argument("--verbose-warnings", action="store_true", help="verify --json/format 时逐条显示历史时间 warning")
-    p.add_argument("--repo", help="init/path 的项目路径；其他模式为 Git 来源仓库绝对路径")
+                   help="verify=run format, check, ledger-check and reconcile in order; ledger-check=validate the requirement "
+                        "ledger; check=validate structure, size and the ledger entry; should-commit=validate and decide "
+                        "whether the state changed relative to HEAD; reconcile=closing reconciliation")
+    p.add_argument("--file", help="Workbook or requirement ledger Markdown file")
+    p.add_argument("--ledger", help="verify: override the workbook header's ledger entry (local path)")
+    p.add_argument("--dry-run", action="store_true", help="verify: format in memory without writing the workbook")
+    p.add_argument("--json", action="store_true", help="verify/ledger-check: print the full JSON")
+    p.add_argument("--verbose-warnings", action="store_true", help="verify --json/format: list each historical-time warning")
+    p.add_argument("--repo", help="init/path: project path; other modes: absolute path of the Git source repository")
     revision = p.add_mutually_exclusive_group()
-    revision.add_argument("--ref", help="核实远端并固定 SHA，如 origin/main")
-    revision.add_argument("--revision", help="本次操作已固定的 40 位 SHA；不宣称为最新")
+    revision.add_argument("--ref", help="Verify the remote and pin a SHA, e.g. origin/main")
+    revision.add_argument("--revision", help="40-character SHA already pinned by this operation; not claimed to be latest")
     p.add_argument("--ledger-kind", choices=['standard', 'history'], default='standard')
-    p.add_argument("--live", action="store_true", help="reconcile 时经 bb thread list 核对「进行中」线程是否还活着")
+    p.add_argument("--live", action="store_true", help="reconcile: check through bb thread list that \"in progress\" threads are alive")
     p.add_argument("--max-nonempty-lines", type=int, default=DEFAULT_MAX_NONEMPTY_LINES)
     p.add_argument("--max-line-chars", type=int, default=DEFAULT_MAX_LINE_CHARS)
     p.add_argument("--max-route-items", type=int, default=DEFAULT_MAX_ROUTE_ITEMS)
@@ -835,10 +886,10 @@ def report_result(args, res):
         errors = [error for result in results for error in result.get("errors", [])]
         problems = sum(len(result.get("problems", [])) for result in results)
         warnings = sum(len(result.get("warnings", [])) for result in results)
-        status = "ok" if res["ok"] else f"失败（{res.get('failed_step', args.mode)}）"
-        summary = f"{args.mode} {status}，问题 {len(errors) + problems} 项，提醒 {warnings} 项"
+        status = "ok" if res["ok"] else f"failed ({res.get('failed_step', args.mode)})"
+        summary = f"{args.mode} {status}, {len(errors) + problems} problems, {warnings} warnings"
         if errors:
-            summary += "。 " + " ".join(errors[0].splitlines())
+            summary += ". " + " ".join(errors[0].splitlines())
         print(summary)
     return 0 if res["ok"] else 2
 
@@ -847,14 +898,14 @@ def main():
     cli = parser()
     args = cli.parse_args()
     if (args.ledger is not None or args.dry_run) and args.mode != "verify":
-        cli.error("--ledger/--dry-run 仅用于 verify")
+        cli.error("--ledger/--dry-run apply only to verify")
     if args.verbose_warnings and args.mode not in ("format", "verify"):
-        cli.error("--verbose-warnings 仅用于 format/verify")
+        cli.error("--verbose-warnings applies only to format/verify")
     if args.ledger_kind != "standard" and args.mode != "ledger-check":
-        cli.error("--ledger-kind 仅用于 ledger-check")
+        cli.error("--ledger-kind applies only to ledger-check")
     if args.mode in ("init", "path"):
         if args.file or args.ref or args.revision:
-            parser().error("init/path 不使用 --file、--ref 或 --revision")
+            parser().error("init/path take no --file, --ref or --revision")
         try:
             if args.mode == "path":
                 print(workbook_location(args.repo)[0])
@@ -865,9 +916,9 @@ def main():
             print(json.dumps({"ok": False, "errors": [str(exc)]}, ensure_ascii=False))
             return 2
     if not args.file:
-        parser().error("此模式需要 --file")
+        parser().error("this mode needs --file")
     if args.mode in ("format", "verify") and (args.repo or args.ref or args.revision):
-        cli.error("format/verify 只接受本地编辑文件；Git 来源先在对应分支检出")
+        cli.error("format/verify accept only a locally edited file; check out the Git source branch first")
     if args.mode == "format":
         try:
             _, res = format_workbook(Path(args.file).expanduser().resolve(),
@@ -878,7 +929,7 @@ def main():
         return 0 if res["ok"] else 2
     fpath = Path(args.file).expanduser()
     if not args.repo and not fpath.is_file():
-        return report_result(args, {"ok": False, "file": str(fpath), "errors": [f"文件不存在：{fpath}"]})
+        return report_result(args, {"ok": False, "file": str(fpath), "errors": [f"File not found: {fpath}"]})
     check_args = {
         "max_nonempty_lines": args.max_nonempty_lines,
         "max_line_chars": args.max_line_chars,
@@ -890,7 +941,7 @@ def main():
     elif args.repo or args.ref or args.revision:
         try:
             if not args.repo or not Path(args.repo).is_absolute() or not (args.ref or args.revision) or args.mode == 'should-commit':
-                raise source.SourceError('Git 来源需要 --repo 与 --ref/--revision；不支持 should-commit')
+                raise source.SourceError('A Git source needs --repo and --ref/--revision; should-commit is not supported')
             sha = source.pin(args.repo, args.ref) if args.ref else args.revision
             file = source.relative_path(args.file)
 
@@ -901,7 +952,7 @@ def main():
             if args.mode == 'check':
                 res = check_workbook_source(file, text, read, True, **check_args)
             elif args.mode == 'ledger-check':
-                res = check_ledger(text) if args.ledger_kind == 'standard' else {'ok': False, 'applicable': False, 'errors': ['历史流水账；标准五列表统计不适用']}
+                res = check_ledger(text) if args.ledger_kind == 'standard' else {'ok': False, 'applicable': False, 'errors': [HISTORY_NOT_APPLICABLE]}
             else:
                 threads = fetch_threads(reconcile_workbook(text)['referenced_threads']) if args.live else None
                 res = reconcile_workbook(text, threads=threads)
@@ -913,7 +964,7 @@ def main():
     elif args.mode == "ledger-check":
         try:
             res = check_ledger(fpath.read_text()) if args.ledger_kind == "standard" else {
-                "ok": False, "applicable": False, "errors": ["历史流水账；标准五列表统计不适用"]}
+                "ok": False, "applicable": False, "errors": [HISTORY_NOT_APPLICABLE]}
         except (OSError, ValueError) as exc:
             res = {"ok": False, "errors": [str(exc)]}
         res["file"] = str(fpath)
@@ -924,7 +975,7 @@ def main():
             try:
                 threads = fetch_threads(reconcile_workbook(text)["referenced_threads"])
             except RuntimeError as exc:
-                warnings.append(f"线程核对跳过：{exc}")
+                warnings.append(f"thread check skipped: {exc}")
         res = {"file": str(fpath), **reconcile_workbook(text, threads=threads)}
         if warnings:
             res["warnings"] = warnings

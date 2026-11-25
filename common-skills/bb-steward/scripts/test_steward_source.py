@@ -8,8 +8,11 @@ from unittest.mock import patch
 
 import steward_source as source
 import steward_watch as watch
-from test_steward_workbook import VALID_WORKBOOK
-from test_steward_ledger import FIXTURE
+from test_steward_english import EN_WORKBOOK, LEDGER as FIXTURE
+
+VALID_WORKBOOK = EN_WORKBOOK.replace(
+    'Updated: 2026-10-26; per-item status, results and material in [Requirements ledger](topic-requirements.md).',
+    'Updated: 2026-10-26')
 
 
 class GitSourceTests(unittest.TestCase):
@@ -25,7 +28,7 @@ class GitSourceTests(unittest.TestCase):
         self.git('remote', 'add', 'origin', str(self.remote))
         self.workbook = self.repo / 'docs/workbook.md'
         self.workbook.parent.mkdir()
-        self.workbook.write_text(VALID_WORKBOOK.replace('更新：2026-10-14', '[要求帐](ledger.md)'))
+        self.workbook.write_text(VALID_WORKBOOK.replace('Updated: 2026-10-26', '[Requirements ledger](ledger.md)'))
         (self.repo / 'docs/ledger.md').write_text(FIXTURE)
         self.commit('first')
         self.entry = {'repo': str(self.repo), 'ref': 'origin/main', 'path': 'docs/workbook.md', 'workbook': str(self.workbook)}
@@ -47,8 +50,8 @@ class GitSourceTests(unittest.TestCase):
     def test_remote_advances_and_disk_missing_or_different_do_not_change_source(self):
         first = source.pin(self.repo, 'origin/main')
         self.workbook.write_text('wrong disk')
-        self.assertIn('项目介绍', watch.read_workbook(self.entry))
-        self.workbook.write_text(VALID_WORKBOOK.replace('更新：2026-10-14', '[要求帐](new.md)'))
+        self.assertIn('Carry maintenance lessons', watch.read_workbook(self.entry))
+        self.workbook.write_text(VALID_WORKBOOK.replace('Updated: 2026-10-26', '[Requirements ledger](new.md)'))
         (self.repo / 'docs/new.md').write_text(FIXTURE)
         second = self.commit('second')
         self.workbook.unlink()
@@ -73,14 +76,14 @@ class GitSourceTests(unittest.TestCase):
         with self.assertRaises(watch.WatchError):
             watch.read_workbook(self.entry)
         with patch.object(source.subprocess, 'run', side_effect=subprocess.TimeoutExpired('git', 15)):
-            with self.assertRaisesRegex(source.SourceError, '超时'):
+            with self.assertRaisesRegex(source.SourceError, 'timed out'):
                 source.pin(self.repo, 'origin/main')
 
     def test_history_index_and_paths_preserve_original_text_without_standard_statistics(self):
-        self.workbook.write_text(VALID_WORKBOOK.replace('更新：2026-10-14', '[要求帐（历史流水账）](history/README.md)'))
+        self.workbook.write_text(VALID_WORKBOOK.replace('Updated: 2026-10-26', '[Requirements ledger (history log)](history/README.md)'))
         history = self.repo / 'docs/history'
         history.mkdir()
-        (history / 'README.md').write_text('[旧账](../ledger.md)')
+        (history / 'README.md').write_text('[old ledger](../ledger.md)')
         sha = self.commit('history')
         code, result = self.checker('--ref', 'origin/main')
         self.assertEqual(code, 0, result)

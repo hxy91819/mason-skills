@@ -8,10 +8,6 @@ triggers:
 
 # BB Steward
 
-<!-- Script-facing literals stay in Chinese on purpose: the workbook headings, route states, to-do categories,
-     ledger columns/statuses and file names below are parsed by scripts/. Headings keep their Chinese name in
-     parentheses because watchdog messages cite sections by that name (e.g. bb-steward「收尾对账」). -->
-
 A steward is first someone the user discusses things with, and only second an orchestrator. The user's questions,
 counter-questions, and "I feel…" / "isn't it…" remarks are discussion: answer the question, state your own judgment
 and which in-flight work it affects; when the user sends several messages in a row, wait until they finish. Only
@@ -38,7 +34,7 @@ rules all follow it.
 After context compaction this skill's body is no longer in context; the summary keeps only a paraphrase and loses a
 bit more with each compaction: one steward, after 16 compactions, had no requirement ledger left in its summary and
 recorded nothing for the next three days. After every compaction, before continuing work, re-read this SKILL.md and
-the "Judgment and invocation (判断与调用)" section of `$bb-model-routing`, then read the workbook and the requirement
+the "Judgment and invocation" section of `$bb-model-routing`, then read the workbook and the requirement
 ledger, and record any user requirements not yet entered.
 
 When the goal is big enough to need Story decomposition and unattended continuous execution, switch to
@@ -46,7 +42,7 @@ When the goal is big enough to need Story decomposition and unattended continuou
 the SPEC delivery route, key decisions into the SPEC settled trade-offs, user to-dos into STATUS needs-attention;
 then delete the workbook. The two systems never coexist.
 
-## One steward, one goal (一个管家一个目标)
+## One steward, one goal
 
 A steward is responsible only for the goal in the workbook title. Stuffing in work outside that goal makes the route
 and decisions messier, fills context faster, compacts more often, and loses the rules faster. The goal can be a
@@ -76,7 +72,7 @@ Splitting work to a new steward is done by this steward, writing the hand-off wh
    peer steward; worker child threads still go through `$bb-model-routing`.
    Always pass `--permission-mode full` (full access) explicitly for a new steward; `auto` mode is forbidden, and
    the mode is neither inherited nor omitted.
-   The first message starts with `/bb-steward 新建目标「<目标>」` and states: the user's exact words on this matter
+   The first message starts with `/bb-steward new goal "<goal>"` and states: the user's exact words on this matter
    with dates, existing child threads with their status and output locations, background material paths, resources
    shared with this steward and how to coordinate (e.g. whom to ask for a test-environment window), off-limits scope,
    related decisions the user has already made, and the next step. Note that this steward's workbook is read-only
@@ -85,15 +81,15 @@ Splitting work to a new steward is done by this steward, writing the hand-off wh
    a one-line `bb thread tell` saying who is now responsible.
 3. User to-dos belonging to the new goal are handed to the new steward and renumbered there; in this workbook mark
    the original items completed and note which number they moved to, so one matter has only one number. Conventions
-   that apply to both sides move into `共用约定.md` (see key decisions under "Workbook").
+   that apply to both sides move into `shared-conventions.md` (see key decisions under "Workbook").
 4. Remove those lines from this workbook's route, record one key-decision line
-   "<item> split to thr_new (date, user request)"; mark the matching requirement-ledger rows `被覆蓋` pointing to the
+   "<item> split to thr_new (date, user request)"; mark the matching requirement-ledger rows `Superseded` pointing to the
    new steward.
 
 After that, ask the user to send messages about this matter directly to the new steward; anything sent to this
 steward is forwarded to the new one.
 
-## Workbook (工作簿)
+## Workbook
 
 One per goal, managed offline on this machine, default path `.local/steward/<topic>.md`; if the project `AGENTS.md`
 specifies otherwise, the project wins. The workbook root sits under the main checkout root (the parent directory of
@@ -106,9 +102,10 @@ projects whose workbook still lives on a remote branch of the project repository
 log, also read [legacy sources](references/legacy-sources.md).
 
 The workbook has exactly three sections, each with its own admission criteria. The section headings are the literal
-`## 路线` (route), `## 关键决策` (key decisions) and `## 用户待办` (user to-dos), in that order; the scripts parse them.
+`## Route`, `## Key decisions` and `## User to-dos`, in that order; the scripts parse them. Workbooks and ledgers
+written with the earlier Chinese vocabulary stay valid and keep their language; the scripts never translate them.
 
-- **Route (`路线`)**: the list of stages and the current position, one line per stage; completed stages also keep
+- **Route**: the list of stages and the current position, one line per stage; completed stages also keep
   one line each, not merged into a summary; unfinished lines end with a `←` status, values listed under "Closing
   reconciliation". Split a line if it contains items that can progress independently; requirements the user raised
   that remain open across turns also enter the route as stages. When the project already has a roadmap (issue, plan
@@ -117,7 +114,7 @@ The workbook has exactly three sections, each with its own admission criteria. T
   Completed lines state the result: remaining parts within authorized scope are split into new lines and carried on;
   things only the user can decide go into user to-dos; a "pending user decision" written only inside a completed line
   is followed up by no one and silently gets dropped.
-- **Key decisions (`关键决策`)**: record only when both hold: the next session would likely redo or reverse the work
+- **Key decisions**: record only when both hold: the next session would likely redo or reverse the work
   without knowing it, and it cannot be derived from code, git or existing docs. One line each: decision, date,
   reason, scope of impact. When a new decision overrides or narrows an old one, update that line in place. When the
   project already has a decision registry (decision map, ADR), keep only the link; what remains here is usually just
@@ -127,20 +124,20 @@ The workbook has exactly three sections, each with its own admission criteria. T
   move out entries whose affected stages are all complete or that have been written into project docs/ADRs (the
   requirement ledger keeps the original words and outcome); exceeding the suggested count is only a reminder, and
   user decisions that still bind stay. When one project has several stewards, conventions that apply to all of them
-  (e.g. how to report spend, who may merge) live only in `共用约定.md` in the workbook directory, and each workbook
-  holds one link line here; when the user changes one of them, the steward that heard it edits that file and
+  (e.g. how to report spend, who may merge) live only in `shared-conventions.md` in the workbook directory, and each
+  workbook holds one link line here; when the user changes one of them, the steward that heard it edits that file and
   `bb thread tell`s the other stewards.
-- **User to-dos (`用户待办`)**: only things the user personally must do. Each has a fixed number (D1, D2…; new numbers
-  increase, existing ones never change), so the user can reply "D3 同意" / "D3 approved". When one project has several
+- **User to-dos**: only things the user personally must do. Each has a fixed number (D1, D2…; new numbers
+  increase, existing ones never change), so the user can reply "D3 approved". When one project has several
   stewards, numbers carry this steward's short prefix (e.g. `HST-D3`, `CI-D3`) so the user does not approve the wrong
   thing in the wrong thread. Each item states what to do, background (what it is, why the user must do it now, what
   happens if not; explain codenames the user doesn't know), recommendation, why only the user can do it, which stage
-  it blocks, date raised, status. "Why only the user can do it" starts with a category, one of the literals
-  `凭据账号` (credentials/accounts), `真机线下` (physical device/offline), `对外沟通` (external communication),
-  `不可逆上线` (irreversible launch), `用户保留` (user reserved — the user explicitly said they decide it); anything
+  it blocks, date raised, status. "Why only the user can do it" starts with a category, written
+  `<category>: <detail>`, one of `credentials`, `physical device` (including offline sessions),
+  `external communication`, `irreversible launch`, `user reserved` (the user explicitly said they decide it); anything
   that fits none of the five is driven by the steward, see "When the user must decide". For items blocking no stage,
-  the "blocks" column says `不挡`. Status is only `待办` (open) or `已完成` (done); when the user says it's done or the
-  steward verifies it, change it to `已完成` and keep the row.
+  the "blocks" column says `not blocking`. Status is only `open` or `done`; when the user says it's done or the
+  steward verifies it, change it to `done` and keep the row.
 
 The workbook is a human-readable status page, not a run log: update it only on stage completion, route changes
 (including the status after `←`, scheduled times, or dependency targets), key-decision changes or user-to-do status
@@ -162,11 +159,11 @@ historical timestamp warning.
 reverse chronological order: completed items by completion time, unfinished by time raised, ties keep original
 order; no grouping by status or blocking. The steward only edits content and status; it never types the current
 time or sorts by hand. The route's first-recorded time lives in an HTML comment and the completion time shows at the
-line end; the to-do table gets `提出` (raised) and `完成` (completed) columns added automatically, numbers unchanged.
+line end; the to-do table gets `Raised` and `Done` columns added automatically, numbers unchanged.
 Times are the moment the script first observed the change; completion transitions are detected relative to HEAD of
 the Git repository containing the file, so commit after each format as usual; rerunning never refreshes existing
 times. Old to-dos keep their raised dates; old route lines without dates use their first-recorded time. Historical
-items already complete at first adoption and lacking a completion time are marked `待核实` (to be verified) and sorted
+items already complete at first adoption and lacking a completion time are marked `unverified` and sorted
 last, rather than passing today off as the historical completion date; verifiable times may be filled in from
 records. A Git-ref workbook is run on the actual edited file on its branch, then committed and pushed per project
 process; read-only remote snapshots are never written.
@@ -174,42 +171,41 @@ process; read-only remote snapshots are never written.
 When a line is too long or structure fails, trim by the admission criteria; the line-count warning is only for
 spotting content that shouldn't be there. When the ledger entry link fails, fix the link target.
 
-## Requirement ledger (要求帐)
+## Requirement ledger
 
-Each goal also gets `.local/steward/<topic>-要求帳.md`, linked from the workbook header in one sentence; no line
+Each goal also gets `.local/steward/<topic>-requirements.md`, linked from the workbook header in one sentence; no line
 limit. Format and examples: see the [workbook template](references/workbook-template.md). The workbook's three
 sections answer where to go next, which trade-offs to remember, and what only the user can do; the requirement
 ledger answers each requirement's status, result and material.
 
 Admission: everything the user has asked for, including research, implementation, operating conventions, additions
 and corrections; one message containing several independent requests becomes several rows. Each requirement gets a
-row with status `進行中` in the same turn it is received; when the status changes, update in place and keep the old
+row with status `In progress` in the same turn it is received; when the status changes, update in place and keep the old
 rows. When taking over an existing goal, backfill historical requirements from readable context, deliverables and
 existing records; for results that cannot be verified, state the gap rather than guessing completion.
 
-Sections by period (`## <start date> 起（<topic>）`), each with one table `| 日期 | 要求 | 狀態 | 結果 | 材料 |`
-(date | requirement | status | result | material). Status uses only these seven literal values (keep these status
-values and headers verbatim even when the project writes prose in another language):
+Sections by period (`## <start date> onward (<topic>)`), each with one table
+`| Date | Requirement | Status | Result | Material |`. Status uses only these seven values:
 
 | Status | Meaning and what the result must say |
 | --- | --- |
-| 完成 (done) | The requested deliverable is accepted; result states actual output and effect |
-| 採納 (adopted) | The suggestion or convention is accepted and written into the relevant rules; state where |
-| 部分採納 (partially adopted) | State what was and wasn't accepted, and where the remainder went |
-| 進行中 (in progress) | Being driven; state current progress or dependency |
-| 待使用者 (awaiting user) | Next step needs user action or a ruling; state the concrete question, matching a workbook user to-do |
-| 被覆蓋 (superseded) | A later requirement replaced this one; result states which row or matter replaced it |
-| 排除 (excluded) | No longer pursued; result states why |
+| Done | The requested deliverable is accepted; result states actual output and effect |
+| Adopted | The suggestion or convention is accepted and written into the relevant rules; state where |
+| Partially adopted | State what was and wasn't accepted, and where the remainder went |
+| In progress | Being driven; state current progress or dependency |
+| Awaiting user | Next step needs user action or a ruling; state the concrete question, matching a workbook user to-do |
+| Superseded | A later requirement replaced this one; result states which row or matter replaced it |
+| Excluded | No longer pursued; result states why |
 
-Material for 完成/採納 must be a locatable link, file path, commit, PR, or the explicit literal `會話回覆` (session
-reply; a date may be attached). Results state quantifiable conclusions, e.g. "CI 21→8 min (-62%)"; when not
+Material for Done/Adopted must be a locatable link, file path, commit, PR, or the explicit literal `session reply`
+(a date may be attached). Results state quantifiable conclusions, e.g. "CI 21→8 min (-62%)"; when not
 quantifiable, state the concrete change and scope, never just "done" in place of a result. Material links should
 open directly; local material notes its applicable scope, temporary previews note their expiry; the script only
 checks the material's form and does not prove it is reachable or the conclusion true.
 
-When the user asks for a summary or "what do I need to decide", reconcile item by item first: check `待使用者` items,
-and also delivered research recommendations still awaiting the user's choice, so that "research done" is not mistaken
-for "recommendation decided"; record pending decisions as the corresponding requirement and user to-do.
+When the user asks for a summary or "what do I need to decide", reconcile item by item first: check `Awaiting user`
+items, and also delivered research recommendations still awaiting the user's choice, so that "research done" is not
+mistaken for "recommendation decided"; record pending decisions as the corresponding requirement and user to-do.
 
 Validate and commit after every ledger update:
 
@@ -220,7 +216,7 @@ python3 scripts/steward_workbook.py --mode ledger-check --file <ledger path>
 `ledger-check` prints a one-line summary by default; exit code 0 means pass, 2 means fail. Add `--json` for the full
 errors and statistics.
 
-## Session start (会话开始)
+## Session start
 
 1. If there is no workbook, run `python3 scripts/steward_workbook.py --mode init [--repo <project path>]`, handle its
    output prompts, then create the workbook and ledger from the template. When creating a new workbook, recover the
@@ -233,11 +229,11 @@ errors and statistics.
    the watchdog (see "Watchdog"); a non-empty `handovers` in its output means you have taken over another thread —
    complete it per "Takeover".
 
-## Takeover (接任)
+## Takeover
 
 After a session fault, model downgrade or too many compactions, the user opens a new thread for you to take over the
 same goal. Registering the watchdog completes the hand-over: the watchdog switches this workbook's registration to
-you, moves the old steward's running, just-finished and `進行中`-referenced child threads under you, cancels the old
+you, moves the old steward's running, just-finished and `in progress`-referenced child threads under you, cancels the old
 thread's queued automatic retries, and tells the old thread to stop. If the registration output `handovers` shows a
 failed step, complete it manually.
 
@@ -255,13 +251,13 @@ own. Backfill the books first, then drive forward:
 - Without `ledger_gap`, read `bb thread log <old thread> --limit 3` and add any requirements the user raised that
   are not yet recorded.
 
-Update one key-decision line in place: `管家：thr_新（MM-DD 接任 thr_旧）` (steward: thr_new, MM-DD took over
-thr_old), and commit per "Workbook".
+Update one key-decision line in place: `Steward: thr_new (took over thr_old on MM-DD)`, and commit per
+"Workbook".
 
-Receiving `[bb-steward 交接]` means you have been taken over: stop dispatching and editing the workbook, point the
+Receiving `[bb-steward handover]` means you have been taken over: stop dispatching and editing the workbook, point the
 user to the new thread if they come to you, no reply needed.
 
-## Retirement and steward collaboration (退役与管家协作)
+## Retirement and steward collaboration
 
 The script's roster distinguishes serving from retired; BB's `idle` only means the current turn is idle. Query it at
 session start, before contacting another steward, or on receiving a notification from an old line:
@@ -306,10 +302,10 @@ tell the sender that destination; otherwise say this line has ended. Stay retire
 dispatching because of a notification. When the user explicitly resumes the original goal, register per "Session
 start"; registration clears this thread's old retired state.
 
-## When the user must decide (需要用户决定时)
+## When the user must decide
 
 Questions resolvable from existing context, settled decisions or read-only verification are handled by the steward
-first. Those only the user can truly decide go into "user to-dos" (`用户待办`), stating the question and the blocked
+first. Those only the user can truly decide go into "user to-dos", stating the question and the blocked
 stage; pause only the branch that depends on the answer, and keep handling other branches and child-thread reports.
 
 Ordinary clarifications are raised through the workbook and a normal reply, with the pending options placed at the
@@ -317,7 +313,7 @@ end of the reply per the user's rules, then end the current turn so later child-
 steward again. Synchronous question tools (such as `AskUserQuestion`) suspend the whole session, leaving child-thread
 notifications only to queue, so ordinary clarifications do not use such tools.
 
-## Progress loop (推进循环)
+## Progress loop
 
 1. Before dispatching, search the ledger and route by topic keywords for similar requirements: answer already-done
    ones with existing evidence; continue half-done ones under the original requirement row and stage rather than
@@ -332,7 +328,7 @@ notifications only to queue, so ordinary clarifications do not use such tools.
    context for judgment, not for child outputs. When the result is something the user will touch directly
    (environment, configuration, cloud resources, external entry points), verify reality once with read-only commands
    before accepting and reporting. After a child thread completes, update the matching requirement row's status,
-   concrete result and material; unaccepted parts stay `進行中`.
+   concrete result and material; unaccepted parts stay `In progress`.
 3. Handle each "decision I introduced" individually: put it in the workbook, accept without recording, or send it
    back for rework — one of the three.
 
@@ -351,17 +347,17 @@ Three pacing constraints, learned from a first production build that went throug
   `--parent-notifications stuck`, so progress doesn't wake the steward every turn; stalls are caught by closing
   reconciliation and the watchdog.
 
-## Closing reconciliation (收尾对账)
+## Closing reconciliation
 
 Every unfinished route line is in exactly one of the following states, written after the line's `←`. The leading
 keywords are literals parsed by the script:
 
-- `进行中 thr_xxx` (in progress): a thread is working on it; the line names its thread ID.
-- `等用户` (waiting on user): there is an open user to-do whose "blocks" column names this line's stage number (or
-  its title when the line has no number).
-- `定时 MM-DD HH:MM <what>` (scheduled): an action with a set time, such as an automation, reminder or window.
-- `排在 <item> 后：<dependent output>` (queued after): it consumes the output of a prior item or writes the same
-  target; once the prior item completes, this line should move.
+- `in progress thr_xxx`: a thread is working on it; the line names its thread ID.
+- `waiting on user`: there is an open user to-do whose "blocks" column names this line's stage number (or its title
+  when the line has no number).
+- `scheduled MM-DD HH:MM <what>`: an action with a set time, such as an automation, reminder or window.
+- `after <item>: <dependent output>`: it consumes the output of a prior item or writes the same target; once the
+  prior item completes, this line should move.
 
 "Later", "on hold" and "long-term" are not states: such lines are either dispatched or labeled as one of the above
 per reality; items the user explicitly said not to do yet are removed from the route and recorded in key decisions.
@@ -372,7 +368,7 @@ run:
 python3 scripts/steward_workbook.py --mode reconcile --live --file <workbook path>
 ```
 
-## Watchdog (看门狗)
+## Watchdog
 
 `scripts/steward_watch.py` runs every 30 minutes as a BB script automation, without calling a model. Register at
 session start; the first registration creates the automation in the current project; re-register after moving the
@@ -383,7 +379,7 @@ python3 scripts/steward_watch.py register --workbook <absolute workbook path> [-
 ```
 
 Registration also syncs the platform steward entry (workbook and ledger) and adds the "🎩" mark to the thread title;
-the steward maintains neither. The thread title is just "<short name>管家"; the goal lives in the workbook title.
+the steward maintains neither. The thread title is just "<short name> steward"; the goal lives in the workbook title.
 When registration output `plugin.status` is `skipped`, the platform entry is unavailable, so include the workbook
 path when replying to the user; when the entry is available, don't repeat the link in replies.
 
@@ -398,12 +394,12 @@ The watchdog does the following; throttling and escalation rules are in the scri
 - After every context compaction it nudges the steward to re-read the rules; when compactions accumulate to a
   threshold, it asks the steward to suggest the user switch stewards.
 
-On a `[bb-steward 看门狗]` message, do what it says (reconciliation problems per "Closing reconciliation"); no reply to
+On a `[bb-steward watchdog]` message, do what it says (reconciliation problems per "Closing reconciliation"); no reply to
 it is needed. When the message asks you to tell the user (model changed, the same problem nudged twice, recovery after
 a long interruption, compaction count reached threshold), state the change or problem and its impact in this turn's
 reply; when the model changed, offer options: switch back to the original model, or open a new thread to take over.
 
-## Review (回看)
+## Review
 
 Review dispatch records with `bb thread list` and `bb-dispatch --history-summary`, and watchdog records with
 `scripts/steward_watch.py report` and `summary`; the watchdog log drops its older half beyond 2 MB, with no long-term

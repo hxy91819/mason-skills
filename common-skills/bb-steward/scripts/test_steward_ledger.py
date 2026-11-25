@@ -12,6 +12,7 @@ import steward_workbook as sw
 from test_steward_workbook import VALID_WORKBOOK
 
 
+# Legacy Chinese ledger: must keep validating unchanged (backward compatibility).
 FIXTURE = (Path(__file__).parent / 'fixtures' / '要求帳.md').read_text()
 
 
@@ -27,7 +28,10 @@ class LedgerTests(unittest.TestCase):
         res = sw.check_ledger(FIXTURE)
         self.assertTrue(res['ok'], res['errors'])
         self.assertEqual(res['stats'], {'periods': 2, 'rows': 8})
-        self.assertEqual(sum(res['summary'].values()), 8)
+        self.assertEqual(sum(res['summary'][s] for s in sw.vocab.LEDGER_STATES), 8)
+        self.assertEqual(res['summary']['In progress'], 1)
+        self.assertEqual(res['summary']['Awaiting user'], 1)
+        # The BB steward plugin UI reads these two legacy keys.
         self.assertEqual(res['summary']['進行中'], 1)
         self.assertEqual(res['summary']['待使用者'], 1)
 
@@ -65,12 +69,12 @@ class LedgerTests(unittest.TestCase):
             self.assertFalse(sw.check_ledger(text)['ok'])
 
     def test_rejects_empty_or_vacuous_results_for_every_state(self):
-        for status in sw.LEDGER_STATES:
+        for status in sw.vocab.LEDGER_STATE_ALIASES:
             for result in ('', '—', '完成', '已完成。', '**已完成**', '已採納', '已處理！', 'done', '已全部完成', '已經全部完成了'):
                 with self.subTest(status=status, result=result):
                     res = sw.check_ledger(ledger_row(status, result))
                     self.assertFalse(res['ok'])
-                    self.assertTrue(any('第 7 行' in e and '具体结论' in e for e in res['errors']))
+                    self.assertTrue(any('Line 7' in e and 'concrete conclusion' in e for e in res['errors']))
 
     def test_escaped_pipe_in_requirement_preserves_five_columns(self):
         text = ledger_row().replace('優化 CI', r'優化 CI \| 文件檢查')
@@ -107,13 +111,13 @@ class LedgerTests(unittest.TestCase):
                 summary = subprocess.run(command, capture_output=True, text=True)
                 self.assertEqual(summary.returncode, expected)
                 self.assertEqual(len(summary.stdout.splitlines()), 1)
-                self.assertIn(f"问题 {len(result['errors'])} 项", summary.stdout)
+                self.assertIn(f"{len(result['errors'])} problems", summary.stdout)
 
     def test_bad_column_count_includes_original_line(self):
         row = '| 2026-11-01 | 缺列 |'
         text = FIXTURE.rstrip() + '\n' + row + '\n'
         line = len(text.splitlines())
-        self.assertTrue(any(f"第 {line} 行" in error and row in error
+        self.assertTrue(any(f"Line {line}:" in error and row in error
                             for error in sw.check_ledger(text)['errors']))
 
     def test_workbook_entry_resolves_relative_to_workbook_not_cwd(self):

@@ -1,4 +1,5 @@
-"""验证 BB 管家工作簿门禁、提交节流与收尾对账逻辑。"""
+"""Workbook gates, commit throttling and closing reconciliation on legacy Chinese workbooks, which must keep
+working unchanged (backward compatibility). English coverage lives in test_steward_english.py."""
 from datetime import datetime
 from pathlib import Path
 import sys
@@ -86,7 +87,7 @@ class StewardWorkbookTests(unittest.TestCase):
         with_extra = VALID_WORKBOOK + "\n## 追加任务\n\n- [ ] 临时事项\n"
         res1 = sw.check_workbook(with_extra)
         self.assertFalse(res1["ok"])
-        self.assertTrue(any("二级标题必须且只能按顺序" in e for e in res1["errors"]))
+        self.assertTrue(any("Level-2 headings must be exactly" in e for e in res1["errors"]))
 
         with_route_table = VALID_WORKBOOK.replace(
             "- [ ] 阶段 3：浅色多图落地页重设计与发布",
@@ -94,7 +95,7 @@ class StewardWorkbookTests(unittest.TestCase):
         )
         res2 = sw.check_workbook(with_route_table)
         self.assertFalse(res2["ok"])
-        self.assertTrue(any("在「路线」中使用了表格" in e for e in res2["errors"]))
+        self.assertTrue(any('a table in "Route"' in e for e in res2["errors"]))
 
     def test_route_stage_count_is_unbounded_by_default(self):
         extra = "\n".join(f"- [ ] 阶段 {i}：并行事项" for i in range(4, 16))
@@ -107,7 +108,7 @@ class StewardWorkbookTests(unittest.TestCase):
         self.assertEqual(res["stats"]["route_items"], 15)
         capped = sw.check_workbook(text, max_route_items=10)
         self.assertFalse(capped["ok"])
-        self.assertTrue(any("阶段数 15 超过上限 10" in e for e in capped["errors"]))
+        self.assertTrue(any("has 15 stages, over the limit of 10" in e for e in capped["errors"]))
 
     def test_excess_lines_warn_without_failing(self):
         extra = "\n".join(f"- [x] 阶段 {i}：已交付" for i in range(4, 4 + sw.DEFAULT_MAX_NONEMPTY_LINES))
@@ -117,10 +118,10 @@ class StewardWorkbookTests(unittest.TestCase):
         )
         res = sw.check_workbook(text)
         self.assertTrue(res["ok"], res["errors"])
-        self.assertTrue(any("非空行总数" in w for w in res["warnings"]))
+        self.assertTrue(any("non-empty lines exceed" in w for w in res["warnings"]))
 
     def test_numbered_todo_table_with_background_parses(self):
-        long_bg = "背景说明" * 60
+        long_bg = "background " * 30
         text = VALID_WORKBOOK.replace(
             "| 状态 | 事项 | 为什么只能用户做 | 挡住 | 提出 |\n| --- | --- | --- | --- | --- |\n"
             "| 待办 | 用公司账号抓取《揭榜方案模板》 | 乐享需要本人登录 | 阶段 3 | 2026-10-14 |",
@@ -139,7 +140,7 @@ class StewardWorkbookTests(unittest.TestCase):
         extra = "\n".join(f"- 2026-10-14 决定 {i}。原因：用户确认。影响：阶段 2。" for i in range(sw.DEFAULT_MAX_DECISIONS))
         res = sw.check_workbook(VALID_WORKBOOK.replace("\n\n## 用户待办", "\n" + extra + "\n\n## 用户待办", 1))
         self.assertTrue(res["ok"])
-        self.assertTrue(any("关键决策" in w for w in res["warnings"]))
+        self.assertTrue(any("Key decisions" in w for w in res["warnings"]))
         self.assertEqual(sw.check_workbook(VALID_WORKBOOK)["warnings"], [])
 
     def test_fetch_threads_filters_full_list_and_falls_back_to_archived(self):
@@ -163,10 +164,10 @@ class StewardWorkbookTests(unittest.TestCase):
         tid = "thr_aaaaaa1111"
         idle_row = {"id": tid, "status": "idle", "queuedWork": "none", "activity": {}, "updatedAt": 0}
         cases = {
-            "长等待在终端里跑": ([], [{"id": "term_a", "status": "running", "lastUserInputAt": None}], True),
-            "独立审查子线程在跑": ([{"id": "thr_review0001", "status": "active"}], [], True),
-            "人开着的交互 shell": ([], [{"id": "term_b", "status": "running", "lastUserInputAt": 1}], False),
-            "子线程已结束、没有终端": ([{"id": "thr_review0001", "status": "idle"}], [], False),
+            "long wait in a terminal": ([], [{"id": "term_a", "status": "running", "lastUserInputAt": None}], True),
+            "review child thread running": ([{"id": "thr_review0001", "status": "active"}], [], True),
+            "interactive shell a person opened": ([], [{"id": "term_b", "status": "running", "lastUserInputAt": 1}], False),
+            "child finished, no terminal": ([{"id": "thr_review0001", "status": "idle"}], [], False),
         }
         for name, (children, sessions, alive) in cases.items():
             def fake_list(*args, children=children):
@@ -186,7 +187,7 @@ class StewardWorkbookTests(unittest.TestCase):
         )
         res = sw.check_workbook(bloated)
         self.assertFalse(res["ok"])
-        self.assertTrue(any("可见字符数" in e for e in res["errors"]))
+        self.assertTrue(any("visible characters exceed" in e for e in res["errors"]))
 
     def test_should_commit_ignores_micro_progress_and_detects_state_transitions(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -198,7 +199,7 @@ class StewardWorkbookTests(unittest.TestCase):
                 "max_route_items": sw.DEFAULT_MAX_ROUTE_ITEMS,
                 "max_decisions": sw.DEFAULT_MAX_DECISIONS,
             }
-            # 1. 仅修改括号里的最近线程 ID 和微进度，不应触发 commit
+            # 1. Only the thread ID and micro progress in parentheses changed: no commit
             minor_edit = VALID_WORKBOOK.replace("thr_55yf6266zn", "thr_new123，已跑完第一轮测试")
             p.write_text(minor_edit.replace("更新：2026-10-14", "[要求帐（历史流水账）](ledger.md)"))
             r_minor = sw.should_commit_workbook(p, check_args, baseline_text=VALID_WORKBOOK)
@@ -206,7 +207,7 @@ class StewardWorkbookTests(unittest.TestCase):
             self.assertFalse(r_minor["should_commit"])
             self.assertEqual(r_minor["reason"], "no_structural_state_change")
 
-            # 2. 阶段 2 完成勾选并推进到阶段 3，应触发 commit
+            # 2. Stage 2 checked off and stage 3 started: commit
             stage_done = VALID_WORKBOOK.replace(
                 "- [ ] 阶段 2：冷启动独立实例与 Playwright 回归 ← 进行中（最近线程 thr_55yf6266zn）\n- [ ] 阶段 3：浅色多图落地页重设计与发布",
                 "- [x] 阶段 2：冷启动独立实例与 Playwright 回归\n- [ ] 阶段 3：浅色多图落地页重设计与发布 ← 进行中",
@@ -215,15 +216,15 @@ class StewardWorkbookTests(unittest.TestCase):
             r_stage = sw.should_commit_workbook(p, check_args, baseline_text=VALID_WORKBOOK)
             self.assertTrue(r_stage["ok"])
             self.assertTrue(r_stage["should_commit"])
-            self.assertIn("路线", r_stage["changed_sections"])
+            self.assertIn("Route", r_stage["changed_sections"])
 
-            # 3. 用户待办状态从“待办”变为“已完成”，应触发 commit
+            # 3. A user to-do went from open to done: commit
             todo_done = VALID_WORKBOOK.replace("| 待办 | 用公司账号", "| 已完成 | 用公司账号")
             p.write_text(todo_done.replace("更新：2026-10-14", "[要求帐（历史流水账）](ledger.md)"))
             r_todo = sw.should_commit_workbook(p, check_args, baseline_text=VALID_WORKBOOK)
             self.assertTrue(r_todo["ok"])
             self.assertTrue(r_todo["should_commit"])
-            self.assertIn("用户待办", r_todo["changed_sections"])
+            self.assertIn("User to-dos", r_todo["changed_sections"])
 
     def test_should_commit_tracks_state_changes_but_not_thread_ids(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -270,11 +271,11 @@ class ReconcileTests(unittest.TestCase):
         res = sw.reconcile_workbook(broken, now=NOW)
         self.assertFalse(res["ok"])
         details = {p["label"]: p["detail"] for p in res["problems"] if p["kind"] == "no_state"}
-        self.assertEqual(details["阶段 2"], "进行中但没写线程 ID")
-        self.assertIn("不在四种之内", details["阶段 3"])
-        self.assertEqual(details["阶段 4"], "定时没写 MM-DD HH:MM")
-        self.assertEqual(details["阶段 5"], "排在…后 没写依赖的产出")
-        self.assertEqual(details["阶段 6"], "缺状态")
+        self.assertEqual(details["阶段 2"], "in progress without a thread ID")
+        self.assertIn("is not one of the four", details["阶段 3"])
+        self.assertEqual(details["阶段 4"], "scheduled without MM-DD HH:MM")
+        self.assertEqual(details["阶段 5"], "after <item> without the dependent output")
+        self.assertEqual(details["阶段 6"], "no state")
 
     def test_passed_schedule_is_flagged_after_grace(self):
         res = sw.reconcile_workbook(RECONCILED_WORKBOOK, now=datetime(2026, 10, 26, 22, 30))
@@ -286,7 +287,7 @@ class ReconcileTests(unittest.TestCase):
         unbacked = RECONCILED_WORKBOOK.replace("| 待办 | iPad", "| 已完成 | iPad")
         self.assertIn(("user_wait_unbacked", "nudge"), kinds(sw.reconcile_workbook(unbacked, now=NOW)))
 
-        # 另一行也标等用户，但唯一的待办只挡阶段 3：只有新行被点名。
+        # Another line also waits on the user, but the only to-do blocks stage 3: only the new line is named.
         two_waits = RECONCILED_WORKBOOK.replace("- [ ] 阶段 3：真机验收 ← 等用户",
                                                 "- [ ] 阶段 3：真机验收 ← 等用户\n- [ ] 阶段 6：灰度 ← 等用户")
         res = sw.reconcile_workbook(two_waits, now=NOW)
@@ -344,10 +345,10 @@ class ReconcileTests(unittest.TestCase):
             self.assertTrue(res["ok"], (info, res["problems"]))
 
         stopped_cases = {
-            "已空闲": thread(tid, idle_minutes=120),
-            "失败": thread(tid, status="error"),
-            "已归档": thread(tid, archived=True),
-            "找不到": None,
+            "idle for": thread(tid, idle_minutes=120),
+            "failed": thread(tid, status="error"),
+            "archived": thread(tid, archived=True),
+            "not found": None,
         }
         for word, info in stopped_cases.items():
             res = sw.reconcile_workbook(RECONCILED_WORKBOOK, now=NOW, threads={} if info is None else {tid: info})
@@ -369,7 +370,7 @@ class ReconcileTests(unittest.TestCase):
         res = sw.reconcile_workbook(two, now=NOW, threads={a: thread(a, status="active"), b: thread(b, idle_minutes=450)})
         self.assertEqual(kinds(res), [("stale_sibling", "nudge")])
         self.assertIn(b, res["problems"][0]["detail"])
-        self.assertIn("已空闲 7.5 小时", res["problems"][0]["detail"])
+        self.assertIn("idle for 7.5 h", res["problems"][0]["detail"])
         self.assertNotIn(a, res["problems"][0]["detail"])
 
 

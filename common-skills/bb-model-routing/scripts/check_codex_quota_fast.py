@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""巡检 Codex 账号剩余额度；若 codex 或 codex-l 等账号剩余额度 <= 阈值，则关闭对应账号的 Fast。
-若所有可监控账号均关闭 Fast，则联动关闭无法获取额度的账号（如 codex-b）。
-若配置了 force_fast: true（全局或 agent 级），则强制开启 Fast 并豁免额度熔断。
-支持在配置中通过 quota_fuse 自定义熔断阈值（如已用 95% 再关）及自动恢复时间（如明天中午恢复）。"""
+"""Check remaining Codex account quota; when an account such as codex or codex-l is at or below the threshold,
+turn off Fast for that account.
+When every measurable account has Fast off, accounts whose quota cannot be read (such as codex-b) are turned off too.
+With force_fast: true (global or per agent), Fast is forced on and exempt from the quota fuse.
+quota_fuse in the config can customize the fuse threshold (e.g. only turn off at 95% used) and an automatic
+restore time (e.g. restore tomorrow at noon)."""
 
 import argparse
 from datetime import datetime, timezone
@@ -14,7 +16,7 @@ import sys
 from pathlib import Path
 
 CONFIG_PATH = Path(os.environ.get("BB_DISPATCH_CONFIG", Path.home() / ".config/bb-dispatch/config.yaml"))
-QUOTA_THRESHOLD_PERCENT = 40.0  # 默认剩余额度阈值百分比（即已用 60% 熔断）
+QUOTA_THRESHOLD_PERCENT = 40.0  # Default remaining-quota threshold in percent (i.e. fuse at 60% used)
 
 
 def notify_thread(thread_id, message):
@@ -24,7 +26,7 @@ def notify_thread(thread_id, message):
         res = subprocess.run(["bb", "thread", "tell", thread_id, message], capture_output=True, text=True, timeout=15)
         return res.returncode == 0
     except Exception as exc:
-        sys.stderr.write(f"通知线程失败: {exc}\n")
+        sys.stderr.write(f"failed to notify thread: {exc}\n")
         return False
 
 
@@ -232,9 +234,9 @@ def check_and_fuse(config_path=CONFIG_PATH, dry_run=False, now_dt=None):
                 provider_to_alias[p] = alias
 
     monitored = [
-        ("codex", "codex (主号)"),
-        ("codex-l", "codex-l (L号)"),
-        ("codex-b", "codex-b (B号)"),
+        ("codex", "codex (main)"),
+        ("codex-l", "codex-l (L account)"),
+        ("codex-b", "codex-b (B account)"),
     ]
 
     accounts_stat = {}
@@ -267,7 +269,7 @@ def check_and_fuse(config_path=CONFIG_PATH, dry_run=False, now_dt=None):
 
         if rem <= rem_threshold:
             if account_force_fast:
-                reasons.append(f"{label} 已用达到 {used:.1f}% (>= {used_threshold:.1f}%)，但已配置 force_fast: true，豁免熔断")
+                reasons.append(f"{label} used {used:.1f}% (>= {used_threshold:.1f}%), but force_fast: true is set; exempt from the fuse")
                 if current_fast is True:
                     measurable_fast_active_count += 1
             else:
@@ -275,20 +277,20 @@ def check_and_fuse(config_path=CONFIG_PATH, dry_run=False, now_dt=None):
                 if alias and alias in agents and isinstance(agents[alias], dict):
                     if current_fast is True:
                         fused_agents.append(alias)
-                        reasons.append(f"{label} 已用达到 {used:.1f}% (>= {used_threshold:.1f}%)，剩余仅剩 {rem:.1f}% (<= {rem_threshold:.1f}%)，已自动关闭该账号 Fast 开关（agents.{alias}.fast: false）")
+                        reasons.append(f"{label} used {used:.1f}% (>= {used_threshold:.1f}%), only {rem:.1f}% left (<= {rem_threshold:.1f}%); turned off Fast for this account (agents.{alias}.fast: false)")
                     else:
-                        reasons.append(f"{label} 已用达到 {used:.1f}% (>= {used_threshold:.1f}%)，该账号 Fast 已处于关闭状态")
+                        reasons.append(f"{label} used {used:.1f}% (>= {used_threshold:.1f}%); Fast is already off for this account")
                 else:
                     if global_fast is True:
                         fused_agents.append(None)
-                        reasons.append(f"{label} 已用达到 {used:.1f}% (>= {used_threshold:.1f}%)，已自动关闭全局 Fast 开关（fast: false）")
+                        reasons.append(f"{label} used {used:.1f}% (>= {used_threshold:.1f}%); turned off global Fast (fast: false)")
                     else:
-                        reasons.append(f"{label} 已用达到 {used:.1f}% (>= {used_threshold:.1f}%)，全局 Fast 已处于关闭状态")
+                        reasons.append(f"{label} used {used:.1f}% (>= {used_threshold:.1f}%); global Fast is already off")
         else:
             if current_fast is True:
                 measurable_fast_active_count += 1
 
-    # 若存在可监控账号，且所有可监控账号的 Fast 均已关闭（本次熔断或此前已关），则联动关闭无法获取额度的账号
+    # When measurable accounts exist and all of them have Fast off (fused now or earlier), also turn off accounts whose quota cannot be read
     if measurable_count > 0 and measurable_fast_active_count == 0:
         for provider_id, label in unmeasurable_accounts:
             alias = provider_to_alias.get(provider_id)
@@ -297,23 +299,23 @@ def check_and_fuse(config_path=CONFIG_PATH, dry_run=False, now_dt=None):
                 if "force_fast" in agents[alias]:
                     account_force_fast = bool(agents[alias]["force_fast"])
                 if account_force_fast:
-                    reasons.append(f"{label} 无法获取额度，但已配置 force_fast: true，豁免联动熔断")
+                    reasons.append(f"{label} quota unavailable, but force_fast: true is set; exempt from the linked fuse")
                     continue
                 current_fast = agents[alias].get("fast", global_fast)
                 if current_fast is True:
                     fused_agents.append(alias)
                     fuse_triggered = True
-                    reasons.append(f"{label} 无法获取额度，因所有可监控 Codex 账号均已关闭 Fast，联动关闭该账号 Fast（agents.{alias}.fast: false）")
+                    reasons.append(f"{label} quota unavailable and every measurable Codex account has Fast off; turned off Fast for this account too (agents.{alias}.fast: false)")
                 else:
-                    reasons.append(f"{label} 无法获取额度，且 Fast 此前已处于关闭状态")
+                    reasons.append(f"{label} quota unavailable, and Fast was already off")
             else:
                 if account_force_fast:
-                    reasons.append(f"{label} 无法获取额度，但已配置 force_fast: true，豁免联动熔断")
+                    reasons.append(f"{label} quota unavailable, but force_fast: true is set; exempt from the linked fuse")
                     continue
                 if global_fast is True:
                     fused_agents.append(None)
                     fuse_triggered = True
-                    reasons.append(f"{label} 无法获取额度，因所有可监控 Codex 账号均已关闭 Fast，联动关闭全局 Fast 开关（fast: false）")
+                    reasons.append(f"{label} quota unavailable and every measurable Codex account has Fast off; turned off global Fast too (fast: false)")
 
     action_taken = "none"
     if fused_agents:
@@ -343,30 +345,30 @@ def check_and_fuse(config_path=CONFIG_PATH, dry_run=False, now_dt=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="巡检 Codex 账号剩余额度并在超限时独立/联动熔断 Fast")
-    parser.add_argument("--dry-run", action="store_true", help="乾跑模式，不修改配置文件")
-    parser.add_argument("--notify-thread", default=os.environ.get("BB_NOTIFY_THREAD"), help="状态切换时通知的目标 BB 线程 ID")
+    parser = argparse.ArgumentParser(description="Check remaining Codex account quota and turn off Fast per account (or linked) when over the limit")
+    parser.add_argument("--dry-run", action="store_true", help="dry run; do not modify the config file")
+    parser.add_argument("--notify-thread", default=os.environ.get("BB_NOTIFY_THREAD"), help="BB thread ID to notify when the state changes")
     args = parser.parse_args()
 
     result = check_and_fuse(dry_run=args.dry_run)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     if result.get("threshold_restored"):
-        msg = f"🔔 临时 Fast 熔断阈值已到期，已自动恢复默认阈值（已用 >= {result['used_threshold']:.1f}%，即剩余 <= {result['remaining_threshold']:.1f}%）。"
+        msg = f"🔔 The temporary Fast fuse threshold expired; restored the default threshold (used >= {result['used_threshold']:.1f}%, i.e. remaining <= {result['remaining_threshold']:.1f}%)."
         print(msg)
         if args.notify_thread and not args.dry_run:
             notify_thread(args.notify_thread, msg)
 
     if result["action"] == "fused_closed_fast":
-        msg = f"⚠️ 触发额度熔断：{'; '.join(result['reasons'])}"
+        msg = f"⚠️ Quota fuse triggered: {'; '.join(result['reasons'])}"
         print(msg)
         if args.notify_thread and not args.dry_run:
-            notify_thread(args.notify_thread, f"[Codex 额度熔断告警] {'; '.join(result['reasons'])}")
+            notify_thread(args.notify_thread, f"[Codex quota fuse alert] {'; '.join(result['reasons'])}")
     elif result["action"] == "forced_fast":
-        print(f"⚡ force_fast 强制开启模式：{'; '.join(result['reasons']) if result['reasons'] else '所有账号保持开启 Fast，豁免熔断。'}")
+        print(f"⚡ force_fast mode: {'; '.join(result['reasons']) if result['reasons'] else 'all accounts keep Fast on, exempt from the fuse.'}")
     elif result["fuse_triggered"]:
-        print(f"⚠️ 额度低于阈值，但 Fast 当前已处于关闭状态：{'; '.join(result['reasons'])}")
+        print(f"⚠️ Quota below threshold, but Fast is already off: {'; '.join(result['reasons'])}")
     else:
-        print(f"✅ Codex 额度充足（已用均 < {result['used_threshold']:.1f}%，剩余均 > {result['remaining_threshold']:.1f}%），巡检正常。")
+        print(f"✅ Codex quota is sufficient (all used < {result['used_threshold']:.1f}%, all remaining > {result['remaining_threshold']:.1f}%); check OK.")
 
 
 if __name__ == "__main__":

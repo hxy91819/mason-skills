@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
-"""按用户配置校验 BB 路由并创建一个线程；不拆任务、不重试创建、不预先修改环境。
+"""Validate BB routes against the user configuration and create one thread.
 
-defaults.<路由> 可为有序 fallback 链，也可配置 load-balance 候选。脚本只在
-spawn 前校验候选（provider 可用性、权限、模型目录与熔断冷却），首个通过者派发；
-spawn 发出后任何失败都中止并冷却该候选，由调用方确认线程未创建后重跑。
-熔断冷却默认不读报错文字。子线程报错时由 --on-failure 在原会话按退避重试，
-偶发错误在这一层消化；重试用尽才记为失败。结构化额度讯号则跳过原会话重试，
-直接按 provider 与模型进入更长的额度冷却。
-每次派发先按 BB 线程状态把账本里已做完的线程记为 completed，成功一次清零。
-关联父线程时在任务末尾附加固定的回报方式，让子线程把回报留到回合结束。
+Does not split tasks, retry creation, or modify environments beforehand.
 
-参数见 --help。stdout 为 JSON；stderr 为错误与复盘提醒；退出码 0 成功、2 失败。
-依赖 Python 3.10+、PyYAML 和 PATH 上的 bb。
+defaults.<route> is an ordered fallback chain or a load-balance candidate set. Candidates are validated
+only before spawn (provider availability, permissions, model catalog and circuit-breaker cooldown) and
+the first one that passes is dispatched; any failure after spawn is issued aborts and cools that
+candidate, and the caller reruns after confirming no thread was created.
+Cooldowns never read error text. When a child thread errors, --on-failure retries it in the original
+session with backoff, so transient errors are absorbed there; only exhausted retries count as failures.
+Structured quota signals skip the original-session retries and go straight to a longer quota cooldown
+for that provider and model.
+Every dispatch first marks ledger threads that BB reports as finished as completed; one success resets
+the cooldown. When a parent thread is linked, a fixed reporting section is appended to the task so the
+child holds its reports until the turn ends.
+
+See --help for options. stdout is JSON; stderr carries errors and review reminders; exit code 0 on
+success, 2 on failure. Requires Python 3.10+, PyYAML and bb on PATH.
 """
 import argparse
 import contextlib
@@ -29,14 +34,14 @@ import yaml
 
 try:
     import fcntl
-except ImportError:  # Windows 没有 fcntl，账本退回无锁写入。
+except ImportError:  # Windows has no fcntl; the ledger falls back to unlocked writes.
     fcntl = None
 
 
 class DispatchError(Exception):
     def __init__(self, message, code=None):
         super().__init__(message)
-        # BB --json 失败时 stdout 错误信封里的 error.code，例如 retry_already_queued；其他错误为 None。
+        # error.code from the stdout error envelope of a failed BB --json call (e.g. retry_already_queued); None otherwise.
         self.code = code
 
 
@@ -66,54 +71,74 @@ ALL_TITLE_PREFIXES = tuple(
     )
 )
 OUTCOME_KEYS = ("spawned", "completed", "failed", "failed_quota", "failed_transient", "failed_other")
-# failed 由线程状态自动识别；其余 failed_* 是旧版手动回写的取值，冷却时一视同仁。
+# failed is recorded automatically; the other failed_* values come from legacy manual write-backs and cool the same way.
 FAILED_OUTCOMES = ("failed", "failed_quota", "failed_transient", "failed_other")
-# 交付后追加消息里，这些前缀是工具或系统通知，不算父线程或用户的追加。
+# In post-delivery messages these prefixes mark tool or system notices, not follow-ups from the parent or the user.
 NOTICE_PREFIXES = ("[bb_long_task]", "[bb system]")
 FOLLOWUP_TEXT_MAX_CHARS = 600
 BACKOFF_BASE_SECONDS = 15 * 60
-# 没有重置窗口时，额度冷却从 1 小时起翻倍；已知订阅窗口更晚则冷却到该时刻。
+# Without a reset window, quota cooldowns start at 1 hour and double; a later known subscription reset extends them to that moment.
 QUOTA_BACKOFF_BASE_SECONDS = 60 * 60
 BACKOFF_MAX_SECONDS = 6 * 3600
 SPAWN_COOLDOWN_SECONDS = 15 * 60
-# 原会话重试：1、2、4 分钟各一次，用尽才计入派发冷却。额度类失败不排这三次。
+# Original-session retries: once each after 1, 2 and 4 minutes; only exhausted retries count toward cooldown. Quota failures skip them.
 SESSION_RETRY_LIMIT = 3
 SESSION_RETRY_BASE_SECONDS = 60
-# BB 已在原会话重试到上限时，再排 1、2、4 分钟也是白等。额度类 decline 见 QUOTA_DECLINE_REASONS。
+# When BB has already retried to its limit in the original session, more retries are pointless. Quota declines: QUOTA_DECLINE_REASONS.
 BB_RETRY_GAVE_UP = ("attempts-exhausted",)
-# provider-retry 已把这些 decline 判成额度类，并且不会在原会话里等它恢复。
+# provider-retry classifies these declines as quota and will not wait for recovery in the original session.
 QUOTA_DECLINE_REASONS = ("no-rate-limit-state", "not-resettable", "beyond-maximum-wait")
-# 只认 JSON 里的这些字段值，不在报错句子里找同名单词。
+# Only these JSON field values count; error sentences are never scanned for the same words.
 QUOTA_CODE_FIELDS = ("code", "status", "type")
 QUOTA_CODES = frozenset({"resource_exhausted", "model_cooldown", "insufficient_quota", "quota_exceeded", "quota"})
-# 识别终态、计算冷却和保留账本条目共用的近期窗口。
+# Recent window shared by outcome detection, cooldown computation and ledger entry retention.
 RECENT_WINDOW_SECONDS = 48 * 3600
 LEDGER_LOCK_WAIT_SECONDS = 5
+# Persisted as ledger cooldown reasons; earlier versions wrote Chinese text, mapped to English when read.
+QUOTA_WINDOW_REASON = "quota window"
+LEGACY_COOLDOWN_REASONS = {"额度窗口": QUOTA_WINDOW_REASON}
 MAX_LIVE_ENTRIES = 200
-# 复盘日志超过上限时丢掉较早的一半；汇总只看近 7 天，正常用量下仍留得下几十天。
+# When the review log exceeds the cap, the older half is dropped; summaries read only 7 days, and normal use keeps weeks.
 EVENTS_MAX_BYTES = 4 * 1024 * 1024
 UNKNOWN_MAX_CHARS = 120
+# Markers emitted verbatim by other skills (autoreview's review prompt, large-task-orchestrator's driver);
+# they must match those skills' text, so they stay as-is.
 REVIEW_PROMPT_ANCHOR = "# Review agent 提示词"
 DRIVER_PAYLOAD_ANCHORS = (
     "\n执行包：\n",
     "\n完成工作后必须提交结构化报告。",
     "\n完成裁决后必须提交结构化报告。",
 )
-# 关联父线程时附加：子线程的每条中途消息都会唤醒或打断父线程，回报统一留到回合结束。
-REPORT_PROTOCOL_ANCHOR = "\n\n## 回报方式（bb-dispatch 附加）\n"
+# Appended when a parent thread is linked: every intermediate child message wakes or interrupts the parent,
+# so reports are held until the turn ends.
+REPORT_PROTOCOL_ANCHOR = "\n\n## How to report (appended by bb-dispatch)\n"
+# Threads spawned by earlier versions carry the Chinese anchor; copied tasks must still strip it.
+LEGACY_REPORT_PROTOCOL_ANCHORS = ("\n\n## 回报方式（bb-dispatch 附加）\n",)
 REPORT_PROTOCOL = (
-    "回合结束时，BB 会自动把你的最终回复送达父线程；中途用 `bb thread tell` 给它发消息，每条都会唤醒或打断它。"
-    "进度、阶段发现、新建资源和对父线程追加消息的回应，都留到回合结束按任务要求一次交代；"
-    "需要即时留底的事实（如资源 ID）先写进工作区文件。任务正文另有约定时以正文为准。"
+    "When your turn ends, BB automatically delivers your final reply to the parent thread; every message you send it "
+    "mid-turn with `bb thread tell` wakes or interrupts it. "
+    "Hold progress, interim findings, newly created resources and replies to the parent's follow-up messages until "
+    "the turn ends and report them once as the task requires; "
+    "write facts that need an immediate record (such as resource IDs) to a workspace file first. "
+    "If the task body says otherwise, the task body wins."
 )
-# 长任务每个回合结束（等 CI、等审查）都会唤醒父线程；stuck/off 时只在失败、卡住或等审批时自动唤醒，
-# 其余要父线程知道的事由子线程显式 tell，进度不再逐回合打扰。
+# Long tasks wake the parent at every turn end (waiting for CI, waiting for review); stuck/off only wake it
+# automatically on failure, when stuck, or when awaiting approval, and the child tells it everything else explicitly.
 PARENT_NOTIFICATION_MODES = ("auto", "stuck", "off")
 QUIET_REPORT_PROTOCOL = (
-    "回合结束不会自动通知父线程。只在这几种情况下用 `bb thread tell <父线程ID>` 发一条消息："
-    "需要父线程审批；需要它决定或你被卡住；阶段完成（附交付摘要）；发现不归你管的问题。进度不报。"
-    "需要即时留底的事实（如资源 ID）先写进工作区文件。任务正文另有约定时以正文为准。"
+    "The parent thread is not notified automatically when your turn ends. Send it one message with "
+    "`bb thread tell <parent-thread-ID>` only when: the parent must approve something; it must decide or you are stuck; "
+    "a phase is complete (include a delivery summary); you find a problem outside your scope. Do not report progress. "
+    "Write facts that need an immediate record (such as resource IDs) to a workspace file first. "
+    "If the task body says otherwise, the task body wins."
 )
+
+
+def strip_report_protocol(task):
+    """Remove an appended report protocol (current or legacy anchor) from a task copied from a child's first message."""
+    for anchor in (REPORT_PROTOCOL_ANCHOR, *LEGACY_REPORT_PROTOCOL_ANCHORS):
+        task = task.split(anchor, 1)[0]
+    return task
 
 
 def bb(*args):
@@ -121,42 +146,42 @@ def bb(*args):
     try:
         result = subprocess.run(["bb", *args, "--json"], capture_output=True, text=True, timeout=120)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        suffix = " 创建结果未知，请先查询线程，勿直接重试。" if creating else ""
-        raise DispatchError(f"BB 调用失败：{exc}.{suffix}") from exc
+        suffix = " Creation result unknown; query threads first, do not retry directly." if creating else ""
+        raise DispatchError(f"BB call failed: {exc}.{suffix}") from exc
     if result.returncode:
-        suffix = " 请先查询线程确认是否已创建，勿直接重试。" if creating else ""
+        suffix = " Query threads first to confirm whether one was created; do not retry directly." if creating else ""
         try:
             error = json.loads(result.stdout).get("error")
         except (ValueError, AttributeError):
             error = None
         error = error if isinstance(error, dict) else {}
         code = error.get("code")
-        detail = "：".join(str(part) for part in (code, error.get("message")) if part) or result.stderr.strip()
-        raise DispatchError(f"bb {' '.join(args[:2])} 失败：{detail[:1000]}{suffix}", code=code)
+        detail = ": ".join(str(part) for part in (code, error.get("message")) if part) or result.stderr.strip()
+        raise DispatchError(f"bb {' '.join(args[:2])} failed: {detail[:1000]}{suffix}", code=code)
     try:
         return json.loads(result.stdout)
     except ValueError as exc:
-        raise DispatchError("BB 返回非 JSON。" + ("创建结果未知，勿直接重试。" if creating else "")) from exc
+        raise DispatchError("BB returned non-JSON output." + (" Creation result unknown; do not retry directly." if creating else "")) from exc
 
 
 def mapping(value, where):
     if not isinstance(value, dict):
-        raise DispatchError(f"{where} 必须是映射。")
+        raise DispatchError(f"{where} must be a mapping.")
     return value
 
 
 def string(value, where):
     if not isinstance(value, str) or not value.strip():
-        raise DispatchError(f"{where} 必须是非空字符串。")
+        raise DispatchError(f"{where} must be a non-empty string.")
     return value
 
 
 def unique(items, key, value, label):
     if not isinstance(items, list):
-        raise DispatchError(f"{label} 目录格式未知。")
+        raise DispatchError(f"{label} catalog has an unknown format.")
     matches = [item for item in items if isinstance(item, dict) and item.get(key) == value]
     if len(matches) != 1:
-        raise DispatchError(f"{label} {value!r} 缺失或不唯一；请检查用户配置。")
+        raise DispatchError(f"{label} {value!r} is missing or not unique; check the user configuration.")
     return matches[0]
 
 
@@ -169,7 +194,7 @@ def configured_bool(override, config, key, default, where):
         return default
     value = source[key]
     if not isinstance(value, bool):
-        raise DispatchError(f"{label} 必须是 true 或 false。")
+        raise DispatchError(f"{label} must be true or false.")
     return value
 
 
@@ -196,7 +221,7 @@ def thread_title(title, task, difficulty, shape="circle"):
         if prefix is None:
             break
         text = text[len(prefix):].strip()
-    text = text or "任务"
+    text = text or "Task"
     if len(text) > 80:
         text = text[:79] + "…"
     prefix_map = SHAPED_TITLE_PREFIXES.get(shape, TITLE_PREFIXES)
@@ -209,6 +234,7 @@ def effective_task_chars(task):
     for anchor in DRIVER_PAYLOAD_ANCHORS:
         if anchor in body:
             body = body.split(anchor, 1)[0]
+    # Worker report block embedded by large-task-orchestrator's judge prompt.
     if "\nWorker 报告：" in body and "\n需要证据时读取对应 BB 线程" in body:
         before, rest = body.split("\nWorker 报告：", 1)
         _, after = rest.split("\n需要证据时读取对应 BB 线程", 1)
@@ -238,14 +264,14 @@ def load_ledger(path, strict=False):
     try:
         data = json.loads(path.read_text())
         if not isinstance(data, dict) or data.get("version") != 1:
-            raise ValueError("账本版本或格式无效")
+            raise ValueError("invalid ledger version or format")
         if not isinstance(data.get("entries"), list) or not isinstance(data.get("rollups"), dict) or not isinstance(data.get("cooldowns"), dict):
-            raise ValueError("账本字段缺失或类型错误")
+            raise ValueError("ledger fields missing or of the wrong type")
         return data
     except Exception as exc:
         if strict:
-            raise DispatchError(f"无法读取运行账本 {path}：{exc}") from exc
-        print(f"warning: 账本读取失败（已旁路忽略）：{exc}", file=sys.stderr)
+            raise DispatchError(f"cannot read run ledger {path}: {exc}") from exc
+        print(f"warning: ledger read failed (ignored, continuing): {exc}", file=sys.stderr)
         return empty_ledger()
 
 
@@ -257,13 +283,13 @@ def save_ledger(path, data, strict=False):
         tmp.replace(path)
     except Exception as exc:
         if strict:
-            raise DispatchError(f"无法写入运行账本 {path}：{exc}") from exc
-        print(f"warning: 账本写入失败（已旁路忽略）：{exc}", file=sys.stderr)
+            raise DispatchError(f"cannot write run ledger {path}: {exc}") from exc
+        print(f"warning: ledger write failed (ignored, continuing): {exc}", file=sys.stderr)
 
 
 @contextlib.contextmanager
 def ledger_lock(path):
-    """跨进程串行化账本读改写；等不到锁只告警，不挡派发。"""
+    """Serialize ledger read-modify-write across processes; failing to get the lock only warns and never blocks dispatch."""
     handle = None
     if fcntl is not None:
         try:
@@ -276,10 +302,10 @@ def ledger_lock(path):
                     break
                 except BlockingIOError:
                     if time.monotonic() >= deadline:
-                        raise TimeoutError(f"等待超过 {LEDGER_LOCK_WAIT_SECONDS}s")
+                        raise TimeoutError(f"waited more than {LEDGER_LOCK_WAIT_SECONDS}s")
                     time.sleep(0.05)
         except Exception as exc:
-            print(f"warning: 账本加锁失败（已旁路继续）：{exc}", file=sys.stderr)
+            print(f"warning: ledger lock failed (continuing without it): {exc}", file=sys.stderr)
             if handle is not None:
                 handle.close()
                 handle = None
@@ -291,12 +317,12 @@ def ledger_lock(path):
 
 
 def events_path(ledger_path):
-    """复盘日志与账本同目录，只追加：ledger.json 对应 ledger.events.jsonl。"""
+    """Append-only review log next to the ledger: ledger.json pairs with ledger.events.jsonl."""
     return ledger_path.with_name(ledger_path.stem + ".events.jsonl")
 
 
 def append_events(ledger_path, events):
-    """每行一个 JSON 事件；调用方持有账本锁，写入失败只告警，不挡派发。"""
+    """One JSON event per line; the caller holds the ledger lock. Write failures only warn and never block dispatch."""
     if not events:
         return
     try:
@@ -310,11 +336,12 @@ def append_events(ledger_path, events):
             tmp.write_text("".join(lines[len(lines) // 2:]))
             tmp.replace(target)
     except Exception as exc:
-        print(f"warning: 复盘日志写入失败（已旁路忽略）：{exc}", file=sys.stderr)
+        print(f"warning: review log write failed (ignored, continuing): {exc}", file=sys.stderr)
 
 
 def update_ledger(path, mutate, strict=False):
-    """加锁后重读账本再改写，并发的派发与回写互不覆盖；mutate 返回的复盘事件随后追加进日志。"""
+    """Reread and rewrite the ledger under the lock so concurrent dispatches and write-backs never overwrite each other;
+    review events returned by mutate are then appended to the log."""
     with ledger_lock(path):
         ledger = load_ledger(path, strict=strict)
         events = mutate(ledger)
@@ -343,14 +370,14 @@ def rollup_entry(rollups, entry):
 
 
 def outcome_time(entry):
-    """条目的终态时间；旧版条目没有 outcome_ts，取派发时间。"""
+    """Time of the entry's outcome; legacy entries without outcome_ts use the dispatch time."""
     return int(entry.get("outcome_ts") or entry.get("ts") or 0)
 
 
 def append_ledger_entry(ledger, entry, max_live=MAX_LIVE_ENTRIES, now=None):
     entries = ledger.setdefault("entries", [])
     rollups = ledger.setdefault("rollups", {})
-    # 同一稳定 ID 若已存在则原地覆盖，避免重复计数。
+    # An existing entry with the same stable ID is overwritten in place to avoid double counting.
     for idx, existing in enumerate(entries):
         if isinstance(existing, dict) and existing.get("id") == entry["id"]:
             entries[idx] = entry
@@ -359,7 +386,8 @@ def append_ledger_entry(ledger, entry, max_live=MAX_LIVE_ENTRIES, now=None):
     excess = len(entries) - max_live
     if excess <= 0:
         return
-    # 近期窗口内的条目还要识别终态、参与冷却计算，超出上限也先留着，只折算更早的条目。
+    # Entries inside the recent window still feed outcome detection and cooldowns, so they stay even over the cap;
+    # only older entries are rolled up.
     horizon = int(time.time() if now is None else now) - RECENT_WINDOW_SECONDS
     kept = []
     for item in entries:
@@ -382,11 +410,11 @@ def backoff_seconds(level, quota=False):
 
 
 def set_explicit_cooldown(ledger, provider, model, reason, now):
-    """spawn 失败或被 --fallback-from 跳过的候选没有线程状态可读，单独冷却固定时长。"""
+    """Candidates whose spawn failed or that --fallback-from skipped have no thread status, so they get a fixed cooldown."""
     table = ledger.setdefault("cooldowns", {})
     key = health_key(provider, model)
     current = table.get(key)
-    # 并发时别处可能已记下结束更晚的冷却，不缩短它。
+    # A concurrent process may already have recorded a longer cooldown; never shorten it.
     if isinstance(current, dict) and int(current.get("until") or 0) >= now + SPAWN_COOLDOWN_SECONDS:
         return
     table[key] = {
@@ -399,19 +427,19 @@ def set_explicit_cooldown(ledger, provider, model, reason, now):
 
 
 def set_quota_window(ledger, provider, model, now, until):
-    """订阅窗口的重置时刻晚于按等级算出的冷却时，把冷却拉到那个时刻。"""
+    """When the subscription window resets later than the level-based cooldown, extend the cooldown to that moment."""
     table = ledger.setdefault("cooldowns", {})
     key = health_key(provider, model)
     current = table.get(key)
     if isinstance(current, dict) and int(current.get("until") or 0) >= until:
         return
     table[key] = {
-        "provider": provider, "model": model, "reason": "额度窗口", "since": now, "until": until, "quota": True,
+        "provider": provider, "model": model, "reason": QUOTA_WINDOW_REASON, "since": now, "until": until, "quota": True,
     }
 
 
 def latest_success_at(ledger):
-    """每个 provider+模型在账本里最晚的成功时间，不受 48 小时视野限制。"""
+    """Latest success time per provider+model in the ledger, not limited to the 48-hour horizon."""
     latest = {}
     for entry in ledger.get("entries") or []:
         if not isinstance(entry, dict) or entry.get("outcome") != "completed":
@@ -424,7 +452,7 @@ def latest_success_at(ledger):
 
 
 def forget_cleared_cooldowns(ledger):
-    """成功一次就删掉此前记下的显式冷却，避免成功滚出 48 小时视野后窗口复活。"""
+    """One success deletes earlier explicit cooldowns so they do not revive once that success leaves the 48-hour horizon."""
     table = ledger.get("cooldowns")
     if not isinstance(table, dict):
         return
@@ -435,11 +463,12 @@ def forget_cleared_cooldowns(ledger):
 
 
 def health_cooldowns(ledger, now):
-    """按 provider 与模型计算当前冷却，只看近期窗口内的终态。
+    """Compute current cooldowns per provider and model from outcomes inside the recent window.
 
-    普通失败从 BACKOFF_BASE_SECONDS 起翻倍，带 quota 标记的失败从 QUOTA_BACKOFF_BASE_SECONDS 起翻倍，
-    两者都封顶 BACKOFF_MAX_SECONDS，成功一次清零。冷却期内的失败只顺延，冷却结束后再失败才升级。
-    手动回写的 failed_quota 没有 quota 标记，仍按普通失败计。
+    Ordinary failures double from BACKOFF_BASE_SECONDS, failures marked quota double from
+    QUOTA_BACKOFF_BASE_SECONDS; both cap at BACKOFF_MAX_SECONDS and one success resets them. Failures during
+    a cooldown only extend it; a failure after it ends raises the level. A manually written failed_quota has
+    no quota mark and counts as an ordinary failure.
     """
     horizon = now - RECENT_WINDOW_SECONDS
     events = {}
@@ -471,13 +500,13 @@ def health_cooldowns(ledger, now):
                 quota_until = max(quota_until, step_until)
             thread_id = thread
         quota = quota_until == until and quota_until > 0
-        reason = f"额度冷却，连续失败 {level} 次" if quota else f"连续失败 {level} 次"
+        reason = f"quota cooldown, {level} consecutive failure(s)" if quota else f"{level} consecutive failure(s)"
         state[key] = {"until": until, "level": level, "reason": reason, "quota": quota,
                       "thread_id": thread_id, "last_success": last_success}
-    # 显式冷却用账本里全部成功来清零，不只用 48 小时内的终态。
+    # Explicit cooldowns are cleared by any success in the ledger, not just outcomes within 48 hours.
     successes = latest_success_at(ledger)
     for key, cd in (ledger.get("cooldowns") or {}).items():
-        # 旧版按 路由|别名 记的冷却没有 provider 字段，不再生效，到期后随派发清理。
+        # Legacy cooldowns keyed by route|alias have no provider field; they no longer apply and are pruned once expired.
         if not isinstance(cd, dict) or "provider" not in cd:
             continue
         current = state.setdefault(
@@ -485,7 +514,8 @@ def health_cooldowns(ledger, now):
         if max(current["last_success"], successes.get(key, 0)) > int(cd.get("since") or 0):
             continue
         if int(cd.get("until") or 0) > current["until"]:
-            current.update(until=int(cd["until"]), reason=cd.get("reason"), thread_id=None, quota=bool(cd.get("quota")))
+            current.update(until=int(cd["until"]), reason=LEGACY_COOLDOWN_REASONS.get(cd.get("reason"), cd.get("reason")),
+                           thread_id=None, quota=bool(cd.get("quota")))
     cooled = {}
     for key, value in state.items():
         if value["until"] > now:
@@ -496,22 +526,23 @@ def health_cooldowns(ledger, now):
 
 
 def thread_completed(thread):
-    """只看 bb thread list 的结构化线程状态：空闲、没有排队消息、没有待处理交互才算做完。"""
+    """Only the structured status from bb thread list counts: idle, no queued work and no pending interaction means done."""
     return (thread.get("status") == "idle" and thread.get("queuedWork", "none") == "none"
             and not thread.get("hasPendingInteraction"))
 
 
 def awaiting_outcome(entry):
-    """还在等结果的条目：从未结束，或成功过之后又报错、正在原会话重试。"""
+    """Entries still awaiting an outcome: never finished, or succeeded and then errored and are retrying in the original session."""
     outcome = entry.get("outcome") or "spawned"
     return outcome == "spawned" or (int(entry.get("retries") or 0) > 0 and outcome not in FAILED_OUTCOMES)
 
 
 def reconcile_outcomes(ledger, call, now):
-    """把账本里近期还在等结果、已经做完的线程改记为 completed。
+    """Mark recent ledger entries still awaiting an outcome whose threads have finished as completed.
 
-    报错不在这里记失败：单次报错先由 --on-failure 在原会话重试，重试用尽才记失败。
-    只改传入的账本并返回改动；读不到线程状态时告警后返回空列表，不挡派发。
+    Errors are not recorded as failures here: --on-failure first retries in the original session, and only
+    exhausted retries record a failure. Mutates only the given ledger and returns the changes; when thread
+    status cannot be read it warns and returns an empty list without blocking dispatch.
     """
     try:
         pending = {
@@ -523,18 +554,18 @@ def reconcile_outcomes(ledger, call, now):
             return []
         threads = call("thread", "list")
         if not isinstance(threads, list):
-            raise DispatchError("bb thread list 返回格式未知")
+            raise DispatchError("bb thread list returned an unknown format")
         updates = []
         for thread in threads:
             entry = pending.get(thread.get("id")) if isinstance(thread, dict) else None
             if entry is None or not thread_completed(thread):
                 continue
-            # updatedAt 不早于这次结束；归档等操作会再推后它。
+            # updatedAt is no earlier than this finish; archiving and similar actions push it later.
             updated = thread.get("updatedAt")
             at = min(now, int(updated) // 1000) if isinstance(updated, (int, float)) else now
             updates.append({"id": entry["id"], "outcome": "completed", "outcome_ts": at})
     except Exception as exc:
-        print(f"warning: 读取线程状态失败，本次不补记完成（已旁路继续）：{exc}", file=sys.stderr)
+        print(f"warning: cannot read thread status, completions not recorded this time (continuing): {exc}", file=sys.stderr)
         return []
     for update in updates:
         pending[update["id"]].update(outcome=update["outcome"], outcome_ts=update["outcome_ts"])
@@ -543,7 +574,7 @@ def reconcile_outcomes(ledger, call, now):
 
 def record_outcome_command(args, now=None):
     if not args.outcome:
-        raise DispatchError("--record-outcome 必须配合 --outcome。")
+        raise DispatchError("--record-outcome requires --outcome.")
     target_id = string(args.record_outcome, "--record-outcome")
     now = int(time.time() if now is None else now)
     recorded = {}
@@ -552,7 +583,7 @@ def record_outcome_command(args, now=None):
         matched = next((entry for entry in ledger.get("entries", [])
                         if isinstance(entry, dict) and entry.get("id") == target_id), None)
         if matched is None:
-            raise DispatchError(f"账本 live 窗口中未找到线程 {target_id!r}，拒绝回写未知 ID。")
+            raise DispatchError(f"thread {target_id!r} not found in the ledger live window; refusing to write back an unknown ID.")
         events = []
         if args.outcome != (matched.get("outcome") or "spawned"):
             matched["outcome"], matched["outcome_ts"] = args.outcome, now
@@ -568,7 +599,7 @@ def record_outcome_command(args, now=None):
 
 
 def cooled_event(ledger, entry, reason, now, retries):
-    """记失败后的复盘事件：这次冷却的等级与结束时间，以及这次故障在原会话重试过几次。"""
+    """Review event after recording a failure: this cooldown's level and end time, and how many original-session retries this fault had."""
     cooldown = health_cooldowns(ledger, now).get(health_key(entry.get("provider"), entry.get("model"))) or {}
     return {"ts": now, "event": "cooled", "thread": entry.get("id"), "provider": entry.get("provider"),
             "model": entry.get("model"), "reason": reason, "retries": retries,
@@ -576,23 +607,23 @@ def cooled_event(ledger, entry, reason, now, retries):
 
 
 def recovered_event(entry, retries, now):
-    """原会话重试后线程成功过的复盘事件；retries 是这次故障安排过的重试次数。"""
+    """Review event for a thread that succeeded after original-session retries; retries is how many were scheduled for this fault."""
     return {"ts": now, "event": "recovered", "thread": entry.get("id"), "provider": entry.get("provider"),
             "model": entry.get("model"), "retries": retries}
 
 
 def turns_ended_since(call, thread_id, since):
-    """线程日志里 since（秒）之后结束的回合状态，按先后排列。"""
+    """Statuses of turns that ended after since (seconds) in the thread log, in order."""
     events = call("thread", "log", thread_id, "--all")
     if not isinstance(events, list):
-        raise DispatchError("bb thread log 返回格式未知")
+        raise DispatchError("bb thread log returned an unknown format")
     return [(event.get("data") or {}).get("status") for event in events
             if isinstance(event, dict) and event.get("type") == "turn/completed"
             and int(event.get("createdAt") or 0) >= since * 1000]
 
 
 def json_object(text):
-    """从文本里取出第一个 JSON 对象；对不上就当没有结构化字段。"""
+    """Extract the first JSON object from text; anything that does not parse counts as no structured fields."""
     if not isinstance(text, str) or "{" not in text:
         return None
     try:
@@ -603,7 +634,7 @@ def json_object(text):
 
 
 def payload_has_quota_code(payload):
-    """只看 code、status、type 和 error 对象，不看 message 句子。"""
+    """Only code, status, type and the error object are inspected, never the message sentence."""
     if not isinstance(payload, dict):
         return False
     for field in QUOTA_CODE_FIELDS:
@@ -646,7 +677,7 @@ def provider_error_is_quota(event):
 
 
 def current_failure_events(events):
-    """这次故障的日志：上次成功回合之后的事件。更早的额度报错不算这次。"""
+    """Log of the current fault: events after the last successful turn. Earlier quota errors do not count."""
     last_success_at = 0
     for event in events or []:
         if not isinstance(event, dict) or event.get("type") != "turn/completed":
@@ -665,7 +696,7 @@ def quota_classified(diagnostic, events):
 
 
 def quota_window_reset(diagnostic, events, now):
-    """订阅额度窗口的重置时刻（秒）。model_cooldown 的 reset_seconds 不是这个窗口。"""
+    """Reset time (seconds) of the subscription quota window. model_cooldown's reset_seconds is not this window."""
     resets = []
     availability = diagnostic.get("availability") if isinstance(diagnostic, dict) else None
     if isinstance(availability, dict) and availability.get("kind") == "blocked":
@@ -689,10 +720,12 @@ def quota_window_reset(diagnostic, events, now):
 
 
 def on_failure_command(args, call=bb, now=None):
-    """子线程报错后由父线程调用：先在原会话按退避重试，重试用尽才记失败、冷却该 provider 与模型。
+    """Called by the parent after a child errors: retry in the original session with backoff first, and only
+    record a failure and cool that provider and model once retries are exhausted.
 
-    额度类只认 provider-retry 的 decline 原因，以及 HTTP 429 上的结构化错误码；对不上就仍按原会话重试。
-    不扫报错句子。报错线程上的排队消息要等线程被重试才送出，所以排队数不当作"已有重试"。
+    Quota is recognized only from provider-retry decline reasons and structured error codes on HTTP 429;
+    otherwise original-session retries continue. Error sentences are never scanned. Queued messages on an
+    errored thread are sent only when it is retried, so the queue count is not treated as an existing retry.
     """
     target_id = string(args.on_failure, "--on-failure")
     now = int(time.time() if now is None else now)
@@ -702,11 +735,11 @@ def on_failure_command(args, call=bb, now=None):
         entry = next((item for item in ledger.get("entries", [])
                       if isinstance(item, dict) and item.get("id") == target_id), None)
         if entry is None:
-            raise DispatchError(f"账本 live 窗口中未找到线程 {target_id!r}；只处理经 bb-dispatch 派发的线程。")
+            raise DispatchError(f"thread {target_id!r} not found in the ledger live window; only threads dispatched by bb-dispatch are handled.")
         return entry
 
     def optional(*command):
-        # BB 自动重试插件不可用时按没有结论处理，不挡原会话重试。
+        # When the BB automatic retry plugin is unavailable, treat it as no verdict and keep original-session retries going.
         try:
             value = call(*command)
         except DispatchError:
@@ -714,7 +747,7 @@ def on_failure_command(args, call=bb, now=None):
         return value if isinstance(value, dict) else {}
 
     def waiting(why):
-        return {"action": "waiting", "message": f"{why}，结束回合等通知。"}
+        return {"action": "waiting", "message": f"{why}; end the turn and wait for the notification."}
 
     ledger = load_ledger(lpath, strict=True)
     entry = find(ledger)
@@ -722,32 +755,32 @@ def on_failure_command(args, call=bb, now=None):
     shown = mapping(call("thread", "show", target_id), "thread")
     thread = shown.get("thread") if isinstance(shown.get("thread"), dict) else shown
     if thread.get("status") != "error":
-        return {"action": "not-failed", "status": thread.get("status"), "message": "线程不在报错状态，照常等待通知。"}
+        return {"action": "not-failed", "status": thread.get("status"), "message": "thread is not in error state; keep waiting for the notification as usual."}
     if optional("provider-retry", "status", target_id).get("retries"):
         if not args.dry_run:
             with ledger_lock(lpath):
                 append_events(lpath, [{"ts": now, "event": "deferred", "thread": target_id,
                                        "provider": entry.get("provider"), "model": entry.get("model")}])
-        return waiting("BB 自动重试已排队")
+        return waiting("a BB automatic retry is already queued")
 
     def cooled(reason, data):
         result = {"action": "cooled", "reason": reason,
-                  "message": f"{reason}，已记为失败并冷却 {target}；用原难度与完整任务文本重跑 bb-dispatch 会换候选。"}
+                  "message": f"{reason}; recorded as failed and cooled {target}. Rerun bb-dispatch with the original difficulty and full task text (or --redispatch) to switch candidates."}
         cooldown = health_cooldowns(data, now).get(health_key(entry.get("provider"), entry.get("model")))
         if cooldown:
             result["cooldown"] = {**cooldown, "remaining_seconds": cooldown["until"] - now}
         return result
 
     if (entry.get("outcome") or "spawned") in FAILED_OUTCOMES:
-        return cooled("该线程已记为失败", ledger)
+        return cooled("thread already recorded as failed", ledger)
     retries = int(entry.get("retries") or 0)
     recovered = False
     if retries:
-        # 重试最早 1 分钟后才执行，本机与 BB 服务的时钟差不会把安排之前的回合算进来。
+        # Retries run at least 1 minute later, so clock skew between this host and BB cannot pull in turns from before scheduling.
         ended = turns_ended_since(call, target_id, int(entry.get("retry_ts") or 0))
         if ended == []:
-            return waiting("上次安排的原会话重试还没执行")
-        # 上次安排重试之后成功过：那次故障已恢复，这是新的一次故障，从头计。
+            return waiting("the previously scheduled original-session retry has not run yet")
+        # A success since the last scheduled retry means that fault recovered; this is a new fault, counted from scratch.
         recovered = "completed" in ended
     attempt = 1 if recovered else retries + 1
     events = [recovered_event(entry, retries, now)] if recovered else []
@@ -764,28 +797,28 @@ def on_failure_command(args, call=bb, now=None):
     quota = quota_classified(diagnostic, logged)
     reset = quota_window_reset(diagnostic, logged, now) if quota else None
     if quota:
-        code, reason = "quota", "额度耗尽"
+        code, reason = "quota", "quota exhausted"
     elif isinstance(decision, dict) and decision.get("kind") == "decline" and decision.get("reason") in BB_RETRY_GAVE_UP:
-        code, reason = "bb-gave-up", "BB 已在原会话重试到上限"
+        code, reason = "bb-gave-up", "BB already retried to its limit in the original session"
     elif attempt > SESSION_RETRY_LIMIT:
-        code, reason = "exhausted", f"原会话重试 {SESSION_RETRY_LIMIT} 次仍失败"
+        code, reason = "exhausted", f"still failing after {SESSION_RETRY_LIMIT} original-session retries"
     else:
         delay = SESSION_RETRY_BASE_SECONDS * 2 ** (attempt - 1)
         result = {"action": "retry-scheduled", "attempt": attempt, "limit": SESSION_RETRY_LIMIT, "delay_seconds": delay,
-                  "message": f"已安排原会话第 {attempt}/{SESSION_RETRY_LIMIT} 次重试，{delay // 60} 分钟后执行；结束回合等通知。"}
+                  "message": f"scheduled original-session retry {attempt}/{SESSION_RETRY_LIMIT} in {delay // 60} minute(s); end the turn and wait for the notification."}
         if args.dry_run:
             return {"dry_run": True, **result}
         try:
             call("thread", "retry", target_id, "--send-at", f"{delay}s",
-                 "--reason", f"bb-dispatch 原会话重试 {attempt}/{SESSION_RETRY_LIMIT}")
+                 "--reason", f"bb-dispatch original-session retry {attempt}/{SESSION_RETRY_LIMIT}")
         except DispatchError as exc:
             if exc.code == "retry_already_queued":
-                return waiting("这个回合已有排队的重试")
-            code, reason = "retry-impossible", f"无法在原会话重试（{exc}）"
+                return waiting("this turn already has a queued retry")
+            code, reason = "retry-impossible", f"cannot retry in the original session ({exc})"
         else:
             def mark_retry(data):
                 matched = find(data)
-                # 终态不动：成功过的线程保留那次成功，冷却照旧按它清零。
+                # Leave the outcome alone: a thread that succeeded keeps that success, which still resets the cooldown.
                 matched["retries"], matched["retry_ts"], matched["updated_ts"] = attempt, now, now
                 return [*events, {"ts": now, "event": "retry", "thread": target_id, "provider": matched.get("provider"),
                                   "model": matched.get("model"), "attempt": attempt, "delay": delay}]
@@ -854,7 +887,7 @@ def summarize_ledger(ledger, now=None):
                 "agent": agent,
                 "numerator": failed,
                 "denominator": total,
-                "message": f"候选 {agent} 失败率 {failed}/{total} (>=30%)，请检查其配额或服务稳定性。",
+                "message": f"candidate {agent} failure rate {failed}/{total} (>=30%); check its quota or service stability.",
             })
 
     active_cooldowns = [
@@ -874,7 +907,8 @@ def summarize_ledger(ledger, now=None):
 
 
 def summarize_events(ledger_path, now, days=7):
-    """按复盘日志汇总近几天的派发、原会话重试与冷却：重试是否奏效、冷却是否频繁、走势是否正常。"""
+    """Summarize recent dispatches, original-session retries and cooldowns from the review log: whether retries
+    work, whether cooldowns are frequent, and whether the trend looks normal."""
     counters = {"dispatch": "dispatches", "deferred": "deferred_to_bb", "retry": "retries",
                 "recovered": "recovered", "cooled": "cooled"}
     totals = dict.fromkeys(("dispatches", "diverted_dispatches", "quota_cooldown_skips", "deferred_to_bb", "retries",
@@ -913,7 +947,7 @@ def summarize_events(ledger_path, now, days=7):
             target["max_level"] = max(target["max_level"], int(event.get("level") or 0))
             if int(event.get("retries") or 0) > 0:
                 totals["retried_then_cooled"] += 1
-    # 原会话重试过的故障只有两种收场：恢复，或最终冷却。
+    # A fault retried in the original session ends one of two ways: recovered, or finally cooled.
     ended = totals["recovered"] + totals["retried_then_cooled"]
     return {"window_days": days, **totals,
             "retry_recovery_rate": round(totals["recovered"] / ended, 4) if ended else None,
@@ -922,7 +956,8 @@ def summarize_events(ledger_path, now, days=7):
 
 
 def followups_command(args, call=bb, now=None):
-    """近几天派发的线程首次交付后，父线程或用户追加的消息；正文只在输出里，不写账本。"""
+    """Messages the parent or user added after the first delivery of recently dispatched threads; text is only
+    printed, never written to the ledger."""
     now = int(time.time() if now is None else now)
     since = now - args.days * 86400
     dispatched, redispatched = {}, {}
@@ -943,7 +978,7 @@ def followups_command(args, call=bb, now=None):
             dispatched[event.get("thread")] = event
     threads = call("thread", "list", "--include-hidden", "--include-archived")
     if not isinstance(threads, list):
-        raise DispatchError("bb thread list 返回格式未知")
+        raise DispatchError("bb thread list returned an unknown format")
     parents = {t.get("id"): t.get("parentThreadId") for t in threads if isinstance(t, dict)}
     titles = {t.get("id"): t.get("title") for t in threads if isinstance(t, dict)}
     rows, unreadable = [], []
@@ -953,7 +988,7 @@ def followups_command(args, call=bb, now=None):
         except DispatchError:
             unreadable.append(thread_id)
             continue
-        # 只有正常结束的回合才算交付；被手动停掉的回合以 interrupted 结束。
+        # Only a normally completed turn counts as delivery; a manually stopped turn ends as interrupted.
         delivered, stopped, followups = False, False, []
         for item in log if isinstance(log, list) else []:
             kind, data = item.get("type"), item.get("data") or {}
@@ -995,36 +1030,36 @@ def candidate_chain(args, defaults, route):
     elif isinstance(value, dict):
         unknown = set(value) - {"mode", "candidates"}
         if unknown:
-            raise DispatchError(f"defaults.{route} 路由配置存在未知项：{sorted(unknown)}。")
+            raise DispatchError(f"defaults.{route} route config has unknown keys: {sorted(unknown)}.")
         mode = string(value.get("mode"), f"defaults.{route}.mode")
         if mode not in ("fallback", "load-balance", "weighted-load-balance"):
             raise DispatchError(
-                f"defaults.{route}.mode 必须是 fallback、load-balance 或 weighted-load-balance。"
+                f"defaults.{route}.mode must be fallback, load-balance or weighted-load-balance."
             )
         candidates = value.get("candidates")
         if mode == "weighted-load-balance":
             if not isinstance(candidates, dict) or not candidates:
-                raise DispatchError(f"defaults.{route}.candidates 必须是非空的 别名: 权重 映射。")
+                raise DispatchError(f"defaults.{route}.candidates must be a non-empty alias: weight mapping.")
             chain, weights = [], {}
             for raw_alias, weight in candidates.items():
-                alias = string(raw_alias, f"defaults.{route} 候选别名")
+                alias = string(raw_alias, f"defaults.{route} candidate alias")
                 if isinstance(weight, bool) or not isinstance(weight, (int, float)) or not math.isfinite(weight) or weight < 0:
-                    raise DispatchError(f"defaults.{route}.candidates.{alias} 权重必须是大于或等于 0 的有限数字。")
+                    raise DispatchError(f"defaults.{route}.candidates.{alias} weight must be a finite number >= 0.")
                 if weight == 0:
                     continue
                 chain.append(alias)
                 weights[alias] = weight
             if not chain:
-                raise DispatchError(f"defaults.{route}.candidates 至少需要一个权重大于 0 的候选。")
+                raise DispatchError(f"defaults.{route}.candidates needs at least one candidate with weight > 0.")
         else:
             if not isinstance(candidates, list) or not candidates:
-                raise DispatchError(f"defaults.{route}.candidates 必须是非空别名列表。")
+                raise DispatchError(f"defaults.{route}.candidates must be a non-empty alias list.")
             chain, weights = candidates, None
     else:
-        raise DispatchError(f"defaults.{route} 必须是非空别名、有序别名列表或路由配置。")
-    chain = [string(item, f"defaults.{route} 候选项") for item in chain]
+        raise DispatchError(f"defaults.{route} must be a non-empty alias, an ordered alias list or a route config.")
+    chain = [string(item, f"defaults.{route} candidate") for item in chain]
     if len(set(chain)) != len(chain):
-        raise DispatchError(f"defaults.{route} 候选别名不能重复。")
+        raise DispatchError(f"defaults.{route} candidate aliases must not repeat.")
     weights = weights or {alias: 1 for alias in chain}
     if mode in ("load-balance", "weighted-load-balance"):
         # Deterministic rendezvous ordering spreads independent tasks without mutable state.
@@ -1046,21 +1081,21 @@ def candidate_chain(args, defaults, route):
     if args.fallback_from is not None:
         start = string(args.fallback_from, "--fallback-from")
         if start not in chain:
-            raise DispatchError(f"--fallback-from {start!r} 不在 defaults.{route} 候选 {chain} 中。")
+            raise DispatchError(f"--fallback-from {start!r} is not among defaults.{route} candidates {chain}.")
         chain = chain[chain.index(start):]
     return chain, mode, {alias: weights[alias] for alias in chain}, full_chain
 
 
 def model_and_reasoning(agent, alias, route):
     if "model" in agent or "reasoning" in agent:
-        raise DispatchError(f"agents.{alias} 的 model/reasoning 必须放在 routes.<路由> 下。")
+        raise DispatchError(f"model/reasoning of agents.{alias} must be under routes.<route>.")
     routes = mapping(agent.get("routes"), f"agents.{alias}.routes")
     unknown = [repr(key) for key in routes if key not in ROUTE_KEYS]
     if unknown:
-        raise DispatchError(f"agents.{alias}.routes 只支持 {sorted(ROUTE_KEYS)}；未知项：{', '.join(unknown)}。")
+        raise DispatchError(f"agents.{alias}.routes only supports {sorted(ROUTE_KEYS)}; unknown keys: {', '.join(unknown)}.")
     profile_name = next((key for key in (route, "default") if key in routes), None)
     if profile_name is None:
-        raise DispatchError(f"agents.{alias}.routes 缺少 {route!r} 或 'default'；该候选不参与本次路由。")
+        raise DispatchError(f"agents.{alias}.routes lacks {route!r} or 'default'; this candidate does not take part in this route.")
     profile = mapping(routes[profile_name], f"agents.{alias}.routes.{profile_name}")
     model = string(profile.get("model"), f"agents.{alias}.routes.{profile_name}.model")
     reasoning = profile.get("reasoning")
@@ -1079,7 +1114,7 @@ def resolve_escalation(args, call):
     shown = mapping(call("thread", "show", source_id), f"{flag} thread")
     thread = shown.get("thread") if isinstance(shown.get("thread"), dict) else shown
     if thread.get("id") and thread["id"] != source_id:
-        raise DispatchError(f"{flag} 线程 {source_id!r} 校验不匹配。")
+        raise DispatchError(f"{flag} thread {source_id!r} failed verification.")
     if redispatch is not None:
         restore_redispatch(args, call, source_id, thread)
     return source_id
@@ -1087,17 +1122,17 @@ def resolve_escalation(args, call):
 
 def restore_redispatch(args, call, source_id, thread):
     if args.difficulty is not None or args.task is not None or args.escalate_from is not None:
-        raise DispatchError("--redispatch 会恢复原始用途、难度和任务，不能与 --difficulty、--task 或 --escalate-from 同用。")
+        raise DispatchError("--redispatch restores the original purpose, difficulty and task; it cannot be combined with --difficulty, --task or --escalate-from.")
     ledger = load_ledger(ledger_path_from(args), strict=True)
     entry = next((item for item in ledger["entries"]
                   if isinstance(item, dict) and item.get("id") == source_id), {})
     difficulty = entry.get("requested_difficulty", entry.get("difficulty"))
     if difficulty not in DIFFICULTIES:
-        raise DispatchError(f"运行账本中没有线程 {source_id!r} 的有效原始难度。")
+        raise DispatchError(f"the run ledger has no valid original difficulty for thread {source_id!r}.")
 
     events = call("thread", "log", source_id, "--all")
     if not isinstance(events, list):
-        raise DispatchError("bb thread log 返回格式未知。")
+        raise DispatchError("bb thread log returned an unknown format.")
     first = next((event for event in events if isinstance(event, dict)
                   and event.get("type") == "client/turn/requested"), {})
     data = first.get("data")
@@ -1106,27 +1141,27 @@ def restore_redispatch(args, call, source_id, thread):
         not isinstance(part, dict) or part.get("type") != "text" or not isinstance(part.get("text"), str)
         for part in parts
     ):
-        raise DispatchError(f"线程 {source_id!r} 的日志中没有可恢复的首轮派发任务文本。")
+        raise DispatchError(f"the log of thread {source_id!r} has no recoverable first-turn dispatch task text.")
 
     args.task = "".join(part["text"] for part in parts)
     args.difficulty = difficulty
     if entry.get("purpose") in ("work", "review"):
         args.purpose = entry["purpose"]
     if args.environment is None:
-        args.environment = string(thread.get("environmentId"), "原线程环境 ID")
+        args.environment = string(thread.get("environmentId"), "original thread environment ID")
     args.parent_notifications = args.parent_notifications or thread.get("parentNotifications")
 
 
-# 独立于 --ledger/--config：同一 OS 用户的派发进程共用锁与未决占位。
+# Independent of --ledger/--config: dispatch processes of the same OS user share the lock and pending reservations.
 CONCURRENCY_PATH = Path.home() / ".cache/bb-dispatch/concurrency.json"
 CONCURRENCY_LOCK_WAIT_SECONDS = 10
 
 
 @contextlib.contextmanager
 def concurrency_lock():
-    """容量控制不能像统计账本一样旁路失败。锁只覆盖一次派发，不等待任务结束。"""
+    """Capacity control cannot fail open like the statistics ledger. The lock covers one dispatch, not the task's lifetime."""
     if fcntl is None:
-        raise DispatchError("并发限制需要 fcntl 文件锁，当前平台不支持。")
+        raise DispatchError("concurrency limits need an fcntl file lock, which this platform lacks.")
     handle = None
     try:
         CONCURRENCY_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -1138,11 +1173,11 @@ def concurrency_lock():
                 break
             except BlockingIOError:
                 if time.monotonic() >= deadline:
-                    raise DispatchError("并发派发锁繁忙，请稍后重试；本次未创建线程。")
+                    raise DispatchError("concurrency dispatch lock is busy; retry later. No thread was created.")
                 time.sleep(0.05)
         yield
     except OSError as exc:
-        raise DispatchError(f"并发状态访问失败：{exc}") from exc
+        raise DispatchError(f"cannot access concurrency state: {exc}") from exc
     finally:
         if handle is not None:
             handle.close()
@@ -1156,15 +1191,15 @@ class ConcurrencySlots:
             data = json.loads(CONCURRENCY_PATH.read_text()) if CONCURRENCY_PATH.exists() else {"version": 1, "reservations": []}
             self.reservations = data["reservations"]
             if data.get("version") != 1 or not isinstance(self.reservations, list):
-                raise ValueError("并发状态格式无效")
+                raise ValueError("invalid concurrency state format")
             for item in self.reservations:
                 if (not isinstance(item, dict) or not isinstance(item.get("id"), str)
                         or not isinstance(item.get("provider"), str) or not isinstance(item.get("ts"), int)
                         or (item.get("thread") is not None and not isinstance(item["thread"], str))
                         or (item.get("model") is not None and not isinstance(item["model"], str))):
-                    raise ValueError("并发占位字段无效")
+                    raise ValueError("invalid concurrency reservation fields")
         except (OSError, ValueError, KeyError, TypeError) as exc:
-            raise DispatchError(f"无法读取并发状态 {CONCURRENCY_PATH}：{exc}") from exc
+            raise DispatchError(f"cannot read concurrency state {CONCURRENCY_PATH}: {exc}") from exc
 
     def save(self):
         if self.read_only:
@@ -1174,17 +1209,18 @@ class ConcurrencySlots:
             tmp.write_text(json.dumps({"version": 1, "reservations": self.reservations}, ensure_ascii=False, indent=2))
             tmp.replace(CONCURRENCY_PATH)
         except OSError as exc:
-            raise DispatchError(f"无法保存并发状态：{exc}") from exc
+            raise DispatchError(f"cannot save concurrency state: {exc}") from exc
 
     @staticmethod
     def occupied(thread):
-        # 归档阻止队列继续派发；残留消息和交互不再预留容量。
+        # Archiving stops the queue from dispatching; leftover messages and interactions no longer reserve capacity.
         if thread.get("archivedAt") is not None:
             return False
         if thread.get("hasPendingInteraction") is not False:
             return True
-        # error 的普通排队消息等待 retry，不代表正在执行；未知队列状态仍保守计数。
-        # 原会话/自动重试不经过新建入口，启动后由实时状态重新计数。
+        # Ordinary queued messages on an error thread wait for a retry and are not running; unknown queue states
+        # still count conservatively. Original-session/automatic retries bypass the create path and are counted
+        # from live status once they start.
         if thread.get("status") == "error":
             return thread.get("queuedWork") not in ("none", "waiting", "failed")
         return not (thread.get("status") == "idle" and thread.get("queuedWork") == "none")
@@ -1194,14 +1230,15 @@ class ConcurrencySlots:
             return
         rows = self.call("thread", "list", "--include-hidden", "--include-archived")
         if not isinstance(rows, list) or any(not isinstance(t, dict) or not t.get("id") for t in rows):
-            raise DispatchError("无法确定并发量：bb thread list 返回格式未知。")
+            raise DispatchError("cannot determine concurrency: bb thread list returned an unknown format.")
         self.threads = {t["id"]: t for t in rows}
         keep = []
         for item in self.reservations:
             thread = self.threads.get(item.get("thread"))
-            # 未知创建结果、线程暂未可见，均保持占位。idle 还需结束事件，避免初始 idle 提早释放。
+            # Unknown creation results and not-yet-visible threads keep their reservation. idle also needs a turn-end event
+            # so the initial idle state does not release it early.
             if thread is not None and not self.occupied(thread):
-                # 归档本身足以终止派发资格，不要求存在 turn/completed 日志。
+                # Archiving alone ends dispatch eligibility; no turn/completed log is required.
                 if thread.get("archivedAt") is not None or self.turn_ended(thread["id"], item["ts"]):
                     continue
             keep.append(item)
@@ -1211,8 +1248,8 @@ class ConcurrencySlots:
         try:
             return bool(turns_ended_since(self.call, thread_id, since))
         except DispatchError as exc:
-            # BB 单次日志响应上限 8 MiB；读不出来的空闲线程必然已跑过回合，按已结束释放，
-            # 否则这一条占位会让整次刷新失败，所有线路都显示并发已满。
+            # BB caps a single log response at 8 MiB; an idle thread whose log is too large must have run a turn,
+            # so release it as ended. Otherwise this one reservation fails the whole refresh and every route shows full.
             if exc.code == "event_data_too_large":
                 return True
             raise
@@ -1223,13 +1260,14 @@ class ConcurrencySlots:
                  if r["provider"] == provider and r.get("thread")}
 
         def included(model):
-            # BB 列表不带模型；新派发在占位中登记。旧占位/其他入口未知模型仍保守计数。
+            # The BB list carries no model; new dispatches record it in the reservation. Legacy reservations and other
+            # entry points with unknown models still count conservatively.
             return models is None or model is None or model in models
 
         active = {t["id"] for t in self.threads.values()
                   if t.get("providerId") == provider and self.occupied(t) and included(known.get(t["id"]))}
         held = [r for r in self.reservations if r["provider"] == provider and included(r.get("model"))]
-        # 已可见的线程与占位只算一次；也计入其他入口创建的活跃线程，避免继续挤占 provider。
+        # Visible threads and reservations count once; active threads created elsewhere count too, so the provider is not overloaded.
         return len(active | {r["thread"] for r in held if r.get("thread")}) + sum(not r.get("thread") for r in held)
 
     def reserve(self, provider, model):
@@ -1237,7 +1275,7 @@ class ConcurrencySlots:
         item = {"id": uuid.uuid4().hex, "provider": provider, "model": model,
                 "ts": int(time.time()), "thread": None}
         self.reservations.append(item)
-        self.save()  # 在 spawn 前落盘，崩溃或超时仍占位。
+        self.save()  # Persisted before spawn so crashes or timeouts still hold the slot.
         return item
 
 
@@ -1249,26 +1287,26 @@ def provider_limits(agents):
             continue
         limit = agent["max_concurrency"]
         if type(limit) is not int or limit < 1:
-            raise DispatchError(f"agents.{alias}.max_concurrency 必须是正整数；不限制时省略。")
+            raise DispatchError(f"agents.{alias}.max_concurrency must be a positive integer; omit it for no limit.")
         provider = string(agent.get("provider"), f"agents.{alias}.provider")
         limits[provider] = min(limit, limits.get(provider, limit))
     return limits
 
 
 def provider_model_scopes(agents):
-    """同 provider 的受限模型合并成一个池；任一上限未限定模型则覆盖全部模型。"""
+    """Limited models of the same provider merge into one pool; any cap without a model list covers all models."""
     scopes = {}
     for alias, agent in mapping(agents, "agents").items():
         agent = mapping(agent, f"agents.{alias}")
         if "concurrency_models" in agent and "max_concurrency" not in agent:
-            raise DispatchError(f"agents.{alias}.concurrency_models 需要同时配置 max_concurrency。")
+            raise DispatchError(f"agents.{alias}.concurrency_models requires max_concurrency as well.")
         if "max_concurrency" not in agent:
             continue
         models = agent.get("concurrency_models")
         if "concurrency_models" in agent:
             if (not isinstance(models, list) or not models
                     or any(not isinstance(v, str) or not v.strip() or v != v.strip() for v in models)):
-                raise DispatchError(f"agents.{alias}.concurrency_models 必须是非空模型 ID 列表。")
+                raise DispatchError(f"agents.{alias}.concurrency_models must be a non-empty list of model IDs.")
             models = set(models)
         provider = string(agent.get("provider"), f"agents.{alias}.provider")
         if provider not in scopes:
@@ -1286,7 +1324,7 @@ def concurrency_command(args, call=bb):
         if args.release_reservation:
             matched = [r for r in slots.reservations if r["id"] == args.release_reservation]
             if not matched:
-                raise DispatchError("未知并发占位 ID，未做修改。")
+                raise DispatchError("unknown concurrency reservation ID; nothing changed.")
             if args.dry_run:
                 return {"would_release": args.release_reservation, "dry_run": True}
             slots.reservations.remove(matched[0])
@@ -1307,11 +1345,11 @@ def dispatch(args, call=bb, now=None):
     try:
         config = mapping(yaml.safe_load(Path(args.config).expanduser().read_text()), "config")
     except (OSError, yaml.YAMLError) as exc:
-        raise DispatchError(f"无法读取配置 {args.config}：{exc}") from exc
+        raise DispatchError(f"cannot read config {args.config}: {exc}") from exc
     if config.get("version") != 2:
-        raise DispatchError("配置必须包含 version: 2。")
+        raise DispatchError("config must contain version: 2.")
     escalate_from = resolve_escalation(args, call)
-    # 各环境的限制也决定是否进入锁；实际限额在解析目标环境后计算。
+    # Per-environment limits also decide whether to take the lock; the actual limit is computed after resolving the target environment.
     configured = bool(provider_limits(config.get("agents", {})))
     provider_model_scopes(config.get("agents", {}))
     for override in mapping(config.get("environments", {}), "environments").values():
@@ -1327,8 +1365,9 @@ def dispatch(args, call=bb, now=None):
 
 def dispatch_unlocked(args, call, now, config, slots, escalate_from):
     now = int(time.time() if now is None else now)
-    # 从子线程首条消息复制回来的任务先去掉回报方式，续派的候选顺序与标题保持不变。
-    args.task = string(args.task.split(REPORT_PROTOCOL_ANCHOR, 1)[0], "task")
+    # A task copied from a child's first message drops its report protocol first, so redispatch keeps the same
+    # candidate order and title.
+    args.task = string(strip_report_protocol(args.task), "task")
     args.requested_difficulty = args.difficulty
     unknown = (getattr(args, "unknown", None) or "").strip()
 
@@ -1341,18 +1380,18 @@ def dispatch_unlocked(args, call, now, config, slots, escalate_from):
         environment = str(environment_path.resolve())
         project = args.project or current_project
         if not project:
-            raise DispatchError("路径模式无法确定项目，请提供 --project <id>。")
+            raise DispatchError("path mode cannot determine the project; pass --project <id>.")
         validation_environment = current_env
         if not validation_environment:
-            raise DispatchError("路径模式需要代理环境校验 provider 和模型；请在 BB 线程里运行，或先准备可代理的当前环境。")
+            raise DispatchError("path mode needs a proxy environment to validate providers and models; run inside a BB thread or prepare a current environment first.")
     else:
         environment = args.environment or current_env
         if not environment:
-            raise DispatchError("无法确定环境，请提供 --environment <id-or-path>。")
+            raise DispatchError("cannot determine the environment; pass --environment <id-or-path>.")
         env = mapping(call("environment", "show", environment), "environment")
         project = args.project or env.get("projectId") or current_project
         if not project or env.get("projectId") != project or env.get("id") != environment:
-            raise DispatchError("项目与环境不匹配；环境 ID 必须精确匹配现有环境。")
+            raise DispatchError("project and environment do not match; the environment ID must exactly match an existing environment.")
         validation_environment = environment
     floor_warnings = []
     if args.purpose == "work":
@@ -1360,11 +1399,11 @@ def dispatch_unlocked(args, call, now, config, slots, escalate_from):
         project_config = mapping(projects.get(project, {}), f"projects.{project}")
         minimum = project_config.get("min_difficulty", "simple")
         if minimum not in DIFFICULTIES:
-            raise DispatchError(f"projects.{project}.min_difficulty 必须为 simple、medium 或 complex。")
+            raise DispatchError(f"projects.{project}.min_difficulty must be simple, medium or complex.")
         if DIFFICULTIES.index(args.difficulty) < DIFFICULTIES.index(minimum):
             args.difficulty = minimum
-            floor_warnings.append(f"按项目下限从 {args.requested_difficulty} 抬到 {minimum}（项目 {project}）。")
-    # 环境块中的同名别名整体替换，避免混用另一台机器的模型和推理设置。
+            floor_warnings.append(f"raised from {args.requested_difficulty} to {minimum} by the project floor (project {project}).")
+    # Same-named aliases in an environment block replace the whole entry, so another machine's model and reasoning never mix in.
     override = {} if path_mode else mapping(
         mapping(config.get("environments", {}), "environments").get(environment, {}), "environment config"
     )
@@ -1381,7 +1420,7 @@ def dispatch_unlocked(args, call, now, config, slots, escalate_from):
     chain, routing_mode, candidate_weights, full_chain = candidate_chain(args, defaults, route)
 
     def route_target(alias):
-        """别名在本次路由下解析到的 (provider, model)；配置有误时返回 None，留给校验循环报错。"""
+        """(provider, model) the alias resolves to on this route; None on bad config, left for the validation loop to report."""
         try:
             agent = mapping(agents.get(alias), f"agents.{alias}")
             return string(agent.get("provider"), f"agents.{alias}.provider"), model_and_reasoning(agent, alias, route)[0]
@@ -1402,15 +1441,16 @@ def dispatch_unlocked(args, call, now, config, slots, escalate_from):
     health = health_cooldowns(ledger, now)
 
     def cooldown_for(alias):
-        # 调用方点名从该别名续派时不按冷却跳过它。
+        # When the caller names this alias to continue from, cooldown does not skip it.
         if args.fallback_from == alias:
             return None
         target = route_target(alias)
         return health.get(health_key(*target)) if target is not None else None
 
     providers = call("provider", "list", "--environment", validation_environment)
-    # 同档 fallback：每个候选按本次路由项解析自己的 routes，首个通过校验者派发。
-    # 优先跳过熔断冷却中的候选；若所有候选均在冷却中，则保底降级尝试，避免单候选链死锁。
+    # Same-tier fallback: each candidate resolves its own routes for this route key; the first to pass validation is
+    # dispatched. Cooling candidates are skipped first; if all are cooling, try them anyway so a single-candidate chain
+    # never deadlocks.
     all_cooled = all(cooldown_for(alias) for alias in chain)
     attempts = []
     diverted = []
@@ -1425,7 +1465,7 @@ def dispatch_unlocked(args, call, now, config, slots, escalate_from):
                 if cd.get("quota"):
                     quota_diverted.append(alias)
                 rem = int(cd["until"]) - now
-                raise DispatchError(f"候选 {alias} 处于熔断冷却中（原因：{cd.get('reason')}，剩余 {rem}s）。")
+                raise DispatchError(f"candidate {alias} is in circuit-breaker cooldown (reason: {cd.get('reason')}, {rem}s remaining).")
             agent = mapping(agents.get(alias), f"agents.{alias}")
             provider = string(agent.get("provider"), f"agents.{alias}.provider")
             model, reasoning = model_and_reasoning(agent, alias, route)
@@ -1435,18 +1475,18 @@ def dispatch_unlocked(args, call, now, config, slots, escalate_from):
             if limited(provider, model):
                 used = slots.usage(provider, scopes[provider])
                 if used >= limits[provider]:
-                    raise DispatchError(f"候选 {alias} 并发已满（{provider}: {used}/{limits[provider]}），本次跳过。", code="capacity_full")
+                    raise DispatchError(f"candidate {alias} is at concurrency capacity ({provider}: {used}/{limits[provider]}); skipped.", code="capacity_full")
             selected = unique(providers, "id", provider, "provider")
             if selected.get("available") is not True:
-                raise DispatchError(f"provider {provider} 在校验环境不可用。")
+                raise DispatchError(f"provider {provider} is unavailable in the validation environment.")
             modes = selected.get("capabilities", {}).get("permissionModes", [])
             codex = selected.get("pluginId") == "provider-codex" or provider == "codex" or provider.startswith("codex-")
             default_permission = "auto" if codex and "auto" in modes else "accept-edits"
             permission = args.permission_mode or agent.get("permission_mode", override.get("permission_mode", config.get("permission_mode", default_permission)))
             if permission not in ("accept-edits", "auto", "full"):
-                raise DispatchError("permission_mode 必须是 accept-edits、auto 或 full。")
+                raise DispatchError("permission_mode must be accept-edits, auto or full.")
             if permission not in modes:
-                raise DispatchError(f"{provider} 不支持权限 {permission}；请选用兼容工具，或在任务已授权后显式指定权限。")
+                raise DispatchError(f"{provider} does not support permission {permission}; pick a compatible tool, or pass the permission explicitly once the task is authorized.")
             catalog_key = (provider, model)
             if catalog_key not in catalogs:
                 catalogs[catalog_key] = call(
@@ -1454,14 +1494,14 @@ def dispatch_unlocked(args, call, now, config, slots, escalate_from):
                     "--environment", validation_environment,
                     "--selected-model", model,
                 )
-            selected_model = unique(catalogs[catalog_key], "id", model, "模型")
+            selected_model = unique(catalogs[catalog_key], "id", model, "model")
             levels = [entry.get("reasoningEffort") for entry in (selected_model.get("supportedReasoningEfforts") or [])]
             if reasoning is not None and reasoning not in levels:
-                raise DispatchError(f"模型 {model} 不支持 reasoning={reasoning}；可用值：{levels}。")
+                raise DispatchError(f"model {model} does not support reasoning={reasoning}; available: {levels}.")
             agent_fast = agent.get("fast")
             if agent_fast is not None:
                 if not isinstance(agent_fast, bool):
-                    raise DispatchError(f"agents.{alias}.fast 必须是 true 或 false。")
+                    raise DispatchError(f"agents.{alias}.fast must be true or false.")
                 candidate_fast = agent_fast
             else:
                 candidate_fast = fast
@@ -1477,21 +1517,22 @@ def dispatch_unlocked(args, call, now, config, slots, escalate_from):
         choice = (index, alias, provider, model, reasoning, service_tier)
         break
     if choice is None:
-        detail = "；".join(f"{item['agent']}: {item['error']}" for item in attempts)
-        raise DispatchError(f"defaults.{route} 候选链 {chain} 均不可用：{detail}")
+        detail = "; ".join(f"{item['agent']}: {item['error']}" for item in attempts)
+        raise DispatchError(f"no candidate in defaults.{route} chain {chain} is usable: {detail}")
     index, alias, provider, model, reasoning, service_tier = choice
     fallbacks = chain[index + 1:]
     agent_cfg = agents.get(alias) if isinstance(agents.get(alias), dict) else {}
     shape = agent_cfg.get("shape") or AGENT_SHAPES.get(alias) or AGENT_SHAPES.get(provider) or "circle"
     title = thread_title(args.title, args.task, args.difficulty, shape=shape)
-    # 父子关系不要求同项目：BB 的 --parent-thread 允许父线程在另一个项目，完成通知照常回到父线程。
+    # Parent and child need not share a project: BB's --parent-thread allows a parent in another project, and
+    # completion notices still reach it.
     parent = context.get("thread") or {}
     if not parent and os.environ.get("BB_THREAD_ID"):
         parent = (call("thread", "show", os.environ["BB_THREAD_ID"]).get("thread") or {})
-    # 只要关联了父线程就附加回报方式，跨项目也一样；通知模式决定附加哪一份。
+    # Any linked parent gets the report protocol, cross-project too; the notification mode decides which variant.
     notifications = args.parent_notifications or config.get("parent_notifications") or "auto"
     if notifications not in PARENT_NOTIFICATION_MODES:
-        raise DispatchError(f"parent_notifications 只能是 {'/'.join(PARENT_NOTIFICATION_MODES)}，收到 {notifications!r}")
+        raise DispatchError(f"parent_notifications must be one of {'/'.join(PARENT_NOTIFICATION_MODES)}, got {notifications!r}")
     protocol = REPORT_PROTOCOL if notifications == "auto" else QUIET_REPORT_PROTOCOL
     task = args.task + REPORT_PROTOCOL_ANCHOR + protocol if parent.get("id") else args.task
     command = ["thread", "spawn", "--project", project, "--environment", environment,
@@ -1531,16 +1572,16 @@ def dispatch_unlocked(args, call, now, config, slots, escalate_from):
         return {"dry_run": True, "selection": plan, "argv": ["bb", *command, "--json"]}
 
     def persist(extra_cooldowns=(), entry=None):
-        """把本次识别的终态、冷却和新条目合并进最新账本并记复盘事件；写入失败只告警。"""
+        """Merge this run's outcomes, cooldowns and new entry into the latest ledger and record review events; write failures only warn."""
         def apply(fresh):
             events = []
             entries = {item.get("id"): item for item in fresh.get("entries", []) if isinstance(item, dict)}
             for update in reconciled:
                 target = entries.get(update["id"])
-                # 并发期间别处已回写的终态优先。
+                # An outcome written back concurrently elsewhere wins.
                 if target is not None and awaiting_outcome(target):
                     target.update(outcome=update["outcome"], outcome_ts=update["outcome_ts"])
-                    # 这次故障已恢复，重试次数清零，下次报错从头计。
+                    # This fault recovered: reset retries so the next error counts from scratch.
                     retries = int(target.pop("retries", 0) or 0)
                     target.pop("retry_ts", None)
                     if retries:
@@ -1555,7 +1596,7 @@ def dispatch_unlocked(args, call, now, config, slots, escalate_from):
                 del table[key]
             if entry is not None:
                 append_ledger_entry(fresh, entry, now=now)
-                # 复盘日志比 live 窗口留得久，复盘要串起派发链和定档理由，这里带上同样的最小事实。
+                # The review log outlives the live window and must link dispatch chains and grading reasons, so it carries the same minimal facts.
                 extra = {k: entry[k] for k in ("purpose", "parent_thread", "reasoning", "task_chars", "unknown", "escalated_from")
                          if entry.get(k) is not None}
                 if entry.get("requested_difficulty") != entry["difficulty"]:
@@ -1568,29 +1609,29 @@ def dispatch_unlocked(args, call, now, config, slots, escalate_from):
         try:
             return update_ledger(lpath, apply, strict=False)
         except Exception as exc:
-            print(f"warning: 账本写入失败（已旁路忽略）：{exc}", file=sys.stderr)
+            print(f"warning: ledger write failed (ignored, continuing): {exc}", file=sys.stderr)
             return None
 
-    # 有模型范围时也登记范围外派发，以便之后查询不会把 simple 当成未知模型计入。
+    # With a model scope, out-of-scope dispatches are recorded too so later queries do not count them as unknown models.
     reservation = slots.reserve(provider, model) if provider in limits else None
     try:
         result = call(*command)
     except DispatchError as exc:
         persist(extra_cooldowns=[(provider, model, "spawn-failed")])
         if reservation is not None:
-            raise DispatchError(f"{exc} 并发占位 {reservation['id']} 已保留；先查询线程确认创建结果，"
-                                "再用 --release-reservation <占位ID> 释放；勿直接重试创建。") from exc
+            raise DispatchError(f"{exc} Concurrency reservation {reservation['id']} kept; query threads to confirm the creation "
+                                "result, then release it with --release-reservation <reservation-ID>; do not retry creation directly.") from exc
         if fallbacks:
             raise DispatchError(
-                f"{exc} 该候选已冷却；确认线程未创建后重跑同一命令会改用 {fallbacks[0]}"
-                f"（也可用 --fallback-from {fallbacks[0]}）。"
+                f"{exc} This candidate is now cooling; after confirming no thread was created, rerunning the same command "
+                f"switches to {fallbacks[0]} (or use --fallback-from {fallbacks[0]})."
             ) from exc
         raise
     thread_obj = result.get("thread") if isinstance(result, dict) and isinstance(result.get("thread"), dict) else result
     created_id = (thread_obj or {}).get("id") if isinstance(thread_obj, dict) else None
     if reservation is not None:
         if not created_id:
-            raise DispatchError(f"创建响应缺少线程 ID，并发占位 {reservation['id']} 已保留；请先查询线程。")
+            raise DispatchError(f"creation response lacks a thread ID; concurrency reservation {reservation['id']} kept. Query threads first.")
         reservation["thread"] = str(created_id)
         slots.save()
     entry = None
@@ -1620,41 +1661,42 @@ def dispatch_unlocked(args, call, now, config, slots, escalate_from):
         hooks = summary["review_hooks"]
         if hooks:
             plan.setdefault("warnings", []).extend(h["message"] for h in hooks)
-    # 返回完整创建回执，包括排队状态；不把创建成功宣称为任务完成。
+    # Return the full creation receipt including queue state; successful creation is not task completion.
     return {"dry_run": False, "selection": plan, "result": result}
 
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="示例：\n  bb-dispatch --difficulty simple --task '补充 README' --dry-run\n  bb-dispatch --difficulty simple --task '登录失败可复现，在认证链路定位根因并修复'\n  bb-dispatch --difficulty medium --task '改动租户隔离边界，测试通过不足以证明没有泄漏'\n  bb-dispatch --history-summary\n  bb-dispatch --on-failure thr_xxx\n  bb-dispatch --followups --days 3\n输出：stdout JSON，stderr 错误；退出码 0 成功，2 失败。")
-    p.add_argument("--config", default=os.environ.get("BB_DISPATCH_CONFIG", str(Path.home() / ".config/bb-dispatch/config.yaml")), help="用户 YAML 配置路径，也可设置 BB_DISPATCH_CONFIG")
-    p.add_argument("--ledger", default=os.environ.get("BB_DISPATCH_LEDGER_PATH", str(Path.home() / ".cache/bb-dispatch/ledger.json")), help="运行账本与熔断缓存路径，也可设置 BB_DISPATCH_LEDGER_PATH")
-    p.add_argument("--difficulty", choices=["simple", "medium", "complex"], help="任务难度，归档标准见 SKILL.md「判断与调用」")
+        epilog="Examples:\n  bb-dispatch --difficulty simple --task 'Expand the README' --dry-run\n  bb-dispatch --difficulty simple --task 'Login failure is reproducible; find the root cause in the auth path and fix it'\n  bb-dispatch --difficulty medium --task 'Change the tenant isolation boundary; passing tests do not prove there is no leak'\n  bb-dispatch --history-summary\n  bb-dispatch --on-failure thr_xxx\n  bb-dispatch --followups --days 3\nOutput: JSON on stdout, errors on stderr; exit code 0 on success, 2 on failure.")
+    p.add_argument("--config", default=os.environ.get("BB_DISPATCH_CONFIG", str(Path.home() / ".config/bb-dispatch/config.yaml")), help="user YAML config path; can also be set via BB_DISPATCH_CONFIG")
+    p.add_argument("--ledger", default=os.environ.get("BB_DISPATCH_LEDGER_PATH", str(Path.home() / ".cache/bb-dispatch/ledger.json")), help="run ledger and circuit-breaker cache path; can also be set via BB_DISPATCH_LEDGER_PATH")
+    p.add_argument("--difficulty", choices=["simple", "medium", "complex"], help="task difficulty; grading criteria in SKILL.md \"Judgment and invocation\"")
     p.add_argument("--purpose", choices=["work", "review"], default="work",
-                   help="派发用途，默认 work；review 跳过项目最低难度，按请求难度路由")
-    p.add_argument("--task", help="任务目标、范围和验收要求")
-    p.add_argument("--escalate-from", metavar="线程ID", help="同一任务前序失败或返工的线程 ID，记入账本")
-    p.add_argument("--unknown", metavar="原因", help="可选：一句话说明定档原因，截断后记入账本")
-    p.add_argument("--fallback-from", metavar="别名", help="从 defaults.<路由> 链中该别名起续派；链上排在它前面的候选按 provider 与模型冷却 15 分钟")
-    p.add_argument("--reasoning", help="覆盖推理级别，仍校验模型目录")
-    p.add_argument("--project", help="项目 ID；ID 模式默认环境所属项目，路径模式默认当前项目")
-    p.add_argument("--environment", help="现有环境 ID 或本机工作区目录；默认当前 BB 环境")
-    p.add_argument("--permission-mode", choices=["accept-edits", "auto", "full"], help="权限覆盖；默认用户配置，否则支持 auto 的 Codex 用 auto，其他用 accept-edits")
-    p.add_argument("--title", help="可选标题正文；按难度和账号自动加颜色形状前缀（圆/方/心），省略时从任务文本截取")
+                   help="dispatch purpose, default work; review skips the project minimum difficulty and routes by the requested difficulty")
+    p.add_argument("--task", help="task goal, scope and acceptance requirements")
+    p.add_argument("--escalate-from", metavar="THREAD_ID", help="ID of an earlier thread where the same task failed or needed rework; recorded in the ledger")
+    p.add_argument("--unknown", metavar="REASON", help="optional one-sentence grading reason; truncated and recorded in the ledger")
+    p.add_argument("--fallback-from", metavar="ALIAS", help="continue from this alias in the defaults.<route> chain; candidates before it are cooled for 15 minutes per provider and model")
+    p.add_argument("--reasoning", help="override the reasoning level; still validated against the model catalog")
+    p.add_argument("--project", help="project ID; defaults to the environment's project in ID mode and the current project in path mode")
+    p.add_argument("--environment", help="existing environment ID or local workspace directory; defaults to the current BB environment")
+    p.add_argument("--permission-mode", choices=["accept-edits", "auto", "full"], help="permission override; defaults to the user config, else auto for Codex providers that support it and accept-edits otherwise")
+    p.add_argument("--title", help="optional title text; a colored shape prefix (circle/square/heart/book) is added by difficulty and account; taken from the task text when omitted")
     p.add_argument("--parent-notifications", choices=PARENT_NOTIFICATION_MODES,
-                   help="子线程哪些回合结果唤醒父线程：auto 每回合；stuck 只在失败、卡住或等审批时，其余由子线程显式 tell；"
-                        "off 不自动唤醒。省略时读配置顶层 parent_notifications，默认 auto")
-    p.add_argument("--dry-run", action="store_true", help="只读校验并输出启动参数，不创建线程；配合 --on-failure 只给出动作，不安排重试、不写账本")
+                   help="which child turn results wake the parent: auto every turn; stuck only on failure, when stuck or awaiting "
+                        "approval, with everything else told explicitly by the child; off never wakes it automatically. "
+                        "Defaults to the top-level parent_notifications config, else auto")
+    p.add_argument("--dry-run", action="store_true", help="validate read-only and print the launch arguments without creating a thread; with --on-failure only report the action, scheduling no retry and writing no ledger")
     modes = p.add_mutually_exclusive_group()
-    modes.add_argument("--redispatch", metavar="线程ID", help="按原始难度和首轮任务文本改派已冷却的失败线程，自动记录 --escalate-from")
-    modes.add_argument("--concurrency-status", action="store_true", help="只读查看 provider 当前占用与未决并发占位，不依赖统计账本")
-    modes.add_argument("--release-reservation", metavar="占位ID", help="确认创建结果后移除指定占位；活跃线程仍按 BB 实时状态计数")
-    modes.add_argument("--on-failure", metavar="线程ID", help="子线程报错后调用：先在原会话按 1、2、4 分钟退避重试，用尽才记失败并冷却该 provider 与模型")
-    modes.add_argument("--history-summary", "--stats", dest="history_summary", action="store_true", help="只读输出运行账本的聚合统计、当前冷却、确定性复盘 hooks，以及复盘日志近 7 天的重试与冷却汇总")
-    modes.add_argument("--followups", action="store_true", help="只读列出近 --days 天派发的线程首次交付后，父线程或用户追加的消息，供复盘归类返工")
-    p.add_argument("--days", type=int, default=3, help="配合 --followups 的回看天数（默认 3）")
-    modes.add_argument("--record-outcome", "--record-decision", dest="record_outcome", metavar="线程ID", help="按稳定线程 ID 改正运行终态（覆盖而非追加）")
-    p.add_argument("--outcome", choices=list(OUTCOME_KEYS), help="配合 --record-outcome 改正运行终态；completed 按线程状态自动记录，failed 由 --on-failure 在重试用尽后记录，放弃任务也可手动记；各 failed* 取值都计入连续失败")
+    modes.add_argument("--redispatch", metavar="THREAD_ID", help="redispatch a cooled failed thread with its original difficulty and first-turn task text; records --escalate-from automatically")
+    modes.add_argument("--concurrency-status", action="store_true", help="read-only view of current provider usage and pending concurrency reservations; independent of the statistics ledger")
+    modes.add_argument("--release-reservation", metavar="RESERVATION_ID", help="remove the given reservation after confirming the creation result; active threads still count by live BB status")
+    modes.add_argument("--on-failure", metavar="THREAD_ID", help="call after a child thread errors: retry in the original session after 1, 2 and 4 minutes, and only when exhausted record failure and cool that provider and model")
+    modes.add_argument("--history-summary", "--stats", dest="history_summary", action="store_true", help="read-only aggregate statistics from the run ledger, active cooldowns, deterministic review hooks, and a 7-day retry and cooldown summary from the review log")
+    modes.add_argument("--followups", action="store_true", help="read-only list of messages the parent or user added after the first delivery of threads dispatched in the last --days days, for rework review")
+    p.add_argument("--days", type=int, default=3, help="days to look back with --followups (default 3)")
+    modes.add_argument("--record-outcome", "--record-decision", dest="record_outcome", metavar="THREAD_ID", help="correct a run outcome by stable thread ID (overwrites, never appends)")
+    p.add_argument("--outcome", choices=list(OUTCOME_KEYS), help="outcome for --record-outcome; completed is recorded automatically from thread status, failed by --on-failure after retries are exhausted, and can also be set manually for abandoned tasks; every failed* value counts as a consecutive failure")
     return p
 
 
@@ -1667,7 +1709,7 @@ def main():
         if args.history_summary:
             lpath, now = ledger_path_from(args), int(time.time())
             ledger = load_ledger(lpath, strict=False)
-            # 只在内存里补齐终态，保持统计只读。
+            # Fill in outcomes only in memory so statistics stay read-only.
             reconcile_outcomes(ledger, bb, now)
             summary = summarize_ledger(ledger, now)
             summary["retry_review"] = summarize_events(lpath, now)
@@ -1684,13 +1726,13 @@ def main():
             return 0
         if args.redispatch is None:
             if not args.difficulty or args.task is None:
-                raise DispatchError("派发模式必须提供 --difficulty 与 --task。")
+                raise DispatchError("dispatch mode requires --difficulty and --task.")
             string(args.task, "task")
         result = dispatch(args)
         print(json.dumps(result, ensure_ascii=False, indent=2))
-        # 调用方常只取 stdout 里的线程 ID，复盘提醒另写 stderr，过滤输出时也看得到。
+        # Callers often take only the thread ID from stdout, so review reminders also go to stderr where filtering keeps them visible.
         for warning in (result.get("selection") or {}).get("warnings") or []:
-            print(f"提醒：{warning}", file=sys.stderr)
+            print(f"warning: {warning}", file=sys.stderr)
     except DispatchError as exc:
         print(str(exc), file=sys.stderr)
         return 2

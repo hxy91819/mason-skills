@@ -1,4 +1,4 @@
-"""离线验证派发行为；假 BB 边界不创建真实线程。"""
+"""Offline dispatch behavior tests; the fake BB boundary never creates real threads."""
 import importlib.machinery
 import importlib.util
 import io
@@ -63,7 +63,7 @@ environments:
         if args[:2] == ('environment', 'show'):
             return {'id': args[2], 'projectId': 'proj'}
         if args[:2] == ('thread', 'show'):
-            # 真实 show 只给排队数，queuedWork 与 hasPendingInteraction 只在 list 里有。
+            # Real show only gives queue counts; queuedWork and hasPendingInteraction exist only in list.
             known = next((t for t in self.threads if t.get('id') == args[2]), {})
             return {'thread': {'id': args[2], 'projectId': 'proj', 'status': known.get('status', 'error'),
                                'environmentId': known.get('environmentId', 'env'),
@@ -110,7 +110,7 @@ environments:
             '--ledger', str(self.ledger),
             '--difficulty', 'simple',
             '--task', 'literal $(touch nope) "text"',
-            '--unknown', '测试用原因',
+            '--unknown', 'test reason',
             *extra,
         ])
 
@@ -191,7 +191,7 @@ environments:
         self.assertEqual(argv[argv.index('--parent-notifications') + 1], 'stuck')
         self.assertTrue(prompt(quiet).endswith(m.QUIET_REPORT_PROTOCOL))
         self.assertEqual(quiet['selection']['parent_notifications'], 'stuck')
-        # 续派时从子线程首条消息复制任务文本：去掉旧回报方式，按当前模式重新附加一次。
+        # Redispatch copies the task from the child's first message: drop the old protocol and reattach once for the current mode.
         copied = m.dispatch(self.args('--task', prompt(quiet), '--parent-notifications', 'stuck', '--dry-run'), self.fake)
         self.assertEqual(prompt(copied), prompt(quiet))
 
@@ -205,11 +205,34 @@ environments:
             task = f'linked task {index}'
             first = m.dispatch(self.args('--task', task, '--dry-run'), self.fake)
             self.assertEqual(prompt(first), task + m.REPORT_PROTOCOL_ANCHOR + m.REPORT_PROTOCOL)
-            # 续派时从子线程首条消息复制任务文本：不重复附加，候选顺序与标题不变。
+            # Redispatch copies the task from the child's first message: no double append, same candidate order and title.
             copied = m.dispatch(self.args('--task', prompt(first), '--dry-run'), self.fake)
             self.assertEqual(prompt(copied), prompt(first))
             self.assertEqual(copied['selection']['candidates'], first['selection']['candidates'])
             self.assertEqual(copied['selection']['title'], first['selection']['title'])
+
+    def test_copied_task_with_legacy_chinese_protocol_is_stripped_and_gets_english_protocol(self):
+        legacy_quiet = ('linked task\n\n## 回报方式（bb-dispatch 附加）\n'
+                        '回合结束不会自动通知父线程。只在这几种情况下用 `bb thread tell <父线程ID>` 发一条消息。')
+        legacy_auto = 'linked task\n\n## 回报方式（bb-dispatch 附加）\n回合结束时，BB 会自动把你的最终回复送达父线程。'
+        expected = m.dispatch(self.args('--task', 'linked task', '--dry-run'), self.fake)
+        for copied_task in (legacy_quiet, legacy_auto):
+            with self.subTest(copied_task=copied_task):
+                copied = m.dispatch(self.args('--task', copied_task, '--dry-run'), self.fake)
+                prompt = copied['argv'][copied['argv'].index('--prompt') + 1]
+                self.assertEqual(prompt, 'linked task' + m.REPORT_PROTOCOL_ANCHOR + m.REPORT_PROTOCOL)
+                self.assertNotIn('回报方式', prompt)
+                self.assertEqual(copied['selection']['title'], expected['selection']['title'])
+                self.assertEqual(copied['selection']['candidates'], expected['selection']['candidates'])
+
+    def test_legacy_chinese_quota_window_cooldown_still_applies_with_english_reason(self):
+        ledger = m.empty_ledger()
+        ledger['cooldowns']['primary|fast-model'] = {
+            'provider': 'primary', 'model': 'fast-model', 'reason': '额度窗口',
+            'since': 1000, 'until': 5000, 'quota': True,
+        }
+        cooldown = m.health_cooldowns(ledger, now=2000)['primary|fast-model']
+        self.assertEqual((cooldown['reason'], cooldown['quota'], cooldown['until']), ('quota window', True, 5000))
 
     def test_kind_option_is_removed(self):
         import contextlib
@@ -276,7 +299,7 @@ environments:
                 return {'project': {'id': 'proj'}, 'thread': {'id': 'parent'}}
             return self.fake(*args)
 
-        with self.assertRaisesRegex(m.DispatchError, '代理环境'):
+        with self.assertRaisesRegex(m.DispatchError, 'proxy environment'):
             m.dispatch(self.args('--environment', str(workspace), '--dry-run'), status_without_environment)
         self.assertFalse(any(c[:2] == ('provider', 'list') for c in self.calls))
 
@@ -440,7 +463,7 @@ environments:
         self.config.write_text(m.yaml.safe_dump(config))
         with self.assertRaises(m.DispatchError) as ctx:
             m.dispatch(self.args('--dry-run'), self.enable_fast_catalog())
-        self.assertIn("agents.primary.fast 必须是 true 或 false", str(ctx.exception))
+        self.assertIn("agents.primary.fast must be true or false", str(ctx.exception))
 
     def test_fast_cli_is_rejected(self):
         import contextlib
@@ -504,15 +527,15 @@ environments:
     def test_titles_are_prefixed_in_preview_and_spawn(self):
         cases = [(None, 'literal $(touch nope) "text"'),
                  ('  ', 'literal $(touch nope) "text"'),
-                 ('修复登录', '修复登录'),
-                 ('  [Agent] [Agent] 修复\n登录 ', '修复 登录'),
-                 ('🟢 🟡 🔴 [Agent] 修复登录', '修复登录'),
-                 ('🟩 🟨 🟥 💚 💛 ❤️ [Agent] 修复登录', '修复登录'),
-                 ('[Agent]', '任务'),
-                 ('🟢', '任务'),
-                 ('🟨', '任务'),
-                 ('❤️', '任务'),
-                 ('📒', '任务'),
+                 ('Fix login', 'Fix login'),
+                 ('  [Agent] [Agent] Fix\nlogin ', 'Fix login'),
+                 ('🟢 🟡 🔴 [Agent] Fix login', 'Fix login'),
+                 ('🟩 🟨 🟥 💚 💛 ❤️ [Agent] Fix login', 'Fix login'),
+                 ('[Agent]', 'Task'),
+                 ('🟢', 'Task'),
+                 ('🟨', 'Task'),
+                 ('❤️', 'Task'),
+                 ('📒', 'Task'),
                  ('文' * 100, '文' * 79 + '…')]
         for supplied, expected in cases:
             for difficulty, prefix in [('simple', '🟢'), ('medium', '🟡'), ('complex', '🔴')]:
@@ -541,8 +564,8 @@ environments:
                         config['agents'][alias]['shape'] = 'book'
                     config['defaults'][difficulty] = alias
                     self.config.write_text(m.yaml.safe_dump(config))
-                    result = m.dispatch(self.args('--difficulty', difficulty, '--title', '📒 测试任务', '--dry-run'), self.fake)
-                    self.assertEqual(result['selection']['title'], prefix + ' 测试任务')
+                    result = m.dispatch(self.args('--difficulty', difficulty, '--title', '📒 test task', '--dry-run'), self.fake)
+                    self.assertEqual(result['selection']['title'], prefix + ' test task')
 
     def test_shaped_title_prefixes_by_agent_and_shape(self):
         config = m.yaml.safe_load(self.config.read_text())
@@ -564,20 +587,20 @@ environments:
         config['defaults']['simple'] = 'custom_agent'
         self.config.write_text(m.yaml.safe_dump(config))
 
-        res_l = m.dispatch(self.args('--difficulty', 'medium', '--title', '测试任务', '--dry-run'), self.fake)
-        self.assertEqual(res_l['selection']['title'], '🟨 测试任务')
+        res_l = m.dispatch(self.args('--difficulty', 'medium', '--title', 'test task', '--dry-run'), self.fake)
+        self.assertEqual(res_l['selection']['title'], '🟨 test task')
 
-        res_b = m.dispatch(self.args('--difficulty', 'complex', '--title', '测试任务', '--dry-run'), self.fake)
-        self.assertEqual(res_b['selection']['title'], '❤️ 测试任务')
+        res_b = m.dispatch(self.args('--difficulty', 'complex', '--title', 'test task', '--dry-run'), self.fake)
+        self.assertEqual(res_b['selection']['title'], '❤️ test task')
 
-        res_custom = m.dispatch(self.args('--difficulty', 'simple', '--title', '测试任务', '--dry-run'), self.fake)
-        self.assertEqual(res_custom['selection']['title'], '💚 测试任务')
+        res_custom = m.dispatch(self.args('--difficulty', 'simple', '--title', 'test task', '--dry-run'), self.fake)
+        self.assertEqual(res_custom['selection']['title'], '💚 test task')
 
     def test_spawn_failure_is_not_retried(self):
         def failing(*args):
             if args[:2] == ('thread', 'spawn'):
                 self.calls.append(args)
-                raise m.DispatchError('创建结果未知')
+                raise m.DispatchError('creation result unknown')
             return self.fake(*args)
         with self.assertRaises(m.DispatchError):
             m.dispatch(self.args(), failing)
@@ -680,7 +703,7 @@ environments:
     def test_all_zero_weights_fail_before_provider_validation(self):
         self.chain_config({'mode': 'weighted-load-balance',
                            'candidates': {'primary': 0, 'specialist': 0.0}})
-        with self.assertRaisesRegex(m.DispatchError, '至少需要一个权重大于 0'):
+        with self.assertRaisesRegex(m.DispatchError, 'at least one candidate with weight > 0'):
             m.dispatch(self.args(), self.fake)
         self.assertFalse(any(c[:2] in (('provider', 'list'), ('thread', 'spawn')) for c in self.calls))
 
@@ -767,10 +790,10 @@ environments:
 
     def complex_args(self, *extra):
         return m.parser().parse_args(['--config', str(self.config), '--ledger', str(self.ledger),
-                                      '--difficulty', 'complex', '--task', '裁决方案', *extra])
+                                      '--difficulty', 'complex', '--task', 'judge the plan', *extra])
 
     def test_direct_medium_or_complex_needs_no_escalation_or_reason(self):
-        long_task = '细化步骤' * 700
+        long_task = 'refine the steps ' * 700
         for diff in ('medium', 'complex'):
             args = self.args('--difficulty', diff, '--task', long_task)
             args.unknown = None
@@ -779,7 +802,7 @@ environments:
             self.assertNotIn('escalated_from', result['selection'])
 
     def test_optional_reason_and_escalation_are_recorded(self):
-        unknown = '不知道故障在网关、调度还是存储哪一层' * 10
+        unknown = 'unclear whether the fault is in the gateway, scheduler or storage layer' * 10
         stated = m.dispatch(self.complex_args('--unknown', unknown), self.fake, now=1000)
         self.assertEqual(stated['selection']['unknown'], unknown)
         escalated = m.dispatch(self.complex_args('--escalate-from', 'thr_prev_failed'), self.fake, now=1001)
@@ -803,14 +826,14 @@ environments:
         self.assertEqual(m.summarize_ledger(m.load_ledger(self.ledger, strict=True), now=1000)['review_hooks'], [])
 
     def test_review_warnings_also_reach_stderr(self):
-        receipt = {'dry_run': False, 'selection': {'warnings': ['分档偏斜提醒']}, 'result': {'thread': {'id': 'thr_x'}}}
+        receipt = {'dry_run': False, 'selection': {'warnings': ['grading skew reminder']}, 'result': {'thread': {'id': 'thr_x'}}}
         argv = ['bb-dispatch', '--config', str(self.config), '--difficulty', 'simple', '--task', 't']
         with mock.patch.object(m, 'dispatch', return_value=receipt), mock.patch('sys.argv', argv), \
                 mock.patch('sys.stdout', new_callable=io.StringIO) as out, \
                 mock.patch('sys.stderr', new_callable=io.StringIO) as err:
             self.assertEqual(m.main(), 0)
         self.assertEqual(json.loads(out.getvalue())['result']['thread']['id'], 'thr_x')
-        self.assertIn('提醒：分档偏斜提醒', err.getvalue())
+        self.assertIn('warning: grading skew reminder', err.getvalue())
 
     def test_ledger_records_minimal_facts_and_overwrites_on_repeat_decision(self):
         res = m.dispatch(self.args('--task', 'SENSITIVE_SECRET_TOKEN_123'), self.fake, now=1000)
@@ -818,13 +841,13 @@ environments:
         raw_ledger = self.ledger.read_text()
         self.assertNotIn('SENSITIVE_SECRET_TOKEN_123', raw_ledger)
         self.assertNotIn('SENSITIVE_SECRET_TOKEN_123', m.events_path(self.ledger).read_text())
-        # 未知 ID 拒绝
-        with self.assertRaisesRegex(m.DispatchError, '拒绝回写未知 ID'):
+        # Unknown IDs are rejected
+        with self.assertRaisesRegex(m.DispatchError, 'refusing to write back an unknown ID'):
             m.record_outcome_command(
                 m.parser().parse_args(['--ledger', str(self.ledger), '--record-outcome', 'thr_unknown', '--outcome', 'completed']),
                 now=1010,
             )
-        # 重复回写同一 ID 覆盖而非追加；旧参数名仍可用
+        # Writing back the same ID again overwrites instead of appending; the old option name still works
         for flag, outcome, now in (('--record-outcome', 'failed', 1010), ('--record-decision', 'completed', 1020)):
             m.record_outcome_command(
                 m.parser().parse_args(['--ledger', str(self.ledger), flag, tid, '--outcome', outcome]), now=now)
@@ -862,18 +885,18 @@ environments:
         first = m.dispatch(self.args(), self.fake, now=1000)
         self.assertEqual(first['selection']['agent'], 'primary')
         tid = first['result']['thread']['id']
-        # 旧版手动回写的失败类型照样计入，但不再按类型定时长。
+        # Legacy manual failure types still count, but no longer set the duration by type.
         m.record_outcome_command(
             m.parser().parse_args(['--ledger', str(self.ledger), '--record-outcome', tid, '--outcome', 'failed_quota']),
             now=1010,
         )
-        # 冷却期内自动跳过 primary，选择 specialist
+        # During the cooldown primary is skipped automatically and specialist is chosen
         second = m.dispatch(self.args('--dry-run'), self.fake, now=1100)
         self.assertEqual(second['selection']['agent'], 'specialist')
-        self.assertIn('熔断冷却中', second['selection']['attempts'][0]['error'])
+        self.assertIn('circuit-breaker cooldown', second['selection']['attempts'][0]['error'])
         cooled = m.summarize_ledger(m.load_ledger(self.ledger, strict=True), now=1100)['active_cooldowns']
         self.assertEqual([(c['provider'], c['model'], c['level']) for c in cooled], [('primary', 'fast-model', 1)])
-        # 首次失败冷却 15 分钟后自动解除
+        # The first failure's 15-minute cooldown lifts automatically
         third = m.dispatch(self.args('--dry-run'), self.fake, now=1010 + m.BACKOFF_BASE_SECONDS + 1)
         self.assertEqual(third['selection']['agent'], 'primary')
 
@@ -882,7 +905,7 @@ environments:
             m.parser().parse_args(['--ledger', str(self.ledger), '--on-failure', tid, *extra]), self.fake, now=now)
 
     def turn_ended(self, tid, at, status='failed'):
-        """线程在 at 秒结束一个回合：日志多一条结束事件，线程停在 error 或空闲。"""
+        """The thread ends a turn at `at` seconds: the log gains a turn-end event and the thread rests in error or idle."""
         self.turns.setdefault(tid, []).append((at, status))
         thread = next((t for t in self.threads if t['id'] == tid), None)
         if thread is None:
@@ -898,7 +921,7 @@ environments:
         return [event for event in map(json.loads, lines) if event['event'] == kind]
 
     def provider_error(self, tid, detail, at=1090, http=429):
-        """线程日志里的 provider/error。detail 用真实事故的 JSON，而不是报错句子。"""
+        """A provider/error in the thread log. detail uses JSON from a real incident, not an error sentence."""
         self.provider_errors.setdefault(tid, []).append({
             'type': 'provider/error', 'createdAt': at * 1000,
             'data': {
@@ -914,7 +937,7 @@ environments:
         self.config.write_text(m.yaml.safe_dump(config))
         tid = m.dispatch(self.args('--difficulty', 'medium'), self.fake, now=1000)['result']['thread']['id']
         self.turn_ended(tid, 1095)
-        # 报错先在原会话退避重试，期间不影响新派发；每次重试执行后又失败，才安排下一次。
+        # Errors first retry in the original session with backoff without affecting new dispatches; the next retry is scheduled only after one runs and fails again.
         at, delays = 1100, []
         for _ in range(m.SESSION_RETRY_LIMIT):
             delays.append(self.on_failure(tid, now=at)['delay_seconds'])
@@ -924,7 +947,7 @@ environments:
         sent = [c[c.index('--send-at') + 1] for c in self.calls if c[:2] == ('thread', 'retry')]
         self.assertEqual(sent, ['60s', '120s', '240s'])
         self.assertEqual(m.dispatch(self.args('--task', 'other', '--dry-run'), self.fake, now=1200)['selection']['agent'], 'specialist')
-        # 重试用尽才记失败；冷却按 provider 与模型计，别的档位同样跳过。
+        # Failure is recorded only once retries are exhausted; cooldown is per provider and model, so other tiers skip it too.
         cooled = self.on_failure(tid, now=at)
         self.assertEqual(cooled['action'], 'cooled')
         self.assertEqual((cooled['cooldown']['provider'], cooled['cooldown']['level']), ('specialist', 1))
@@ -938,7 +961,7 @@ environments:
         config = m.yaml.safe_load(self.config.read_text())
         config['defaults']['medium'] = ['primary', 'specialist']
         self.config.write_text(m.yaml.safe_dump(config))
-        task = '  目标\n\n保留完整任务 $(literal)\n'
+        task = '  Goal\n\nkeep the full task $(literal)\n'
         original = m.dispatch(self.args('--task', task, '--environment', 'env_other',
                                         '--parent-notifications', 'stuck'), self.fake, now=1000)
         tid = original['result']['thread']['id']
@@ -950,7 +973,7 @@ environments:
                 {'type': 'text', 'text': prompt[:7]}, {'type': 'text', 'text': prompt[7:]},
             ]}},
             {'type': 'client/turn/requested', 'data': {'source': 'message', 'input': [
-                {'type': 'text', 'text': '后续消息不能成为任务正文'},
+                {'type': 'text', 'text': 'later messages must not become the task body'},
             ]}},
         ]
         self.turn_ended(tid, 1095)
@@ -974,7 +997,7 @@ environments:
         self.assertEqual(respawn[respawn.index('--prompt') + 1], task + m.REPORT_PROTOCOL_ANCHOR + m.QUIET_REPORT_PROTOCOL)
         self.assertIn(('thread', 'log', tid, '--all'), self.calls)
         self.assertEqual(self.ledger_entry(result['result']['thread']['id'])['escalated_from'], tid)
-        self.assertNotIn('保留完整任务', self.ledger.read_text())
+        self.assertNotIn('keep the full task', self.ledger.read_text())
 
     def test_redispatch_keeps_review_purpose_exempt_from_project_floor(self):
         self.project_floor('medium')
@@ -995,31 +1018,31 @@ environments:
     def test_redispatch_requires_known_difficulty_and_initial_spawn_text(self):
         tid = m.dispatch(self.args(), self.fake, now=1000)['result']['thread']['id']
         self.requests[tid] = [{'type': 'client/turn/requested', 'data': {'source': 'message', 'input': [
-            {'type': 'text', 'text': '仅有后续消息'},
+            {'type': 'text', 'text': 'only later messages'},
         ]}}]
         prefix = ['--config', str(self.config), '--ledger', str(self.ledger), '--redispatch']
-        for source_id, message in [(tid, '首轮派发任务文本'), ('missing', '有效原始难度')]:
+        for source_id, message in [(tid, 'first-turn dispatch task text'), ('missing', 'valid original difficulty')]:
             with self.subTest(source_id=source_id), self.assertRaisesRegex(m.DispatchError, message):
                 m.dispatch(m.parser().parse_args([*prefix, source_id]), self.fake, now=1100)
         self.assertEqual(self.spawn_counter, 1)
 
     def test_on_failure_waits_while_a_retry_is_queued_but_not_for_deferred_messages(self):
         tid = m.dispatch(self.args(), self.fake, now=1000)['result']['thread']['id']
-        # 父线程的消息排在报错线程上，要等线程被重试才送出，不算已有重试。
+        # Parent messages queued on the errored thread are sent only on retry and do not count as an existing retry.
         self.threads = [{'id': tid, 'status': 'error', 'queuedWork': 'waiting', 'updatedAt': 1095 * 1000}]
         at = 1100
         for attempt in range(1, m.SESSION_RETRY_LIMIT + 1):
             self.assertEqual(self.on_failure(tid, now=at)['attempt'], attempt)
-            # 重复调用时上次安排的重试还没执行：只等待，不再安排，用到第 3 次也不冷却。
+            # Repeated calls while the last scheduled retry has not run: only wait, schedule nothing, and never cool even at the 3rd.
             self.assertEqual(self.on_failure(tid, now=at + 5)['action'], 'waiting')
             at += 60 * 2 ** (attempt - 1) + 10
             self.turn_ended(tid, at - 5)
         self.assertEqual(len([c for c in self.calls if c[:2] == ('thread', 'retry')]), m.SESSION_RETRY_LIMIT)
         self.assertEqual((self.ledger_entry(tid)['outcome'], self.ledger_entry(tid)['retries']), ('spawned', 3))
-        # BB 回复这个回合已有排队的重试（例如用户在界面上点了重试）：同样等待，不冷却。
+        # BB replies that the turn already has a queued retry (e.g. the user clicked retry in the UI): wait as well, no cooldown.
         other = m.dispatch(self.args('--task', 'other'), self.fake, now=1000)['result']['thread']['id']
         self.turn_ended(other, 1095)
-        self.retry_error = m.DispatchError('bb thread retry 失败：retry_already_queued：', code='retry_already_queued')
+        self.retry_error = m.DispatchError('bb thread retry failed: retry_already_queued:', code='retry_already_queued')
         self.assertEqual(self.on_failure(other, now=1100)['action'], 'waiting')
         self.assertEqual((self.ledger_entry(other)['outcome'], self.ledger_entry(other).get('retries')), ('spawned', None))
 
@@ -1040,7 +1063,7 @@ environments:
         self.pending_retries[tid] = [{'threadId': tid}]
         self.assertEqual(self.on_failure(tid, now=1100)['action'], 'waiting')
         self.pending_retries.clear()
-        # BB 已在原会话重试到上限：不再重试，直接冷却。
+        # BB already retried to its limit in the original session: no more retries, cool directly.
         self.retry_diagnostics[tid] = {'decision': {'kind': 'decline', 'reason': 'attempts-exhausted'}}
         preview = self.on_failure(tid, '--dry-run', now=1200)
         self.assertEqual((preview['dry_run'], preview['action']), (True, 'cooled'))
@@ -1052,14 +1075,14 @@ environments:
         tid = m.dispatch(self.args(), self.fake, now=1000)['result']['thread']['id']
         self.turn_ended(tid, 1095)
         self.assertEqual(self.on_failure(tid, now=1100)['attempt'], 1)
-        # 原会话重试成功，其间没有别的派发补记完成；之后再报错仍是新的一次故障，从第 1 次算起。
+        # The original-session retry succeeded with no other dispatch recording completion; a later error is a new fault counted from 1.
         self.turn_ended(tid, 1170, 'completed')
         self.turn_ended(tid, 1295)
         self.assertEqual(self.on_failure(tid, now=1300)['attempt'], 1)
         self.assertEqual([(e['thread'], e['retries']) for e in self.logged('recovered')], [(tid, 1)])
-        # 原会话无法重试时直接冷却。
+        # Cool directly when the original session cannot be retried.
         self.turn_ended(tid, 1395)
-        self.retry_error = m.DispatchError('bb thread retry 失败：thread_not_failed：', code='thread_not_failed')
+        self.retry_error = m.DispatchError('bb thread retry failed: thread_not_failed:', code='thread_not_failed')
         self.assertEqual(self.on_failure(tid, now=1400)['action'], 'cooled')
         self.assertEqual([e['reason'] for e in self.logged('cooled')], ['retry-impossible'])
 
@@ -1072,13 +1095,13 @@ environments:
             now=1010,
         )
         self.threads = [{'id': reused, 'status': 'idle', 'queuedWork': 'none', 'updatedAt': 1050 * 1000}]
-        # 之后的一次成功清零了 primary 的冷却。
+        # A later success clears primary's cooldown.
         self.assertEqual(m.dispatch(self.args('--task', 'next'), self.fake, now=1060)['selection']['agent'], 'primary')
-        # 做完的线程续用后报错：原会话重试期间终态不动，那次成功照样算数，旧失败不复活冷却。
+        # A finished thread reused and then errored: the outcome stays during original-session retries, that success still counts, and old failures do not revive the cooldown.
         self.turn_ended(reused, 1095)
         self.assertEqual(self.on_failure(reused, now=1100)['action'], 'retry-scheduled')
         self.assertEqual(m.dispatch(self.args('--task', 'later', '--dry-run'), self.fake, now=1150)['selection']['agent'], 'primary')
-        # 重试成功后，下一次派发补记恢复并把重试次数清零。
+        # After a successful retry, the next dispatch records the recovery and resets the retry count.
         self.turn_ended(reused, 1170, 'completed')
         m.dispatch(self.args('--task', 'more'), self.fake, now=1300)
         self.assertEqual((self.ledger_entry(reused)['outcome'], self.ledger_entry(reused).get('retries')), ('completed', None))
@@ -1091,7 +1114,7 @@ environments:
             for task in ('flaky', 'broken', 'given up', 'hopeless'))
         self.turn_ended(flaky, 1095)
         self.turn_ended(broken, 1095)
-        # flaky 在原会话第 2 次重试后恢复；broken 随后重试用尽、冷却。
+        # flaky recovers after the 2nd original-session retry; broken then exhausts its retries and cools.
         self.on_failure(flaky, now=1100)
         self.turn_ended(flaky, 1102)
         self.on_failure(flaky, now=1104)
@@ -1100,7 +1123,7 @@ environments:
             self.on_failure(broken, now=1110 + 10 * index)
             self.turn_ended(broken, 1115 + 10 * index)
         self.on_failure(broken, now=1110 + 10 * m.SESSION_RETRY_LIMIT)
-        # 原会话重试过一次后 BB 放弃的也算重试没救回来；一上来 BB 就放弃的不算原会话重试的收场。
+        # BB giving up after one original-session retry counts as a retry that did not save it; BB giving up immediately does not count as a retry outcome.
         self.turn_ended(given_up, 1145)
         self.on_failure(given_up, now=1150)
         self.turn_ended(given_up, 1155)
@@ -1145,7 +1168,7 @@ environments:
         m.dispatch(self.args('--task', 'next task'), self.fake, now=base + 200)
         outcomes = {e['id']: e['outcome'] for e in m.load_ledger(self.ledger, strict=True)['entries']}
         self.assertEqual(outcomes[ids[0]], 'completed')
-        # 报错留给 --on-failure 处理，这里不记失败。
+        # Errors are left to --on-failure; no failure is recorded here.
         self.assertEqual([outcomes[tid] for tid in ids[1:]], ['spawned'] * 4)
         self.assertEqual(outcomes[stale], 'spawned')
 
@@ -1154,27 +1177,27 @@ environments:
             return {'id': tid, 'ts': at - 50, 'provider': 'p', 'model': 'm', 'outcome': outcome, 'outcome_ts': at}
 
         base = m.BACKOFF_BASE_SECONDS
-        # 冷却期内接连失败只算一次，冷却从最后一次失败起算。
+        # Back-to-back failures during a cooldown count once; the cooldown runs from the last failure.
         ledger = {'entries': [entry('a', 'failed', 100), entry('b', 'failed', 200), entry('c', 'failed', 300)],
                   'cooldowns': {}}
         cooled = m.health_cooldowns(ledger, now=301)['p|m']
         self.assertEqual((cooled['level'], cooled['until']), (1, 300 + base))
-        # 冷却结束后再失败，时长翻倍。
+        # A failure after the cooldown ends doubles the duration.
         after = 300 + base
         ledger['entries'].append(entry('d', 'failed', after + 60))
         cooled = m.health_cooldowns(ledger, now=after + 61)['p|m']
         self.assertEqual((cooled['level'], cooled['until']), (2, after + 60 + 2 * base))
-        # 一次成功清零。
+        # One success resets it.
         ledger['entries'].append(entry('e', 'completed', after + 80))
         self.assertEqual(m.health_cooldowns(ledger, now=after + 81), {})
-        # 近期窗口之前的失败不再计入等级。
+        # Failures before the recent window no longer count toward the level.
         old = 10 ** 6
         fresh = old + base + m.RECENT_WINDOW_SECONDS + 100
         stale = {'entries': [entry('o1', 'failed', old), entry('o2', 'failed', old + base + 1),
                              entry('n', 'failed', fresh)], 'cooldowns': {}}
         cooled = m.health_cooldowns(stale, now=fresh + 1)['p|m']
         self.assertEqual((cooled['level'], cooled['until']), (1, fresh + base))
-        # 持续失败时封顶 6 小时。
+        # Persistent failures cap at 6 hours.
         at, entries = 10 ** 6, []
         for index in range(8):
             entries.append(entry(f'x{index}', 'failed', at))
@@ -1197,7 +1220,7 @@ environments:
         with contextlib.redirect_stderr(stderr):
             result = m.dispatch(self.args('--task', 'another task'), broken, now=1100)
         self.assertFalse(result['dry_run'])
-        self.assertIn('读取线程状态失败', stderr.getvalue())
+        self.assertIn('cannot read thread status', stderr.getvalue())
 
     def test_spawn_failure_cools_candidate_so_rerun_switches(self):
         self.chain_config(['primary', 'specialist'])
@@ -1208,7 +1231,7 @@ environments:
                 raise m.DispatchError('spawn failed')
             return self.fake(*a)
 
-        with self.assertRaisesRegex(m.DispatchError, '该候选已冷却'):
+        with self.assertRaisesRegex(m.DispatchError, 'candidate is now cooling'):
             m.dispatch(self.args(), flaky, now=1000)
         rerun = m.dispatch(self.args(), flaky, now=1010)
         self.assertEqual(rerun['selection']['agent'], 'specialist')
@@ -1216,7 +1239,7 @@ environments:
     def test_concurrent_ledger_write_is_merged_not_overwritten(self):
         def racing(*a):
             if a[:2] == ('thread', 'spawn'):
-                # 另一会话在本次 spawn 期间写入账本。
+                # Another session writes the ledger during this spawn.
                 other = m.load_ledger(self.ledger, strict=True)
                 m.append_ledger_entry(other, {'id': 'other_session', 'ts': 999, 'provider': 'x', 'model': 'y', 'outcome': 'spawned'})
                 m.save_ledger(self.ledger, other, strict=True)
@@ -1231,7 +1254,7 @@ environments:
 
         def racing(*a):
             if a[:2] == ('thread', 'spawn'):
-                # 另一会话在本次 spawn 期间更晚地记下同一 provider 与模型的 spawn 失败。
+                # Another session records a later spawn failure for the same provider and model during this spawn.
                 other = m.load_ledger(self.ledger, strict=True)
                 other['cooldowns']['primary|fast-model'] = {
                     'provider': 'primary', 'model': 'fast-model', 'reason': 'spawn-failed',
@@ -1241,7 +1264,7 @@ environments:
                 raise m.DispatchError('spawn failed')
             return self.fake(*a)
 
-        with self.assertRaisesRegex(m.DispatchError, '该候选已冷却'):
+        with self.assertRaisesRegex(m.DispatchError, 'candidate is now cooling'):
             m.dispatch(self.args(), racing, now=1000)
         later = m.dispatch(self.args('--dry-run'), self.fake, now=1000 + m.SPAWN_COOLDOWN_SECONDS + 50)
         self.assertEqual(later['selection']['agent'], 'specialist')
@@ -1252,7 +1275,7 @@ environments:
         ledger = m.empty_ledger()
         ledger['entries'].append({'id': 'ancient', 'ts': now - m.RECENT_WINDOW_SECONDS - 100,
                                   'provider': 'other', 'model': 'x', 'outcome': 'completed'})
-        # 长任务最早派出、刚刚失败；其后又有一整窗别的派发。
+        # A long task dispatched first has just failed; a full window of other dispatches followed.
         ledger['entries'].append({'id': 'long', 'ts': now - 7200, 'provider': 'primary', 'model': 'fast-model',
                                   'outcome': 'failed', 'outcome_ts': now - 60})
         ledger['entries'] += [{'id': f'busy{i}', 'ts': now - 3600, 'provider': 'other', 'model': 'x',
@@ -1270,7 +1293,7 @@ environments:
     def test_fallback_from_automatically_cools_down_skipped_candidate(self):
         self.chain_config(['primary', 'specialist'])
         m.dispatch(self.args('--fallback-from', 'specialist'), self.fake, now=2000)
-        # 下一笔未传 --fallback-from 的任务在 15 分钟内也应自动跳过刚刚失败的 primary
+        # The next task without --fallback-from should also skip the just-failed primary within 15 minutes
         nxt = m.dispatch(self.args('--dry-run'), self.fake, now=2100)
         self.assertEqual(nxt['selection']['agent'], 'specialist')
 
@@ -1295,7 +1318,7 @@ environments:
         event = [json.loads(l) for l in m.events_path(self.ledger).read_text().splitlines()][-1]
         self.assertEqual(event['event'], 'dispatch')
         self.assertEqual(event['escalated_from'], 'thr_prev')
-        self.assertEqual(event['unknown'], '测试用原因')
+        self.assertEqual(event['unknown'], 'test reason')
         self.assertIn('task_chars', event)
         self.assertNotIn('requested_difficulty', event)
         self.assertNotIn('SECRET_TASK_TEXT', json.dumps(event, ensure_ascii=False))
@@ -1314,26 +1337,26 @@ environments:
             return {'seq': seq, 'type': 'client/turn/requested',
                     'data': {'initiator': initiator, 'senderThreadId': sender, 'input': [{'type': 'text', 'text': text}]}}
         log = [
-            req(1, 'user', '原始任务'),
-            req(2, 'agent', '交付前的补充', 'thr_parent'),
+            req(1, 'user', 'original task'),
+            req(2, 'agent', 'addition before delivery', 'thr_parent'),
             {'seq': 3, 'type': 'turn/completed', 'data': {'status': 'completed'}},
-            req(4, 'agent', '[bb message from thread:thr_parent] 还有一处要改', 'thr_parent'),
-            req(5, 'agent', '别的线程发来的', 'thr_other'),
+            req(4, 'agent', '[bb message from thread:thr_parent] one more fix needed', 'thr_parent'),
+            req(5, 'agent', 'sent from another thread', 'thr_other'),
             req(6, 'system', '[bb system] @thread:thr_child completed'),
-            req(7, 'user', '[bb_long_task] 合入结束'),
-            req(8, 'user', '用户直接纠正'),
+            req(7, 'user', '[bb_long_task] merge finished'),
+            req(8, 'user', 'direct user correction'),
         ]
 
         stopped_log = [
-            req(1, 'user', '原始任务'),
+            req(1, 'user', 'original task'),
             {'seq': 2, 'type': 'system/thread/interrupted', 'data': {'reason': 'manual-stop'}},
             {'seq': 3, 'type': 'turn/completed', 'data': {'status': 'interrupted'}},
-            req(4, 'agent', '已停掉并改派', 'thr_parent'),
+            req(4, 'agent', 'stopped and redispatched', 'thr_parent'),
         ]
 
         def call(*argv):
             if argv[:2] == ('thread', 'list'):
-                return [{'id': 'thr_new', 'parentThreadId': 'thr_parent', 'title': '🟡 修复'},
+                return [{'id': 'thr_new', 'parentThreadId': 'thr_parent', 'title': '🟡 Fix'},
                         {'id': 'thr_stopped', 'parentThreadId': 'thr_parent'}, {'id': 'thr_retry'}]
             if argv[:2] == ('thread', 'log'):
                 return {'thr_new': log, 'thr_stopped': stopped_log}.get(argv[2], [])
@@ -1343,7 +1366,7 @@ environments:
         rows = {r['thread']: r for r in result['rows']}
         self.assertEqual(set(rows), {'thr_new', 'thr_stopped', 'thr_retry'})
         row = rows['thr_new']
-        self.assertEqual((row['title'], row['difficulty'], row['agent'], row['model']), ('🟡 修复', 'medium', 'b', 'n'))
+        self.assertEqual((row['title'], row['difficulty'], row['agent'], row['model']), ('🟡 Fix', 'medium', 'b', 'n'))
         self.assertEqual([(f['seq'], f['from']) for f in row['followups']], [(4, 'parent'), (8, 'user')])
         stopped = rows['thr_stopped']
         self.assertEqual((stopped['delivered'], stopped['stopped_before_delivery'], stopped['redispatched_as']),
@@ -1351,10 +1374,10 @@ environments:
         self.assertEqual(stopped['followups'], [])
         self.assertEqual(result['by_agent']['a'], {'threads': 1, 'delivered': 0, 'stopped_before_delivery': 1,
                                                    'redispatched': 1, 'with_followups': 0, 'followups': 0})
-        self.assertNotIn('还有一处要改', self.ledger.read_text() if self.ledger.exists() else '')
+        self.assertNotIn('one more fix needed', self.ledger.read_text() if self.ledger.exists() else '')
 
     def test_resource_exhausted_skips_session_retry_and_cools_for_an_hour(self):
-        """事故：pi 每次 429 RESOURCE_EXHAUSTED，provider-retry 判 no-rate-limit-state，仍重试 1、2、4 分钟。"""
+        """Incident: pi hit 429 RESOURCE_EXHAUSTED every time and provider-retry said no-rate-limit-state, yet it still retried after 1, 2, 4 minutes."""
         self.chain_config(['primary', 'specialist'])
         tid = m.dispatch(self.args(), self.fake, now=1000)['result']['thread']['id']
         self.turn_ended(tid, 1095)
@@ -1373,14 +1396,14 @@ environments:
         self.assertEqual(review['quota_cooldown_skips'], 1)
 
     def test_model_cooldown_json_is_quota_and_ignores_short_reset_seconds(self):
-        """事故：model_cooldown 的 reset_seconds 只有几十秒，按它冷却会马上再派到同一模型。"""
+        """Incident: model_cooldown's reset_seconds is only tens of seconds; cooling by it redispatches to the same model right away."""
         self.chain_config(['primary', 'specialist'])
         tid = m.dispatch(self.args(), self.fake, now=1000)['result']['thread']['id']
         self.turn_ended(tid, 1095)
         detail = json.dumps({'code': 'model_cooldown', 'message': 'All credentials for model gemini-3.8-flash-high are cooling down',
                              'reset_seconds': 30, 'reset_time': '30s'})
         self.provider_error(tid, '429: ' + detail)
-        # 同一批里另一条线程还没报错；一条额度失败就应让后续派发跳过，不必等它也失败。
+        # Another thread in the batch has not errored yet; one quota failure should make later dispatches skip, without waiting for it to fail too.
         other = m.dispatch(self.args('--task', 'other'), self.fake, now=1000)['result']['thread']['id']
         cooled = self.on_failure(tid, now=1100)
         self.assertEqual(cooled['action'], 'cooled')
@@ -1405,7 +1428,7 @@ environments:
         again = self.on_failure(second, now=opened + 20)
         self.assertEqual((again['cooldown']['level'], again['cooldown']['until'] - (opened + 20)),
                          (2, 2 * m.QUOTA_BACKOFF_BASE_SECONDS))
-        # 只有 429 和句子、没有结构化额度码，也没有额度类 decline：仍走原会话重试。
+        # Only a 429 and a sentence, with no structured quota code and no quota decline: still retry in the original session.
         plain = m.dispatch(self.args('--task', 'plain'), self.fake, now=opened + 30)['result']['thread']['id']
         self.turn_ended(plain, opened + 40)
         self.provider_error(plain, '429 RESOURCE_EXHAUSTED', at=opened + 35)
@@ -1442,9 +1465,9 @@ environments:
         self.assertEqual(recovered['selection']['agent'], 'primary')
         saved = m.load_ledger(self.ledger, strict=True)
         self.assertNotIn('primary|fast-model', saved['cooldowns'])
-        # 成功记录还在账本里，但已经离开 48 小时视野；残留的额度窗口不能复活。
+        # The success is still in the ledger but outside the 48-hour horizon; a leftover quota window must not revive.
         saved['cooldowns']['primary|fast-model'] = {
-            'provider': 'primary', 'model': 'fast-model', 'reason': '额度窗口',
+            'provider': 'primary', 'model': 'fast-model', 'reason': m.QUOTA_WINDOW_REASON,
             'since': 1100, 'until': 1000 + 8 * 24 * 3600, 'quota': True,
         }
         later = 1200 + m.RECENT_WINDOW_SECONDS + 10

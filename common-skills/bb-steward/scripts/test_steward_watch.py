@@ -1,4 +1,5 @@
-"""验证 BB 管家看门狗：催办节流与升级、失败重试与恢复、登记与 automation、事件日志与复盘。"""
+"""BB steward watchdog: nudge throttling and escalation, failure retry and recovery, registration and automation,
+event log and review."""
 from pathlib import Path
 import json
 import contextlib
@@ -19,25 +20,26 @@ NOW = 1793000000.0
 HOUR = 3600
 TID = "thr_steward001"
 
-GOOD = """# 目标
+GOOD = """# Goal
 
-更新：2026-10-26
+Updated: 2026-10-26
 
-## 路线
+## Route
 
-- [ ] 阶段 1：布局整理 ← 等用户
+- [ ] Stage 1: layout cleanup ← waiting on user
 
-## 关键决策
+## Key decisions
 
-- 无
+- none
 
-## 用户待办
+## User to-dos
 
-| 状态 | 事项 | 为什么只能用户做 | 挡住 | 提出 |
+| Status | Item | Why only the user | Blocks | Raised |
 | --- | --- | --- | --- | --- |
-| 待办 | 真机验收 | 真机线下：只有用户有设备 | 阶段 1 | 2026-10-26 |
+| open | Device acceptance | physical device: only the user has it | Stage 1 | 2026-10-26 |
 """
-BROKEN = GOOD.replace("- [ ] 阶段 1：布局整理 ← 等用户", "- [ ] 阶段 1：布局整理 ← 等用户\n- [ ] 阶段 2：远景规划")
+BROKEN = GOOD.replace("- [ ] Stage 1: layout cleanup ← waiting on user",
+                      "- [ ] Stage 1: layout cleanup ← waiting on user\n- [ ] Stage 2: long-term plans")
 
 
 class FakeBb:
@@ -75,7 +77,7 @@ class FakeBb:
 
     def tell(self, thread, message):
         if self.fail_tell:
-            raise watch.WatchError("发送失败")
+            raise watch.WatchError("send failed")
         self.tells.append((thread, message))
 
     def log(self, thread, after):
@@ -133,9 +135,9 @@ class WatchTests(unittest.TestCase):
 
     def test_retire_stops_checks_and_exposes_successor_without_messaging(self):
         successor = "thr_successor"
-        self.state["stewards"][successor] = {"name": "新管家", "workbook": str(self.workbook)}
+        self.state["stewards"][successor] = {"name": "New steward", "workbook": str(self.workbook)}
         self.bb.set(successor, status="active")
-        result = watch.retire(self.state, self.bb, TID, self.state_path, "已交接", successor)
+        result = watch.retire(self.state, self.bb, TID, self.state_path, "handed over", successor)
         self.assertTrue(result["removed"])
         saved = watch.load_state(self.state_path)
         self.assertNotIn(TID, saved["stewards"])
@@ -149,17 +151,17 @@ class WatchTests(unittest.TestCase):
 
     def test_retire_does_not_require_plugin_availability_and_is_repeatable(self):
         with mock.patch.object(self.bb, "steward", side_effect=watch.WatchError("offline")):
-            watch.retire(self.state, self.bb, TID, self.state_path, "完成")
+            watch.retire(self.state, self.bb, TID, self.state_path, "goal closed")
         saved = watch.load_state(self.state_path)
         self.assertNotIn(TID, saved["stewards"])
         self.assertIn(TID, saved["pending_plugin_unregistrations"])
         watch.retire(saved, self.bb, TID, self.state_path)
-        self.assertEqual(saved["retired"][TID]["reason"], "完成")
+        self.assertEqual(saved["retired"][TID]["reason"], "goal closed")
         self.assertNotIn(TID, saved["pending_plugin_unregistrations"])
 
     def test_retire_rejects_unknown_successor_before_removing_registration(self):
         with self.assertRaises(watch.WatchError):
-            watch.retire(self.state, self.bb, TID, self.state_path, "交接", "thr_unknown")
+            watch.retire(self.state, self.bb, TID, self.state_path, "handed over", "thr_unknown")
         self.assertIn(TID, self.state["stewards"])
 
     def test_roster_distinguishes_idle_retired_and_unknown_without_writes(self):
@@ -188,9 +190,9 @@ class WatchTests(unittest.TestCase):
         self.assertEqual(len(self.bb.tells), 1)
         thread, message = self.bb.tells[0]
         self.assertEqual(thread, TID)
-        self.assertIn("阶段 2", message)
-        self.assertIn("缺状态", message)
-        self.assertIn("等用户", message)
+        self.assertIn("Stage 2", message)
+        self.assertIn("no state", message)
+        self.assertIn("waiting on user", message)
 
         self.assertEqual(self.tick(NOW + HOUR)["result"], "problems")
         self.assertEqual(len(self.bb.tells), 1)
@@ -201,8 +203,8 @@ class WatchTests(unittest.TestCase):
         self.tick(NOW + 5 * HOUR)
         self.assertEqual(len(self.bb.tells), 2)
         text = self.report(NOW + 5 * HOUR)
-        self.assertIn("需要用户看一眼", text)
-        self.assertIn("「阶段 2」（no_state）已催 2 次仍未处理", text)
+        self.assertIn("Needs the user's attention", text)
+        self.assertIn('"Stage 2" (no_state) nudged 2 times and still open', text)
 
     def test_resolved_problem_records_outcome_and_resets_count(self):
         self.tick(NOW)
@@ -214,7 +216,7 @@ class WatchTests(unittest.TestCase):
 
         self.workbook.write_text(BROKEN)
         self.assertEqual(self.tick(NOW + 3 * HOUR)["result"], "nudged")
-        self.assertEqual(self.state["stewards"][TID]["problems"]["no_state|阶段 2"]["count"], 1)
+        self.assertEqual(self.state["stewards"][TID]["problems"]["no_state|Stage 2"]["count"], 1)
 
     def test_busy_or_just_finished_steward_is_left_alone(self):
         busy_cases: list[dict[str, Any]] = [
@@ -249,13 +251,13 @@ class WatchTests(unittest.TestCase):
         self.assertEqual(len(self.bb.retries), 2)
         res = self.tick(NOW + 70 * 60)
         self.assertEqual(len(self.bb.retries), 2)
-        self.assertIn("需要用户看一眼", res["report"])
-        self.assertIn("回合失败已", self.report(NOW + 70 * 60))
+        self.assertIn("needs the user's attention", res["report"])
+        self.assertIn("turns failing for", self.report(NOW + 70 * 60))
 
         self.bb.set(status="idle", idle=60, now=NOW + 80 * 60)
         res = watch.run(self.state, self.state_path, self.bb, now=NOW + 80 * 60)[0][TID]
         self.assertEqual(res["result"], "recovered")
-        self.assertIn("连续失败", self.bb.tells[-1][1])
+        self.assertIn("kept failing", self.bb.tells[-1][1])
         self.assertNotIn("outage", self.state["stewards"][TID])
         self.assertEqual(self.tick(NOW + 3 * HOUR)["result"], "ok")
         self.assertEqual(len(self.bb.tells), 1)
@@ -272,7 +274,7 @@ class WatchTests(unittest.TestCase):
     def test_unreadable_workbook_is_reported_to_the_steward(self):
         self.workbook.unlink()
         self.assertEqual(self.tick(NOW)["result"], "nudged")
-        self.assertIn("读不到工作簿", self.bb.tells[0][1])
+        self.assertIn("cannot read the workbook", self.bb.tells[0][1])
 
     def test_dry_run_sends_nothing_and_writes_nothing(self):
         self.assertEqual(self.tick(NOW, dry_run=True)["result"], "nudged")
@@ -283,19 +285,20 @@ class WatchTests(unittest.TestCase):
         self.tick(NOW)
         self.tick(NOW + 2 * HOUR + 60)
         self.assertEqual(len(self.bb.tells), 2)
-        self.workbook.write_text(BROKEN.replace("- [ ] 阶段 2：远景规划", "- [ ] 阶段 2：远景规划\n- [ ] 阶段 3：补文档"))
+        self.workbook.write_text(BROKEN.replace("- [ ] Stage 2: long-term plans", "- [ ] Stage 2: long-term plans\n- [ ] Stage 3: write docs"))
         self.assertEqual(self.tick(NOW + 5 * HOUR)["result"], "nudged")
         message = self.bb.tells[-1][1]
-        self.assertIn("阶段 3", message)
-        self.assertNotIn("「阶段 2」", message)
-        self.assertEqual(self.state["stewards"][TID]["problems"]["no_state|阶段 2"]["count"], 2)
+        self.assertIn("Stage 3", message)
+        self.assertNotIn('"Stage 2"', message)
+        self.assertEqual(self.state["stewards"][TID]["problems"]["no_state|Stage 2"]["count"], 2)
 
     def test_only_shown_problems_use_up_their_nudges(self):
-        rows = "\n".join(f"- [ ] 阶段 {i}：事项{i}" for i in range(2, 12))
-        self.workbook.write_text(GOOD.replace("- [ ] 阶段 1：布局整理 ← 等用户", "- [ ] 阶段 1：布局整理 ← 等用户\n" + rows))
+        rows = "\n".join(f"- [ ] Stage {i}: item {i}" for i in range(2, 12))
+        self.workbook.write_text(GOOD.replace("- [ ] Stage 1: layout cleanup ← waiting on user",
+                                             "- [ ] Stage 1: layout cleanup ← waiting on user\n" + rows))
         self.tick(NOW)
         message = self.bb.tells[0][1]
-        self.assertIn("另有 2 处", message)
+        self.assertIn("2 more", message)
         counts = {k: v["count"] for k, v in self.state["stewards"][TID]["problems"].items()}
         self.assertEqual(sorted(counts.values()), [0, 0] + [1] * watch.MESSAGE_MAX_PROBLEMS)
         self.assertEqual(self.state["stewards"][TID]["pending_nudge"]["keys"],
@@ -304,7 +307,7 @@ class WatchTests(unittest.TestCase):
     def test_failed_send_is_not_repeated_on_the_next_tick(self):
         self.bb.fail_tell = True
         res = self.tick(NOW)
-        self.assertIn("发送失败", res["report"])
+        self.assertIn("failed to send", res["report"])
         self.bb.fail_tell = False
         self.assertEqual(self.tick(NOW + 30 * 60)["result"], "problems")
         self.assertEqual(self.bb.tells, [])
@@ -314,7 +317,7 @@ class WatchTests(unittest.TestCase):
         subprocess.run(["git", "init", "-q", str(repo)], check=True)
         wb = repo / "docs" / "wb.md"
         wb.parent.mkdir(parents=True)
-        wb.write_text(GOOD.replace("← 等用户", "← 进行中 thr_oldchild01"))
+        wb.write_text(GOOD.replace("← waiting on user", "← in progress thr_oldchild01"))
         subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
         subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "wb"], check=True)
         subprocess.run(["git", "-C", str(repo), "branch", "main"], check=True)
@@ -326,7 +329,7 @@ class WatchTests(unittest.TestCase):
         self.assertEqual(self.tick(NOW)["result"], "ok")
         self.bb.kids[TID] = []
         self.assertEqual(self.tick(NOW + 3 * HOUR)["result"], "nudged")
-        self.assertIn("thr_oldchild01 已空闲", self.bb.tells[0][1])
+        self.assertIn("thr_oldchild01 idle for", self.bb.tells[0][1])
 
     def test_register_from_a_worktree_reads_through_the_main_checkout(self):
         repo = self.dir / "repo"
@@ -352,7 +355,7 @@ class WatchTests(unittest.TestCase):
         self.assertNotIn(TID, self.state["stewards"])
         self.assertEqual(takeover["handovers"][0]["old"], TID)
         subprocess.run(git + ["worktree", "remove", "--force", str(tree)], check=True)
-        self.assertIn("阶段 1", watch.read_workbook(self.state["stewards"]["thr_new00001"]))
+        self.assertIn("Stage 1", watch.read_workbook(self.state["stewards"]["thr_new00001"]))
 
     def test_register_creates_automation_once_and_follows_script_moves(self):
         state = watch.empty_state()
@@ -370,27 +373,27 @@ class WatchTests(unittest.TestCase):
         self.assertEqual(set(state["stewards"]), {TID})
 
     def test_register_marks_steward_title_once(self):
-        self.bb.set(title="接管指定讨论串")
+        self.bb.set(title="Take over the named discussion")
         first = watch.register(self.state, self.bb, TID, str(self.workbook),
                                manage_automation=False, state_path=self.state_path)
-        self.assertEqual(first["title"], {"status": "marked", "title": "🎩 接管指定讨论串"})
-        self.assertEqual(self.bb.titles, [(TID, "🎩 接管指定讨论串")])
+        self.assertEqual(first["title"], {"status": "marked", "title": "🎩 Take over the named discussion"})
+        self.assertEqual(self.bb.titles, [(TID, "🎩 Take over the named discussion")])
         second = watch.register(self.state, self.bb, TID, str(self.workbook),
                                 manage_automation=False, state_path=self.state_path)
         self.assertEqual(second["title"]["status"], "unchanged")
         self.assertEqual(len(self.bb.titles), 1)
 
     def test_watchdog_marks_missing_title_and_keeps_existing_mark(self):
-        self.bb.set(title="梳理安全处理目标并优化方案")
+        self.bb.set(title="Review the security goal and refine the plan")
         self.tick(NOW)
-        self.assertEqual(self.bb.titles, [(TID, "🎩 梳理安全处理目标并优化方案")])
-        self.assertEqual(self.bb.infos[TID]["title"], "🎩 梳理安全处理目标并优化方案")
+        self.assertEqual(self.bb.titles, [(TID, "🎩 Review the security goal and refine the plan")])
+        self.assertEqual(self.bb.infos[TID]["title"], "🎩 Review the security goal and refine the plan")
         self.bb.titles.clear()
         self.tick(NOW + 60)
         self.assertEqual(self.bb.titles, [])
 
     def test_watchdog_dry_run_does_not_change_title(self):
-        self.bb.set(title="目标")
+        self.bb.set(title="Goal")
         self.tick(NOW, dry_run=True)
         self.assertEqual(self.bb.titles, [])
 
@@ -400,8 +403,8 @@ class WatchTests(unittest.TestCase):
         self.assertEqual(self.bb.titles, [])
 
     def test_title_failure_does_not_stop_reconciliation(self):
-        self.bb.set(title="目标")
-        self.bb.set_title = mock.Mock(side_effect=watch.WatchError("更新失败"))
+        self.bb.set(title="Goal")
+        self.bb.set_title = mock.Mock(side_effect=watch.WatchError("update failed"))
         self.assertEqual(self.tick(NOW)["result"], "nudged")
         events = [e for e in watch.read_events(self.state_path) if e["event"] == "warning"]
         self.assertIn("title", [e["source"] for e in events])
@@ -429,8 +432,8 @@ class WatchTests(unittest.TestCase):
 
     def test_handover_persists_first_filters_children_and_notifies(self):
         old, new = TID, "thr_new00001"
-        self.workbook.write_text(GOOD.replace("← 等用户", "← 进行中 thr_failed0001"))
-        watch.register(self.state, self.bb, old, str(self.workbook), name="原名", manage_automation=False, state_path=self.state_path)
+        self.workbook.write_text(GOOD.replace("← waiting on user", "← in progress thr_failed0001"))
+        watch.register(self.state, self.bb, old, str(self.workbook), name="Original", manage_automation=False, state_path=self.state_path)
         self.bb.set(new, parent=old)
         flags = [("thr_alive0001", {"status": "active"}), ("thr_recent001", {"idle": 60}),
                  ("thr_failed0001", {"status": "error"}), ("thr_stopped001", {}),
@@ -445,20 +448,20 @@ class WatchTests(unittest.TestCase):
             self.assertEqual(set(saved["stewards"]), {new})
             real_reparent(tid, parent)
             if tid == "thr_alive0001":
-                raise watch.WatchError("转移失败")
+                raise watch.WatchError("move failed")
         self.bb.reparent = reparent
         res = watch.register(self.state, self.bb, new, str(self.workbook), now=NOW,
                              state_path=self.state_path, manage_automation=False)
-        self.assertEqual(res["name"], "原名")
+        self.assertEqual(res["name"], "Original")
         self.assertEqual(self.bb.reparents, [(new, None), ("thr_alive0001", new),
                                              ("thr_recent001", new), ("thr_failed0001", new)])
         self.assertEqual(self.bb.cancelled, [old])
-        self.assertIn("[bb-steward 交接]", self.bb.tells[-1][1])
+        self.assertIn(watch.HANDOVER_TAG, self.bb.tells[-1][1])
         self.assertIn("@thread:" + new, self.bb.tells[-1][1])
         self.assertFalse(next(step for step in res["handovers"][0]["steps"] if step["step"] == "reparent:thr_alive0001")["ok"])
         evs = watch.read_events(self.state_path)
         self.assertEqual(evs[-1]["event"], "handover")
-        self.assertIn("接任", watch.report(self.state, evs, NOW, 10))
+        self.assertIn("takeover", watch.report(self.state, evs, NOW, 10))
         self.assertEqual(watch.summary(self.state, evs, NOW, 7)["stewards"][new]["handovers"], 1)
         self.bb.reparents.clear()
         self.bb.cancelled.clear()
@@ -491,7 +494,7 @@ class WatchTests(unittest.TestCase):
             reader.return_value = "older-opus"
             self.tick(NOW + 60)
             self.assertEqual(len(self.bb.tells), 2)
-            self.assertTrue(all("本回合回复里告诉用户" in msg for _, msg in self.bb.tells))
+            self.assertTrue(all("Tell the user in this turn's reply" in msg for _, msg in self.bb.tells))
             self.bb.logs.append(requested(4))
             reader.return_value = "opus"
             self.tick(NOW + 120)
@@ -503,7 +506,7 @@ class WatchTests(unittest.TestCase):
         changes = [e for e in watch.read_events(self.state_path) if e["event"] == "model_change"]
         self.assertEqual(len(changes), 6)
         self.assertEqual(sum(e["returned"] for e in changes), 2)
-        self.assertIn("模型变化", self.report(NOW + 180))
+        self.assertIn("model change", self.report(NOW + 180))
         self.assertEqual(watch.summary(self.state, changes, NOW + 180, 7)["stewards"][TID]["model_changes"], 6)
 
     def test_model_errors_warn_but_allow_reconcile(self):
@@ -541,7 +544,7 @@ class WatchTests(unittest.TestCase):
         path = root / "projects" / "project" / "session.jsonl"
         path.parent.mkdir(parents=True)
         path.write_text(json.dumps({"type": "assistant", "message": {"model": "old"}}) + "\n" +
-                        json.dumps({"type": "assistant", "message": {"model": "real", "content": "长" * 70000}}) + "\n" +
+                        json.dumps({"type": "assistant", "message": {"model": "real", "content": "x" * 70000}}) + "\n" +
                         json.dumps({"type": "assistant", "message": {"model": "<synthetic>"}}) + "\n{partial")
         with mock.patch.dict("os.environ", {"CLAUDE_CONFIG_DIR": str(root)}):
             self.assertEqual(watch.claude_model("session"), "real")
@@ -558,18 +561,18 @@ class WatchTests(unittest.TestCase):
         reader.assert_not_called()
         self.assertFalse(any(e["event"] == "warning" for e in watch.read_events(self.state_path)))
         self.assertEqual(len(self.bb.tells), 1)
-        self.assertIn("opus（high） 变为 opus（low）", self.bb.tells[0][1])
-        self.assertIn("新开线程接任", self.bb.tells[0][1])
+        self.assertIn("opus (high) to opus (low)", self.bb.tells[0][1])
+        self.assertIn("open a new thread to take over", self.bb.tells[0][1])
 
-    def user_said(self, seq, at, text="帮我查一下"):
+    def user_said(self, seq, at, text="please check this"):
         return {"seq": seq, "type": "client/turn/requested", "createdAt": at * 1000,
                 "data": {"initiator": "user", "input": [{"type": "text", "text": text}]}}
 
     def with_ledger(self, age):
-        ledger = self.dir / "workbook-要求帳.md"
-        ledger.write_text("# 要求帐\n")
+        ledger = self.dir / "workbook-requirements.md"
+        ledger.write_text("# Requirement ledger\n")
         os.utime(ledger, (NOW - age, NOW - age))
-        self.workbook.write_text(GOOD.replace("更新：2026-10-26", "更新：2026-10-26；[要求帐](workbook-要求帳.md)"))
+        self.workbook.write_text(GOOD.replace("Updated: 2026-10-26", "Updated: 2026-10-26; [Requirements ledger](workbook-requirements.md)"))
         return ledger
 
     def test_each_new_compaction_asks_for_reread_and_eighth_asks_user_to_hand_over(self):
@@ -577,25 +580,25 @@ class WatchTests(unittest.TestCase):
         compacted = lambda seq: {"seq": seq, "type": "thread/compacted", "data": {}}
         self.bb.logs = [compacted(1), compacted(2)]
         self.tick(NOW)
-        self.assertEqual(self.bb.tells, [])  # 登记前的历史压缩只记基线
+        self.assertEqual(self.bb.tells, [])  # compactions before registration only set the baseline
         self.bb.set(status="active")
         self.bb.logs.append(compacted(3))
         self.tick(NOW + 60)
         self.tick(NOW + 120)
         self.assertEqual(len(self.bb.tells), 1)
-        self.assertIn("重读 bb-steward 的 SKILL.md", self.bb.tells[0][1])
-        self.assertNotIn("告诉用户", self.bb.tells[0][1])
+        self.assertIn("re-read bb-steward's SKILL.md", self.bb.tells[0][1])
+        self.assertNotIn("Tell the user", self.bb.tells[0][1])
         self.bb.logs += [compacted(i) for i in range(4, 9)]
         self.tick(NOW + 180)
-        self.assertIn("已压缩 8 次", self.bb.tells[-1][1])
-        self.assertIn("告诉用户", self.bb.tells[-1][1])
+        self.assertIn("compacted 8 times", self.bb.tells[-1][1])
+        self.assertIn("Tell the user", self.bb.tells[-1][1])
         self.bb.logs += [compacted(i) for i in range(9, 12)]
         self.tick(NOW + 240)
-        self.assertNotIn("告诉用户", self.bb.tells[-1][1])  # 提醒过后隔 4 次再提
+        self.assertNotIn("Tell the user", self.bb.tells[-1][1])  # after a reminder, wait 4 more
         self.bb.logs.append(compacted(12))
         self.tick(NOW + 300)
-        self.assertIn("已压缩 12 次", self.bb.tells[-1][1])
-        self.assertIn("建议新开线程接任", self.report(NOW + 300))
+        self.assertIn("compacted 12 times", self.bb.tells[-1][1])
+        self.assertIn("suggest a new thread take over", self.report(NOW + 300))
         res = watch.summary(self.state, watch.read_events(self.state_path), NOW + 300, 7)
         self.assertEqual(res["stewards"][TID]["compactions"], 10)
         self.assertIn("long_lived_steward", [h["hook"] for h in res["hooks"]])
@@ -608,36 +611,36 @@ class WatchTests(unittest.TestCase):
         self.tick(NOW + 60)
         self.assertEqual(self.bb.log_calls, [0, 9])
         self.assertEqual(len(self.bb.tells), 1)
-        self.assertIn("已压缩 9 次", self.bb.tells[0][1])
-        self.assertNotIn("刚被压缩", self.bb.tells[0][1])
+        self.assertIn("compacted 9 times", self.bb.tells[0][1])
+        self.assertNotIn("just compacted", self.bb.tells[0][1])
 
     def test_user_messages_without_ledger_update_are_nudged_until_ledger_moves(self):
         ledger = self.with_ledger(age=6 * HOUR)
         self.bb.logs = [self.user_said(i, NOW - 5 * HOUR + i) for i in range(1, 5)]
-        self.bb.logs.append(self.user_said(5, NOW - 4 * HOUR, "[bb-steward 看门狗] 对账"))
-        self.assertEqual(self.tick(NOW)["result"], "ok")  # 脚本消息不算用户要求，只有 4 条
+        self.bb.logs.append(self.user_said(5, NOW - 4 * HOUR, f"{watch.TAG} reconcile"))
+        self.assertEqual(self.tick(NOW)["result"], "ok")  # script messages are not user requests: only 4
         self.bb.logs.append(self.user_said(6, NOW - 4 * HOUR))
         self.assertEqual(self.tick(NOW + 60)["result"], "nudged")
-        self.assertIn("「要求帐」", self.bb.tells[0][1])
-        self.assertIn("5 条消息", self.bb.tells[0][1])
+        self.assertIn('"Requirement ledger"', self.bb.tells[0][1])
+        self.assertIn("5 messages", self.bb.tells[0][1])
         os.utime(ledger, (NOW + 100, NOW + 100))
         self.assertEqual(self.tick(NOW + 120)["result"], "ok")
 
     def test_recent_messages_are_not_nudged(self):
         self.with_ledger(age=6 * HOUR)
         self.bb.logs = [self.user_said(i, NOW - HOUR + i) for i in range(1, 9)]
-        self.assertEqual(self.tick(NOW)["result"], "ok")  # 最早一条不到 3 小时
+        self.assertEqual(self.tick(NOW)["result"], "ok")  # the earliest is under 3 hours old
 
     def test_history_ledger_and_missing_ledger_link_are_not_nudged(self):
         self.with_ledger(age=6 * HOUR)
         standard = self.workbook.read_text()
         self.bb.logs = [self.user_said(i, NOW - 5 * HOUR + i) for i in range(1, 9)]
-        self.workbook.write_text(standard.replace("[要求帐]", "[要求帐（历史流水账）]"))
+        self.workbook.write_text(standard.replace("[Requirements ledger]", "[Requirements ledger (history log)]"))
         self.assertEqual(self.tick(NOW)["result"], "ok")
         self.workbook.write_text(GOOD)
         self.assertEqual(self.tick(NOW + 60)["result"], "ok")
         self.workbook.write_text(standard)
-        self.assertEqual(self.tick(NOW + 120)["result"], "nudged")  # 同样的消息，换回标准要求帐就催
+        self.assertEqual(self.tick(NOW + 120)["result"], "nudged")  # same messages: nudged once the standard ledger is back
 
     def test_failed_first_rescan_is_retried_instead_of_becoming_a_zero_baseline(self):
         self.workbook.write_text(GOOD)
@@ -679,15 +682,15 @@ class WatchTests(unittest.TestCase):
             stamp = f"{int(at)} +0000"
             subprocess.run(git + ["commit", "-qm", name], check=True,
                            env={**os.environ, "GIT_COMMITTER_DATE": stamp, "GIT_AUTHOR_DATE": stamp})
-        commit("wb-要求帳.md", "# 要求帐\n", NOW - 6 * HOUR)
-        commit("wb.md", GOOD.replace("更新：2026-10-26", "更新：2026-10-26；[要求帐](wb-要求帳.md)"), NOW - HOUR)
+        commit("wb-requirements.md", "# Requirement ledger\n", NOW - 6 * HOUR)
+        commit("wb.md", GOOD.replace("Updated: 2026-10-26", "Updated: 2026-10-26; [Requirements ledger](wb-requirements.md)"), NOW - HOUR)
         subprocess.run(git + ["branch", "-M", "main"], check=True)
         subprocess.run(git + ["remote", "add", "origin", str(repo)], check=True)
         watch.register(self.state, self.bb, TID, str(repo / "wb.md"), ref="origin/main", manage_automation=False,
                        state_path=self.state_path, now=NOW)
         self.bb.logs = [self.user_said(i, NOW - 5 * HOUR + i) for i in range(1, 60)]
-        self.assertEqual(self.tick(NOW)["result"], "nudged")  # 工作簿一小时前才提交，要求帐六小时没动
-        self.assertIn("至少 50 条消息", self.bb.tells[0][1])
+        self.assertEqual(self.tick(NOW)["result"], "nudged")  # workbook committed an hour ago, ledger untouched for six hours
+        self.assertIn("at least 50 messages", self.bb.tells[0][1])
 
     def test_handover_with_unreadable_old_log_marks_ledger_gap_step_failed(self):
         self.with_ledger(age=6 * HOUR)
@@ -705,28 +708,28 @@ class WatchTests(unittest.TestCase):
                              manage_automation=False, now=NOW)
         self.assertEqual(res["handovers"][0]["ledger_gap"]["messages"], 3)
         self.assertNotIn("compaction", self.state["stewards"]["thr_new00001"])
-        self.assertIn("缺 3 条用户消息", self.report(NOW))
+        self.assertIn("missing 3 user messages", self.report(NOW))
 
     def test_cancel_retry_without_pending_retry_counts_as_done(self):
         bb = watch.Bb()
-        with mock.patch.object(bb, "_run", side_effect=watch.WatchError('bb provider-retry 失败：{"code": "no_pending_retry"}')):
+        with mock.patch.object(bb, "_run", side_effect=watch.WatchError('bb provider-retry failed: {"code": "no_pending_retry"}')):
             bb.cancel_retry(TID)
-        with mock.patch.object(bb, "_run", side_effect=watch.WatchError("bb provider-retry 失败：plugin missing")):
+        with mock.patch.object(bb, "_run", side_effect=watch.WatchError("bb provider-retry failed: plugin missing")):
             with self.assertRaises(watch.WatchError):
                 bb.cancel_retry(TID)
 
     def test_user_relay_for_second_nudge_and_escalated_recovery(self):
         self.tick(NOW)
         self.tick(NOW + 2 * HOUR)
-        self.assertIn("本回合回复里告诉用户", self.bb.tells[-1][1])
-        self.assertIn("催满 2 次", self.bb.tells[-1][1])
+        self.assertIn("Tell the user in this turn's reply", self.bb.tells[-1][1])
+        self.assertIn("nudged twice", self.bb.tells[-1][1])
         self.workbook.write_text(GOOD)
         self.bb.set(status="error", idle=2 * HOUR)
         self.tick(NOW + 3 * HOUR)
         self.bb.set()
         self.tick(NOW + 4 * HOUR)
-        self.assertIn("本回合回复里告诉用户", self.bb.tells[-1][1])
-        self.assertNotIn("告诉用户", watch.recovery_message({"since": NOW, "retries": 1}))
+        self.assertIn("Tell the user in this turn's reply", self.bb.tells[-1][1])
+        self.assertNotIn("Tell the user", watch.recovery_message({"since": NOW, "retries": 1}))
 
     def test_event_log_keeps_newest_half_when_over_cap(self):
         with mock.patch.object(watch, "EVENTS_MAX_BYTES", 2000):
@@ -768,15 +771,15 @@ class CliTests(unittest.TestCase):
             out = subprocess.run([sys.executable, str(SCRIPTS / "steward_watch.py"), "--state", str(blocker / "watch.json"), "run"],
                                  capture_output=True, text=True)
             self.assertEqual(out.returncode, 0, out.stderr)
-            self.assertIn("看门狗未完成", out.stdout)
+            self.assertIn("Watchdog did not finish", out.stdout)
 
 
 class PluginSyncTests(unittest.TestCase):
     def test_register_reads_actual_header_link_and_skips_unavailable_plugin(self):
         with tempfile.TemporaryDirectory() as temp:
             workbook = Path(temp) / "workbook.md"
-            workbook.write_text("# 目标\n\n[要求帳](different%20ledger.md)\n\n## 路线\n")
-            entry = {"workbook": str(workbook), "name": "目标"}
+            workbook.write_text("# Goal\n\n[Requirements ledger](different%20ledger.md)\n\n## Route\n")
+            entry = {"workbook": str(workbook), "name": "Goal"}
             bb = FakeBb()
             self.assertEqual(watch.sync_plugin(bb, "register", TID, entry)["status"], "registered")
             self.assertEqual(bb.plugin_calls[0][1]["ledger"], str(Path(temp) / "different ledger.md"))
@@ -827,8 +830,8 @@ class PluginSyncTests(unittest.TestCase):
             subprocess.run(git + ['config', 'user.name', 'Test'], check=True)
             subprocess.run(git + ['config', 'user.email', 'test@example.invalid'], check=True)
             workbook = repo / 'workbook.md'
-            workbook.write_text(GOOD.replace('更新：2026-10-26', '[要求帐（历史流水账）](history.md)'))
-            (repo / 'history.md').write_text('# 历史流水账')
+            workbook.write_text(GOOD.replace('Updated: 2026-10-26', '[Requirements ledger (history log)](history.md)'))
+            (repo / 'history.md').write_text('# History log')
             subprocess.run(git + ['add', '.'], check=True)
             subprocess.run(git + ['commit', '-qm', 'initial'], check=True)
             subprocess.run(git + ['branch', '-M', 'main'], check=True)

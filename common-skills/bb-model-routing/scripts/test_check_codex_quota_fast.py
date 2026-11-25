@@ -429,9 +429,9 @@ agents:
 
         try:
             checker.subprocess.run = fake_run
-            res = checker.notify_thread("thr_test123", "熔断测试")
+            res = checker.notify_thread("thr_test123", "fuse test")
             self.assertTrue(res)
-            self.assertEqual(calls, [["bb", "thread", "tell", "thr_test123", "熔断测试"]])
+            self.assertEqual(calls, [["bb", "thread", "tell", "thr_test123", "fuse test"]])
         finally:
             checker.subprocess.run = orig_run
 

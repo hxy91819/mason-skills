@@ -43,7 +43,7 @@ triggers:
 
 ## 派发并交付
 
-调用 `$bb-model-routing`，由宿主在 project scope、user scope 或其他已安装来源中解析该 Skill。按它的派发入口提交以下参数：
+调用 `$bb-model-routing`，由宿主在 project scope、user scope 或其他已安装来源中解析该 Skill。按它的 "Dispatch entry" 提交以下参数：
 
 ```text
 difficulty: complex

@@ -1,35 +1,46 @@
 #!/usr/bin/env python3
-"""BB 管家看门狗：由 BB 脚本 automation 每 30 分钟运行一次，不调模型。
+"""BB steward watchdog: run by a BB script automation every 30 minutes, without calling a model.
 
-对每个登记的管家：
-- 线程归档或已删除：移除登记。
-- 标题没有统一「🎩」管家标记时补上；已有标记不重复，只加前缀，不改标题目标。
-- 每轮增量读取 BB 请求模型，Claude Code 管家另读会话记录里的实际模型；首次记基线，新偏离值仅提醒一次，
-  回到基线只记事件。
-- 同一次扫描里数上下文压缩：压缩后技能正文不在上下文里，每次新压缩都让管家重读规范、工作簿和要求帐；
-  累计满 8 次（之后每多 4 次）让管家转告用户换管家。压缩次数跟着线程走，接任的新线程从 0 算。
-- 在跑、有排队消息、等待交互或有后台活动：跳过对账与重试。
-- 回合失败且没有排队的重试：`bb thread retry`，间隔 0/30/60/120/240/240 分钟，最多 6 次；
-  失败满 60 分钟记为需要用户看一眼。恢复后发一次提醒，让管家核对失败期间到达的通知。
-- 空闲（回合结束满 10 分钟）：读工作簿跑收尾对账（steward_workbook.reconcile_workbook），有 nudge 级
-  问题就把问题行发给管家。同一问题最多发 2 次，同一管家两次催办至少隔 2 小时；发满仍未解决的
-  记为需要用户看一眼，并要求管家在本回合回复里转告用户。
-- 对账时一并看要求帐：用户发来满 5 条消息、最早一条已过 3 小时，而要求帐在这之后没有更新，按同一套催办规则
-  处理。本地工作簿看要求帐文件的修改时间，Git-ref 模式看它在该分支上的最后提交时间；历史流水账与缺入口的不查。
+For each registered steward:
+- Thread archived or deleted: drop the registration.
+- Title lacks the shared "🎩" steward mark: add it; an existing mark is not repeated, only the prefix is added and
+  the title goal is untouched.
+- Each run incrementally reads the model BB requested, and for Claude Code stewards also the actual model in the
+  session transcript; the first value is the baseline, each new deviation is reported once, a return to the
+  baseline is only logged.
+- The same scan counts context compactions: after a compaction the skill body is gone from context, so every new
+  compaction asks the steward to re-read the rules, workbook and requirement ledger; at 8 in total (then every 4
+  more) the steward is asked to tell the user to switch stewards. The count follows the thread; a successor
+  thread starts from 0.
+- Running, queued messages, pending interaction or background activity: skip reconciliation and retries.
+- Turn failed with no retry queued: `bb thread retry` at 0/30/60/120/240/240-minute intervals, at most 6 times;
+  a failure lasting 60 minutes needs the user's attention. After recovery one reminder asks the steward to check
+  notifications that arrived during the failure.
+- Idle (10 minutes after the turn ended): read the workbook and run closing reconciliation
+  (steward_workbook.reconcile_workbook); nudge-level problems are sent to the steward. Each problem is sent at
+  most twice, with at least 2 hours between nudges to the same steward; problems still open after that need the
+  user's attention, and the steward is asked to tell the user in this turn's reply.
+- Reconciliation also checks the requirement ledger: when the user sent 5 messages, the earliest over 3 hours ago,
+  and the ledger has not been updated since, the same nudge rules apply. Local workbooks use the ledger file's
+  modification time, Git-ref mode its last commit time on that branch; history logs and missing entries are skipped.
 
-用法：
-  steward_watch.py register --workbook <路径> [--ref origin/main] [--name 简称] [--thread thr_x] [--project proj_x]
-  steward_watch.py retire [--thread thr_x] --reason <原因> [--successor thr_y]
+Usage:
+  steward_watch.py register --workbook <path> [--ref origin/main] [--name <short name>] [--thread thr_x] [--project proj_x]
+  steward_watch.py retire [--thread thr_x] --reason <reason> [--successor thr_y]
   steward_watch.py roster [--thread thr_x]
   steward_watch.py unregister [--thread thr_x]
   steward_watch.py run [--dry-run]
   steward_watch.py report [--since 60]
   steward_watch.py summary [--days 7] [--json]
 
-登记与运行状态在 ${XDG_STATE_HOME:-~/.local/state}/bb-steward/watch.json（可用 BB_STEWARD_WATCH_STATE
-或 --state 改），事件日志在同目录 watch.events.jsonl，超过 2 MB 丢掉较早的一半。首次登记会在当前项目
-创建脚本 automation。模型变化、催满两次、升级过的中断恢复由管家回复转告用户。同工作簿跨线程登记即接任，
-先保存新登记，再独立尝试迁移子线程、取消旧重试及交接通知，并在输出的 ledger_gap 里报旧管家没入账的用户消息数。run 无事可报时不输出，automation 记为静默跳过。
+Registrations and run state live in ${XDG_STATE_HOME:-~/.local/state}/bb-steward/watch.json (override with
+BB_STEWARD_WATCH_STATE or --state); the event log is watch.events.jsonl in the same directory and drops its older
+half beyond 2 MB. The first registration creates the script automation in the current project. Model changes,
+problems nudged twice and escalated outage recoveries reach the user through the steward's reply. Registering the
+same workbook from another thread is a takeover: the new registration is saved first, then moving child threads,
+cancelling old retries and the handover notice are each attempted independently, and the output's ledger_gap
+reports how many user messages the old steward left unrecorded. run prints nothing when there is nothing to
+report, so the automation records a silent skip.
 """
 import argparse
 from collections import Counter, defaultdict
@@ -45,13 +56,13 @@ import time
 
 try:
     import fcntl
-except ImportError:  # Windows 没有 fcntl，退回无锁读写。
+except ImportError:  # Windows has no fcntl; fall back to unlocked reads and writes.
     fcntl = None
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import steward_workbook as sw  # noqa: E402
 
-AUTOMATION_NAME = "管家看门狗（bb-steward）"
+AUTOMATION_NAME = "Steward watchdog (bb-steward)"
 AUTOMATION_CRON = "25,55 * * * *"
 AUTOMATION_TIMEOUT_MS = "300000"
 SETTLE_MINUTES = 10
@@ -64,14 +75,18 @@ MESSAGE_MAX_PROBLEMS = 8
 SUMMARY_LOW_RESOLVE_SHARE = 0.5
 SUMMARY_MIN_NUDGES = 3
 SUMMARY_FREQUENT_OUTAGES = 3
-LOG_UNREADABLE = "BB 模型日志不可读"
+LOG_UNREADABLE = "BB model log unreadable"
 HANDOVER_COMPACTIONS = 8
 HANDOVER_REPEAT_COMPACTIONS = 4
 LEDGER_STALE_MESSAGES = 5
 LEDGER_STALE_MINUTES = 180
 USER_MESSAGES_KEPT = 50
 STEWARD_MARK = "🎩"
-TAG = "[bb-steward 看门狗]"
+TAG = "[bb-steward watchdog]"
+HANDOVER_TAG = "[bb-steward handover]"
+# Script messages are recorded as user input in BB; they are told apart by a leading tag. The prefix also covers
+# the legacy "[bb-steward 看门狗]" / "[bb-steward 交接]" tags still present in older thread logs.
+SCRIPT_MESSAGE_PREFIX = "[bb"
 
 
 class WatchError(Exception):
@@ -79,13 +94,13 @@ class WatchError(Exception):
 
 
 class Bb:
-    """bb CLI 的薄封装；测试用同接口的假对象替换。"""
+    """Thin wrapper over the bb CLI; tests substitute a fake with the same interface."""
 
     def _run(self, args, stdin=None, timeout=60):
         try:
             res = subprocess.run(["bb", *args, "--json"], input=stdin, capture_output=True, text=True, timeout=timeout)
         except (OSError, subprocess.TimeoutExpired) as exc:
-            raise WatchError(f"bb {' '.join(args[:2])} 调用失败：{exc}") from exc
+            raise WatchError(f"bb {' '.join(args[:2])} could not run: {exc}") from exc
         try:
             data = json.loads(res.stdout) if res.stdout.strip() else {}
         except ValueError:
@@ -93,7 +108,7 @@ class Bb:
         if res.returncode or (isinstance(data, dict) and data.get("ok") is False):
             error = data.get("error") if isinstance(data, dict) else None
             detail = json.dumps(error, ensure_ascii=False) if error else (res.stderr.strip() or res.stdout.strip())
-            raise WatchError(f"bb {' '.join(args[:2])} 失败：{detail[:300]}")
+            raise WatchError(f"bb {' '.join(args[:2])} failed: {detail[:300]}")
         return data
 
     def steward(self, command, **values):
@@ -130,7 +145,7 @@ class Bb:
         try:
             self._run(["provider-retry", "cancel", thread])
         except WatchError as exc:
-            # 没有排着的重试正是想要的结果，不算接任步骤失败。
+            # No queued retry is exactly the desired outcome, not a failed takeover step.
             if "no_pending_retry" not in str(exc):
                 raise
 
@@ -156,7 +171,7 @@ class Bb:
                    "--interpreter", "bash", "--timeout", AUTOMATION_TIMEOUT_MS])
 
 
-# ---------- 状态与事件 ----------
+# ---------- State and events ----------
 
 def state_path_from(arg):
     raw = arg or os.environ.get("BB_STEWARD_WATCH_STATE")
@@ -180,9 +195,9 @@ def load_state(path):
     try:
         data = json.loads(path.read_text())
     except ValueError as exc:
-        raise WatchError(f"看门狗状态文件不是 JSON：{path}：{exc}") from exc
+        raise WatchError(f"Watchdog state file is not JSON: {path}: {exc}") from exc
     if not isinstance(data, dict) or data.get("version") != 1 or not isinstance(data.get("stewards"), dict):
-        raise WatchError(f"看门狗状态文件格式无效：{path}")
+        raise WatchError(f"Watchdog state file has an invalid format: {path}")
     return data
 
 
@@ -195,7 +210,7 @@ def save_state(path, state):
 
 @contextlib.contextmanager
 def state_lock(path):
-    """串行化登记与运行；拿不到锁说明另一轮还在跑，本轮直接退出。"""
+    """Serialize registration and runs; failing to get the lock means another run is active, so this one exits."""
     if fcntl is None:
         yield
         return
@@ -204,12 +219,12 @@ def state_lock(path):
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
-            raise WatchError("另一轮看门狗还在运行") from exc
+            raise WatchError("Another watchdog run is still in progress") from exc
         yield
 
 
 def append_events(state_path, events):
-    """每行一个 JSON 事件；写入失败只告警，不改变本轮结果。"""
+    """One JSON event per line; a write failure only warns and never changes this run's result."""
     if not events:
         return
     try:
@@ -223,7 +238,7 @@ def append_events(state_path, events):
             tmp.write_text("".join(lines[len(lines) // 2:]))
             tmp.replace(target)
     except Exception as exc:
-        print(f"warning: 看门狗事件写入失败（已旁路忽略）：{exc}", file=sys.stderr)
+        print(f"warning: watchdog event write failed (ignored): {exc}", file=sys.stderr)
 
 
 def read_events(state_path):
@@ -243,7 +258,7 @@ def event(now, thread, what, **fields):
     return {"ts": round(now, 3), "thread": thread, "event": what, **fields}
 
 
-# ---------- 工作簿 ----------
+# ---------- Workbook ----------
 
 def git(*args, timeout=60):
     return subprocess.run(["git", *args], capture_output=True, text=True, timeout=timeout)
@@ -255,12 +270,12 @@ def git_toplevel(path):
         probe = probe.parent
     res = git("-C", str(probe if probe.is_dir() else probe.parent), "rev-parse", "--show-toplevel")
     if res.returncode:
-        raise WatchError(f"{path} 不在 git 仓库里：{res.stderr.strip()[:200]}")
+        raise WatchError(f"{path} is not inside a git repository: {res.stderr.strip()[:200]}")
     return Path(res.stdout.strip())
 
 
 def read_source(entry):
-    """返回（工作簿正文, 固定的 SHA）；本地工作簿的 SHA 为 None。"""
+    """Return (workbook text, pinned SHA); the SHA is None for a local workbook."""
     if not entry.get("ref"):
         return Path(entry["workbook"]).read_text(), None
     try:
@@ -275,7 +290,8 @@ def read_workbook(entry):
 
 
 def ledger_updated_at(entry, text, sha):
-    """要求帐最后更新的时间戳；没有可比的标准要求帐（缺入口、历史流水账、读不到）时返回 None。"""
+    """Timestamp of the ledger's last update; None without a comparable standard ledger (no entry, history log,
+    unreadable)."""
     try:
         target, kind = sw.source.ledger_entry(text)
         if kind != "standard":
@@ -290,7 +306,8 @@ def ledger_updated_at(entry, text, sha):
 
 
 def ledger_problem(entry, text, sha, now):
-    """用户发了一批消息而要求帐没动：返回一条 nudge 级问题，否则 None。只用时间戳，不读消息正文。"""
+    """The user sent a batch of messages and the ledger did not move: return a nudge-level problem, else None.
+    Uses timestamps only, never message bodies."""
     stamps = (entry.get("model_observation") or {}).get("user_messages") or []
     if len(stamps) < LEDGER_STALE_MESSAGES:
         return None
@@ -300,22 +317,23 @@ def ledger_problem(entry, text, sha, now):
     waiting = [t for t in stamps if t > updated]
     if len(waiting) < LEDGER_STALE_MESSAGES or now - waiting[0] < LEDGER_STALE_MINUTES * 60:
         return None
-    more = "至少 " if len(stamps) >= USER_MESSAGES_KEPT and len(waiting) == len(stamps) else ""
-    return {"kind": "ledger_stale", "severity": "nudge", "line": None, "label": "要求帐",
-            "detail": f"{hhmm(updated)} 之后没有更新，其后用户发来{more}{len(waiting)} 条消息（最早 {hhmm(waiting[0])}）。"
-                      "按 bb-steward「要求帐」把这段时间交代的事逐项补记并提交，关键决策和用户待办同步进工作簿"}
+    more = "at least " if len(stamps) >= USER_MESSAGES_KEPT and len(waiting) == len(stamps) else ""
+    return {"kind": "ledger_stale", "severity": "nudge", "line": None, "label": "Requirement ledger",
+            "detail": f"not updated since {hhmm(updated)}; the user has since sent {more}{len(waiting)} messages "
+                      f"(earliest {hhmm(waiting[0])}). Per bb-steward \"Requirement ledger\", record each request "
+                      "from that period and commit; sync key decisions and user to-dos into the workbook"}
 
 
-# ---------- 模型观测（只读来源，游标与基线由调用方保存） ----------
+# ---------- Model observation (read-only sources; the caller keeps cursors and baselines) ----------
 
 def claude_model(provider_thread_id):
-    """倒序按块读尾部，遇到最后一条真实 assistant 即停，避免读完整会话。"""
+    """Read the tail backwards in chunks and stop at the last real assistant entry, avoiding a full read."""
     if not provider_thread_id or Path(provider_thread_id).name != provider_thread_id:
-        raise WatchError("没有可用的 Claude providerThreadId")
+        raise WatchError("No usable Claude providerThreadId")
     root = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
     paths = list((root / "projects").glob(f"*/{provider_thread_id}.jsonl"))
     if not paths:
-        raise WatchError("未找到 Claude 会话文件")
+        raise WatchError("Claude session file not found")
     for path in sorted(paths, key=lambda p: p.stat().st_mtime, reverse=True):
         with path.open("rb") as handle:
             handle.seek(0, 2)
@@ -335,15 +353,17 @@ def claude_model(provider_thread_id):
                     model = msg.get("model")
                     if row.get("type") == "assistant" and model and model != "<synthetic>":
                         return model
-    raise WatchError("Claude 会话没有真实 assistant model")
+    raise WatchError("Claude session has no real assistant model")
 
 
 def read_models(bb, tid, previous, claude=True):
-    """大页增量扫描；只返回最小事实，不把事件正文存入状态。claude=False 时不找 Claude Code 会话记录。
+    """Incremental scan in large pages; returns minimal facts only and never stores event bodies.
+    claude=False skips the Claude Code transcript.
 
-    同一次扫描顺带数上下文压缩次数、记用户消息的时间戳（只留最近 USER_MESSAGES_KEPT 个）。
-    旧登记没有这两项时从头重扫一次，补出线程自创建以来的累计值；重扫中途读不到日志就整轮作废、
-    下轮再扫，免得把历史压缩当成新压缩。
+    The same scan counts context compactions and records user-message timestamps (only the latest
+    USER_MESSAGES_KEPT). Older registrations lacking these rescan from the start once to recover the totals since
+    thread creation; if the log becomes unreadable mid-rescan the whole pass is discarded and retried next run, so
+    historical compactions are not mistaken for new ones.
     """
     observed = dict(previous)
     rescan = "compactions" not in observed
@@ -355,13 +375,13 @@ def read_models(bb, tid, previous, claude=True):
         try:
             rows = bb.log(tid, after)
         except (OSError, WatchError) as exc:
-            warnings.append(f"{LOG_UNREADABLE}：{exc}")
+            warnings.append(f"{LOG_UNREADABLE}: {exc}")
             if rescan:
                 observed = dict(previous)
                 after = observed.get("seq", 0)
             break
         if not isinstance(rows, list):
-            raise WatchError("thread log 返回非事件数组")
+            raise WatchError("thread log returned a non-array")
         for row in rows:
             data = row.get("data") or {}
             if row.get("type") == "client/turn/requested":
@@ -378,7 +398,7 @@ def read_models(bb, tid, previous, claude=True):
             break
         cursor = max(row["seq"] for row in rows)
         if cursor <= after:
-            raise WatchError("thread log 游标未前进")
+            raise WatchError("thread log cursor did not advance")
         after = cursor
         if len(rows) < 10000:
             break
@@ -387,7 +407,7 @@ def read_models(bb, tid, previous, claude=True):
     if observed.get("requested"):
         values["requested"] = observed["requested"]
     else:
-        warnings.append("BB 请求模型不可读")
+        warnings.append("BB requested model unreadable")
     if claude:
         try:
             values["actual"] = claude_model(observed.get("providerThreadId"))
@@ -397,24 +417,25 @@ def read_models(bb, tid, previous, claude=True):
 
 
 def is_user_message(data):
-    """用户键入的消息。看门狗、交接通知等脚本消息在 BB 里同样记为 user，只能靠 `[bb` 开头的标签区分。"""
+    """A message the user typed. Script messages (watchdog, handover notice) are also recorded as user in BB and
+    are told apart only by their leading `[bb` tag."""
     if data.get("initiator") != "user":
         return False
     text = next((i.get("text") or "" for i in data.get("input") or [] if i.get("type") == "text"), "")
-    return not text.lstrip().startswith("[bb")
+    return not text.lstrip().startswith(SCRIPT_MESSAGE_PREFIX)
 
 
-MODEL_SOURCES = {"requested": "BB 请求模型", "actual": "Claude Code 实际模型"}
+MODEL_SOURCES = {"requested": "BB requested model", "actual": "Claude Code actual model"}
 
 
 def model_text(value):
     if isinstance(value, dict):
         level = value.get("reasoningLevel")
-        return f"{value.get('model')}（{level}）" if level else str(value.get("model"))
+        return f"{value.get('model')} ({level})" if level else str(value.get("model"))
     return str(value)
 
 
-# ---------- 检查一个管家 ----------
+# ---------- Checking one steward ----------
 
 def problem_key(problem):
     return f"{problem['kind']}|{problem['label']}"
@@ -425,29 +446,32 @@ def hhmm(ts):
 
 
 def nudge_message(entry, sent, others):
-    """sent 是本次计入催办次数的问题；others 只报数量（含还没轮到展示的和不急的）。"""
+    """sent are the problems counted as nudged this time; others is only a count (not yet shown or not urgent)."""
     where = entry["workbook"] + (f" @ {entry['ref']}" if entry.get("ref") else "")
-    lines = [f"{TAG} 工作簿对账有 {len(sent)} 处要处理（{where}）："]
+    lines = [f"{TAG} Workbook reconciliation found {len(sent)} items to handle ({where}):"]
     for p in sent:
-        loc = f"第 {p['line']} 行" if p.get("line") else ""
-        lines.append(f"- {loc}「{p['label']}」：{p['detail']}")
+        loc = f"line {p['line']} " if p.get("line") else ""
+        lines.append(f"- {loc}\"{p['label']}\": {p['detail']}")
     if others:
-        lines.append(f"- 另有 {others} 处，跑对账命令查看")
+        lines.append(f"- {others} more; run the reconcile command to see them")
     lines.append(
-        "按 bb-steward「收尾对账」逐项处理：能推进的现在派出去；确实在等的，把状态写准并提交工作簿。"
-        f"状态只用四种：{sw.STATE_HINT}；等用户的行要有“挡住”栏写着它的待办；"
-        f"用户待办的原因以{'、'.join(sw.TODO_CATEGORIES)}之一开头。规则在 bb-steward 的 SKILL.md「收尾对账」一节，"
-        "没读过这一节先重读。对账命令：steward_workbook.py --mode reconcile --live --file <工作簿>。不用回复看门狗。"
+        "Handle each per bb-steward \"Closing reconciliation\": dispatch what can move now; for lines that really "
+        f"wait, write the state accurately and commit the workbook. Use only the four states: {sw.STATE_HINT}; a "
+        "waiting-on-user line needs a to-do whose Blocks cell names it; a user to-do reason starts with one of "
+        f"{', '.join(sw.TODO_CATEGORIES)}. The rules are in the \"Closing reconciliation\" section of bb-steward's "
+        "SKILL.md; re-read it if you have not. Reconcile command: steward_workbook.py --mode reconcile --live "
+        "--file <workbook>. No reply to the watchdog needed."
     )
     return "\n".join(lines)
 
 
 def recovery_message(outage):
-    retried = f"看门狗重试了 {outage['retries']} 次，" if outage.get("retries") else ""
-    return (f"{TAG} 你的回合从 {hhmm(outage['since'])} 起连续失败，{retried}现在已恢复。"
-            "这段时间到达的子线程通知和消息可能没处理：先用 `bb thread log --self` 核对，"
-            "再按 bb-steward「收尾对账」继续。"
-            + ("请在本回合回复里告诉用户此次中断已恢复及影响。" if outage.get("escalated") else "不用回复看门狗。"))
+    retried = f"the watchdog retried {outage['retries']} times, " if outage.get("retries") else ""
+    return (f"{TAG} Your turns kept failing from {hhmm(outage['since'])}; {retried}and you have now recovered. "
+            "Child-thread notifications and messages that arrived meanwhile may be unhandled: check with "
+            "`bb thread log --self`, then continue per bb-steward \"Closing reconciliation\". "
+            + ("Tell the user in this turn's reply that the outage is over and what it affected."
+               if outage.get("escalated") else "No reply to the watchdog needed."))
 
 
 class Checker:
@@ -460,16 +484,17 @@ class Checker:
         self.events = []
 
     def persist(self):
-        """副作用（tell/retry）之前先落盘：即使发送后进程中断，也不会下一轮重复催办。"""
+        """Persist before side effects (tell/retry): even if the process dies after sending, the next run will not
+        nudge again."""
         if not self.dry_run:
             save_state(self.state_path, self.state)
 
     def check(self, tid, entry, info):
         name = entry.get("name") or tid
         if info is None or info["archived"]:
-            reason = "线程已删除" if info is None else "线程已归档"
+            reason = "thread deleted" if info is None else "thread archived"
             self.events.append(event(self.now, tid, "unregister", reason=reason))
-            return {"result": "unregistered", "remove": True, "report": f"{name}：{reason}，已移除登记"}
+            return {"result": "unregistered", "remove": True, "report": f"{name}: {reason}, registration removed"}
         self.mark_title(tid, info)
         self.check_models(tid, entry, info)
         busy = (info["status"] not in sw.SETTLED_STATUSES or info["queued"]
@@ -487,7 +512,7 @@ class Checker:
         return self.reconcile(tid, entry, name)
 
     def mark_title(self, tid, info):
-        """看门狗每轮补齐管家标记，标题被改掉或登记时没加上都能自动恢复。"""
+        """Every run restores the steward mark, whether the title was changed or registration missed it."""
         if self.dry_run:
             return
         marked = marked_title(info.get("title"))
@@ -501,7 +526,7 @@ class Checker:
             self.events.append(event(self.now, tid, "warning", source="title", detail=str(exc)[:200]))
 
     def check_models(self, tid, entry, info):
-        # 实际模型只有 Claude Code 的会话记录能读到；其他 provider 只看 BB 请求的模型。
+        # Only Claude Code transcripts reveal the actual model; other providers use the model BB requested.
         claude = info.get("provider") in (None, "claude-code")
         try:
             observed, values, warnings = read_models(self.bb, tid, entry.get("model_observation", {}), claude)
@@ -533,9 +558,11 @@ class Checker:
                            returned=returned, notified=notify)
             if notify and not self.dry_run:
                 try:
-                    self.bb.tell(tid, f"{TAG} {MODEL_SOURCES.get(source, source)}从 {model_text(before)} 变为 "
-                                 f"{model_text(value)}（登记时 {model_text(record['baseline'])}）。请在本回合回复里告诉用户"
-                                 "这一变化和影响，并给出选项：换回原模型，或新开线程接任（bb-steward「接任」）。")
+                    self.bb.tell(tid, f"{TAG} {MODEL_SOURCES.get(source, source)} changed from {model_text(before)} to "
+                                 f"{model_text(value)} (at registration: {model_text(record['baseline'])}). Tell the "
+                                 "user in this turn's reply about the change and its impact, with options: switch "
+                                 "back to the original model, or open a new thread to take over "
+                                 "(bb-steward \"Takeover\").")
                     change["ok"] = True
                 except Exception as exc:
                     change.update(ok=False, detail=str(exc)[:200])
@@ -544,7 +571,8 @@ class Checker:
     def check_compactions(self, tid, entry, count):
         record = entry.get("compaction")
         if record is None:
-            # 首次观测只记基线：历史压缩不补发重读提醒，但已到阈值的照常提醒换管家。
+            # First observation only records a baseline: no re-read reminder for past compactions, but a reached
+            # threshold still triggers the switch reminder.
             record = entry["compaction"] = {"seen": count, "handover_notified": 0}
             fresh = 0
         else:
@@ -556,18 +584,22 @@ class Checker:
             return
         parts = []
         if fresh > 0:
-            parts.append(f"你的上下文刚被压缩（累计第 {count} 次）。压缩后技能正文不在上下文里，摘要只留了转述："
-                         "继续之前重读 bb-steward 的 SKILL.md、bb-model-routing 的「判断与调用」，再读工作簿和要求帐，"
-                         "补记压缩前后还没入账的用户要求。")
+            parts.append(f"Your context was just compacted (compaction {count} in total). The skill body is no longer "
+                         "in context and the summary keeps only a paraphrase: before continuing, re-read bb-steward's "
+                         "SKILL.md and the \"Judgment and invocation\" section of bb-model-routing, then read the "
+                         "workbook and requirement ledger, and record user requests from around the compaction "
+                         "not yet entered. ")
         if handover_due:
             record["handover_notified"] = count
-            parts.append(f"本会话已压缩 {count} 次，规范靠摘要层层转述，遗漏会越来越多。请在本回合回复里告诉用户：建议新开"
-                         "同模型线程接任（bb-steward「接任」），并先把要求帐和工作簿补齐，新管家只能靠它们接手。")
+            parts.append(f"This session has been compacted {count} times; the rules survive only as layered "
+                         "paraphrase and more gets lost each time. Tell the user in this turn's reply: suggest opening a "
+                         "same-model thread to take over (bb-steward \"Takeover\"), and first bring the requirement "
+                         "ledger and workbook up to date, since they are all a new steward can take over from. ")
         self.persist()
         note = event(self.now, tid, "compaction", count=count, new=max(fresh, 0), handover=handover_due)
         if not self.dry_run:
             try:
-                self.bb.tell(tid, f"{TAG} " + "".join(parts) + ("" if handover_due else "不用回复看门狗。"))
+                self.bb.tell(tid, f"{TAG} " + "".join(parts) + ("" if handover_due else "No reply to the watchdog needed."))
                 note["ok"] = True
             except Exception as exc:
                 note.update(ok=False, detail=str(exc)[:200])
@@ -588,7 +620,7 @@ class Checker:
         if escalate:
             outage["escalated"] = True
             self.events.append(event(self.now, tid, "escalate", reason="outage", minutes=round(minutes)))
-            notes.append("需要用户看一眼")
+            notes.append("needs the user's attention")
         if due:
             outage["retries"] = n + 1
             outage["last_retry"] = self.now
@@ -596,15 +628,15 @@ class Checker:
             ok, err = True, ""
             if not self.dry_run:
                 try:
-                    self.bb.retry(tid, f"{TAG} 管家回合失败后自动重试（第 {n + 1} 次）")
+                    self.bb.retry(tid, f"{TAG} automatic retry after a failed steward turn (attempt {n + 1})")
                 except WatchError as exc:
                     ok, err = False, str(exc)
             self.events.append(event(self.now, tid, "retry", attempt=n + 1, ok=ok))
-            notes.insert(0, f"已重试第 {n + 1} 次" + ("" if ok else f"（重试失败：{err[:120]}）"))
+            notes.insert(0, f"retried (attempt {n + 1})" + ("" if ok else f" (retry failed: {err[:120]})"))
         if not notes:
             self.events.append(event(self.now, tid, "check", result="failed"))
             return {"result": "failed"}
-        return {"result": "failed", "report": f"{name}：回合失败 {minutes:.0f} 分钟，" + "，".join(notes)}
+        return {"result": "failed", "report": f"{name}: turn failing for {minutes:.0f} min, " + ", ".join(notes)}
 
     def handle_recovery(self, tid, entry, name):
         outage = entry.pop("outage")
@@ -619,20 +651,22 @@ class Checker:
         minutes = round((self.now - outage["since"]) / 60)
         self.events.append(event(self.now, tid, "recovered", minutes=minutes, retries=outage["retries"], ok=ok))
         return {"result": "recovered",
-                "report": f"{name}：已从回合失败恢复（约 {minutes} 分钟），" + ("已提醒核对失败期间的通知" if ok else "提醒发送失败")}
+                "report": f"{name}: recovered from failed turns (about {minutes} min), "
+                          + ("reminded to check notifications from the outage" if ok else "reminder failed to send")}
 
     def reconcile(self, tid, entry, name):
         try:
             text, sha = read_source(entry)
         except Exception as exc:
-            problems = [{"kind": "workbook_unreadable", "severity": "nudge", "line": None, "label": "工作簿",
-                         "detail": f"读不到工作簿，路径变了就重新登记：{str(exc)[:160]}"}]
+            problems = [{"kind": "workbook_unreadable", "severity": "nudge", "line": None, "label": "Workbook",
+                         "detail": f"cannot read the workbook; re-register if its path changed: {str(exc)[:160]}"}]
         else:
             ids = sw.reconcile_workbook(text, now=datetime.fromtimestamp(self.now))["referenced_threads"]
             threads = self.bb.threads(ids) if ids else {}
             unlisted = 0
             if entry.get("ref"):
-                # 远端工作簿可能还没提交新线程 ID：管家另有在跑的子线程时，「线程已停」只记 minor。
+                # A remote workbook may not have the new thread IDs yet: while the steward has other running
+                # children, "thread stopped" is only minor.
                 grace = sw.DEFAULT_GRACE_MINUTES * 60
                 unlisted = sum(1 for child in self.bb.children(tid)
                                if child["id"] not in threads
@@ -664,15 +698,15 @@ class Checker:
                 record["escalated"] = True
                 self.events.append(event(self.now, tid, "escalate", reason="problem",
                                          kind=problem["kind"], label=problem["label"]))
-                notes.append(f"「{problem['label']}」已催 {record['count']} 次仍未处理，需要用户看一眼")
+                notes.append(f"\"{problem['label']}\" nudged {record['count']} times and still open, needs the user's attention")
         if notes:
             self.persist()
             if not self.dry_run:
                 try:
-                    self.bb.tell(tid, f"{TAG} " + "；".join(notes) + "。请在本回合回复里告诉用户问题与影响。")
+                    self.bb.tell(tid, f"{TAG} " + "; ".join(notes) + ". Tell the user in this turn's reply about the problem and its impact.")
                 except WatchError as exc:
                     self.events.append(event(self.now, tid, "warning", source="escalation", detail=str(exc)[:200]))
-        # 只发还有额度的问题，且发出去的、计数的、记进 pending 的是同一组。
+        # Send only problems with nudges left; the sent, counted and pending sets are the same.
         sent_keys = [k for k in urgent if tracked[k]["count"] < MAX_NUDGES_PER_PROBLEM][:MESSAGE_MAX_PROBLEMS]
         last = entry.get("last_nudge")
         if sent_keys and (last is None or self.now - last >= MIN_NUDGE_INTERVAL_MINUTES * 60):
@@ -692,18 +726,19 @@ class Checker:
                 try:
                     message = nudge_message(entry, sent, len(problems) - len(sent))
                     if full:
-                        message += "\n以下问题已催满 2 次：" + "、".join(p["label"] for p in full) + "。请在本回合回复里告诉用户问题与影响。"
+                        message += ("\nThese problems have now been nudged twice: " + ", ".join(p["label"] for p in full)
+                                    + ". Tell the user in this turn's reply about the problem and its impact.")
                     self.bb.tell(tid, message)
                 except WatchError:
                     ok = False
             labels = [f"{p['label']} {p['detail'][:20]}" for p in sent]
             self.events.append(event(self.now, tid, "nudge", ok=ok, count=len(sent),
                                      problems=[{"kind": p["kind"], "label": p["label"]} for p in sent]))
-            notes.insert(0, f"已催（{len(sent)} 处：{'；'.join(labels[:3])}{'…' if len(labels) > 3 else ''}）"
-                         + ("" if ok else "，但消息发送失败"))
-            return {"result": "nudged", "report": f"{name}：" + "，".join(notes)}
+            notes.insert(0, f"nudged ({len(sent)} items: {'; '.join(labels[:3])}{'…' if len(labels) > 3 else ''})"
+                         + ("" if ok else ", but the message failed to send"))
+            return {"result": "nudged", "report": f"{name}: " + ", ".join(notes)}
         self.events.append(event(self.now, tid, "check", result="problems", count=len(urgent)))
-        return {"result": "problems", "report": f"{name}：" + "，".join(notes) if notes else None}
+        return {"result": "problems", "report": f"{name}: " + ", ".join(notes) if notes else None}
 
 
 def run(state, state_path, bb, now=None, dry_run=False):
@@ -721,9 +756,9 @@ def run(state, state_path, bb, now=None, dry_run=False):
                 outcome = checker.check(tid, entry, infos.get(tid))
             except Exception as exc:
                 checker.events.append(event(now, tid, "error", detail=str(exc)[:300]))
-                outcome = {"result": "error", "report": f"{entry.get('name') or tid}：检查出错：{str(exc)[:200]}"}
+                outcome = {"result": "error", "report": f"{entry.get('name') or tid}: check failed: {str(exc)[:200]}"}
             if outcome.get("remove"):
-                remember_retirement(state, tid, entry, "线程已归档或删除", now=now)
+                remember_retirement(state, tid, entry, "thread archived or deleted", now=now)
                 del stewards[tid]
                 if not dry_run:
                     outcome["plugin"] = unregister_plugin(state, bb, tid, state_path)
@@ -734,10 +769,10 @@ def run(state, state_path, bb, now=None, dry_run=False):
     return results, checker.events
 
 
-# ---------- 登记 ----------
+# ---------- Registration ----------
 
 def ensure_automation(state, bb, project, script_path, state_path):
-    # 写死状态文件路径：automation 运行时的 HOME/XDG 变量可能和登记时不同。
+    # Hard-code the state file path: the automation's HOME/XDG variables may differ from registration time.
     script = f"exec python3 {shlex.quote(str(script_path))} --state {shlex.quote(str(state_path))} run"
     auto = state.get("automation")
     if auto:
@@ -750,14 +785,14 @@ def ensure_automation(state, bb, project, script_path, state_path):
                 return {"id": auto["id"], "project": auto["project"], "status": "updated"}
             return {"id": auto["id"], "project": auto["project"], "status": "exists"}
     if not project:
-        return {"status": "skipped", "reason": "不在 BB 线程里且没传 --project，未创建 automation"}
+        return {"status": "skipped", "reason": "not in a BB thread and no --project given; automation not created"}
     created = bb.automation_create(project, script)
     state["automation"] = {"id": created["id"], "project": project, "script": script}
     return {"id": created["id"], "project": project, "status": "created"}
 
 
 def main_worktree(top):
-    """worktree 会被删掉，远端分支模式记主工作区：git-common-dir 的上一级。"""
+    """Worktrees get deleted, so remote-branch mode records the main worktree: the parent of git-common-dir."""
     res = git("-C", str(top), "rev-parse", "--path-format=absolute", "--git-common-dir")
     common = Path(res.stdout.strip()) if res.returncode == 0 else None
     return common.parent if common is not None and common.name == ".git" else top
@@ -779,11 +814,12 @@ def entry_identity(entry):
 
 
 def ledger_gap(bb, old, old_entry, entry):
-    """旧管家没入账的用户消息：要求帐最后更新之后旧线程收到的用户消息数。没有缺口或无从比较时返回 None。"""
+    """User messages the old steward left unrecorded: messages the old thread received after the ledger's last
+    update. None when there is no gap or nothing to compare."""
     observed, _, warnings = read_models(bb, old, old_entry.get("model_observation", {}), claude=False)
     unreadable = [w for w in warnings if w.startswith(LOG_UNREADABLE)]
     if unreadable:
-        raise WatchError(f"旧线程日志读不到，无法判断要求帐缺口：{unreadable[0]}")
+        raise WatchError(f"Old thread log unreadable; cannot judge the ledger gap: {unreadable[0]}")
     text, sha = read_source(entry)
     updated = ledger_updated_at(entry, text, sha)
     stamps = observed["user_messages"]
@@ -795,7 +831,7 @@ def ledger_gap(bb, old, old_entry, entry):
 
 
 def handover(bb, old, new, entry, now, old_entry=None):
-    """每个外部步骤独立失败；登记已由 register 落盘，不回滚。"""
+    """Each external step fails independently; register has already saved the registration, nothing rolls back."""
     results = []
 
     def attempt(step, call):
@@ -818,14 +854,15 @@ def handover(bb, old, new, entry, now, old_entry=None):
             attempt("reparent:" + child["id"], lambda child=child: bb.reparent(child["id"], new))
     attempt("cancel_retry", lambda: bb.cancel_retry(old))
     if old in infos and not infos[old]["archived"]:
-        attempt("notify", lambda: bb.tell(old, f"[bb-steward 交接] 已由 @thread:{new} 接任。停止派发和改工作簿；"
-                                          "用户来找时指向新线程，不用回复。"))
+        attempt("notify", lambda: bb.tell(old, f"{HANDOVER_TAG} @thread:{new} has taken over. Stop dispatching and "
+                                          "editing the workbook; point the user to the new thread if they come "
+                                          "to you. No reply needed."))
     gap = attempt("ledger_gap", lambda: ledger_gap(bb, old, old_entry or {}, entry))
     return {"old": old, "new": new, "steps": results, **({"ledger_gap": gap} if gap else {})}
 
 
 def marked_title(title):
-    """标题前加统一的管家标记；已有标记或标题为空时返回 None。"""
+    """Prefix the title with the shared steward mark; None when already marked or the title is empty."""
     text = (title or "").strip()
     if not text:
         return None
@@ -835,12 +872,13 @@ def marked_title(title):
 
 
 def mark_thread_title(bb, thread, title=None):
-    """确保线程标题带管家标记；失败只报告，不阻断登记或看门狗。"""
+    """Ensure the thread title carries the steward mark; failures are reported, never block registration or the
+    watchdog."""
     try:
         if title is None:
             info = (bb.threads([thread]) or {}).get(thread)
             if info is None:
-                return {"status": "skipped", "reason": "线程不存在"}
+                return {"status": "skipped", "reason": "thread not found"}
             title = info.get("title")
         marked = marked_title(title)
         if marked is None:
@@ -868,7 +906,7 @@ def sync_plugin(bb, command, thread, entry=None):
     except (sw.source.SourceError, WatchError, OSError, ValueError) as exc:
         return {"status": "skipped", "reason": str(exc)}
     except Exception:
-        return {"status": "skipped", "reason": "管家插件未安装或暂未就绪，看门狗继续运行"}
+        return {"status": "skipped", "reason": "steward plugin not installed or not ready; the watchdog keeps running"}
 
 
 def unregister_plugin(state, bb, thread, state_path):
@@ -908,15 +946,15 @@ def remember_retirement(state, thread, entry, reason, successor=None, now=None):
     }
 
 
-def retire(state, bb, thread, state_path, reason="手动释放看门狗", successor=None):
+def retire(state, bb, thread, state_path, reason="watchdog released manually", successor=None):
     if not thread:
-        raise WatchError("缺少 --thread，且当前不在 BB 线程里（没有 BB_THREAD_ID）")
+        raise WatchError("Missing --thread and not in a BB thread (no BB_THREAD_ID)")
     if successor and (successor == thread or successor not in state["stewards"]):
-        raise WatchError("接任者必须是另一位已登记的在任管家")
+        raise WatchError("The successor must be another registered serving steward")
     removed = state["stewards"].pop(thread, None)
     if removed or thread not in state.get("retired", {}):
         remember_retirement(state, thread, removed or {}, reason, successor)
-    # 先保存退役事实，插件同步失败也不能让下轮继续催办。
+    # Save the retirement first so a failed plugin sync cannot make the next run keep nudging.
     save_state(state_path, state)
     plugin = unregister_plugin(state, bb, thread, state_path)
     try:
@@ -931,7 +969,7 @@ def retire(state, bb, thread, state_path, reason="手动释放看门狗", succes
 
 
 def roster(state, bb, thread=None):
-    """本 host 的登记与退役事实；运行状态只读实时 BB，不把 idle 当成退役。"""
+    """Registration and retirement facts on this host; run state comes live from BB, and idle never means retired."""
     active = state["stewards"]
     retired = state.get("retired", {})
     ids = [thread] if thread else list(dict.fromkeys([*active, *retired]))
@@ -955,7 +993,7 @@ def roster(state, bb, thread=None):
 def register(state, bb, thread, workbook, ref=None, name=None, project=None, script_path=None,
              state_path=None, manage_automation=True, now=None):
     if not thread:
-        raise WatchError("缺少 --thread，且当前不在 BB 线程里（没有 BB_THREAD_ID）")
+        raise WatchError("Missing --thread and not in a BB thread (no BB_THREAD_ID)")
     now = time.time() if now is None else now
     workbook = Path(workbook).expanduser().resolve()
     identity = workbook_identity(workbook)
@@ -970,18 +1008,18 @@ def register(state, bb, thread, workbook, ref=None, name=None, project=None, scr
         entry.update(repo=identity[0], path=identity[1])
     if ref:
         if not identity[0]:
-            raise WatchError("--ref 需要 Git 仓库")
+            raise WatchError("--ref needs a Git repository")
         entry["ref"] = ref
         if not olds:
             read_workbook(entry)
     elif not olds and not workbook.is_file():
-        raise WatchError(f"工作簿不存在：{workbook}；工作簿以远端分支为准时传 --ref")
+        raise WatchError(f"Workbook not found: {workbook}; pass --ref when the remote branch is the source of truth")
     entry["name"] = name if name is not None else inherited.get("name") or (Path(identity[0]).name if identity[0] else workbook.stem)
     runtime = {k: previous[k] for k in ("problems", "last_nudge", "pending_nudge", "outage", "models", "model_observation", "compaction") if k in previous}
     state.get("retired", {}).pop(thread, None)
     state["stewards"][thread] = {**entry, **runtime}
     for old, old_entry in olds:
-        remember_retirement(state, old, old_entry, "已接任", thread, now)
+        remember_retirement(state, old, old_entry, "taken over", thread, now)
         del state["stewards"][old]
     path = state_path or state_path_from(None)
     handovers = []
@@ -1003,76 +1041,77 @@ def register(state, bb, thread, workbook, ref=None, name=None, project=None, scr
             "plugin": plugin_result, "title": title_result}
 
 
-# ---------- 汇报与复盘 ----------
+# ---------- Reports and review ----------
 
 RESULT_TEXT = {
-    "busy": "管家在跑或有排队消息，跳过",
-    "settling": "管家刚结束回合，下轮再看",
-    "ok": "对账通过",
-    "problems": "对账有问题，还没到再催的时间",
-    "failed": "回合失败",
-    "nudged": "已催",
-    "recovered": "已从失败恢复",
+    "busy": "steward running or has queued messages, skipped",
+    "settling": "steward just finished a turn, check next run",
+    "ok": "reconciliation passed",
+    "problems": "reconciliation has problems, not yet time to nudge again",
+    "failed": "turn failed",
+    "nudged": "nudged",
+    "recovered": "recovered from failure",
 }
 
 
 def report(state, events, now, since_minutes):
     start = now - since_minutes * 60
     window = [e for e in events if e.get("ts", 0) >= start]
-    lines = [f"看门狗记录（{hhmm(start)} 到 {hhmm(now)}，{sum(1 for e in window if e['event'] == 'run')} 轮）"]
+    lines = [f"Watchdog log ({hhmm(start)} to {hhmm(now)}, {sum(1 for e in window if e['event'] == 'run')} runs)"]
     attention = []
     for tid, entry in state["stewards"].items():
         name = entry.get("name") or tid
         evs = [e for e in window if e.get("thread") == tid]
-        lines.append(f"- {name}（{tid}，工作簿 {entry['workbook']}" + (f" @ {entry['ref']}" if entry.get("ref") else "") + "）")
+        lines.append(f"- {name} ({tid}, workbook {entry['workbook']}" + (f" @ {entry['ref']}" if entry.get("ref") else "") + ")")
         status = [e for e in evs if e["event"] in ("check", "nudge", "retry", "recovered", "error")]
         if status:
             last = status[-1]
             kind = last.get("result") if last["event"] == "check" else {"nudge": "nudged", "retry": "failed"}.get(last["event"], last["event"])
-            text = RESULT_TEXT.get(kind or "") or f"检查出错：{last.get('detail', '')}"
-            lines.append(f"  最近检查 {hhmm(last['ts'])}：{text}")
+            text = RESULT_TEXT.get(kind or "") or f"check failed: {last.get('detail', '')}"
+            lines.append(f"  last check {hhmm(last['ts'])}: {text}")
         else:
-            lines.append("  这段时间没有检查记录")
+            lines.append("  no checks in this period")
         for e in evs:
             if e["event"] == "nudge":
-                labels = "、".join(f"{p['label']}（{p['kind']}）" for p in e.get("problems", [])[:4])
-                lines.append(f"  {hhmm(e['ts'])} 已催 {e.get('count', 0)} 处：{labels}" + ("" if e.get("ok", True) else "，发送失败"))
+                labels = ", ".join(f"{p['label']} ({p['kind']})" for p in e.get("problems", [])[:4])
+                lines.append(f"  {hhmm(e['ts'])} nudged {e.get('count', 0)} items: {labels}" + ("" if e.get("ok", True) else ", send failed"))
             elif e["event"] == "nudge_outcome":
-                lines.append(f"  {hhmm(e['ts'])} 上次催办后：解决 {e['resolved']} 处，仍在 {e['persisted']} 处")
+                lines.append(f"  {hhmm(e['ts'])} after the last nudge: {e['resolved']} resolved, {e['persisted']} persist")
             elif e["event"] == "retry":
-                lines.append(f"  {hhmm(e['ts'])} 回合失败，重试第 {e['attempt']} 次" + ("" if e.get("ok") else "（重试命令失败）"))
+                lines.append(f"  {hhmm(e['ts'])} turn failed, retry attempt {e['attempt']}" + ("" if e.get("ok") else " (retry command failed)"))
             elif e["event"] == "handover":
                 moved = sum(1 for s in e["steps"] if s["step"].startswith("reparent:") and s["ok"])
                 failed = [s["step"] for s in e["steps"] if not s["ok"]]
-                lines.append(f"  {hhmm(e['ts'])} 接任 {e['old']} → {e['new']}：转来 {moved} 个子线程"
-                             + (f"，失败步骤：{'、'.join(failed)}" if failed else "")
-                             + (f"，要求帐自 {e['ledger_gap']['since']} 起缺 {e['ledger_gap']['messages']} 条用户消息"
+                lines.append(f"  {hhmm(e['ts'])} takeover {e['old']} → {e['new']}: moved {moved} child threads"
+                             + (f", failed steps: {', '.join(failed)}" if failed else "")
+                             + (f", ledger missing {e['ledger_gap']['messages']} user messages since {e['ledger_gap']['since']}"
                                 if e.get("ledger_gap") else ""))
             elif e["event"] == "model_change":
-                lines.append(f"  {hhmm(e['ts'])} 模型变化，{MODEL_SOURCES.get(e['source'], e['source'])}："
+                lines.append(f"  {hhmm(e['ts'])} model change, {MODEL_SOURCES.get(e['source'], e['source'])}: "
                              f"{model_text(e['before'])} → {model_text(e['value'])}"
-                             + ("（回到基线）" if e.get("returned") else "")
-                             + ("（提醒发送失败）" if e.get("ok") is False else ""))
+                             + (" (back to baseline)" if e.get("returned") else "")
+                             + (" (reminder failed to send)" if e.get("ok") is False else ""))
             elif e["event"] == "recovered":
-                lines.append(f"  {hhmm(e['ts'])} 从失败恢复（约 {e.get('minutes', 0)} 分钟）")
+                lines.append(f"  {hhmm(e['ts'])} recovered from failure (about {e.get('minutes', 0)} min)")
             elif e["event"] == "compaction":
-                lines.append(f"  {hhmm(e['ts'])} 上下文累计压缩 {e['count']} 次"
-                             + ("，已催重读规范" if e.get("new") else "") + ("，已提醒换管家" if e.get("handover") else "")
-                             + ("（提醒发送失败）" if e.get("ok") is False else ""))
+                lines.append(f"  {hhmm(e['ts'])} context compacted {e['count']} times in total"
+                             + (", asked to re-read the rules" if e.get("new") else "")
+                             + (", reminded to switch stewards" if e.get("handover") else "")
+                             + (" (reminder failed to send)" if e.get("ok") is False else ""))
         outage = entry.get("outage")
         if outage and outage.get("escalated"):
-            attention.append(f"{name}：回合失败已 {(now - outage['since']) / 60:.0f} 分钟，看门狗已重试 {outage['retries']} 次")
+            attention.append(f"{name}: turns failing for {(now - outage['since']) / 60:.0f} min, watchdog retried {outage['retries']} times")
         compactions = (entry.get("compaction") or {}).get("seen", 0)
         if compactions >= HANDOVER_COMPACTIONS:
-            attention.append(f"{name}：上下文已压缩 {compactions} 次，建议新开线程接任")
+            attention.append(f"{name}: context compacted {compactions} times, suggest a new thread take over")
         for key, record in (entry.get("problems") or {}).items():
             if record.get("escalated"):
                 kind, _, label = key.partition("|")
-                attention.append(f"{name}：「{label}」（{kind}）已催 {record['count']} 次仍未处理")
+                attention.append(f"{name}: \"{label}\" ({kind}) nudged {record['count']} times and still open")
     for e in window:
         if e["event"] == "unregister":
-            lines.append(f"- {e['thread']}：{e.get('reason')}，已移除登记")
-    lines.append("需要用户看一眼：" + ("无" if not attention else ""))
+            lines.append(f"- {e['thread']}: {e.get('reason')}, registration removed")
+    lines.append("Needs the user's attention: " + ("none" if not attention else ""))
     lines += [f"  - {a}" for a in attention]
     return "\n".join(lines)
 
@@ -1111,14 +1150,14 @@ def summary(state, events, now, days):
         stewards[tid] = {"name": name, **dict(c), "resolve_share": share}
         if c["nudges"] >= SUMMARY_MIN_NUDGES and share is not None and share < SUMMARY_LOW_RESOLVE_SHARE:
             hooks.append({"hook": "nudge_ignored", "thread": tid,
-                          "detail": f"{name} 催办后解决率 {share:.0%}（{c['resolved']}/{handled}）：看对账规则是否过严，或管家没读新版收尾对账"})
+                          "detail": f"{name} resolved {share:.0%} after nudges ({c['resolved']}/{handled}): check whether the reconciliation rules are too strict, or the steward has not read the current closing reconciliation"})
         total = ((state["stewards"].get(tid) or {}).get("compaction") or {}).get("seen", 0)
         if total >= HANDOVER_COMPACTIONS:
             hooks.append({"hook": "long_lived_steward", "thread": tid,
-                          "detail": f"{name} 累计压缩 {total} 次（{days} 天内 {c['compactions']} 次）：换管家，或把新目标拆给新管家"})
+                          "detail": f"{name} compacted {total} times in total ({c['compactions']} in {days} days): switch stewards, or split new goals to a new steward"})
         if c["outages"] >= SUMMARY_FREQUENT_OUTAGES:
             hooks.append({"hook": "frequent_outage", "thread": tid,
-                          "detail": f"{name} {days} 天内回合失败 {c['outages']} 次：查账号额度或模型路由"})
+                          "detail": f"{name} had {c['outages']} turn outages in {days} days: check account quota or model routing"})
     return {"days": days, "stewards": stewards, "hooks": hooks}
 
 
@@ -1126,28 +1165,28 @@ def summary(state, events, now, days):
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--state", help="状态文件路径，默认见上")
+    p.add_argument("--state", help="State file path; default above")
     sub = p.add_subparsers(dest="cmd", required=True)
-    reg = sub.add_parser("register", help="登记或更新一个管家，并确保看门狗 automation 存在")
-    reg.add_argument("--workbook", required=True, help="工作簿路径；配合 --ref 时可以是工作区里不存在的路径")
-    reg.add_argument("--ref", help="仅旧项目仓库内工作簿：以该远端分支为准，如 origin/main；离线工作簿不传")
-    reg.add_argument("--name", help="汇报里用的简称，默认取仓库目录名")
-    reg.add_argument("--thread", default=os.environ.get("BB_THREAD_ID"), help="管家线程 ID，默认当前线程")
-    reg.add_argument("--project", default=os.environ.get("BB_PROJECT_ID"), help="首次创建 automation 的项目，默认当前项目")
-    reg.add_argument("--no-automation", action="store_true", help="只登记，不检查也不创建 automation（测试或手动运行时用）")
-    unreg = sub.add_parser("unregister", help="移除一个管家的登记")
+    reg = sub.add_parser("register", help="Register or update a steward and ensure the watchdog automation exists")
+    reg.add_argument("--workbook", required=True, help="Workbook path; with --ref it may be absent from the worktree")
+    reg.add_argument("--ref", help="Only for legacy in-repo workbooks: the remote branch is the source of truth, e.g. origin/main; omit for offline workbooks")
+    reg.add_argument("--name", help="Short name used in reports; defaults to the repository directory name")
+    reg.add_argument("--thread", default=os.environ.get("BB_THREAD_ID"), help="Steward thread ID; defaults to the current thread")
+    reg.add_argument("--project", default=os.environ.get("BB_PROJECT_ID"), help="Project for the first automation; defaults to the current project")
+    reg.add_argument("--no-automation", action="store_true", help="Register only; neither check nor create the automation (for tests or manual runs)")
+    unreg = sub.add_parser("unregister", help="Remove a steward's registration")
     unreg.add_argument("--thread", default=os.environ.get("BB_THREAD_ID"))
-    retirement = sub.add_parser("retire", help="退役并释放检查，保留原因与接任去向；不发消息、不归档线程")
+    retirement = sub.add_parser("retire", help="Retire and release checks, keeping the reason and successor; sends no message and archives no thread")
     retirement.add_argument("--thread", default=os.environ.get("BB_THREAD_ID"))
     retirement.add_argument("--reason", required=True)
-    retirement.add_argument("--successor", help="已登记的接任管家线程 ID")
-    listing = sub.add_parser("roster", help="查询本 host 在任与退役管家，JSON 输出；不发消息、不写状态")
-    listing.add_argument("--thread", help="只查询该线程；未登记者返回 unknown")
-    run_p = sub.add_parser("run", help="检查所有登记的管家（automation 调用）")
-    run_p.add_argument("--dry-run", action="store_true", help="只输出判断，不发消息、不重试、不写状态")
-    rep = sub.add_parser("report", help="最近一段时间的检查记录与需要用户看一眼的事")
-    rep.add_argument("--since", type=int, default=60, help="分钟，默认 60")
-    summ = sub.add_parser("summary", help="按天聚合的催办、解决率、重试与复盘提示")
+    retirement.add_argument("--successor", help="Thread ID of the registered successor steward")
+    listing = sub.add_parser("roster", help="List serving and retired stewards on this host as JSON; sends nothing, writes no state")
+    listing.add_argument("--thread", help="Query only this thread; unregistered threads return unknown")
+    run_p = sub.add_parser("run", help="Check every registered steward (called by the automation)")
+    run_p.add_argument("--dry-run", action="store_true", help="Print decisions only; no messages, retries or state writes")
+    rep = sub.add_parser("report", help="Recent check log and items needing the user's attention")
+    rep.add_argument("--since", type=int, default=60, help="Minutes, default 60")
+    summ = sub.add_parser("summary", help="Nudges, resolve share, retries and review hooks aggregated over days")
     summ.add_argument("--days", type=int, default=7)
     summ.add_argument("--json", action="store_true")
     return p
@@ -1172,10 +1211,11 @@ def main(argv=None):
                     print(json.dumps(res, ensure_ascii=False, indent=2))
                 else:
                     for s in res["stewards"].values():
-                        print(f"{s['name']}：检查 {s.get('checks', 0)}，催办 {s.get('nudges', 0)}，解决率 {s['resolve_share']}，"
-                              f"重试 {s.get('retries', 0)}，失败 {s.get('outages', 0)} 次，接任 {s.get('handovers', 0)}，模型变化 {s.get('model_changes', 0)} 次，压缩 {s.get('compactions', 0)} 次")
+                        print(f"{s['name']}: checks {s.get('checks', 0)}, nudges {s.get('nudges', 0)}, resolve share {s['resolve_share']}, "
+                              f"retries {s.get('retries', 0)}, outages {s.get('outages', 0)}, takeovers {s.get('handovers', 0)}, "
+                              f"model changes {s.get('model_changes', 0)}, compactions {s.get('compactions', 0)}")
                     for h in res["hooks"]:
-                        print(f"复盘提示 {h['hook']}：{h['detail']}")
+                        print(f"review hook {h['hook']}: {h['detail']}")
             return 0
         with state_lock(path):
             state = load_state(path)
@@ -1187,7 +1227,7 @@ def main(argv=None):
                 print(json.dumps(res, ensure_ascii=False, indent=2))
             elif args.cmd in ("unregister", "retire"):
                 res = retire(state, bb, args.thread, path,
-                             getattr(args, "reason", "手动释放看门狗"), getattr(args, "successor", None))
+                             getattr(args, "reason", "watchdog released manually"), getattr(args, "successor", None))
                 print(json.dumps(res, ensure_ascii=False))
             else:
                 started = time.time()
@@ -1203,8 +1243,9 @@ def main(argv=None):
                         print("\n".join(reports))
         return 0
     except (WatchError, OSError) as exc:
-        # 已知故障照常退出 0：automation 连续三次失败会自动暂停，看门狗不能因为一次 bb 抖动或磁盘问题停掉。
-        print(f"看门狗未完成：{exc}")
+        # Known failures still exit 0: the automation pauses after three failures in a row, and one bb hiccup or
+        # disk problem must not stop the watchdog.
+        print(f"Watchdog did not finish: {exc}")
         if args.cmd == "run" and not getattr(args, "dry_run", False):
             append_events(path, [event(time.time(), None, "error", detail=str(exc)[:300])])
         return 0 if args.cmd == "run" else 2

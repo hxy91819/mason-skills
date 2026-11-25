@@ -45,5 +45,5 @@ Usage rules:
 - "Read first" must include the authoritative sources for terms (glossary, option files, status lists); the implementation only references them and does not coin new names; if terms are not finalized, finalize them before dispatching.
 - When the goal or boundary comes from the user's request, attach the user's original words; when restating rules or constraints, state the reason and scope, so the child thread can judge cases the rules do not cover.
 - When multiple child threads change the same repository, state in "Before starting" which files the parent thread changes, and that child threads pull latest before changing files.
-- Grading follows SKILL.md "Judgment and invocation (判断与调用)"; the task brief still states goal, boundaries, authoritative entry points, and acceptance gaps; whether the parent thread investigates first is decided by cost.
+- Grading follows SKILL.md "Judgment and invocation"; the task brief still states goal, boundaries, authoritative entry points, and acceptance gaps; whether the parent thread investigates first is decided by cost.
 - Item 3 of the reply format is the input for the parent thread's decision summary; send it back for completion if missing.
