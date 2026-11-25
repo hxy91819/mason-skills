@@ -1,49 +1,49 @@
-# 派发任务模板
+# Dispatch task template
 
-`bb-dispatch --task` 的正文依此填。模板的目的只有一个：子 agent 拿到的是契约，不是口头交代。每段都要填，没有内容就写“无”。
+Fill the body of `bb-dispatch --task` from this. The template has one purpose: the child agent receives a contract, not a verbal briefing. Fill every section; write "None" when there is nothing.
 
 ```markdown
-<一句话目标：做什么、做到什么程度、不做什么>
+<One-sentence goal: what to do, to what extent, and what not to do>
 
-## 先读
-<开工前必读的文件与规则，按阅读顺序；含项目 AGENTS.md、相关 skill、来源证据>
+## Read first
+<Files and rules that must be read before starting, in reading order; include the project AGENTS.md, relevant skills, source evidence>
 
-## 开工前
-- 先 git fetch，确认 HEAD 包含 origin/main；落后就先保全他人未提交文件（patch 或本机 commit，不用 stash），再 --ff-only 快进，失败就停。
-- 列出工作区里不属于本任务的未提交文件，全程不碰、不一起 commit。
+## Before starting
+- git fetch first and confirm HEAD contains origin/main; if behind, first preserve others' uncommitted files (patch or local commit, no stash), then fast-forward with --ff-only; stop on failure.
+- List uncommitted files in the workspace that do not belong to this task; never touch them or commit them along the way.
 
-## 授权范围与根因位置
-- 可改的文件或模块：<清单>
-- 若根因落在范围之外（例如权限判断在 store 而不在页面），<允许改／先回报再改>。
-- 不做：<明确排除的事，例如不改数据模型、不加页面、不发新版本>
+## Authorized scope and root-cause location
+- Files or modules you may change: <list>
+- If the root cause lies outside this scope (e.g. the permission check is in the store, not the page), <allowed to change / report first, then change>.
+- Out of scope: <explicitly excluded items, e.g. no data model changes, no new pages, no new release>
 
-## 要做
-<逐条，具体到组件或文件；每条可检查>
+## To do
+<Itemized, down to the component or file; each item checkable>
 
-## 自行引入的决定
-- 任务没写明、但实现必须二选一的地方，选不扩大范围的那个；
-- 每个这样的决定在最终回复里单列一段“我自行引入的决定”：决定、理由、影响，让父线程逐条确认，不得只写在代码注释或散在正文。
+## Decisions I introduced
+- Where the task does not say but the implementation must pick one of two, pick the one that does not expand scope;
+- List each such decision in a separate "Decisions I introduced" section of the final reply: decision, reason, impact, so the parent thread can confirm them one by one; never leave them only in code comments or scattered through the body.
 
-## 交付与验证
-- 验证方式：<本机如何实际操作或执行；需要截图的页面与身份；检查命令>
-- 推送前：先跑项目规定的快速本机检查（项目 AGENTS.md 指定的入口），通过再 push；CI 只兜底。
-- 独立审查分工：<由父线程验收后统一派发独立审查，或由子线程提交前依 autoreview 派发（二选一，不双重叠加；子线程内最多 2 轮）>
-- 发布／提交：<是否发布、commit 消息前缀、是否 push、只 add 自己改的文件>
-- 临时脚本与产物放哪、交付前是否删除。
+## Delivery and verification
+- Verification: <how to actually operate or run it locally; pages and identities needing screenshots; check commands>
+- Before pushing: run the project's required fast local checks first (the entry point specified in the project AGENTS.md), push only after they pass; CI is only a backstop.
+- Independent review split: <the parent thread dispatches independent review after acceptance, or the child thread dispatches it via autoreview before committing (pick one, do not stack both; at most 2 rounds inside the child thread)>
+- Release / commit: <whether to release, commit message prefix, whether to push, add only files you changed>
+- Where temporary scripts and artifacts go, and whether to delete them before delivery.
 
-## 回复格式
-1. 版本或 commit
-2. 每条“要做”的改法与验证结果
-3. 我自行引入的决定（单列）
-4. 与既有文档冲突的地方（只列，不自行改文档）
-5. 未完成项
+## Reply format
+1. Version or commit
+2. For each "To do" item, the change and verification result
+3. Decisions I introduced (listed separately)
+4. Conflicts with existing documents (list only; do not change the documents yourself)
+5. Unfinished items
 ```
 
-使用规则：
+Usage rules:
 
-- 任务文字只放目标、范围、输入与验收；provider、模型、推理级别不写进去。
-- “先读”要含名词权威来源（术语表、选项文件、状态清单），实现只引用不另起名；名词没定稿就先定稿再派。
-- 目标或边界来自用户要求时附用户原话；转述规矩或约束时写明原因与适用范围，子线程才能判断规矩没写到的情况。
-- 多个子线程改同一仓库时，在“开工前”写明哪些文件由父线程改，子线程改文件前先拉最新。
-- 分档以 SKILL.md「判断与调用」为准；任务书仍写目标、边界、权威入口和验收缺口，父线程是否先调查按成本决定。
-- 回复格式第 3 项是父线程汇总决策的输入，缺它就退回补。
+- Task text holds only goal, scope, inputs, and acceptance; do not write provider, model, or reasoning level into it.
+- "Read first" must include the authoritative sources for terms (glossary, option files, status lists); the implementation only references them and does not coin new names; if terms are not finalized, finalize them before dispatching.
+- When the goal or boundary comes from the user's request, attach the user's original words; when restating rules or constraints, state the reason and scope, so the child thread can judge cases the rules do not cover.
+- When multiple child threads change the same repository, state in "Before starting" which files the parent thread changes, and that child threads pull latest before changing files.
+- Grading follows SKILL.md "Judgment and invocation (判断与调用)"; the task brief still states goal, boundaries, authoritative entry points, and acceptance gaps; whether the parent thread investigates first is decided by cost.
+- Item 3 of the reply format is the input for the parent thread's decision summary; send it back for completion if missing.

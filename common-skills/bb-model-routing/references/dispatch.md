@@ -1,36 +1,36 @@
-# 配置与派发
+# Configuration and dispatch
 
-依赖 Python 3.10+、PyYAML、PATH 中的 `bb`。入口为技能目录内的 `scripts/bb-dispatch`，也可将它软链为用户命令 `~/.local/bin/bb-dispatch`。
+Requires Python 3.10+, PyYAML, and `bb` on PATH. The entry point is `scripts/bb-dispatch` in the skill directory; it can also be symlinked as the user command `~/.local/bin/bb-dispatch`.
 
-## 首次配置与迁移
+## First-time configuration and migration (首次配置与迁移)
 
-配置路径优先级：`--config` > `BB_DISPATCH_CONFIG` > `~/.config/bb-dispatch/config.yaml`。文件不存在时按[首次配置引导](bootstrap.md)检测环境、给出建议并经用户确认后写入；调整已有映射时复用引导第 1 步的只读命令查看目标环境实际提供的 provider 与模型（ID 使用返回值），检查 `permissionModes` 和模型的 `supportedReasoningEfforts`，多个候选缺乏选择依据时询问用户。目录能证明可用性，不能证明价格和任务质量。结构以 [config.example.yaml](config.example.yaml) 为准，尖括号值必须替换，不能直接派发；将选择写入任意别名，例如 `primary`，然后配置各难度的默认别名。配置不含凭据，认证由 BB provider 管理。
+Configuration path precedence: `--config` > `BB_DISPATCH_CONFIG` > `~/.config/bb-dispatch/config.yaml`. When the file does not exist, follow [First-time configuration bootstrap](bootstrap.md) to detect the environment, propose a configuration, and write it after user confirmation. When adjusting existing mappings, reuse the read-only commands from bootstrap step 1 to see which providers and models the target environment actually offers (use the returned IDs), check `permissionModes` and the model's `supportedReasoningEfforts`, and ask the user when several candidates lack a basis for choosing. The catalog proves availability, not price or task quality. The structure follows [config.example.yaml](config.example.yaml); angle-bracket values must be replaced and cannot be dispatched as-is. Write the choice under any alias, e.g. `primary`, then configure the default alias for each difficulty. Configuration contains no credentials; authentication is managed by the BB provider.
 
-配置格式为 `version: 2`。迁移时把扁平的 `agents.<别名>.model/reasoning` 移到 `agents.<别名>.routes.<难度>`；同一 provider 的不同模型和难度保留在这个别名下。脚本不接受旧格式。配置服务多个环境时使用 `environments` 覆盖。脚本只读取配置，不安装 provider 或覆盖配置。新配置先运行 `--dry-run` 验证，再派发。模型目录不会自动生成用户的模型偏好。
+The configuration format is `version: 2`. When migrating, move flat `agents.<alias>.model/reasoning` into `agents.<alias>.routes.<difficulty>`; different models and difficulties of the same provider stay under this alias. The script does not accept the old format. When configuration serves multiple environments, use `environments` overrides. The script only reads configuration; it does not install providers or overwrite configuration. Run `--dry-run` on new configuration to verify before dispatching. The model catalog does not automatically produce the user's model preferences.
 
-## 项目最低难度
+## Project minimum difficulty (项目最低难度)
 
-用户配置可增加 `projects: {<project-id>: {min_difficulty: medium}}`，取值为 `simple`、`medium` 或 `complex`。项目 ID 沿用 `--project` 解析：ID 模式默认目标环境所属项目，路径模式默认当前项目。未配置时保持原难度；低于下限时自动抬升，按实际难度选择路由、模型和标题。
+User configuration can add `projects: {<project-id>: {min_difficulty: medium}}`, with values `simple`, `medium`, or `complex`. The project ID follows `--project` resolution: in ID mode it defaults to the project owning the target environment, in path mode to the current project. When not configured, the original difficulty is kept; when below the floor it is raised automatically, and route, model, and title are chosen by the actual difficulty.
 
-项目下限只作用于工作线程（默认 `--purpose work`）。审查线程用 `--purpose review` 豁免项目下限，按请求难度路由。重新派发时沿用原用途和请求难度。
+The project floor applies only to work threads (default `--purpose work`). Review threads use `--purpose review` to be exempt from the project floor and are routed by the requested difficulty. Redispatch keeps the original purpose and requested difficulty.
 
-`selection`、账本和派发事件均记录 `purpose`。`selection.difficulty` 与账本 `difficulty` 为实际难度，`requested_difficulty` 保留原请求；抬升提示同时出现在 stderr 和 `selection.warnings`，dry-run 也可见。历史统计按实际难度计数。
+`selection`, the ledger and dispatch events all record `purpose`. `selection.difficulty` and the ledger's `difficulty` are the actual difficulty; `requested_difficulty` keeps the original request. The raise notice appears both on stderr and in `selection.warnings`, and is visible in dry-run too. Historical statistics count by actual difficulty.
 
-## 派发与配置规则
+## Dispatch and configuration rules (派发与配置规则)
 
 ```bash
-bb-dispatch --difficulty simple --task '补充 README 示例' --dry-run
-bb-dispatch --difficulty medium --task '改动租户隔离边界；测试通过不足以证明没有泄漏'
-bb-dispatch --difficulty complex --task 'Oracle：裁决指定的技术问题' --dry-run
+bb-dispatch --difficulty simple --task 'Add README examples' --dry-run
+bb-dispatch --difficulty medium --task 'Change the tenant isolation boundary; passing tests is not enough to prove there is no leak'
+bb-dispatch --difficulty complex --task 'Oracle: rule on the specified technical question' --dry-run
 ```
 
-`--task` 只传递任务本身：目标、范围、必要输入和验收要求。provider、模型、推理级别、权限和目录校验由脚本和配置处理，不能写进子线程 prompt，也不要求子 agent 重复检查。用户直接给出 provider 或模型要求时，调用方须调整用户配置，再调用脚本。
+`--task` carries only the task itself: goal, scope, necessary inputs, and acceptance requirements. Provider, model, reasoning level, permissions, and catalog validation are handled by the script and configuration; they must not be written into the child-thread prompt, and the child agent is not asked to re-check them. When the user directly gives a provider or model requirement, the caller must adjust the user configuration, then call the script.
 
-权限优先级：`--permission-mode` > `agents.<别名>.permission_mode` > 环境配置 > 顶层配置。均未配置时，支持 `auto` 的原生 Codex provider 默认使用 Approve for me（`auto`），其他 provider 默认 `accept-edits`。显式配置的权限不兼容时报告错误。
+Permission precedence: `--permission-mode` > `agents.<alias>.permission_mode` > environment configuration > top-level configuration. When none is configured, native Codex providers that support `auto` default to Approve for me (`auto`), other providers default to `accept-edits`. When an explicitly configured permission is incompatible, report an error.
 
-`fast` 控制派发是否请求 BB 的 Fast service tier。省略时默认 `false`；人手改配置文件为 `true` 即开启。脚本不提供命令行覆盖，也不接受模型侧选择。优先级：`agents.<别名>.fast` > 环境配置 `environments.<id>.fast` > 顶层配置 `fast`。若在顶层或 agent 配置 `force_fast: true`，则强制开启 Fast 并豁免巡检自动熔断；也可通过 `quota_fuse` 自定义熔断阈值（如已用 95% 熔断）并在 `restore_at` 到期后自动恢复默认阈值。打开且模型支持 fast 时传 `--service-tier fast`；关闭或模型不支持 fast 时，只要 provider 列出 service tiers（含 `default`）就显式传 `--service-tier default`，硬性覆盖项目历史记忆偏好；整个 provider 均不支持 service tiers 时才省略该参数。
+`fast` controls whether dispatch requests BB's Fast service tier. Defaults to `false` when omitted; a human editing the configuration file to `true` turns it on. The script provides no command-line override and does not accept model-side selection. Precedence: `agents.<alias>.fast` > environment configuration `environments.<id>.fast` > top-level `fast`. If `force_fast: true` is set at top level or in agent configuration, Fast is forced on and exempted from the patrol automatic circuit breaker; `quota_fuse` can also customize the breaker threshold (e.g. break at 95% used) and automatically restore the default threshold after `restore_at` expires. When on and the model supports fast, pass `--service-tier fast`; when off or the model does not support fast, as long as the provider lists service tiers (including `default`), explicitly pass `--service-tier default`, hard-overriding project history memory preferences; omit the parameter only when the whole provider does not support service tiers.
 
-`defaults` 将 simple/medium/complex 映射到路由。字符串或有序别名列表使用 `fallback`：脚本按配置顺序校验并派发首个可用候选。需要在候选间分摊独立任务时使用显式配置：
+`defaults` maps simple/medium/complex to routes. A string or ordered alias list uses `fallback`: the script validates in configured order and dispatches the first available candidate. To spread independent tasks across candidates, use explicit configuration:
 
 ```yaml
 defaults:
@@ -39,7 +39,7 @@ defaults:
     candidates: [primary, backup]
 ```
 
-`load-balance` 以路由项和完整任务文本做稳定散列，为每个任务排列等权候选。按额度比例分摊时使用权重映射：
+`load-balance` uses a stable hash of the route entry and full task text to order equal-weight candidates for each task. To spread by quota ratio, use a weight mapping:
 
 ```yaml
 defaults:
@@ -48,34 +48,34 @@ defaults:
     candidates:
       weekly-quota: 2
       monthly-quota: 1
-      paused-quota: 0  # 额度恢复后改回正权重
+      paused-quota: 0  # restore a positive weight once quota recovers
 ```
 
-`weighted-load-balance` 接受非负有限数字，`0` 表示暂停该候选：抽选、fallback 和 `--fallback-from` 均不会使用它，也不校验其 provider 或模型。每档至少需要一个正权重候选，全为 `0` 时明确报错。长期选择概率与正权重成比例；权重只表达相对比例，不代表并发上限。两种负载模式都不维护计数器，不同任务会分散，同一任务的选择和 fallback 顺序保持稳定。所有模式均在首选项校验失败时继续同档候选。每个 `agents.<别名>` 只写一次 `provider`，并在 `routes.<难度>` 或 `routes.default` 中写 `model` 与可选的 `reasoning`；缺少两者时跳过该候选，切换候选不改变难度。同一 provider 因而可按难度选择不同模型，且无需为模型组合创建别名。显式 reasoning 仍须通过模型目录校验；省略或设为 null 时使用 provider 默认值。
+`weighted-load-balance` accepts non-negative finite numbers; `0` pauses that candidate: sampling, fallback, and `--fallback-from` never use it, and its provider or model is not validated. Each tier needs at least one positive-weight candidate; all `0` is an explicit error. Long-run selection probability is proportional to positive weight; weights express only relative proportion, not a concurrency cap. Neither load mode maintains counters; different tasks spread out, and the same task keeps a stable selection and fallback order. All modes continue to same-tier candidates when the first choice fails validation. Each `agents.<alias>` writes `provider` once, and writes `model` and optional `reasoning` in `routes.<difficulty>` or `routes.default`; candidates lacking both are skipped, and switching candidates does not change difficulty. The same provider can thus pick different models by difficulty without creating aliases for model combinations. Explicit reasoning must still pass model catalog validation; when omitted or set to null the provider default is used.
 
-每次派发都会创建独立 BB 会话，负载均衡不会拆分或迁移同一会话的上下文。provider 的前缀缓存是否跨独立会话命中由 provider、账号和模型决定；候选落到不同 provider 或模型时不假定它们共享缓存。
+Each dispatch creates an independent BB session; load balancing does not split or migrate the context of one session. Whether a provider's prefix cache hits across independent sessions depends on the provider, account, and model; when candidates land on different providers or models, do not assume they share cache.
 
-路由项只由 `--difficulty simple|medium|complex` 决定；候选仅在存在该难度或显式 `default` 时参与。难度归类标准只在 SKILL.md「判断与调用」维护，本文不复述。没有任何匹配项会报错，不会猜测模型。
+The route entry is determined only by `--difficulty simple|medium|complex`; a candidate participates only when it has that difficulty or an explicit `default`. Difficulty grading criteria are maintained only in SKILL.md "Judgment and invocation (判断与调用)" and are not repeated here. If nothing matches, it errors; it does not guess a model.
 
-优先级：命令行覆盖 > `agents.<别名>` 配置 > 环境配置 > 顶层配置。候选始终由 defaults 决定，脚本不提供 `--agent` 覆盖入口。`environments.<精确环境 ID>` 可覆盖 defaults、agents、permission_mode、fast；同名 agent 整体替换，必须写出 provider 和 routes。每个 agent 可通过 `fast: true|false` 单独控制是否开启 Fast。目录路径模式尚无环境 ID，不应用 `environments.<id>` 覆盖，只使用顶层配置。模型的明确要求通过配置调整表达，思考深度的明确要求用 `--reasoning` 表达，Fast 只改配置文件，缺失配置时先补齐，不静默替换。
+Precedence: command-line override > `agents.<alias>` configuration > environment configuration > top-level configuration. Candidates are always determined by defaults; the script provides no `--agent` override. `environments.<exact-environment-ID>` can override defaults, agents, permission_mode, fast; a same-named agent is replaced wholesale and must spell out provider and routes. Each agent can control Fast individually via `fast: true|false`. Directory path mode has no environment ID yet, so `environments.<id>` overrides do not apply; only top-level configuration is used. Explicit model requirements are expressed by adjusting configuration, explicit thinking-depth requirements by `--reasoning`, Fast only by editing the configuration file; when configuration is missing, fill it in first, do not silently substitute.
 
-`--fallback-from <别名>` 把本次候选截取为从该别名起的后缀，供需要点名续派候选的调用方使用；别名不在候选中时报错，点名的别名本身不按冷却跳过。实际派发时链上位于该别名之前的候选按 provider 与模型冷却 15 分钟。线程已有 ID 且 `--on-failure` 返回 `cooled` 时，按 SKILL.md「等待与并发」使用 `--redispatch`，默认沿用原线程环境与父线程通知模式。spawn 失败且确认未创建线程时，重跑原派发命令会跳过已冷却的候选。
+`--fallback-from <alias>` truncates this dispatch's candidates to the suffix starting at that alias, for callers that need to name the continuation candidate; an alias not among the candidates is an error, and the named alias itself is not skipped for cooldown. On actual dispatch, candidates before that alias in the chain are cooled for 15 minutes per provider and model. When the thread already has an ID and `--on-failure` returns `cooled`, use `--redispatch` per SKILL.md "Waiting and concurrency (等待与并发)", which by default keeps the original thread's environment and parent notification mode. When spawn failed and it is confirmed no thread was created, rerunning the original dispatch command skips already-cooled candidates.
 
-`--escalate-from <线程ID>` 与 `--unknown <原因>` 都是可选的账本注记：前者记下同一任务失败或返工的前序线程（脚本会核对线程存在），后者记一句定档原因。分档以 SKILL.md「判断与调用」为准，本文不复述条件。
+`--escalate-from <thread-ID>` and `--unknown <reason>` are both optional ledger annotations: the former records the prior thread where the same task failed or needed rework (the script verifies the thread exists), the latter records a one-sentence grading reason. Grading follows SKILL.md "Judgment and invocation (判断与调用)"; conditions are not repeated here.
 
-`--on-failure <线程ID>` 处理报错的子线程，只看 BB 的结构化信息：线程不在 `error` 状态返回 `not-failed`；`bb provider-retry status` 列出 BB 自动重试时返回 `waiting`。报错线程上的排队消息要等线程被重试才送出，不算已有重试。账本 `retries` 记当前这次故障已安排的原会话重试次数，`retry_ts` 记最近一次安排的时间；`retries` 大于 0 时读 `bb thread log`：那之后还没有回合结束，说明上次的重试还没执行，返回 `waiting`；那之后有回合成功结束，说明那次故障已恢复，这次从头计（派发补记 `completed` 时也清零）。`bb provider-retry explain` 的 decline 原因是 `no-rate-limit-state`、`not-resettable` 或 `beyond-maximum-wait` 时，视为额度耗尽：不安排原会话重试，记 `failed` 并带 `quota`。线程日志里这次故障的 `provider/error`，在 HTTP 429（`errorInfo.httpStatusCode`，或 detail 以 `429` 开头）且 JSON 的 `code`、`status` 或 `type` 为 `RESOURCE_EXHAUSTED`、`model_cooldown`、`quota`、`insufficient_quota`、`quota_exceeded` 时同样处理；只看这些字段，不扫 `message`。`attempts-exhausted` 仍表示原会话重试已用尽。其余失败用 `bb thread retry --send-at` 安排下一次（1、2、4 分钟），返回 `retry-scheduled`；BB 回复该回合已有排队的重试（`retry_already_queued`）时返回 `waiting`。额度冷却的时长见 SKILL.md「可观测性」。`availability.kind` 为 `blocked` 的 `retryAt`，或 `provider/rateLimits/updated` 里被挡住的订阅窗口 `resetsAtMs`，会把冷却拉到该时刻；`model_cooldown` 的 `reset_seconds` 不用。重试用尽、无法重试或已确定额度耗尽时返回 `cooled`；重试期间不改终态，线程之前的成功照样为冷却清零。读不到线程状态，或确认上次重试有没有执行时读不到日志，报错退出，稍后重跑同一命令；判断额度码时读不到日志则当作判不出。只处理账本里的线程；配合 `--dry-run` 只给出动作，不安排重试、不写账本。
+`--on-failure <thread-ID>` handles an errored child thread, looking only at BB's structured information: a thread not in `error` state returns `not-failed`; when `bb provider-retry status` lists a BB automatic retry it returns `waiting`. Queued messages on an errored thread are sent only when the thread is retried and do not count as an existing retry. The ledger's `retries` records the number of original-session retries scheduled for the current fault, `retry_ts` the time of the most recent scheduling; when `retries` is greater than 0 it reads `bb thread log`: if no turn has ended since then, the last retry has not run yet, return `waiting`; if a turn ended successfully since then, that fault has recovered and this one counts from scratch (also reset when dispatch back-fills `completed`). When the decline reason of `bb provider-retry explain` is `no-rate-limit-state`, `not-resettable`, or `beyond-maximum-wait`, treat it as quota exhaustion: do not schedule an original-session retry, record `failed` with `quota`. The same handling applies when this fault's `provider/error` in the thread log is HTTP 429 (`errorInfo.httpStatusCode`, or detail starting with `429`) and the JSON `code`, `status`, or `type` is `RESOURCE_EXHAUSTED`, `model_cooldown`, `quota`, `insufficient_quota`, `quota_exceeded`; only these fields are checked, `message` is not scanned. `attempts-exhausted` still means original-session retries are exhausted. Other failures schedule the next attempt with `bb thread retry --send-at` (1, 2, 4 minutes) and return `retry-scheduled`; when BB replies that the turn already has a queued retry (`retry_already_queued`), return `waiting`. Quota cooldown durations are in SKILL.md "Observability (可观测性)". The `retryAt` of an `availability.kind` of `blocked`, or the blocked subscription window's `resetsAtMs` in `provider/rateLimits/updated`, extends the cooldown to that moment; `model_cooldown`'s `reset_seconds` is not used. When retries are exhausted, retry is impossible, or quota exhaustion is established, return `cooled`; the terminal state is not changed during retries, and the thread's earlier success still resets the cooldown. If thread status cannot be read, or the log cannot be read when confirming whether the last retry ran, exit with an error and rerun the same command later; if the log cannot be read when judging quota codes, treat it as undeterminable. Only threads in the ledger are handled; with `--dry-run` it only reports the action, schedules no retry, and does not write the ledger.
 
-`completed` 由脚本按 BB 线程状态自动记录，`failed` 由 `--on-failure` 在重试用尽或确定额度耗尽后记录；识别有误或放弃任务时用 `--record-outcome <线程ID> --outcome <终态>` 改正（旧名 `--record-decision` 仍可用），写入本地账本（默认 `~/.cache/bb-dispatch/ledger.json`）；旧值 `failed_quota`、`failed_transient`、`failed_other` 仍可写，与 `failed` 一样计入连续失败。只有脚本写入的 `quota: true` 才按额度冷却计时，手动的 `failed_quota` 不拉长。`--history-summary`（别名 `--stats`）只读输出按难度与候选的聚合统计、活跃冷却、确定性复盘 hooks，以及复盘日志 `ledger.events.jsonl` 近 7 天的重试与冷却汇总 `retry_review`（字段见 SKILL.md「可观测性」）。
+`completed` is recorded automatically by the script from BB thread status; `failed` is recorded by `--on-failure` after retries are exhausted or quota exhaustion is established. When detection is wrong or a task is abandoned, correct it with `--record-outcome <thread-ID> --outcome <terminal-state>` (the old name `--record-decision` still works), writing to the local ledger (default `~/.cache/bb-dispatch/ledger.json`); old values `failed_quota`, `failed_transient`, `failed_other` can still be written and count toward consecutive failures like `failed`. Only `quota: true` written by the script is timed as a quota cooldown; a manual `failed_quota` does not lengthen it. `--history-summary` (alias `--stats`) outputs, read-only, aggregate statistics by difficulty and candidate, active cooldowns, deterministic review hooks, and `retry_review`, the last-7-days retry and cooldown summary from the review log `ledger.events.jsonl` (fields in SKILL.md "Observability (可观测性)").
 
-默认从 `bb status` 解析环境，项目使用该环境的所属项目。`--environment` 接受现有环境 ID 或本机已存在的目录路径：ID 模式下 `--project` 与环境所属项目必须匹配；路径模式下目录会解析为绝对路径并原样交给 BB 创建 project-checkout 附着环境，项目取 `--project` 或当前 `bb status`，两者都没有时须显式提供 `--project`。在 BB 线程里派发时关联当前父线程，跨环境、跨项目都保留关联。
+By default the environment is resolved from `bb status`, and the project is that environment's owning project. `--environment` accepts an existing environment ID or a directory path that exists locally: in ID mode `--project` must match the environment's owning project; in path mode the directory is resolved to an absolute path and handed to BB as-is to create a project-checkout attached environment, with the project taken from `--project` or the current `bb status`; when neither is available `--project` must be given explicitly. When dispatching inside a BB thread the current parent thread is linked, keeping the link across environments and projects.
 
-每次调用会校验 provider 是否存在且可用、权限是否兼容、模型及 reasoning 是否在目录中。查询模型目录时同时传入配置中的 selected model，使刚发布但尚未进入普通目录的模型仍能由 provider 验证。ID 模式使用目标环境校验；路径模式不调用 `bb environment show`，而使用当前 `bb status` 的环境作为同 host 代理，没有当前环境时须在 BB 线程里运行或先准备可代理环境。返回 JSON 的 `selection.validation_environment` 记录实际校验环境，ID 模式下等于目标环境。`--dry-run` 同样执行只读校验并输出参数数组，不创建线程。实际派发返回 JSON 的 `selection` 和 BB 原始 `result`，每次调用最多发出一次 spawn（fallback 只发生在 spawn 前的校验阶段）；超时或响应异常时先查线程，避免重复创建。`selection.attempts` 记录链上失败候选及原因（含冷却中的候选），`selection.fallbacks` 记录未尝试的同档别名，`selection.reconciled` 列出本次按线程状态改记的终态。目录不做持久缓存，防止安装、账号或环境变化后继续使用过期配置。
+Each call validates that the provider exists and is available, permissions are compatible, and the model and reasoning are in the catalog. When querying the model catalog it also passes the configured selected model, so models just released but not yet in the regular catalog can still be validated by the provider. ID mode validates against the target environment; path mode does not call `bb environment show` but uses the current `bb status` environment as a same-host proxy; when there is no current environment, run inside a BB thread or prepare a proxy environment first. The returned JSON's `selection.validation_environment` records the actual validation environment, equal to the target environment in ID mode. `--dry-run` performs the same read-only validation and outputs the argument array without creating a thread. Actual dispatch returns JSON with `selection` and BB's raw `result`; each call issues at most one spawn (fallback happens only in the pre-spawn validation phase); on timeout or abnormal response query threads first to avoid duplicate creation. `selection.attempts` records failed candidates along the chain and reasons (including cooling candidates), `selection.fallbacks` records untried same-tier aliases, `selection.reconciled` lists terminal states re-recorded from thread status in this call. The catalog is not persistently cached, to avoid using stale configuration after installation, account, or environment changes.
 
-验证：`python3 -m unittest discover -s scripts -p 'test_*.py'`（从技能目录运行）。
+Verification: `python3 -m unittest discover -s scripts -p 'test_*.py'` (run from the skill directory).
 
-## Provider 并发限制
+## Provider concurrency limits (Provider 并发限制)
 
-在 `agents.<别名>` 配置 `max_concurrency: 1`（正整数，省略表示不限制）。默认限制该 provider 全部模型；可用 `concurrency_models` 指定共享名额的模型 ID。下面只让 amp 的 medium 与 complex 合计最多运行 1 个，simple 使用的 grok46 不限量：
+Configure `max_concurrency: 1` in `agents.<alias>` (positive integer; omitted means unlimited). By default it limits all models of that provider; `concurrency_models` can specify the model IDs that share the slots. Below, only amp's medium and complex together run at most 1, while grok46 used by simple is unlimited:
 
 ```yaml
 agents:
@@ -89,39 +89,39 @@ agents:
       complex: {model: high, reasoning: medium}
 ```
 
-名额按实际 provider ID 共享，不按别名、难度、项目或父线程拆分。`concurrency_models` 必须是非空模型 ID 列表，需同时配置 `max_concurrency`，列表中的模型合计共用上限，列表外的模型不受容量限制。同一份有效环境配置中多个别名指向同一 provider 时，取已配置上限的最小值、合并受限模型集合；任一配置上限的别名省略模型范围，则限制全部模型。环境同名别名仍整体替换，需在替换项中保留所需上限。多个调用者应使用一致的限额配置；未配置上限的脚本调用仍按原行为派发。
+Slots are shared by actual provider ID, not split by alias, difficulty, project, or parent thread. `concurrency_models` must be a non-empty list of model IDs and requires `max_concurrency` too; listed models share the cap together, unlisted models are not capacity-limited. When multiple aliases in the same effective environment configuration point to the same provider, take the minimum of the configured caps and merge the limited model sets; if any alias with a cap omits the model scope, all models are limited. Same-named environment aliases are still replaced wholesale, so keep the needed cap in the replacement. Multiple callers should use consistent limit configuration; script calls without a configured cap dispatch as before.
 
-同一台机器、同一 OS 用户、同一个 BB 服务下的脚本进程，通过固定的 `~/.cache/bb-dispatch/concurrency.lock` 串行完成查询、占位和创建；`--config`、`--ledger` 与 `BB_DISPATCH_LEDGER_PATH` 不改变锁和占位的位置。不同机器或 OS 用户不共享限制。锁只保护一次创建，任务运行期间不持锁；锁繁忙约 10 秒后明确退出且不创建线程，稍后可重试。
+Script processes on the same machine, same OS user, and same BB service serialize query, reservation, and creation through the fixed `~/.cache/bb-dispatch/concurrency.lock`; `--config`, `--ledger`, and `BB_DISPATCH_LEDGER_PATH` do not change the location of the lock and reservations. Different machines or OS users do not share limits. The lock protects only one creation and is not held while the task runs; when the lock is busy for about 10 seconds it exits explicitly without creating a thread, and can be retried later.
 
-派发前读取 `bb thread list --include-hidden` 的实时状态，默认所有该 provider 的活跃线程都计入占用（包括其他入口创建的线程）。配置模型范围时，仅明确登记为范围外模型的线程不计入该池；BB 列表不返回模型，脚本通过占位中的模型 ID 识别自己的派发。旧占位和其他入口的线程缺少模型信息时，仍保守计入受限池，待对应回合结束后释放；范围外新派发本身不做容量检查。已归档线程（`archivedAt` 非 null）不占名额，残留队列、交互和已登记占位一并排除。这里以归档为容量边界；BB 归档可给已有运行回合保留约 30 秒宽限，因此归档释放名额不代表运行时已立即停止。未归档线程的待处理交互、运行中和未知状态仍保守占名额；`idle` 只有明确无排队消息、无待处理交互才释放。`error` 且明确无待处理交互时，已知队列状态 `none`、`waiting`、`failed` 不占名额：普通排队消息须等失败回合被 retry 才会送出，排队本身不代表运行；未知队列状态仍计数。除归档直接释放外，脚本新建线程额外保留占位，直到日志中出现派发后的 `turn/completed`，避免创建后的初始 `idle` 被误判为完成。中断若没有结束事件，仍保留占位，由下述恢复命令处理。对活跃线程和对应占位去重计数。
+Before dispatch, it reads live status from `bb thread list --include-hidden`; by default all active threads of that provider count toward occupancy (including threads created by other entry points). When a model scope is configured, only threads explicitly registered as out-of-scope models are excluded from the pool; the BB list does not return models, so the script identifies its own dispatches by the model ID in reservations. Old reservations and threads from other entry points lacking model info are still conservatively counted in the limited pool and released after the corresponding turn ends; out-of-scope new dispatches themselves get no capacity check. Archived threads (`archivedAt` non-null) do not occupy slots, and residual queues, interactions, and registered reservations are excluded with them. Archiving is the capacity boundary here; BB archiving may give an existing running turn about 30 seconds of grace, so a slot freed by archiving does not mean the run stopped immediately. Pending interactions, running, and unknown states of unarchived threads still conservatively occupy slots; `idle` releases only with explicitly no queued messages and no pending interactions. For `error` with explicitly no pending interactions, known queue states `none`, `waiting`, `failed` do not occupy slots: ordinary queued messages are sent only after the failed turn is retried, and queuing itself does not mean running; unknown queue states still count. Apart from archiving releasing directly, threads newly created by the script additionally keep a reservation until a post-dispatch `turn/completed` appears in the log, so the initial `idle` after creation is not mistaken for completion. If an interruption has no end event, the reservation is kept and handled by the recovery commands below. Active threads and their reservations are de-duplicated when counting.
 
-候选满额时记录 `selection.attempts` 并尝试同档下一个候选；全部满额时明确报错，不等待、不创建队列、不计失败或熔断冷却。全部候选处于冷却、或用 `--fallback-from` 点名，也不能绕过容量限制。`selection.concurrency` 返回选中 provider 的 `limit` 和派发前 `used`，有模型范围时附带 `models`；范围外模型不返回容量限制。`--dry-run` 只读检查容量，不占位、不改并发状态，结果只是当时快照。
+When a candidate is full, it records `selection.attempts` and tries the next same-tier candidate; when all are full it errors explicitly, without waiting, creating a queue, or counting failure or circuit-breaker cooldown. All candidates cooling, or naming one with `--fallback-from`, cannot bypass the capacity limit either. `selection.concurrency` returns the selected provider's `limit` and pre-dispatch `used`, plus `models` when there is a model scope; out-of-scope models return no capacity limit. `--dry-run` only checks capacity read-only, makes no reservation, does not change concurrency state, and the result is only a snapshot of that moment.
 
-并发占位保存在同目录的 `concurrency.json`，独立于可旁路失败的统计账本，只保存占位 ID、provider、模型 ID、时间和线程 ID。范围外模型也登记占位，以便后续派发明确排除它们；它们不占用受限模型池。占位文件损坏、无法加锁或保存时明确失败；查不到实时线程状态时跳过受限候选。不会因为统计账本失败而取消限制。spawn 前先写占位，超时、异常或进程崩溃后不自动释放未知创建结果，避免重复派发：
+Concurrency reservations are stored in `concurrency.json` in the same directory, independent of the bypass-on-failure statistics ledger, and store only reservation ID, provider, model ID, time, and thread ID. Out-of-scope models are registered too, so later dispatches can explicitly exclude them; they do not occupy the limited model pool. When the reservation file is corrupt, cannot be locked, or cannot be saved, it fails explicitly; when live thread status cannot be queried, limited candidates are skipped. Limits are never cancelled because the statistics ledger failed. The reservation is written before spawn; after timeout, exception, or process crash, unknown creation results are not released automatically, to avoid duplicate dispatch:
 
 ```bash
 bb-dispatch --concurrency-status
 bb thread list --include-hidden --json
-bb thread show <线程ID> --json
-bb-dispatch --release-reservation <占位ID>
+bb thread show <thread-ID> --json
+bb-dispatch --release-reservation <reservation-ID>
 ```
 
-`--concurrency-status` 只读输出整个 provider 的实时占用与仍在占用的最小事实，不写状态；其中 `usage` 为所有模型的总量，模型范围实际用量以派发时的 `selection.concurrency.used` 为准，登记模型可在 `reservations` 中查看。确认该次创建未成功，或对应回合已经结束后，用稳定占位 ID 释放；未知 ID 拒绝，重复释放不会误删其他占位；配合 `--dry-run` 只预览。释放占位不会停止线程，仍活跃的线程继续由 BB 状态计数。正常结束的占位在后续派发时自动清理，未决占位持续保留供恢复，不按时间强制过期。
+`--concurrency-status` outputs, read-only, the whole provider's live occupancy and minimal facts of reservations still occupying, without writing state; its `usage` is the total over all models, actual usage of a model scope is per `selection.concurrency.used` at dispatch time, and registered models can be seen in `reservations`. After confirming that creation did not succeed, or the corresponding turn has ended, release by stable reservation ID; unknown IDs are rejected, repeated release does not delete other reservations by mistake; with `--dry-run` it only previews. Releasing a reservation does not stop the thread; still-active threads continue to be counted from BB status. Reservations that ended normally are cleaned up automatically on later dispatches; pending reservations are kept for recovery and are not force-expired by time.
 
-限制覆盖脚本的新建派发入口。旧线程继续对话、`--on-failure` 的原会话重试、BB 自动重试、直接创建线程不会先申请名额，仍可能与已派任务重叠；它们处于活跃状态时会影响下一次脚本派发。BB 已持久化线程状态、回合日志和父线程通知，可用 `bb thread show` / `bb thread log <线程ID> --all --json` 回看。此处只提供当前容量及恢复查询，不另建历史账本；并发等待时间与满额跳过次数暂不聚合，历史派发与质量裁决继续使用原有 `--history-summary`。
+The limit covers the script's new-dispatch entry. Continuing old threads, `--on-failure` original-session retries, BB automatic retries, and directly created threads do not request a slot first and may still overlap with dispatched tasks; while active they affect the next script dispatch. BB already persists thread status, turn logs, and parent thread notifications, reviewable with `bb thread show` / `bb thread log <thread-ID> --all --json`. Only current capacity and recovery queries are provided here, with no separate history ledger; concurrency wait time and full-skip counts are not aggregated yet, and historical dispatch and quality verdicts continue to use the existing `--history-summary`.
 
-## 路由不可用
+## Route unavailable (路由不可用)
 
-候选切换只覆盖派发前校验：provider 不存在或不可用、权限不兼容、模型或 reasoning 不在目录时，记录该候选错误并试下一个；全部失败时汇总各候选错误。spawn 一旦发出即不重试，失败的候选随即冷却：失败或结果不明时先 `bb thread list`/`bb thread show` 确认是否已创建，确认未创建后保持难度与任务文本重跑同一命令。线程运行期报错（额度耗尽、provider 中断、会话错误）按 SKILL.md「等待与并发」运行 `--on-failure`，按其返回的 `action` 等待或换候选；确定性调用方（如编排 driver）也可持久化 `selection.fallbacks`，用 `--fallback-from` 自行点名。继续已有线程前，确认原回合结束并核对已完成工作，按该 provider 支持的续接方式操作；不要以重新创建整个任务冒充续接。
+Candidate switching covers only pre-dispatch validation: when the provider does not exist or is unavailable, permissions are incompatible, or the model or reasoning is not in the catalog, record that candidate's error and try the next; when all fail, aggregate each candidate's errors. Once spawn is issued there is no retry, and the failed candidate is cooled immediately: on failure or unclear result, first confirm with `bb thread list`/`bb thread show` whether it was created; after confirming it was not, rerun the same command keeping difficulty and task text. Runtime thread errors (quota exhaustion, provider interruption, session error) run `--on-failure` per SKILL.md "Waiting and concurrency (等待与并发)" and wait or switch candidates per its returned `action`; deterministic callers (e.g. an orchestration driver) can also persist `selection.fallbacks` and name candidates themselves with `--fallback-from`. Before continuing an existing thread, confirm the original turn has ended and check completed work, and use the continuation method that provider supports; do not pass off recreating the whole task as continuation.
 
-## 会话标题
+## Session titles (会话标题)
 
-脚本按 `--difficulty` 和候选 agent 为标题加前缀：
-- **颜色代表难度**：`simple` 为绿色、`medium` 为黄色、`complex` 为红色。
-- **形状代表账号**：通过 agent 配置的 `shape` 或默认别名映射识别：
-  - 圆形（默认 / `codex`）：`🟢` / `🟡` / `🔴`
-  - 方形（`codexl` / `codex-l` / `shape: square`）：`🟩` / `🟨` / `🟥`
-  - 心形（`codexb` / `codex-b` / `shape: heart`）：`💚` / `💛` / `❤️`
-  - 书本（`codexm` / `codex-m` / `shape: book`）：`📗` / `📒` / `📕`
+The script prefixes titles by `--difficulty` and candidate agent:
+- **Colour represents difficulty**: `simple` is green, `medium` yellow, `complex` red.
+- **Shape represents account**: identified via the agent configuration's `shape` or the default alias mapping:
+  - Circle (default / `codex`): `🟢` / `🟡` / `🔴`
+  - Square (`codexl` / `codex-l` / `shape: square`): `🟩` / `🟨` / `🟥`
+  - Heart (`codexb` / `codex-b` / `shape: heart`): `💚` / `💛` / `❤️`
+  - Book (`codexm` / `codex-m` / `shape: book`): `📗` / `📒` / `📕`
 
-`--title` 指定正文；省略或仅空白时使用任务文本。脚本折叠空白，移除开头已有的旧 `[Agent]`、难度圆点或形状前缀，再加上本次难度与账号对应的前缀；正文最多 80 字符（含省略号）。创建命令始终传 `--title`，`selection.title` 返回实际提交的标题。建议传简短标题，避免任务细节直接出现在会话列表。后续显式重命名仍可改变标题；已有线程不会自动改名。
+`--title` sets the body; when omitted or whitespace-only, the task text is used. The script collapses whitespace, removes an existing leading old `[Agent]`, difficulty dot, or shape prefix, then adds the prefix for this dispatch's difficulty and account; the body is at most 80 characters (including the ellipsis). The create command always passes `--title`, and `selection.title` returns the title actually submitted. Passing a short title is recommended, to keep task details out of the session list. Later explicit renames can still change the title; existing threads are not renamed automatically.

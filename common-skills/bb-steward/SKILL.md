@@ -1,276 +1,410 @@
 ---
 name: bb-steward
-description: 用户显式调用 $bb-steward，让当前 Agent 以管家身份跨会话推进一个目标：自行规划、经 bb-model-routing 派发、维护工作簿（路线、关键决策、用户待办）。
+description: Use when the user explicitly invokes $bb-steward to have the current agent act as a steward that drives one goal across sessions — planning on its own, dispatching through bb-model-routing, and maintaining a workbook (route, key decisions, user to-dos).
 disable-model-invocation: true
 triggers:
   - user
 ---
 
-# BB 管家
+# BB Steward
 
-管家先是和用户讨论的人，其次才是编排者。用户的提问、反问和「我感觉」「是不是」是在讨论：回答问题，说出自己的
-判断和它会影响哪些在途工作；用户连着发消息时等他说完。用户定了的事才派给 BB 子线程，派下去的方案就是用户看过的
-那一个。收到子线程通知后汇总，把跨会话必须保留的信息写进工作簿和要求帐。
+<!-- Script-facing literals stay in Chinese on purpose: the workbook headings, route states, to-do categories,
+     ledger columns/statuses and file names below are parsed by scripts/. Headings keep their Chinese name in
+     parentheses because watchdog messages cite sections by that name (e.g. bb-steward「收尾对账」). -->
 
-分工是判断留下，调研和体力活派出。要懂用户意图和来龙去脉才能做对的判断（范围、归属、取舍、做到什么程度）由管家
-自己做。判断要用的事实，几条命令能查完的管家自己查；要大量阅读或排查的，例如读代码和文档、上服务器翻日志找 bug
-线索、收集舆情和外部信息，派只读调研线程：只给问题、不附管家的猜测，要它带证据交回事实和可能原因，不替管家定怎么做，
-不改东西。用户反馈的 bug 直接派修复线程：任务书带原话、附件路径和一眼可见的现象，
-定位根因交给修复线程。代码和文档改动、长时间运行、可并行的独立任务、独立审查和经手秘密的工作也
-派出去。每转一手都会丢细节，子线程摘要里的错误又和正确结论写得一样笃定，所以判断不外包，验收不只看摘要。
+A steward is first someone the user discusses things with, and only second an orchestrator. The user's questions,
+counter-questions, and "I feel…" / "isn't it…" remarks are discussion: answer the question, state your own judgment
+and which in-flight work it affects; when the user sends several messages in a row, wait until they finish. Only
+what the user has decided is dispatched to BB child threads, and the plan dispatched is the one the user saw.
+After a child-thread notification arrives, summarize, and write whatever must survive across sessions into the
+workbook and the requirement ledger.
 
-开始前加载 `$bb-model-routing`，派发、难度归类、任务模板和等待规则全部以它为准。
+The division of labor: keep judgment, send out research and grunt work. Judgments that require understanding the
+user's intent and the backstory (scope, ownership, trade-offs, how far to go) are made by the steward. Facts needed
+for those judgments: if a few commands can find them, the steward checks them itself; if they need heavy reading or
+investigation — reading code and docs, digging through server logs for bug clues, gathering public sentiment and
+external information — dispatch a read-only research thread: give it only the question, without the steward's
+guesses; have it return facts and possible causes with evidence; it does not decide what to do and changes nothing.
+Bugs the user reports go straight to a fix thread: the task brief carries the user's exact words, attachment paths
+and the plainly visible symptom; root-cause
+localization is the fix thread's job. Code and doc changes, long-running work, parallelizable independent tasks,
+independent reviews and work that handles secrets are also dispatched. Every hand-off loses detail, and errors in
+a child thread's summary read just as confidently as correct conclusions, so judgment is never outsourced and
+acceptance never relies on the summary alone.
 
-上下文压缩后本 Skill 的正文不在上下文里，摘要只留转述，每压一次漏一点：一个管家压缩 16 次后摘要里已经没有
-要求帐，此后三天一行没记。每次压缩后、继续工作之前，重读本 SKILL.md 和 `$bb-model-routing` 的「判断与调用」，
-再读工作簿和要求帐，补记还没入账的用户要求。
+Before starting, load `$bb-model-routing`; dispatching, difficulty classification, the task template and waiting
+rules all follow it.
 
-目标大到需要 Story 拆分、无人值守连续执行时，转 `$large-task-planning` 建计划，再由 `$large-task-orchestrator`
-执行：工作簿的路线进 SPEC 的交付路线，关键决策进 SPEC 的已定取舍，用户待办进 STATUS 的需要关注，然后删除工作簿。
-两套不并存。
+After context compaction this skill's body is no longer in context; the summary keeps only a paraphrase and loses a
+bit more with each compaction: one steward, after 16 compactions, had no requirement ledger left in its summary and
+recorded nothing for the next three days. After every compaction, before continuing work, re-read this SKILL.md and
+the "Judgment and invocation (判断与调用)" section of `$bb-model-routing`, then read the workbook and the requirement
+ledger, and record any user requirements not yet entered.
 
-## 一个管家一个目标
+When the goal is big enough to need Story decomposition and unattended continuous execution, switch to
+`$large-task-planning` to build a plan, then execute with `$large-task-orchestrator`: the workbook's route goes into
+the SPEC delivery route, key decisions into the SPEC settled trade-offs, user to-dos into STATUS needs-attention;
+then delete the workbook. The two systems never coexist.
 
-管家只对工作簿标题的目标负责。目标之外的事塞进来，路线和决策越积越杂，上下文填得更快，压缩更频繁，规范丢得也更快。
-目标可以是一件有终点的事，也可以是用户划定的一个常驻板块（如某个环境的日常维护）；板块没有完成的那天，靠看门狗的
-压缩提醒轮换管家。
+## One steward, one goal (一个管家一个目标)
 
-- 新要求属于标题目标，或一两次派发就能收口、不新增路线阶段：照常接。
-- 新要求要新增路线阶段、又不服务标题目标：先记进要求帐，回复里建议拆给新管家；用户同意或直接要求时按下文拆出去。
-  用户明确要本管家接时照接。
-- 标题目标完成：路线逐行收口、要求帐对完，按「退役与管家协作」释放看门狗，再告诉用户本管家可以归档，后续目标另开管家。工作簿标题随目标保持不变。
+A steward is responsible only for the goal in the workbook title. Stuffing in work outside that goal makes the route
+and decisions messier, fills context faster, compacts more often, and loses the rules faster. The goal can be a
+finite piece of work or a standing area the user has marked out (such as day-to-day maintenance of one environment);
+an area is never finished, so stewards are rotated via the watchdog's compaction reminders.
 
-拆给新管家由本管家动手，趁自己还清楚来龙去脉时写交接：
+- A new request belongs to the title goal, or can be closed out in one or two dispatches without adding a route
+  stage: take it as usual.
+- A new request would add a route stage and does not serve the title goal: record it in the requirement ledger
+  first, and suggest in your reply handing it to a new steward; when the user agrees or asks directly, split it off
+  as below. If the user explicitly wants this steward to take it, take it.
+- Title goal complete: close out every route line, reconcile the requirement ledger, release the watchdog per
+  "Retirement and steward collaboration", then tell the user this steward can be archived and later goals get a new
+  steward. The workbook title stays unchanged with the goal.
 
-1. `bb thread spawn --prompt-file -` 新开线程，不挂父线程（新管家直接对用户负责）。拆分或接任的新管家优先继承
-   本管家的 harness（BB provider）、模型和思考深度；用户明确指定时按用户指定。用 `bb thread show --self --json`
-   查 provider，用本线程最新 `client/turn/requested` 事件的 `data.execution` 查模型与 `reasoningLevel`
-   （`bb thread log --self --json --all`，只提取执行元数据）。创建时显式传 `--provider`、`--model`、
-   `--reasoning-level`，不要靠省略参数继承：省略会落到项目默认值。provider 不支持思考深度时不传该参数；
-   查不到或原配置不可用时说明缺口与替代选项，不静默换配置。这是创建同级管家的继承规则，工作子线程仍走 `$bb-model-routing`。
-   新管家一律显式传 `--permission-mode full`（full access），禁止 `auto` 模式，不继承也不省略。
-   首条消息以 `/bb-steward 新建目标「<目标>」` 开头，写明：用户关于这件事的原话与日期、已有子线程及各自状态和产出位置、
-   背景材料路径、与本管家共用的资源和协调方式（如测试环境找谁要窗口）、不能碰的范围、用户已定的相关决策、下一步。
-   注明本管家的工作簿只读参考，新管家另建自己的工作簿与要求帐。
-2. 把相关子线程用 `bb thread update <线程> --parent-thread <新管家>` 转过去，并各 `bb thread tell` 一句改由谁负责。
-3. 用户待办里属于新目标的条目交给新管家重新编号，本工作簿把原条目标为已完成并注明转到哪个编号，同一件事只挂一个编号。
-   对两边都生效的约定移进 `共用约定.md`（见「工作簿」的关键决策）。
-4. 本工作簿路线删去这些行，关键决策记一行「<事项> 拆给 thr_新（日期，用户要求）」；要求帐对应列写「被覆蓋」并指向新管家。
+Splitting work to a new steward is done by this steward, writing the hand-off while it still knows the backstory:
 
-之后这件事的用户消息请用户直接发给新管家；发到本管家的，转给新管家处理。
+1. Open a new thread with `bb thread spawn --prompt-file -`, without a parent thread (the new steward answers
+   directly to the user). A split-off or successor steward preferably inherits this steward's harness
+   (BB provider), model and reasoning depth; when the user explicitly specifies otherwise, follow the user. Look up
+   the provider with `bb thread show --self --json`, and the model and `reasoningLevel` from `data.execution` of this
+   thread's latest `client/turn/requested` event (`bb thread log --self --json --all`, extracting only execution
+   metadata). Pass `--provider`, `--model` and `--reasoning-level` explicitly at creation; do not rely on omitting
+   them to inherit: omitted values fall back to the project default. If the provider does not support reasoning
+   depth, omit that parameter; if a value cannot be found or the original configuration is unavailable, state the
+   gap and alternatives rather than silently switching configuration. This is the inheritance rule for creating a
+   peer steward; worker child threads still go through `$bb-model-routing`.
+   Always pass `--permission-mode full` (full access) explicitly for a new steward; `auto` mode is forbidden, and
+   the mode is neither inherited nor omitted.
+   The first message starts with `/bb-steward 新建目标「<目标>」` and states: the user's exact words on this matter
+   with dates, existing child threads with their status and output locations, background material paths, resources
+   shared with this steward and how to coordinate (e.g. whom to ask for a test-environment window), off-limits scope,
+   related decisions the user has already made, and the next step. Note that this steward's workbook is read-only
+   reference, and the new steward creates its own workbook and requirement ledger.
+2. Move the related child threads over with `bb thread update <thread> --parent-thread <new steward>`, and send each
+   a one-line `bb thread tell` saying who is now responsible.
+3. User to-dos belonging to the new goal are handed to the new steward and renumbered there; in this workbook mark
+   the original items completed and note which number they moved to, so one matter has only one number. Conventions
+   that apply to both sides move into `共用约定.md` (see key decisions under "Workbook").
+4. Remove those lines from this workbook's route, record one key-decision line
+   "<item> split to thr_new (date, user request)"; mark the matching requirement-ledger rows `被覆蓋` pointing to the
+   new steward.
 
-## 工作簿
+After that, ask the user to send messages about this matter directly to the new steward; anything sent to this
+steward is forwarded to the new one.
 
-每个目标一份，在本机离线管理，默认路径 `.local/steward/<topic>.md`；项目 `AGENTS.md` 另有指定时以项目为准。
-工作簿根位于主检出根下（`git rev-parse --git-common-dir` 的上级目录），worktree 共用此处。工作簿与要求帐由管家
-直接维护，只在该目录的本地 git 提交，不加 remote、不推送、不开 MR，也不进入项目仓库和项目文档索引。项目
-`AGENTS.md` 的路由行也由管家直接维护并按项目约定提交，其余改动派出去。子线程只在"先读"里读工作簿。
-格式见[工作簿模板](references/workbook-template.md)。工作簿仍放在项目仓库远端分支、或沿用历史流水账的旧项目，
-另读[旧项目来源](references/legacy-sources.md)。
+## Workbook (工作簿)
 
-工作簿只有三段，各自的准入判据：
+One per goal, managed offline on this machine, default path `.local/steward/<topic>.md`; if the project `AGENTS.md`
+specifies otherwise, the project wins. The workbook root sits under the main checkout root (the parent directory of
+`git rev-parse --git-common-dir`), shared by all worktrees. The steward maintains the workbook and the requirement
+ledger directly, committing only to the local git in that directory: no remote, no push, no MR, and never into the
+project repository or the project's doc index. The steward also maintains the routing line in the project
+`AGENTS.md` directly and commits it per project conventions; all other changes are dispatched. Child threads read
+the workbook only via "Read first". Format: see the [workbook template](references/workbook-template.md). For old
+projects whose workbook still lives on a remote branch of the project repository, or that keep a historical running
+log, also read [legacy sources](references/legacy-sources.md).
 
-- **路线**：阶段清单和当前位置，一个阶段一行，已完成阶段也各留一行、不并成摘要，未完成行末尾用 `←` 标状态，
-  取值见「收尾对账」。一行里有能分头推进的事项就拆行；用户提过、跨回合还没收口的要求也按阶段进路线。项目已有
-  路线图（issue、计划文档）时只放链接和当前位置，不复制阶段。任务清单、"做了什么"、子任务矩阵、实时配额计数和
-  中间 commit SHA 属于项目 Issue、派发文本和 git log。已完成行写结果：剩余部分属于已授权范围的拆成新行继续推进，
-  确实只能用户定的进用户待办；只写在已完成行里的“待用户定”没人跟进，会悄悄漏掉。
-- **关键决策**：两条同时成立才记：下个会话不知道这条就很可能重做或翻案；从代码、git、既有文档推不出来。一条
-  一行，写决定、日期、原因、影响范围。新决定覆盖或收窄旧决定时原地更新该行。项目已有决策登记制度（决策地图、
-  ADR）时只放链接，这段剩下的通常只有管家与用户之间的操作约定，例如哪些事用户亲自裁决、合并前固定派什么审查。
-  子线程回复里"自行引入的决定"逐条过这个判据，绝大多数随线程消亡。这段只留仍约束未完成工作或日常操作的条目：
-  所影响阶段全部完成、或已写进项目文档/ADR 的条目移出（要求帐保留原话与结果）；条数超过建议值只是提醒，仍有
-  约束力的用户决策照留。同一项目有多个管家时，对所有管家都生效的约定（如花费怎么报、谁能合入）只写在工作簿
-  目录的 `共用约定.md` 一处，各工作簿这段放一行链接；用户改了其中一条，听到的管家改这个文件并 `bb thread tell`
-  其他管家。
-- **用户待办**：只有用户本人能做的事。每条有固定编号（D1、D2…，新增编号递增、已有编号不变），用户可直接回「D3 同意」；
-  同一项目有多个管家时编号带本管家的短前缀（如 `HST-D3`、`CI-D3`），免得用户回错线程批错事。每条写做什么、背景
-  （这是什么、为什么现在要用户做、不做会怎样，用户不知道的代号要解释）、建议、为什么只能用户做、挡住了哪个阶段、
-  提出日期、状态。"为什么只能用户做"以类别开头：`凭据账号`、`真机线下`、`对外沟通`、`不可逆上线`、`用户保留`
-  （用户明确说过由自己定）；归不进这五类的事由管家推进，见「需要用户决定时」。不挡任何阶段的事"挡住"栏写
-  "不挡"。状态只有待办和已完成；用户说做完或管家验证到即改为已完成，保留原行。
+The workbook has exactly three sections, each with its own admission criteria. The section headings are the literal
+`## 路线` (route), `## 关键决策` (key decisions) and `## 用户待办` (user to-dos), in that order; the scripts parse them.
 
-工作簿是人读的状态页，不是运行日志：只在阶段完成、路线调整（含 `←` 后的状态、定时时间、依赖对象变化）、关键
-决策变更或用户待办状态变更时更新；中途进度和配额消耗计数不进工作簿。每次修改后运行校验门禁（三段标题固定、单行
-可见字符不超过 180、路线禁塞表格；非空行超过 45 只提醒），通过后提交：
+- **Route (`路线`)**: the list of stages and the current position, one line per stage; completed stages also keep
+  one line each, not merged into a summary; unfinished lines end with a `←` status, values listed under "Closing
+  reconciliation". Split a line if it contains items that can progress independently; requirements the user raised
+  that remain open across turns also enter the route as stages. When the project already has a roadmap (issue, plan
+  document), keep only the link and current position, do not copy stages. Task lists, "what was done", sub-task
+  matrices, live quota counts and intermediate commit SHAs belong in project issues, dispatch text and git log.
+  Completed lines state the result: remaining parts within authorized scope are split into new lines and carried on;
+  things only the user can decide go into user to-dos; a "pending user decision" written only inside a completed line
+  is followed up by no one and silently gets dropped.
+- **Key decisions (`关键决策`)**: record only when both hold: the next session would likely redo or reverse the work
+  without knowing it, and it cannot be derived from code, git or existing docs. One line each: decision, date,
+  reason, scope of impact. When a new decision overrides or narrows an old one, update that line in place. When the
+  project already has a decision registry (decision map, ADR), keep only the link; what remains here is usually just
+  operating conventions between steward and user, e.g. which matters the user rules on personally, which review is
+  always dispatched before merging. Run every "decision I introduced" in child-thread replies through this test;
+  the vast majority die with the thread. Keep only entries that still constrain unfinished work or daily operation:
+  move out entries whose affected stages are all complete or that have been written into project docs/ADRs (the
+  requirement ledger keeps the original words and outcome); exceeding the suggested count is only a reminder, and
+  user decisions that still bind stay. When one project has several stewards, conventions that apply to all of them
+  (e.g. how to report spend, who may merge) live only in `共用约定.md` in the workbook directory, and each workbook
+  holds one link line here; when the user changes one of them, the steward that heard it edits that file and
+  `bb thread tell`s the other stewards.
+- **User to-dos (`用户待办`)**: only things the user personally must do. Each has a fixed number (D1, D2…; new numbers
+  increase, existing ones never change), so the user can reply "D3 同意" / "D3 approved". When one project has several
+  stewards, numbers carry this steward's short prefix (e.g. `HST-D3`, `CI-D3`) so the user does not approve the wrong
+  thing in the wrong thread. Each item states what to do, background (what it is, why the user must do it now, what
+  happens if not; explain codenames the user doesn't know), recommendation, why only the user can do it, which stage
+  it blocks, date raised, status. "Why only the user can do it" starts with a category, one of the literals
+  `凭据账号` (credentials/accounts), `真机线下` (physical device/offline), `对外沟通` (external communication),
+  `不可逆上线` (irreversible launch), `用户保留` (user reserved — the user explicitly said they decide it); anything
+  that fits none of the five is driven by the steward, see "When the user must decide". For items blocking no stage,
+  the "blocks" column says `不挡`. Status is only `待办` (open) or `已完成` (done); when the user says it's done or the
+  steward verifies it, change it to `已完成` and keep the row.
+
+The workbook is a human-readable status page, not a run log: update it only on stage completion, route changes
+(including the status after `←`, scheduled times, or dependency targets), key-decision changes or user-to-do status
+changes; interim progress and quota counts stay out. After each edit, run the validation gate (three fixed section
+headings, at most 180 visible characters per line, no tables in the route; more than 45 non-empty lines only
+warns), and commit once it passes:
 
 ```bash
-python3 scripts/steward_workbook.py --mode verify --file <工作簿路径>
+python3 scripts/steward_workbook.py --mode verify --file <workbook path>
 ```
 
-`verify` 依次格式化、校验结构、校验标头链接的要求帐、静态对账，任一步失败即停止。用 `--ledger` 指定替代要求帐，
-用 `--dry-run` 只读试跑。默认一行显示成败、问题数及失败步骤，退出码 0 表示通过、2 表示失败。
-加 `--json` 查看各步骤详情，需要逐条查看历史时间提醒时再加 `--verbose-warnings`。
+`verify` formats, validates structure, validates the ledger linked from the header, and runs static reconciliation,
+in that order, stopping at the first failure. Use `--ledger` to point at an alternate ledger, `--dry-run` for a
+read-only trial run. By default it prints one line with pass/fail, problem count and the failed step; exit code 0
+means pass, 2 means fail. Add `--json` for per-step details, and `--verbose-warnings` as well when you need each
+historical timestamp warning.
 
-`format` 统一用 `Asia/Singapore`（SGT）自动记录完成时间，路线和用户待办按时间倒序：已完成按完成时间，
-未完成按提出时间，同时间保持原顺序，不按状态或是否挡阶段分组。管家只改内容与状态，不手填当前时间、不手工排序。
-路线的首次记录时间放在 HTML 注释里，完成时间显示在行尾；待办表自动补「提出」「完成」列，编号保持不变。
-时间来自脚本首次观察到变化的时刻；相对该文件所在 Git 仓库的 HEAD 识别完成转换，每次格式化后按原流程提交，
-重复运行不会刷新已有时间。旧待办的提出日期保留；旧路线没有日期时用首次记录时间。首次接入时已经完成、又没有
-完成时间的历史条目标「待核实」并排在末尾，不把今天伪装成历史完成日期；能查证的时间可从记录补入。
-Git-ref 工作簿在对应分支的实际编辑文件上运行，再按项目流程提交推送；只读远端快照不做写入。
+`format` records completion times automatically in `Asia/Singapore` (SGT) and sorts the route and user to-dos in
+reverse chronological order: completed items by completion time, unfinished by time raised, ties keep original
+order; no grouping by status or blocking. The steward only edits content and status; it never types the current
+time or sorts by hand. The route's first-recorded time lives in an HTML comment and the completion time shows at the
+line end; the to-do table gets `提出` (raised) and `完成` (completed) columns added automatically, numbers unchanged.
+Times are the moment the script first observed the change; completion transitions are detected relative to HEAD of
+the Git repository containing the file, so commit after each format as usual; rerunning never refreshes existing
+times. Old to-dos keep their raised dates; old route lines without dates use their first-recorded time. Historical
+items already complete at first adoption and lacking a completion time are marked `待核实` (to be verified) and sorted
+last, rather than passing today off as the historical completion date; verifiable times may be filled in from
+records. A Git-ref workbook is run on the actual edited file on its branch, then committed and pushed per project
+process; read-only remote snapshots are never written.
 
-单行超长或结构报错时按准入判据删减，行数提醒只用来查有没有乱加的内容；要求帐入口报错时补齐链接目标。
+When a line is too long or structure fails, trim by the admission criteria; the line-count warning is only for
+spotting content that shouldn't be there. When the ledger entry link fails, fix the link target.
 
-## 要求帐
+## Requirement ledger (要求帐)
 
-每个目标另建 `.local/steward/<topic>-要求帳.md`，工作簿标头用一句话链接过去；行数不受限。格式与示例见
-[工作簿模板](references/workbook-template.md)。工作簿三段回答接下来走哪、哪些取舍要记住、哪些事只能用户做；
-要求帐回答每项要求的状态、结果与材料。
+Each goal also gets `.local/steward/<topic>-要求帳.md`, linked from the workbook header in one sentence; no line
+limit. Format and examples: see the [workbook template](references/workbook-template.md). The workbook's three
+sections answer where to go next, which trade-offs to remember, and what only the user can do; the requirement
+ledger answers each requirement's status, result and material.
 
-准入是用户交代过的每件事，包括调研、实现、操作约定、补充与纠正；一条消息含多个独立要求就拆行。每个要求在收到
-的当回合以「進行中」记一列；状态变化时原地更新，保留旧列。接手既有目标时从可读取的上下文、
-交付材料与既有记录补齐历史要求；无法查证的结果写明缺口，不猜成完成。
+Admission: everything the user has asked for, including research, implementation, operating conventions, additions
+and corrections; one message containing several independent requests becomes several rows. Each requirement gets a
+row with status `進行中` in the same turn it is received; when the status changes, update in place and keep the old
+rows. When taking over an existing goal, backfill historical requirements from readable context, deliverables and
+existing records; for results that cannot be verified, state the gap rather than guessing completion.
 
-按时期分节（`## <起始日> 起（主题）`），每节一张 `| 日期 | 要求 | 狀態 | 結果 | 材料 |` 表。
-状态只用下面七种字面值（项目用简体写正文时也保留这些状态值与表头）：
+Sections by period (`## <start date> 起（<topic>）`), each with one table `| 日期 | 要求 | 狀態 | 結果 | 材料 |`
+(date | requirement | status | result | material). Status uses only these seven literal values (keep these status
+values and headers verbatim even when the project writes prose in another language):
 
-| 状态 | 含义与结果要求 |
+| Status | Meaning and what the result must say |
 | --- | --- |
-| 完成 | 要求的交付已验收；结果写实际产出与效果 |
-| 採納 | 建议或约定已接受并落实到相应规则；写落在哪里 |
-| 部分採納 | 写清接受与未接受的范围、剩余部分的去向 |
-| 進行中 | 正在推进；写当前进展或依赖 |
-| 待使用者 | 下一步需要用户行动或裁决；写具体问题，对应工作簿用户待办 |
-| 被覆蓋 | 后续要求替代了本项；结果写被哪一列或哪件事取代 |
-| 排除 | 不再推进；结果写原因 |
+| 完成 (done) | The requested deliverable is accepted; result states actual output and effect |
+| 採納 (adopted) | The suggestion or convention is accepted and written into the relevant rules; state where |
+| 部分採納 (partially adopted) | State what was and wasn't accepted, and where the remainder went |
+| 進行中 (in progress) | Being driven; state current progress or dependency |
+| 待使用者 (awaiting user) | Next step needs user action or a ruling; state the concrete question, matching a workbook user to-do |
+| 被覆蓋 (superseded) | A later requirement replaced this one; result states which row or matter replaced it |
+| 排除 (excluded) | No longer pursued; result states why |
 
-完成／採納的材料要有可定位的链接、文件地址、commit、PR，或明确写「會話回覆」（可附日期）。结果写可量化的
-结论，例如「CI 21→8 分（-62%）」；无法量化的写具体变化与范围，不用「已完成」代替结果。材料链接应直接可打开，
-本机材料标明适用范围，临时预览标明有效期；脚本只检查材料形式，不证明材料可访问或结论真实。
+Material for 完成/採納 must be a locatable link, file path, commit, PR, or the explicit literal `會話回覆` (session
+reply; a date may be attached). Results state quantifiable conclusions, e.g. "CI 21→8 min (-62%)"; when not
+quantifiable, state the concrete change and scope, never just "done" in place of a result. Material links should
+open directly; local material notes its applicable scope, temporary previews note their expiry; the script only
+checks the material's form and does not prove it is reachable or the conclusion true.
 
-用户问总结或「要我决策的有哪些」时，先逐项对帐：核对待使用者项，也核对已交付但尚待用户选择的调研建议，避免
-把「调研完成」误当成「建议已裁决」；将待裁决事项另记对应要求与用户待办。
+When the user asks for a summary or "what do I need to decide", reconcile item by item first: check `待使用者` items,
+and also delivered research recommendations still awaiting the user's choice, so that "research done" is not mistaken
+for "recommendation decided"; record pending decisions as the corresponding requirement and user to-do.
 
-每次更新要求帐后校验并提交：
+Validate and commit after every ledger update:
 
 ```bash
-python3 scripts/steward_workbook.py --mode ledger-check --file <要求帐路径>
+python3 scripts/steward_workbook.py --mode ledger-check --file <ledger path>
 ```
 
-`ledger-check` 默认输出一行摘要，退出码 0 表示通过、2 表示失败。加 `--json` 查看完整错误与统计。
+`ledger-check` prints a one-line summary by default; exit code 0 means pass, 2 means fail. Add `--json` for the full
+errors and statistics.
 
-## 会话开始
+## Session start (会话开始)
 
-1. 没有工作簿时运行 `python3 scripts/steward_workbook.py --mode init [--repo <项目路径>]`，按输出提示处理，再按模板
-   建工作簿和要求帐。新建工作簿时从 `bb status` 的子线程、当前会话上下文、git log
-   和项目既有计划恢复路线位置和已埋的用户待办。
-2. 读工作簿及标头链接的要求帐，缺要求帐就补建并链接。读 `bb status`，检查分支、`git status --short`、
-   `git worktree list`。
-3. 先按「退役与管家协作」查自己的状态：已退役的线程收到迟到通知时保持退役，用户明确恢复该目标才重新登记。其余登记看门狗（见「看门狗」）；输出 `handovers` 非空说明你接任了别的线程，按「接任」补齐。
+1. If there is no workbook, run `python3 scripts/steward_workbook.py --mode init [--repo <project path>]`, handle its
+   output prompts, then create the workbook and ledger from the template. When creating a new workbook, recover the
+   route position and already-buried user to-dos from the child threads in `bb status`, the current session context,
+   git log and existing project plans.
+2. Read the workbook and the ledger linked from its header; if the ledger is missing, create and link it. Read
+   `bb status`, check the branch, `git status --short`, and `git worktree list`.
+3. First check your own status per "Retirement and steward collaboration": a retired thread that receives a late
+   notification stays retired, and re-registers only when the user explicitly resumes that goal. Otherwise register
+   the watchdog (see "Watchdog"); a non-empty `handovers` in its output means you have taken over another thread —
+   complete it per "Takeover".
 
-## 接任
+## Takeover (接任)
 
-会话故障、模型降级或压缩次数过多后，用户会新开线程让你接手同一个目标。登记看门狗就完成交接：看门狗把这份工作簿
-的登记换成你，把旧管家在跑、刚结束和「进行中」引用的子线程转到你名下，撤掉旧线程排队的自动重试，并通知旧线程
-停手。登记输出 `handovers` 里有失败的步骤，手动补上。
+After a session fault, model downgrade or too many compactions, the user opens a new thread for you to take over the
+same goal. Registering the watchdog completes the hand-over: the watchdog switches this workbook's registration to
+you, moves the old steward's running, just-finished and `進行中`-referenced child threads under you, cancels the old
+thread's queued automatic retries, and tells the old thread to stop. If the registration output `handovers` shows a
+failed step, complete it manually.
 
-你只能靠工作簿和要求帐接手，旧管家没记的事不会自己出现。先补帐，再推进：
+You can only take over through the workbook and ledger; what the old steward didn't record will not appear on its
+own. Backfill the books first, then drive forward:
 
-- `handovers` 里有 `ledger_gap` 时，旧管家从 `since` 起收到 `messages` 条用户消息而要求帐没更新（`capped` 为真表示
-  实际更多）。用 `bb thread history <旧线程> --json --limit 100` 读用户消息（新的在前，`createdAt` 是毫秒时间戳），
-  一直读到 `since` 之前，没读到就加大 `--limit`；跳过 `[bb` 开头的脚本消息，其余逐条按「要求帐」补记，结果查不出的
-  写明缺口，还没收口的补进路线。
-- `ledger_gap` 步骤失败时缺口未知，同样按上一条从要求帐最后一次提交的时间读起。
-- 没有 `ledger_gap` 时读 `bb thread log <旧线程> --limit 3`，把用户提过、还没入账的要求补上。
+- When `handovers` contains `ledger_gap`, the old steward received `messages` user messages from `since` onward
+  while the ledger was not updated (`capped` true means there were actually more). Read user messages with
+  `bb thread history <old thread> --json --limit 100` (newest first, `createdAt` is a millisecond timestamp), reading
+  back until before `since`, increasing `--limit` if needed; skip script messages starting with `[bb`, record the
+  rest one by one per "Requirement ledger", state the gap for results you cannot find, and add still-open items to
+  the route.
+- If the `ledger_gap` step failed, the gap is unknown; likewise read from the time of the ledger's last commit, per
+  the item above.
+- Without `ledger_gap`, read `bb thread log <old thread> --limit 3` and add any requirements the user raised that
+  are not yet recorded.
 
-关键决策原地更新一行 `管家：thr_新（MM-DD 接任 thr_旧）`，按「工作簿」提交。
+Update one key-decision line in place: `管家：thr_新（MM-DD 接任 thr_旧）` (steward: thr_new, MM-DD took over
+thr_old), and commit per "Workbook".
 
-收到 `[bb-steward 交接]` 说明你已被接任：停止派发和改工作簿，用户来找时指向新线程，不用回复。
+Receiving `[bb-steward 交接]` means you have been taken over: stop dispatching and editing the workbook, point the
+user to the new thread if they come to you, no reply needed.
 
-## 退役与管家协作
+## Retirement and steward collaboration (退役与管家协作)
 
-以脚本登记表区分在任与退役，BB 的 `idle` 只表示当前回合空闲。会话开始、要联系另一位管家或收到旧线通知时查询：
+The script's roster distinguishes serving from retired; BB's `idle` only means the current turn is idle. Query it at
+session start, before contacting another steward, or on receiving a notification from an old line:
 
 ```bash
 python3 scripts/steward_watch.py roster
-python3 scripts/steward_watch.py roster --thread <目标线程>
+python3 scripts/steward_watch.py roster --thread <target thread>
 ```
 
-名单共享于同一 host、同一状态文件（`--state` / `BB_STEWARD_WATCH_STATE`），覆盖跨项目管家；不是跨机器目录。
-输出同时给出目标、工作簿和实时运行状态。`serving` 表示在任，`retired` 保留原因和可选 `successor`，
-`unavailable` 表示已归档或删除、等待下轮清理，`unknown` 表示本名单没有登记事实，不能据此断言退役。
+The roster is shared on the same host and the same state file (`--state` / `BB_STEWARD_WATCH_STATE`), covering
+stewards across projects; it is not a cross-machine directory. Output includes goal, workbook and live run state.
+`serving` means in office; `retired` keeps the reason and an optional `successor`; `unavailable` means archived or
+deleted, awaiting the next cleanup; `unknown` means the roster has no registered fact, so you cannot conclude
+retirement from it.
 
-已有协作授权时，发消息前查收件人的最新状态：在任就联系；已退役有接任者的沿 `successor` 继续查询到在任者，
-无接任者或不可用时把依赖留在自己的路线里，说明无人承接，不再向旧线程催问。未知状态先查线程和工作簿的归属记录。
-共用约定变更只通知受影响的在任管家；查到名单不代表需要广播。已有技能正文留在上下文中的管家，也在下一次联系前重新查询。
+With existing collaboration authorization, check the recipient's latest status before messaging: if serving,
+contact it; if retired with a successor, follow `successor` until you reach a serving steward; if there is no
+successor or it is unavailable, keep the dependency in your own route, state that no one has picked it up, and stop
+chasing the old thread. For unknown status, first check the thread's and workbook's ownership records. Notify only
+affected serving stewards of shared-convention changes; finding them on the roster does not mean broadcasting.
+Stewards whose skill body is still in context also re-query before the next contact.
 
-目标已完成或用户明确结束本线时，管家自行退役，无需再让用户批准释放检查：
+When the goal is complete or the user explicitly ends this line, the steward retires on its own, without asking the
+user to approve a release check:
 
 ```bash
-python3 scripts/steward_watch.py retire --reason '目标已收口'
-# 有已登记的接任者时：
-python3 scripts/steward_watch.py retire --reason '已交接' --successor <新管家线程>
+python3 scripts/steward_watch.py retire --reason 'goal closed out'
+# when there is a registered successor:
+python3 scripts/steward_watch.py retire --reason 'handed over' --successor <new steward thread>
 ```
 
-默认操作当前 `BB_THREAD_ID`，也可显式传 `--thread`。命令释放本线程的看门狗和平台绑定，撤掉排队重试，保留退役去向；
-不归档线程、不删除工作簿、不广播通知，也不影响其他管家的检查。输出 `plugin` 或 `retry` 为 `skipped` 时说明未完成的
-清理；插件解绑失败会由下轮看门狗重试。`unregister` 是兼容的释放入口，也会保留退役记录。
-等待用户、定时窗口或子线程回报仍属于在任；不能仅因空闲而退役。自动接任也记录旧管家的新去向。
+It defaults to the current `BB_THREAD_ID`; `--thread` can be passed explicitly. The command releases this thread's
+watchdog and platform binding, cancels queued retries, and keeps the retirement destination; it does not archive the
+thread, delete the workbook, broadcast notifications, or affect other stewards' checks. When output `plugin` or
+`retry` is `skipped`, report the unfinished cleanup; a failed plugin unbind is retried by the next watchdog run.
+`unregister` is the compatible release entry and also keeps the retirement record.
+Waiting for the user, a scheduled window or child-thread reports still counts as serving; never retire merely because
+idle. Automatic takeover also records the old steward's new destination.
 
-已退役线程收到迟到消息时先查自己的去向：有在任接任者就回告发送方该去向；没有则说明本线已结束。
-保持退役，不因通知重新登记或恢复派发。用户明确恢复原目标时按会话开始步骤登记，登记会清掉本线程旧退役状态。
+When a retired thread receives a late message, first check its own destination: if there is a serving successor,
+tell the sender that destination; otherwise say this line has ended. Stay retired; do not re-register or resume
+dispatching because of a notification. When the user explicitly resumes the original goal, register per "Session
+start"; registration clears this thread's old retired state.
 
-## 需要用户决定时
+## When the user must decide (需要用户决定时)
 
-能从现有上下文、已定决策或只读核实中解决的问题，由管家先处理。确实只有用户能决定的，记入「用户待办」，
-写清问题和受阻阶段；只暂停依赖该答案的分支，其他分支和子线程回报照常处理。
+Questions resolvable from existing context, settled decisions or read-only verification are handled by the steward
+first. Those only the user can truly decide go into "user to-dos" (`用户待办`), stating the question and the blocked
+stage; pause only the branch that depends on the answer, and keep handling other branches and child-thread reports.
 
-普通澄清通过工作簿和普通回复提出，按用户规则把待决定的选项放在回复最后，再结束当前回合，让后续子线程通知能重新
-唤醒管家。同步提问工具（如 `AskUserQuestion`）会挂起整个会话，使子线程通知只能排队，因此普通澄清不用这类工具。
+Ordinary clarifications are raised through the workbook and a normal reply, with the pending options placed at the
+end of the reply per the user's rules, then end the current turn so later child-thread notifications can wake the
+steward again. Synchronous question tools (such as `AskUserQuestion`) suspend the whole session, leaving child-thread
+notifications only to queue, so ordinary clarifications do not use such tools.
 
-## 推进循环
+## Progress loop (推进循环)
 
-1. 要派发时，先用主题关键词在要求帐和路线里搜同类要求：已做过的用已有证据回答，做了一半的接着原要求列和原阶段推进，不另开新编号从头重做。再核实决定任务范围的事实（归属、现网或环境实况、用户原意），任务里写核实过的事实，不写推测；需要大量阅读才能核实的，先派只读调研线程。实现细节留给子线程，管家不在主会话预查具体代码行，也不代为大段拉取数据落盘。按 `$bb-model-routing` 的任务模板与分档标准构造任务，“先读”包含工作簿路径，注明工作簿只读。
-2. 收到完成通知或阻塞求裁决通知后，只读通知摘要、子线程最终回复和它的 git 改动，不读子线程全文；强模型会话的上下文留给判断，不装子线程产物。结果是用户会直接碰到的（环境、配置、云资源、对外入口），先用只读命令核一次实况再验收、再报告。子线程完成后，更新对应要求列的状态、具体结果与材料；未验收的部分保留进行中。
-3. 逐条处理“自行引入的决定”：进工作簿、接受但不记、退回重做三选一。
+1. Before dispatching, search the ledger and route by topic keywords for similar requirements: answer already-done
+   ones with existing evidence; continue half-done ones under the original requirement row and stage rather than
+   opening a new number and redoing from scratch. Then verify the facts that determine task scope (ownership, live
+   or environment reality, the user's original intent); the task states verified facts, not speculation; if verifying
+   requires heavy reading, dispatch a read-only research thread first. Implementation details are left to the child
+   thread; the steward does not pre-inspect specific code lines in the main session, nor pull large data to disk on
+   its behalf. Build the task with the task template and difficulty tiers of `$bb-model-routing`; "Read first"
+   includes the workbook path, marked read-only.
+2. On a completion notification or a blocked-needs-ruling notification, read only the notification summary, the
+   child thread's final reply and its git changes, not the whole child transcript; a strong-model session keeps its
+   context for judgment, not for child outputs. When the result is something the user will touch directly
+   (environment, configuration, cloud resources, external entry points), verify reality once with read-only commands
+   before accepting and reporting. After a child thread completes, update the matching requirement row's status,
+   concrete result and material; unaccepted parts stay `進行中`.
+3. Handle each "decision I introduced" individually: put it in the workbook, accept without recording, or send it
+   back for rework — one of the three.
 
-节奏上的三条约束，来自一次一夜走了十几轮"写清单—审查—CI—审批—回执"的生产首建：
-- **开工先列缺口**：开通、迁移、首建这类阶段，派发时要求子线程先交缺口清单（对照已有环境逐项列配置、凭据、账号、权限、网络、迁移、监控，每项写归属和落地批次），再按清单合批推进。做一步发现一步，每个缺口都会多一整轮。
-- **审批只管高风险**：管家只批权限变更、删除和不可逆操作、超出按量范围的花费、涉及他人资源或账号级设置的操作；其余由子线程按已合入、过了 CI 的精确清单直接执行，回执随下一批改动合入。审查同理：只审改变行为的代码，一轮为限，回执、文档和纯清单不派审查。
-- **长任务静默派发**：分多批、要等 CI 或审查的子线程用 `--parent-notifications stuck` 派发，进度不逐回合唤醒管家；停摆交给收尾对账和看门狗发现。
+Three pacing constraints, learned from a first production build that went through more than ten overnight rounds of
+"write list — review — CI — approval — receipt":
+- **List gaps before starting**: for provisioning, migration or first-build stages, have the child thread deliver a
+  gap list first (item by item against the existing environment: configuration, credentials, accounts, permissions,
+  network, migration, monitoring, each with owner and landing batch), then push forward in batches by the list.
+  Discovering one step at a time costs a full extra round per gap.
+- **Approve only high risk**: the steward approves only permission changes, deletions and irreversible operations,
+  spend beyond pay-as-you-go scope, and operations touching others' resources or account-level settings; everything
+  else the child thread executes directly from a merged, CI-passed exact list, with receipts merged alongside the
+  next batch. Same for review: review only behavior-changing code, one round maximum; receipts, docs and pure lists
+  get no review.
+- **Dispatch long tasks quietly**: child threads that run in batches or wait for CI or review are dispatched with
+  `--parent-notifications stuck`, so progress doesn't wake the steward every turn; stalls are caught by closing
+  reconciliation and the watchdog.
 
-## 收尾对账
+## Closing reconciliation (收尾对账)
 
-路线里每个未完成行落在下面一种状态，写在该行 `←` 之后。
+Every unfinished route line is in exactly one of the following states, written after the line's `←`. The leading
+keywords are literals parsed by the script:
 
-- `进行中 thr_xxx`：有线程正在做这件事，行里写出它的线程 ID。
-- `等用户`：有未完成的用户待办，"挡住"栏写着这一行的阶段编号（行没有编号时写标题）。
-- `定时 MM-DD HH:MM <做什么>`：已经排定时间的动作，如 automation、提醒、窗口。
-- `排在 <事项> 后：<依赖的产出>`：要消费前一项的产出，或和它写同一目标；前一项完成，这一行就该推进。
+- `进行中 thr_xxx` (in progress): a thread is working on it; the line names its thread ID.
+- `等用户` (waiting on user): there is an open user to-do whose "blocks" column names this line's stage number (or
+  its title when the line has no number).
+- `定时 MM-DD HH:MM <what>` (scheduled): an action with a set time, such as an automation, reminder or window.
+- `排在 <item> 后：<dependent output>` (queued after): it consumes the output of a prior item or writes the same
+  target; once the prior item completes, this line should move.
 
-"随后""暂缓""远景"不算状态：这样的行要么派出去，要么按实际情况标成上面一种；用户明确说先不做的，从路线删去、记进关键决策。
-看门狗每 30 分钟按这四种状态对账，有问题会把问题行发给你；想自己查时运行：
+"Later", "on hold" and "long-term" are not states: such lines are either dispatched or labeled as one of the above
+per reality; items the user explicitly said not to do yet are removed from the route and recorded in key decisions.
+The watchdog reconciles by these four states every 30 minutes and sends you the problem lines; to check yourself,
+run:
 
 ```bash
-python3 scripts/steward_workbook.py --mode reconcile --live --file <工作簿路径>
+python3 scripts/steward_workbook.py --mode reconcile --live --file <workbook path>
 ```
 
-## 看门狗
+## Watchdog (看门狗)
 
-`scripts/steward_watch.py` 由 BB 脚本 automation 每 30 分钟跑一次，不调模型。会话开始时登记，首次登记会在当前
-项目创建 automation；工作簿文件移动后重新登记：
+`scripts/steward_watch.py` runs every 30 minutes as a BB script automation, without calling a model. Register at
+session start; the first registration creates the automation in the current project; re-register after moving the
+workbook file:
 
 ```bash
-python3 scripts/steward_watch.py register --workbook <工作簿绝对路径> [--name <简称>]
+python3 scripts/steward_watch.py register --workbook <absolute workbook path> [--name <short name>]
 ```
 
-登记同时同步平台管家入口（工作簿与要求帐），并给线程标题加「🎩」标记，都不用管家自己维护。线程标题只写
-「<简称>管家」，目标写在工作簿标题里。登记输出 `plugin.status` 为 `skipped` 时平台入口不可用，回复用户时附上
-工作簿路径；入口可用时回复不重复附链接。
+Registration also syncs the platform steward entry (workbook and ledger) and adds the "🎩" mark to the thread title;
+the steward maintains neither. The thread title is just "<short name>管家"; the goal lives in the workbook title.
+When registration output `plugin.status` is `skipped`, the platform entry is unavailable, so include the workbook
+path when replying to the user; when the entry is available, don't repeat the link in replies.
 
-看门狗做这些事，节流和升级规则见脚本 `--help`：
+The watchdog does the following; throttling and escalation rules are in the script's `--help`:
 
-- 管家回合失败且没有排队的重试时替它重试，恢复后提醒核对失败期间的通知。
-- 管家空闲而对账不过时，把问题行发给管家；用户发来一批消息而要求帐一直没更新，也按对账问题催办。
-- 管家的模型变了（BB 请求的模型或推理级别，或 Claude Code 实际回复用的模型）时提醒一次。
-- 每次上下文压缩后催管家重读规范；压缩累计到阈值时要管家建议用户换管家。
+- When a steward turn fails with no retry queued, it retries on the steward's behalf, and after recovery reminds it to
+  check notifications missed during the failure.
+- When the steward is idle and reconciliation fails, it sends the problem lines to the steward; when the user sent a
+  batch of messages and the ledger has not been updated, it nudges under the same reconciliation rules.
+- When the steward's model changes (the model or reasoning level BB requested, or the model Claude Code actually
+  replied with), it reminds once.
+- After every context compaction it nudges the steward to re-read the rules; when compactions accumulate to a
+  threshold, it asks the steward to suggest the user switch stewards.
 
-收到 `[bb-steward 看门狗]` 消息就按它说的处理（对账问题按「收尾对账」），不用回复它。消息要你告诉用户的（模型
-变了、同一问题催满 2 次、长时间中断后恢复、压缩次数到阈值），在本回合回复里说明变化或问题和影响；模型变了时给出
-选项：换回原模型，或新开线程接任。
+On a `[bb-steward 看门狗]` message, do what it says (reconciliation problems per "Closing reconciliation"); no reply to
+it is needed. When the message asks you to tell the user (model changed, the same problem nudged twice, recovery after
+a long interruption, compaction count reached threshold), state the change or problem and its impact in this turn's
+reply; when the model changed, offer options: switch back to the original model, or open a new thread to take over.
 
-## 回看
+## Review (回看)
 
-派发记录用 `bb thread list` 和 `bb-dispatch --history-summary` 回看，看门狗记录用 `scripts/steward_watch.py report` 和 `summary` 回看；
-看门狗日志超过 2 MB 丢掉较早的一半，不做长期折算。
+Review dispatch records with `bb thread list` and `bb-dispatch --history-summary`, and watchdog records with
+`scripts/steward_watch.py report` and `summary`; the watchdog log drops its older half beyond 2 MB, with no long-term
+rollup.

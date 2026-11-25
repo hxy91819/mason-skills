@@ -1,24 +1,24 @@
 version: 2
-# 可选：统一覆盖权限；省略时支持 auto 的 Codex 默认 auto，其他默认 accept-edits。
+# Optional: override permissions globally; when omitted, Codex supporting auto defaults to auto, others default to accept-edits.
 # permission_mode: accept-edits
-# 人手改这个开关控制派发是否带 --service-tier fast；省略时默认 false。
-# 脚本没有命令行覆盖。模型不支持 fast 时仍派发，只是不带该参数。
+# Hand-edit this switch to control whether dispatch passes --service-tier fast; defaults to false when omitted.
+# The script has no command-line override. When the model does not support fast it still dispatches, just without that parameter.
 fast: false
-# 可选：强制开启 Fast 并豁免巡检自动熔断（额度即将重置或临时突击时使用；也可在 agents.<别名>.force_fast 配置）
+# Optional: force Fast on and exempt it from the patrol automatic circuit breaker (use when quota is about to reset or for a temporary burst; can also be set in agents.<alias>.force_fast)
 # force_fast: true
-# 可选：自定义 Fast 熔断阈值及到期自动恢复时间（如临时调整至已用 95% 熔断，到期后自动恢复默认已用 60%/剩余 40%）
+# Optional: custom Fast breaker threshold and automatic restore time (e.g. temporarily break at 95% used, automatically restoring the default 60% used / 40% remaining on expiry)
 # quota_fuse:
 #   used_threshold_percent: 95.0
 #   restore_at: '2026-10-30T12:00:00+08:00'
 #   default_used_threshold_percent: 60.0
-# defaults 只选择 provider 别名；模型与推理级别在 agents.<别名>.routes 中定义。
-# 值可为有序别名列表作同档 fallback 链，如 simple: [primary, backup]。
-# 等权负载均衡：{mode: load-balance, candidates: [primary, backup]}
-# 加权负载均衡：
+# defaults only selects provider aliases; model and reasoning level are defined in agents.<alias>.routes.
+# A value can be an ordered alias list as a same-tier fallback chain, e.g. simple: [primary, backup].
+# Equal-weight load balancing:{mode: load-balance, candidates: [primary, backup]}
+# Weighted load balancing:
 # simple:
 #   mode: weighted-load-balance
 #   candidates: {primary: 2, backup: 1}
-# 每个候选按本次路由项解析自己的 routes，切换候选只换 provider 不换档位。
+# Each candidate resolves its own routes by this route entry; switching candidates changes only the provider, not the tier.
 defaults:
   simple: primary
   medium: primary
@@ -26,15 +26,15 @@ defaults:
 agents:
   primary:
     provider: <provider-id>
-    # 可选：覆盖该账号权限；Codex 推荐 auto，其他账号保持各自权限。
+    # Optional: override this account's permission; auto is recommended for Codex, other accounts keep their own permissions.
     # permission_mode: auto
-    # 可选：人手改这个开关单独控制该账号是否带 --service-tier fast；省略时继承顶层 fast。
+    # Optional: hand-edit this switch to control individually whether this account passes --service-tier fast; inherits top-level fast when omitted.
     # fast: true
-    # 可选：标题前缀图标形状，支持 circle（圆，默认）、square（方）、heart（心）；省略时按别名自动映射。
+    # Optional: title prefix icon shape, supports circle (default), square, heart; when omitted it is mapped automatically from the alias.
     # shape: circle
-    # 可选：此 provider 跨模型、难度和派发进程共享的并发上限；省略则不限制。
+    # Optional: concurrency cap for this provider shared across models, difficulties, and dispatch processes; unlimited when omitted.
     # max_concurrency: 1
-    # 可选：只让列出的模型合计共用上限；列表外模型不限制。需同时配置 max_concurrency。
+    # Optional: only the listed models share the cap together; unlisted models are unlimited. Requires max_concurrency too.
     # concurrency_models: [<medium-model-id>, <complex-model-id>]
     routes:
       simple:
@@ -46,16 +46,16 @@ agents:
       complex:
         model: <complex-model-id>
         reasoning: <complex-reasoning-level>
-      # default 显式允许该 agent 接受所有未单独配置的路由项。
+      # default explicitly lets this agent accept all route entries not configured individually.
       default:
         model: <fallback-model-id>
-# 可选：按 BB 项目 ID 设置最低难度；未配置项目保持请求难度。
+# Optional: set a minimum difficulty per BB project ID; unconfigured projects keep the requested difficulty.
 projects: {}
 # projects:
 #   <project-id>:
 #     min_difficulty: medium  # simple / medium / complex
 environments: {}
-# 环境 ID 来自 bb；同名别名整体替换，不继承顶层 routes。
+# Environment IDs come from bb; same-named aliases are replaced wholesale and do not inherit top-level routes.
 # environments:
 #   <environment-id>:
 #     defaults: {complex: specialist}

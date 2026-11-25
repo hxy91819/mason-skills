@@ -2,37 +2,37 @@
 description: Shared user-scope agent rules
 alwaysApply: true
 ---
-# 沟通
+# Communication
 
-- 面向用户默认使用简体中文；代码、命令和技术标识保持原文。
-- 只回答用户问的事，篇幅和问题相当：简单问题一两句话。过程、证据和文件引用等用户追问再给。
-- 先说结论。本轮做了改动时，用一句话说明完成了什么。
-- 需要用户拍板的事放在最后，每项一行并给推荐，只列新出现或有变化的。
-- 建议不适合目标时，直接说原因和替代方案。
+- Reply to the user in Simplified Chinese by default; keep code, commands and technical identifiers in their original form.
+- Answer only what the user asked, at a length proportional to the question: one or two sentences for simple questions. Give process, evidence and file references only when the user asks for them.
+- Lead with the conclusion. When this turn made changes, state in one sentence what was done.
+- Put items needing the user's decision at the end, one line each with a recommendation; list only new or changed ones.
+- When a suggestion doesn't fit the goal, state the reason and the alternative directly.
 
-# 执行方式
+# Execution
 
-- 在遵守宿主更高优先级约束的前提下，用户当前明确要求优先于 Skill、历史记忆和默认偏好；项目规则在其适用目录范围内细化或覆盖全局默认。
-- 未经用户授权不添加 guardrails，日常 Skill 使用默认以低摩擦方式设计；不因假想风险增加警告、免责声明、审批流程或安全合规清单。
+- Subject to the host's higher-priority constraints, the user's current explicit request takes precedence over Skills, historical memory and default preferences; project rules refine or override global defaults within the directories they apply to.
+- Do not add guardrails without the user's authorization; design everyday Skill use for low friction by default; do not add warnings, disclaimers, approval steps or security-compliance checklists for hypothetical risks.
 
-# 测试与验证
+# Testing and verification
 
-- 测试验证可观察行为，不验证实现细节。
-- 收尾清理本次任务创建、已确认无需交付或保留诊断用途的临时文件，包括写到 `/tmp` 的产物；改动推送或合并后，用 `git worktree remove`（不加 `--force`）删除本次任务创建的 worktree，分支保留。
+- Tests verify observable behavior, not implementation details.
+- When wrapping up, clean up temporary files this task created that are confirmed not to be delivered or kept for diagnostics, including artifacts written to `/tmp`; after changes are pushed or merged, delete worktrees this task created with `git worktree remove` (without `--force`), keeping the branch.
 
-# 工具与并行
+# Tools and parallelism
 
-- 搜索文件或文本优先使用 `rg`、`rg --files`。
-- 允许委派时，仅在存在可独立完成、验收的任务，且能节省时间或提升质量时使用子 Agent；明确输入、输出和完成判据，由主 Agent 汇总并验证。
+- Prefer `rg` and `rg --files` for searching files or text.
+- When delegation is allowed, use sub-agents only for tasks that can be completed and accepted independently and that save time or improve quality; specify inputs, outputs and completion criteria; the main agent aggregates and verifies.
 
-# 上下文工程: Skills，AGENTS.md 和 docs
+# Context engineering: Skills, AGENTS.md and docs
 
-- 项目约定、历史决策和对外契约查项目级 `AGENTS.md` 及其指定文档；运行现状查实时状态、脚本和探针，文档与实测冲突时明确指出。
-- 本机专属上下文（本地预览入口、网关与端口、凭据位置、项目目录索引）在 `~/code/workspace/`（存在时）：先读其 `AGENTS.md` 的项目目录索引；团队共享的约定仍放各项目仓库。
-- 用户引用的技能（`$name` / `/name`），或 Skill 正文以 `$name` 声明的依赖，在当前环境的技能列表里找不到时，按顺序查找其 `SKILL.md`：先 `~/.agents/skills/<name>/`，再当前仓库 `.agents/skills/<name>/`。直接读这两个路径；技能目录多为软链，`rg --files`、`find` 默认不跟随软链，搜不到不代表缺失
+- For project conventions, past decisions and external contracts, consult the project-level `AGENTS.md` and the documents it points to; for runtime reality, consult live state, scripts and probes, and call out explicitly when docs and measurements conflict.
+- Machine-specific context (local preview entry points, gateways and ports, credential locations, project directory index) lives in `~/code/workspace/` (when it exists): read the project directory index in its `AGENTS.md` first; team-shared conventions still live in each project's repository.
+- When a skill the user references (`$name` / `/name`), or a dependency a Skill body declares as `$name`, is not in the current environment's skill list, look for its `SKILL.md` in order: first `~/.agents/skills/<name>/`, then the current repo's `.agents/skills/<name>/`. Read these two paths directly; skill directories are mostly symlinks, and `rg --files` and `find` don't follow symlinks by default, so not finding it by search doesn't mean it's missing.
 
-## 共享工作区
+## Shared workspace
 
-- 始终假定当前工作区有其他用户或 Agent 并行修改；开始工作及提交、合并前检查当前分支、`git status --short` 和 `git worktree list`。
-- 将产生副作用的 stash 与 autostash 视为不可用。需要保全现场时创建本地 commit；运行 rebase、merge 或 pull 时传入 `--no-autostash`。
-- 默认工作区保持为主干分支，仅在用户明确要求的情况下才可以切换主工作区分支。改动如果与当前工作区存在冲突，使用worktree进行修改，并明确告知用户。
+- Always assume other users or agents are modifying the current workspace in parallel; check the current branch, `git status --short` and `git worktree list` when starting work and before committing or merging.
+- Treat stash and autostash, which have side effects, as unavailable. To preserve state, create a local commit; pass `--no-autostash` when running rebase, merge or pull.
+- Keep the default workspace on the trunk branch; switch the main workspace's branch only when the user explicitly asks. If changes conflict with the current workspace, make them in a worktree and tell the user explicitly.

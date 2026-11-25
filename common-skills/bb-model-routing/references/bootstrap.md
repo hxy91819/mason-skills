@@ -1,66 +1,66 @@
-# 首次配置引导（Bootstrap）
+# First-time configuration bootstrap (Bootstrap)
 
-进入条件：解析后的配置路径（`--config` > `BB_DISPATCH_CONFIG` > `~/.config/bb-dispatch/config.yaml`）上确实没有文件。`bb-dispatch` 报“无法读取配置 <路径>”时先看这个路径：文件不存在才进入引导；文件存在却读不了（YAML 损坏、路径是目录、无权限）是已有配置的故障，把错误原话报给用户并修复那份文件，不新建覆盖。
+Entry condition: there is truly no file at the resolved configuration path (`--config` > `BB_DISPATCH_CONFIG` > `~/.config/bb-dispatch/config.yaml`). When `bb-dispatch` reports `无法读取配置 <路径>` ("cannot read config <path>"), check this path first: enter bootstrap only if the file does not exist; if the file exists but cannot be read (corrupt YAML, path is a directory, no permission), it is a fault in existing configuration — report the verbatim error to the user and repair that file, do not create a new one over it.
 
-目标：在同一次对话里检测 BB 实际可用的 provider 与模型，给出一份可直接派发的建议配置，经用户确认后写入并通过 `--dry-run` 验证，再回到原来的派发任务。全程让用户看得到进度：每个阶段开始前用一两句话说明正在做什么、刚才发现了什么，写在回复正文里。检测命令的原始 JSON 自己消化，给用户的是整理后的结论。无人值守的调用方（编排 driver、自动化脚本）没有人可以确认，照常以缺少配置失败并报告，不进入引导。
+Goal: within the same conversation, detect the providers and models actually available in BB, propose a configuration that can dispatch directly, write it after user confirmation and verify it with `--dry-run`, then return to the original dispatch task. Keep progress visible to the user throughout: before each stage, say in one or two sentences what you are doing and what you just found, in the reply body. Digest the raw JSON of detection commands yourself; give the user organized conclusions. Unattended callers (orchestration drivers, automation scripts) have nobody to confirm, so they fail with missing configuration and report as usual, without entering bootstrap.
 
-检测、写入和自检都沿用原派发的显式参数：`--config`、`--project`、`--environment`，以及显式给出的 `--permission-mode`、`--reasoning`；没有指定时才用当前线程的上下文和配置默认值。
+Detection, writing, and self-test all reuse the original dispatch's explicit parameters: `--config`, `--project`, `--environment`, and any explicitly given `--permission-mode`, `--reasoning`; only when not specified use the current thread's context and configuration defaults.
 
-## 1. 告知并开始检测
+## 1. Inform and start detection
 
-先告诉用户：在 <路径> 没有找到派发配置，补一份就能继续派发；现在开始检测本机 BB 已接入的 provider 和模型，只运行几条只读命令。然后执行：
+First tell the user: no dispatch configuration was found at <path>; adding one lets dispatch continue; you are now detecting the providers and models connected to local BB, running only a few read-only commands. Then run:
 
 ```bash
-bb status --json                       # thread.id 作为 <thread-id>；thread.environment.display.id 作为 <env>
-bb thread show <thread-id> --json      # thread.providerId 是当前会话正在用的 provider
+bb status --json                       # thread.id is <thread-id>; thread.environment.display.id is <env>
+bb thread show <thread-id> --json      # thread.providerId is the provider the current session is using
 bb provider list --environment <env> --json
-bb provider models <provider-id> --environment <env> --json   # 对每个 available 的 provider 各跑一次
+bb provider models <provider-id> --environment <env> --json   # run once for each available provider
 ```
 
-原派发指定了环境 ID 时，provider 查询用该 ID；指定的是目录路径时，查询仍用当前线程环境作代理（与脚本一致），路径只在自检时原样传回。不在 BB 线程里运行（`bb status --json` 没有 `thread`）且没有指定环境 ID 时，省略 `--environment` 和 `thread show`，用本机默认目录。
+When the original dispatch specified an environment ID, provider queries use that ID; when it specified a directory path, queries still use the current thread's environment as a proxy (consistent with the script), and the path is passed back as-is only during self-test. When not running inside a BB thread (`bb status --json` has no `thread`) and no environment ID is specified, omit `--environment` and `thread show`, and use the local default directory.
 
-逐个 provider 记录 `id`、`displayName`、`available`、`capabilities.permissionModes`，以及模型目录里每项的 `id`、`displayName`、`description`、`supportedReasoningEfforts[*].reasoningEffort`、`defaultReasoningEffort`、`isDefault`。目录可能上百项，只提取这些字段，可用一次性脚本汇总。`maintenance` 是插件维护能力标记，不是可用性信号，不据此排除。
+For each provider record `id`, `displayName`, `available`, `capabilities.permissionModes`, and for each catalog entry `id`, `displayName`, `description`, `supportedReasoningEfforts[*].reasoningEffort`, `defaultReasoningEffort`, `isDefault`. Catalogs may have hundreds of entries; extract only these fields, optionally summarizing with a one-off script. `maintenance` is a plugin maintenance capability flag, not an availability signal; do not exclude based on it.
 
-候选 provider：`available: true` 且模型目录非空。不可用的 provider 记下名称和原因线索（`strings.signInHint` 等），空目录的也记下，两者都不进建议。一个候选都没有时停止引导：告诉用户先在 BB 里接入并登录至少一个 provider（BB 自带的 `acp-provider` 技能可引导接入），完成后再回来派发。
+Candidate providers: `available: true` with a non-empty model catalog. For unavailable providers record the name and cause hints (`strings.signInHint`, etc.); record empty-catalog ones too; neither goes into the proposal. If there are no candidates at all, stop bootstrap: tell the user to first connect and sign in to at least one provider in BB (BB's built-in `acp-provider` skill can guide the setup), then come back to dispatch.
 
-## 2. 汇报检测结果
+## 2. Report detection results
 
-用一张短表列出候选 provider：显示名、provider id、支持的权限模式、模型数、标 `isDefault` 的模型；当前会话正在用的 provider 标注出来，它已经证明能跑。表后一句话列出不可用或空目录的 provider。
+List candidate providers in a short table: display name, provider id, supported permission modes, model count, models marked `isDefault`; mark the provider the current session is using — it has already proven it runs. After the table, list unavailable or empty-catalog providers in one sentence.
 
-## 3. 生成建议配置
+## 3. Generate the proposed configuration
 
-按 [config.example.yaml](config.example.yaml) 的结构写最简建议，`defaults` 用字符串或有序别名列表（fallback 形式）。按下面的顺序决定，每条规则取第一个命中的；关键词不分大小写、按子串匹配，并列时取目录里靠前的一项：
+Write a minimal proposal following the structure of [config.example.yaml](config.example.yaml), with `defaults` as a string or ordered alias list (fallback form). Decide in the order below, taking the first matching rule for each; keywords are case-insensitive substring matches, and ties go to the entry earlier in the catalog:
 
-- 主 provider：当前会话正在用的那个；它不是候选或不在 BB 线程里时，选目录带文字描述且模型最多的候选。
-- 权限模式：原派发显式传了 `--permission-mode` 就以它为准，主 provider 必须支持它；否则支持 `auto` 的原生 Codex 使用 `auto`（Approve for me）；其他 provider 支持 `accept-edits` 就用 `accept-edits`，不支持时改用它支持的模式，并说明这意味着子线程获得的权限（`full` 为完全自主执行）。保留按 provider 默认时省略顶层 `permission_mode`，需要个别覆盖时写到 `agents.<别名>.permission_mode`。
-- Fast：配置显式写 `fast: false`，需要时人手改为 `true`。这是人手改文件的消耗开关，省略时脚本默认关闭；不按当前会话或模型目录推断。
-- `simple` 模型：description 含 fast、affordable、flash、lite、mini；其次 id 含这些字样；再其次 `isDefault`；都没有则按自己对模型档位的了解选。
-- `medium` 模型：description 含 latest workhorse；其次含 workhorse 或 everyday；再其次 `isDefault`；都没有同上。命中的模型与 `simple` 相同而目录还有别的模型时，顺延到下一条规则。
-- `complex` 模型：description 含 frontier、most capable、most demanding；其次 id 含 pro、opus、max；都没有同上。
-- 只有一个模型时三档都用它。靠 id 字样或自己的了解选出的项标注“拿不准，请确认”。
-- `reasoning`：只写 `supportedReasoningEfforts[*].reasoningEffort` 里的精确字符串。`simple` 用 `defaultReasoningEffort`；`medium` 用 `medium`，没有则默认值；`complex` 用 `xhigh`，没有则 `high`，再没有则默认值。模型只有一个级别时三档都写它并说明无法靠 reasoning 拉开；没有级别信息时省略字段。
-- 备用 provider：其余候选里必须支持已定的权限模式；优先目录带文字描述的，仍多个时取 `provider list` 顺序靠前的一项，并说明这是稳定选择规则不是质量排名。有则给每档追加一个 fallback 别名，模型按同样规则从它的目录里选；没有则单别名。
-- 模型 id 保留原值，用单引号包住，值里的单引号写成两个单引号。id 可能含 `/`、`[` 或 `"`；含双引号的 id 不转义就套双引号会写出无效 YAML。
+- Primary provider: the one the current session is using; when it is not a candidate or you are not in a BB thread, choose the candidate whose catalog has text descriptions and the most models.
+- Permission mode: if the original dispatch explicitly passed `--permission-mode`, use it, and the primary provider must support it; otherwise native Codex supporting `auto` uses `auto` (Approve for me); other providers use `accept-edits` if supported, otherwise a mode they support, explaining what permission the child thread gets as a result (`full` is fully autonomous execution). When keeping the provider default, omit top-level `permission_mode`; for individual overrides write `agents.<alias>.permission_mode`.
+- Fast: configuration explicitly writes `fast: false`; a human changes it to `true` when needed. This is a consumption switch toggled by hand-editing the file; when omitted the script defaults to off; do not infer it from the current session or the model catalog.
+- `simple` model: description contains fast, affordable, flash, lite, mini; next, id contains these words; next, `isDefault`; if none, choose by your own knowledge of model tiers.
+- `medium` model: description contains latest workhorse; next, contains workhorse or everyday; next, `isDefault`; if none, same as above. When the matched model is the same as `simple` and the catalog has other models, move on to the next rule.
+- `complex` model: description contains frontier, most capable, most demanding; next, id contains pro, opus, max; if none, same as above.
+- With only one model, all three tiers use it. Mark entries chosen by id words or your own knowledge as "unsure, please confirm".
+- `reasoning`: write only exact strings from `supportedReasoningEfforts[*].reasoningEffort`. `simple` uses `defaultReasoningEffort`; `medium` uses `medium`, else the default; `complex` uses `xhigh`, else `high`, else the default. When the model has only one level, write it for all three tiers and explain that reasoning cannot differentiate them; when there is no level information, omit the field.
+- Backup provider: among the remaining candidates it must support the chosen permission mode; prefer those whose catalog has text descriptions; if still several, take the one earliest in `provider list` order, and explain this is a stable selection rule, not a quality ranking. If there is one, append a fallback alias to each tier, choosing models from its catalog by the same rules; if not, use a single alias.
+- Keep model ids as-is, wrapped in single quotes, with single quotes in the value written as two single quotes. Ids may contain `/`, `[`, or `"`; wrapping an id containing double quotes in double quotes without escaping produces invalid YAML.
 
-把建议 YAML 整段给用户，每个选择用一句话说明依据。YAML 后给编号决策列表，第一项是“按建议写入”，其余是常见替代：换主 provider、换某一档的模型或推理级别、改权限模式、改成负载均衡（格式见[配置与派发](dispatch.md)）。宿主有原生提问工具时可以用它收集选择，否则结束回合等用户回复。
+Give the user the whole proposed YAML, with one sentence explaining the basis for each choice. After the YAML give a numbered decision list: the first item is "write as proposed", the rest are common alternatives: switch primary provider, switch a tier's model or reasoning level, change permission mode, switch to load balancing (format in [Configuration and dispatch](dispatch.md)). When the host has a native question tool you may use it to collect the choice; otherwise end the turn and wait for the user's reply.
 
-## 4. 写入并验证
+## 4. Write and verify
 
-用户确认后创建目录并写入配置文件，再对三档各跑一次自检；建议含备用别名时，每档再以备用别名为起点跑一次，确认 `selection.agent` 等于该别名：
+After user confirmation, create the directory and write the configuration file, then run one self-test per tier; when the proposal includes a backup alias, also run each tier once starting from the backup alias and confirm `selection.agent` equals that alias:
 
 ```bash
-bb-dispatch --difficulty simple --task '配置自检' --dry-run
-bb-dispatch --difficulty medium --task '配置自检' --dry-run
-bb-dispatch --difficulty complex --task '配置自检' --dry-run
-bb-dispatch --difficulty simple --task '配置自检' --dry-run --fallback-from <备用别名>
-bb-dispatch --difficulty medium --task '配置自检' --dry-run --fallback-from <备用别名>
-bb-dispatch --difficulty complex --task '配置自检' --dry-run --fallback-from <备用别名>
+bb-dispatch --difficulty simple --task 'config self-test' --dry-run
+bb-dispatch --difficulty medium --task 'config self-test' --dry-run
+bb-dispatch --difficulty complex --task 'config self-test' --dry-run
+bb-dispatch --difficulty simple --task 'config self-test' --dry-run --fallback-from <backup-alias>
+bb-dispatch --difficulty medium --task 'config self-test' --dry-run --fallback-from <backup-alias>
+bb-dispatch --difficulty complex --task 'config self-test' --dry-run --fallback-from <backup-alias>
 ```
 
-原派发带了 `--config`、`--environment`、`--project` 或 `--permission-mode` 时，自检带同样的参数；原派发显式传了 `--reasoning` 的，对该难度再多跑一次带它的自检。不在 BB 线程里时必须显式传 `--environment <已有环境 ID>`，脚本没有环境无法校验。
+When the original dispatch carried `--config`, `--environment`, `--project`, or `--permission-mode`, the self-test carries the same parameters; when the original dispatch explicitly passed `--reasoning`, run one extra self-test with it for that difficulty. When not inside a BB thread you must explicitly pass `--environment <existing-environment-ID>`; the script cannot validate without an environment.
 
-全部通过后告诉用户：配置文件在哪里、三档各自会用什么 provider 和模型、备用候选是否也通过、以后直接编辑该文件就能调整，然后用原来的全部参数继续原本的派发任务。某档失败时把错误原话和修正方案告诉用户，按用户确认的方向改完重跑该档；备用别名某档失败同样处理，首选通过不算全部通过。修正只限于用户已确认范围内的字段，换成未确认的模型或 provider 要先回到第 3 步。
+After all pass, tell the user: where the configuration file is, which provider and model each of the three tiers will use, whether the backup candidates also passed, and that editing the file directly adjusts it later; then continue the original dispatch task with all original parameters. When a tier fails, tell the user the verbatim error and a fix, apply it in the direction the user confirms, and rerun that tier; handle a backup alias failing a tier the same way — the primary passing does not count as all passing. Fixes are limited to fields within the scope the user has confirmed; switching to an unconfirmed model or provider requires going back to step 3.
 
-## 完成条件
+## Completion criteria
 
-配置文件已写入、三档自检（含备用别名）都通过、用户知道配置路径和调整方式，原本的派发任务已继续。
+The configuration file is written, all three tier self-tests (including backup aliases) pass, the user knows the configuration path and how to adjust it, and the original dispatch task has continued.

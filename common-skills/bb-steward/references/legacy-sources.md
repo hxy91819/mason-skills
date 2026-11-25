@@ -1,36 +1,50 @@
-# 旧项目来源：Git-ref 工作簿与历史流水账
+# Legacy sources: Git-ref workbooks and historical running logs
 
-只有两类旧项目读这份：工作簿仍放在项目仓库、以远端分支为准的；要求帐沿用既有 Markdown 历史流水账的。本地离线
-工作簿（`.local/steward/`）不涉及。
+Only two kinds of old projects read this: those whose workbook still lives in the project repository with a remote
+branch as the source of truth, and those whose requirement ledger continues an existing Markdown historical running
+log. Local offline workbooks (`.local/steward/`) are not affected.
 
-## Git-ref 模式
+## Git-ref mode
 
-工作簿以远端分支为准、主工作区不在该分支时，登记传 `--ref`：
+When the workbook's source of truth is a remote branch and the main worktree is not on that branch, pass `--ref` at
+registration:
 
 ```bash
-python3 scripts/steward_watch.py register --workbook <工作簿路径> --ref origin/<分支> [--name <简称>]
+python3 scripts/steward_watch.py register --workbook <workbook path> --ref origin/<branch> [--name <short name>]
 ```
 
-- 插件与看门狗保留原线程和主机归属，Git 的远端/分支也是同目标匹配的一部分：新线程接任 Git 目标须显式传相同
-  `--ref`；同线程重登记不传时沿用原 ref，不解除绑定。
-- 每次主动打开或刷新 Git 入口先核远端并固定 SHA，工作簿、帐目及相对链接按同 SHA 读取，磁盘无文件也可使用。
-  远端不可达、ref 删除或超时会明确报不能核实，不回退旧本地 ref。“刷新远端文档”才重新核远端。
-- 正文仅在插件中只读展示，不生成持久工作簿副本。大文档与目录分页显示，未读完时明确标示并提供继续按钮，续页
-  仍固定同 SHA。历史索引中的目录链接（如 `2026-10/`）由插件列出目录项，再导航到原分片。
-- 通过插件 CLI/RPC 读取时，`document` 默认返回第一页及 `next: {path, sha, offset}` 或 `null`。续读参数、offset
-  单位和输出边界见插件自带的 steward skill；需要诊断或导出正文时按名称加载它，用实际返回的 `next` 续读，不把
-  部分正文当完整内容。
-- 确定性检查：`python3 scripts/steward_workbook.py --mode check --repo <仓库绝对路径> --ref origin/<分支> --file <仓库相对路径>`，
-  `ledger-check` 同样支持。一次操作已固定 SHA 时用 `--revision <40位SHA>` 代替 `--ref`，输出的 snapshot 标明该
-  版本，不声称最新。Git 来源不支持 `should-commit`，提交判断针对实际编辑的本地工作簿。
-- `init` 发现目标为空且项目有 `docs/steward/` 时会复制旧文件，原副本保留；按它的提示经 MR 删除旧副本并更新
-  项目 `AGENTS.md` 的路由行。
+- The plugin and watchdog keep the original thread and host ownership, and Git's remote/branch is also part of
+  same-goal matching: a new thread taking over a Git goal must pass the same `--ref` explicitly; when the same thread
+  re-registers without it, the original ref is kept and the binding is not released.
+- Every time the Git entry is actively opened or refreshed, the remote is checked first and a SHA pinned; the
+  workbook, ledgers and relative links are read at that same SHA, usable even with no file on disk. An unreachable
+  remote, deleted ref or timeout is reported explicitly as unverifiable, never falling back to an old local ref.
+  Only "refresh remote document" re-checks the remote.
+- The body is shown read-only in the plugin; no persistent workbook copy is generated. Large documents and
+  directories are paginated; when not fully read, this is marked clearly with a continue button, and continuation
+  pages stay pinned to the same SHA. Directory links in the history index (e.g. `2026-10/`) are listed by the plugin,
+  then navigate to the original shard.
+- When reading via the plugin CLI/RPC, `document` returns the first page by default plus `next: {path, sha, offset}`
+  or `null`. Continuation parameters, offset units and output limits are in the plugin's own steward skill; when you
+  need to diagnose or export the body, load it by name, continue with the `next` actually returned, and never treat a
+  partial body as complete.
+- Deterministic checks: `python3 scripts/steward_workbook.py --mode check --repo <absolute repo path> --ref origin/<branch> --file <repo-relative path>`;
+  `ledger-check` supports the same. When an operation has already pinned a SHA, use `--revision <40-char SHA>` instead
+  of `--ref`; the output snapshot names that version and does not claim to be latest. Git sources do not support
+  `should-commit`; commit decisions apply to the locally edited workbook.
+- When `init` finds the target empty and the project has `docs/steward/`, it copies the old files and keeps the
+  original copies; follow its prompts to delete the old copies via MR and update the routing line in the project
+  `AGENTS.md`.
 
-## 历史流水账
+## Historical running log
 
-既有 Markdown 历史流水账经用户确认沿用时，工作簿标头精确标为 `[要求帐（历史流水账）](相对索引.md)`，保留旧账和
-索引链接，不改写成五列表或编造状态统计。平台可查看索引及其相对账目链接，并标示标准统计不适用。
+When an existing Markdown historical running log is kept with the user's confirmation, the workbook header is marked
+exactly `[要求帐（历史流水账）](relative-index.md)` (the label is a literal the script matches), keeping the old ledger
+and index links, not rewriting them into the five-column table or inventing status statistics. The platform can view
+the index and its relative ledger links, and marks standard statistics as not applicable.
 
-- `ledger-check --ledger-kind history` 返回不适用、没有标准统计；标准要求帐仍用默认校验。
-- 看门狗不查历史流水账的停记，接任时也不给 `ledger_gap`，接任按「没有 `ledger_gap`」处理。
-- 标头没有要求帐入口是待补缺口，结构检查通过不代表入口齐全。
+- `ledger-check --ledger-kind history` returns not-applicable with no standard statistics; standard ledgers still use
+  the default validation.
+- The watchdog does not check historical running logs for stale recording, and takeover gives no `ledger_gap`;
+  takeover proceeds as "without `ledger_gap`".
+- A header without a ledger entry is a gap to fill; passing the structure check does not mean the entry is present.

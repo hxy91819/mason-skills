@@ -1,58 +1,75 @@
-# 工作簿模板
+# Workbook template
 
-默认路径 `<主检出根>/.local/steward/<topic>.md`，项目 AGENTS.md 另有指定时以项目为准。目录缺失先运行 `steward_workbook.py --mode init`；工作簿与要求帐只在该目录的本地 git 提交，不推送、不开 MR。三段固定，没有内容的段写"无"。准入判据见 SKILL.md「工作簿」，路线状态见
-「收尾对账」。项目已有路线图或决策登记制度时，路线与关键决策两段只放链接和当前位置，模板里的示例行是给没有
-这些制度的项目用的。
+Default path `<main checkout root>/.local/steward/<topic>.md`; if the project AGENTS.md specifies otherwise, the
+project wins. If the directory is missing, run `steward_workbook.py --mode init` first; the workbook and requirement
+ledger are committed only to the local git in that directory, never pushed, no MR. The three sections are fixed;
+a section with no content says `无` (none). Admission criteria: SKILL.md "Workbook (工作簿)"; route states: "Closing
+reconciliation (收尾对账)". When the project already has a roadmap or decision registry, the route and key-decision
+sections hold only links and the current position; the example lines in the template are for projects without them.
+
+Section headings, the `←` state keywords, the to-do table header, the to-do status values (`待办`/`已完成`), the
+"why only the user" categories and `不挡` are literals parsed by `scripts/`; keep them verbatim. Free-text content in
+`<…>` placeholders may be written in any language.
 
 ```markdown
-# <目标一句话>
+# <goal in one sentence>
 
 更新：<YYYY-MM-DD>；逐项状态、结果与材料见[要求帐](<topic>-要求帳.md)。
 
 ## 路线
 
-- [x] <阶段 1：一句话说明产出>
-- [ ] <阶段 2> ← 进行中 thr_xxx
-- [ ] <阶段 3> ← 等用户
-- [ ] <阶段 4> ← 定时 <MM-DD HH:MM> <到点做什么>
-- [ ] <阶段 5> ← 排在 <阶段 2> 后：<要用阶段 2 的什么产出>
+- [x] <Stage 1: one sentence on the output>
+- [ ] <Stage 2> ← 进行中 thr_xxx
+- [ ] <Stage 3> ← 等用户
+- [ ] <Stage 4> ← 定时 <MM-DD HH:MM> <what to do at that time>
+- [ ] <Stage 5> ← 排在 <Stage 2> 后：<which output of Stage 2 it needs>
 
 ## 关键决策
 
-- <YYYY-MM-DD> <决定一句话>。原因：<一句>。影响：<哪些阶段或模块>。
+- <YYYY-MM-DD> <decision in one sentence>. Reason: <one sentence>. Impact: <which stages or modules>.
 
 ## 用户待办
 
 | 编号 | 状态 | 事项 | 背景 | 建议 | 为什么只能用户做 | 挡住 | 提出 | 完成 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| D1 | 待办 | <做什么> | <这是什么、为什么现在要用户做、不做会怎样；不用内部代号> | <推荐的答案> | 真机线下：<只有用户手上有的设备或会话> | <阶段 3> | <YYYY-MM-DD> | — |
-| D2 | 待办 | <做什么> | ... | ... | 凭据账号：<只有用户持有的令牌或权限> | 不挡 | <YYYY-MM-DD> | — |
-| D3 | 已完成 | <做什么> | ... | — | ... | ... | <YYYY-MM-DD> | — |
+| D1 | 待办 | <what to do> | <what it is, why the user must do it now, what happens if not; no internal codenames> | <recommended answer> | 真机线下：<device or session only the user has> | <Stage 3> | <YYYY-MM-DD> | — |
+| D2 | 待办 | <what to do> | ... | ... | 凭据账号：<token or permission only the user holds> | 不挡 | <YYYY-MM-DD> | — |
+| D3 | 已完成 | <what to do> | ... | — | ... | ... | <YYYY-MM-DD> | — |
 ```
 
-每次编辑后运行 `steward_workbook.py --mode verify --file <工作簿路径>`，由脚本按新加坡时间写入完成时间、排序并校验；通过后提交。保留脚本生成的路线时间注释。历史完成时间缺失时显示「待核实」，不猜日期。
+To-do table columns: number | status | item | background | recommendation | why only the user can do it | blocks |
+raised | completed.
 
-同一项目有多个管家时，待办编号带本管家的短前缀（如 `HST-D1`），所有管家共用的约定写在同目录 `共用约定.md`，
-关键决策里放一行 `- 共用约定见[共用约定](共用约定.md)。`
+After every edit run `steward_workbook.py --mode verify --file <workbook path>`; the script writes completion times
+in Singapore time, sorts and validates; commit once it passes. Keep the route time comments the script generates.
+Missing historical completion times show as `待核实` (to be verified); never guess dates.
 
-项目 `AGENTS.md` 加一行，使任何会话都能接上：
+When one project has several stewards, to-do numbers carry this steward's short prefix (e.g. `HST-D1`); conventions
+shared by all stewards go in `共用约定.md` in the same directory, and key decisions hold one line
+`- 共用约定见[共用约定](共用约定.md)。`
+
+Add one line to the project `AGENTS.md` so any session can pick up:
 
 ```markdown
-管家工作簿在主检出根的 `.local/steward/<topic>.md`（本机目录，被 git 忽略，不在仓库）；没有就按 bb-steward init 建，存在时先读，只报未完成的用户待办。
+The steward workbook is at `.local/steward/<topic>.md` under the main checkout root (a local directory, ignored by git, not in the repo); if missing, create it with bb-steward init; if present, read it first and report only open user to-dos.
 ```
 
-## 要求帐模板
+## Requirement ledger template
 
-默认路径 `.local/steward/<topic>-要求帳.md`。准入、写入时机与状态语意见 SKILL.md「要求帐」。每个时期一张表，
-逐项原地更新并保留历史列；要求帐独立于工作簿三段与一屏门禁。替换占位行后再校验。
+Default path `.local/steward/<topic>-要求帳.md`. Admission, when to write and status semantics: SKILL.md
+"Requirement ledger (要求帐)". One table per period; update rows in place and keep historical rows; the ledger is
+independent of the workbook's three sections and one-screen gate. Replace the placeholder rows before validating.
+
+The period heading format `## <YYYY-MM-DD> 起（<topic>）`, the five column headers and the seven status values are
+literals parsed by `scripts/`; keep them verbatim.
 
 ```markdown
-# <目标>：使用者要求帳
+# <goal>: user requirement ledger
 
-## <YYYY-MM-DD> 起（<主题>）
+## <YYYY-MM-DD> 起（<topic>）
 
 | 日期 | 要求 | 狀態 | 結果 | 材料 |
 | --- | --- | --- | --- | --- |
-| <MM-DD> | <用户交代的独立要求> | 進行中 | <当前进展或依赖> | — |
-| 10-27 | 优化 CI 性能 | 完成 | CI 21→8 分（-62%），纯文档检查 52 秒 | [PR #117](https://github.com/example/project/pull/117) |
+| <MM-DD> | <one independent request from the user> | 進行中 | <current progress or dependency> | — |
+| 10-27 | Optimize CI performance | 完成 | CI 21→8 min (-62%), docs-only check 52 s | [PR #117](https://github.com/example/project/pull/117) |
 ```
