@@ -22,6 +22,10 @@ class DispatchTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.config = Path(self.temp.name) / 'config.yaml'
         self.ledger = Path(self.temp.name) / 'ledger.json'
+        # Keep overlays hermetic: never read the real user's overlay directory.
+        overlay_dir = mock.patch.dict(os.environ, {'BB_DISPATCH_OVERLAY_DIR': str(Path(self.temp.name) / 'overlays')})
+        overlay_dir.start()
+        self.addCleanup(overlay_dir.stop)
         self.config.write_text('''version: 2
 permission_mode: accept-edits
 defaults: {simple: primary, medium: primary, complex: specialist}
@@ -1480,6 +1484,117 @@ environments:
         self.turn_ended(tid, 1295)
         scheduled = self.on_failure(tid, now=1300)
         self.assertEqual(scheduled['action'], 'retry-scheduled')
+
+    # Temporary routing overlays.
+    OVERLAY = '''defaults: {simple: [trial, primary], complex: trial}
+agents:
+  trial:
+    provider: specialist
+    routes: {default: {model: deep-model, reasoning: max}}
+'''
+
+    def overlay_env(self, thread: str | None = 'parent'):
+        if thread:
+            return mock.patch.dict(os.environ, {'BB_THREAD_ID': thread})
+        return mock.patch.dict(os.environ, {k: v for k, v in os.environ.items() if k != 'BB_THREAD_ID'}, clear=True)
+
+    def set_overlay(self, text=None, *extra, now=1000):
+        source = Path(self.temp.name) / 'overlay-input.yaml'
+        source.write_text(self.OVERLAY if text is None else text)
+        args = m.parser().parse_args(['--config', str(self.config), '--overlay-set', str(source), *extra])
+        return m.overlay_set_command(args, now=now)
+
+    def test_overlay_routes_only_its_thread_and_leaves_main_config_untouched(self):
+        before = self.config.read_bytes()
+        with self.overlay_env():
+            self.set_overlay(None, '--note', 'user: try specialist max')
+            result = m.dispatch(self.args(), self.fake, now=1100)
+        self.assertEqual(self.config.read_bytes(), before)
+        selection = result['selection']
+        self.assertEqual((selection['agent'], selection['reasoning']), ('trial', 'max'))
+        self.assertEqual(selection['candidates'], ['trial', 'primary'])
+        self.assertEqual(selection['overlay']['note'], 'user: try specialist max')
+        self.assertTrue(any('overlay active' in w for w in selection['warnings']))
+        self.assertTrue(json.loads(self.ledger.read_text())['entries'][0]['overlay'])
+        # Unset difficulties keep the main config's route.
+        with self.overlay_env():
+            medium = m.dispatch(self.args('--dry-run'), self.fake, now=1100)
+        self.assertEqual(medium['selection']['agent'], 'trial')
+        args = self.args('--dry-run')
+        args.difficulty = 'medium'
+        with self.overlay_env():
+            self.assertEqual(m.dispatch(args, self.fake, now=1100)['selection']['agent'], 'primary')
+        with self.overlay_env('other_thread'):
+            other = m.dispatch(self.args('--dry-run'), self.fake, now=1100)
+        self.assertEqual(other['selection']['agent'], 'primary')
+        self.assertNotIn('overlay', other['selection'])
+
+    def test_overlay_beats_environment_block(self):
+        args = self.args('--environment', 'env_other', '--dry-run')
+        args.difficulty = 'complex'
+        with self.overlay_env():
+            self.set_overlay()
+            selection = m.dispatch(args, self.fake, now=1100)['selection']
+        self.assertEqual((selection['agent'], selection['provider']), ('trial', 'specialist'))
+
+    def test_expired_overlay_falls_back_to_main_config_with_warning(self):
+        with self.overlay_env():
+            self.set_overlay(None, '--hours', '1', now=1000)
+            selection = m.dispatch(self.args('--dry-run'), self.fake, now=1000 + 3601)['selection']
+        self.assertEqual(selection['agent'], 'primary')
+        self.assertTrue(selection['overlay']['expired'])
+        self.assertTrue(any('expired' in w for w in selection['warnings']))
+
+    def test_overlay_set_replaces_clear_removes_and_show_lists(self):
+        with self.overlay_env():
+            self.set_overlay()
+            self.set_overlay('defaults: {simple: specialist}\n')
+            self.assertEqual(m.dispatch(self.args('--dry-run'), self.fake, now=1100)['selection']['agent'], 'specialist')
+            shown = m.overlay_show_command(now=1100)['overlays']
+            self.assertEqual([(o['thread'], o['active'], o['defaults']) for o in shown],
+                             [('parent', True, {'simple': 'specialist'})])
+            m.overlay_clear_command(m.parser().parse_args(['--overlay-clear']))
+            self.assertEqual(m.dispatch(self.args('--dry-run'), self.fake, now=1100)['selection']['agent'], 'primary')
+            with self.assertRaises(m.DispatchError):
+                m.overlay_clear_command(m.parser().parse_args(['--overlay-clear']))
+
+    def test_overlay_set_prunes_other_expired_overlays(self):
+        with self.overlay_env('old_thread'):
+            self.set_overlay(None, '--hours', '1', now=1000)
+        with self.overlay_env():
+            result = self.set_overlay(None, now=1000 + 3601)
+        self.assertEqual(result['pruned_expired'], ['old_thread'])
+
+    def test_overlay_set_rejects_bad_input_without_writing(self):
+        bad = {
+            'unknown key': 'defaults: {simple: primary}\npermission_mode: full\n',
+            'undefined alias': 'defaults: {simple: ghost}\n',
+            'bad difficulty': 'defaults: {hard: primary}\n',
+            'route missing': 'defaults: {complex: trial}\nagents: {trial: {provider: specialist, routes: {simple: {model: deep-model}}}}\n',
+            'empty': '{}\n',
+            'main alias lacks route': 'defaults: {complex: primary}\n',
+            'replaced alias breaks untouched route': 'agents: {primary: {provider: primary, routes: {simple: {model: fast-model}}}}\n',
+            'alias only in one environment': 'defaults: {simple: envonly}\n',
+        }
+        config = m.yaml.safe_load(self.config.read_text())
+        config['environments']['env_other']['agents']['envonly'] = {
+            'provider': 'remote-provider', 'routes': {'default': {'model': 'remote-model'}}}
+        self.config.write_text(m.yaml.safe_dump(config))
+        with self.overlay_env():
+            for name, text in bad.items():
+                with self.subTest(name), self.assertRaises(m.DispatchError):
+                    self.set_overlay(text)
+            self.assertFalse(m.overlay_path('parent').exists())
+        with self.overlay_env(None), self.assertRaises(m.DispatchError):
+            self.set_overlay()
+
+    def test_corrupt_overlay_fails_dispatch_instead_of_silently_using_main_config(self):
+        with self.overlay_env():
+            path = m.overlay_path('parent')
+            path.parent.mkdir(parents=True)
+            path.write_text('defaults: [oops\n')
+            with self.assertRaises(m.DispatchError):
+                m.dispatch(self.args('--dry-run'), self.fake, now=1100)
 
 if __name__ == '__main__':
     unittest.main()

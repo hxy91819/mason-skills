@@ -20,6 +20,7 @@ success, 2 on failure. Requires Python 3.10+, PyYAML and bb on PATH.
 """
 import argparse
 import contextlib
+import datetime
 import hashlib
 import json
 import math
@@ -1341,6 +1342,182 @@ def concurrency_command(args, call=bb):
     return run()
 
 
+# Temporary routing overlays: a user-requested route change scoped to one parent thread, layered over the
+# main config without editing it. Only defaults and agents can be overridden; everything else (projects,
+# permissions, notifications, fast) still comes from the main config.
+OVERLAY_ROUTING_KEYS = ("defaults", "agents")
+OVERLAY_META_KEYS = ("thread", "note", "created_at", "expires_at")
+OVERLAY_DEFAULT_HOURS = 24
+
+
+def overlay_dir():
+    return Path(os.environ.get("BB_DISPATCH_OVERLAY_DIR", str(Path.home() / ".config/bb-dispatch/overlays"))).expanduser()
+
+
+def overlay_path(thread):
+    thread = string(thread, "overlay thread")
+    if not all(ch.isalnum() or ch in "_-" for ch in thread):
+        raise DispatchError(f"invalid thread ID for an overlay: {thread!r}.")
+    return overlay_dir() / f"{thread}.yaml"
+
+
+def iso_time(ts):
+    return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).isoformat(timespec="seconds")
+
+
+def parse_overlay(body, where):
+    body = mapping(body, where)
+    unknown = sorted(set(body) - set(OVERLAY_ROUTING_KEYS) - set(OVERLAY_META_KEYS))
+    if unknown:
+        raise DispatchError(f"{where} only overrides defaults and agents; unknown keys: {unknown}.")
+    defaults = mapping(body.get("defaults", {}), f"{where} defaults")
+    bad = sorted(set(defaults) - set(DIFFICULTIES))
+    if bad:
+        raise DispatchError(f"{where} defaults only takes simple, medium or complex; got {bad}.")
+    agents = mapping(body.get("agents", {}), f"{where} agents")
+    if not defaults and not agents:
+        raise DispatchError(f"{where} must set defaults or agents.")
+    return body
+
+
+def overlay_expiry(body, where):
+    try:
+        return int(datetime.datetime.fromisoformat(string(body.get("expires_at"), f"{where} expires_at")).timestamp())
+    except ValueError as exc:
+        raise DispatchError(f"{where} expires_at is not an ISO time: {exc}") from exc
+
+
+def read_overlay(path):
+    try:
+        raw = yaml.safe_load(path.read_text())
+    except (OSError, yaml.YAMLError) as exc:
+        raise DispatchError(f"cannot read overlay {path}: {exc}") from exc
+    body = parse_overlay(raw, f"overlay {path}")
+    return body, overlay_expiry(body, f"overlay {path}")
+
+
+def load_overlay(now):
+    """Active overlay for the current BB thread, or None. An unreadable overlay fails the dispatch rather than silently routing by the main config."""
+    thread = os.environ.get("BB_THREAD_ID")
+    if not thread:
+        return None
+    path = overlay_path(thread)
+    if not path.exists():
+        return None
+    body, expires = read_overlay(path)
+    info = {"path": str(path), "thread": thread, "note": body.get("note"), "expires_at": iso_time(expires),
+            "overrides": [f"defaults.{k}" for k in body.get("defaults", {})] + [f"agents.{k}" for k in body.get("agents", {})]}
+    if expires <= now:
+        return {**info, "expired": True}
+    return {**info, "expired": False, "defaults": body.get("defaults", {}), "agents": body.get("agents", {})}
+
+
+def overlay_set_command(args, now=None):
+    now = int(time.time() if now is None else now)
+    thread = args.overlay_thread or os.environ.get("BB_THREAD_ID")
+    if not thread:
+        raise DispatchError("cannot determine the thread the overlay applies to; run inside a BB thread or pass --overlay-thread <thread-ID>.")
+    if args.hours is None or args.hours <= 0:
+        raise DispatchError("--hours must be a positive number.")
+    source = sys.stdin.read() if args.overlay_set == "-" else Path(args.overlay_set).expanduser().read_text()
+    try:
+        raw = yaml.safe_load(source)
+    except yaml.YAMLError as exc:
+        raise DispatchError(f"overlay input is not valid YAML: {exc}") from exc
+    body = parse_overlay(raw, "overlay input")
+    body = {k: body[k] for k in OVERLAY_ROUTING_KEYS if k in body}
+    # Check the merged routes resolve against the main config, which is only read here, never written.
+    try:
+        config = mapping(yaml.safe_load(Path(args.config).expanduser().read_text()), "config")
+    except (OSError, yaml.YAMLError) as exc:
+        raise DispatchError(f"cannot read config {args.config}: {exc}") from exc
+    provider_limits(body.get("agents", {}))
+    provider_model_scopes(body.get("agents", {}))
+    overlay_defaults, overlay_agents = body.get("defaults", {}), body.get("agents", {})
+    # Compose exactly as dispatch does: main config, then one environment block (or none, as in path mode), then
+    # the overlay. Every difficulty the overlay touches must keep at least one resolvable candidate in each.
+    scopes = [("main config", {})] + [
+        (f"environment {env_id}", mapping(env, "environment config"))
+        for env_id, env in mapping(config.get("environments", {}), "environments").items()
+    ]
+    probe = argparse.Namespace(task="", fallback_from=None)
+    for scope, env in scopes:
+        defaults = {**mapping(config.get("defaults", {}), "defaults"),
+                    **mapping(env.get("defaults", {}), "environment defaults"), **overlay_defaults}
+        agents = {**mapping(config.get("agents", {}), "agents"),
+                  **mapping(env.get("agents", {}), "environment agents"), **overlay_agents}
+        for route in DIFFICULTIES:
+            if route not in defaults:
+                continue
+            chain = candidate_chain(probe, defaults, route)[3]
+            if route not in overlay_defaults and not set(chain) & set(overlay_agents):
+                continue
+            missing = [alias for alias in chain if alias not in agents] if route in overlay_defaults else []
+            if missing:
+                raise DispatchError(f"overlay defaults.{route} names agents undefined in {scope}: {missing}; define them under overlay agents.")
+            errors = []
+            for alias in chain:
+                try:
+                    agent = mapping(agents.get(alias), f"agents.{alias}")
+                    string(agent.get("provider"), f"agents.{alias}.provider")
+                    model_and_reasoning(agent, alias, route)
+                    break
+                except DispatchError as exc:
+                    errors.append(str(exc))
+            else:
+                raise DispatchError(f"with this overlay, defaults.{route} has no resolvable candidate in {scope}: {'; '.join(errors)}")
+    expires = now + int(args.hours * 3600)
+    record = {"thread": thread, "note": args.note, "created_at": iso_time(now), "expires_at": iso_time(expires), **body}
+    if args.note is None:
+        del record["note"]
+    path = overlay_path(thread)
+    if args.dry_run:
+        return {"dry_run": True, "path": str(path), "overlay": record}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
+    tmp.write_text(yaml.safe_dump(record, allow_unicode=True, sort_keys=False))
+    tmp.replace(path)
+    pruned = []
+    for other in overlay_dir().glob("*.yaml"):
+        if other == path:
+            continue
+        try:
+            if read_overlay(other)[1] <= now:
+                other.unlink()
+                pruned.append(other.stem)
+        except (DispatchError, OSError):
+            continue
+    return {"set": True, "path": str(path), "overlay": record, "pruned_expired": pruned}
+
+
+def overlay_show_command(now=None):
+    now = int(time.time() if now is None else now)
+    overlays = []
+    for path in sorted(overlay_dir().glob("*.yaml")) if overlay_dir().is_dir() else []:
+        try:
+            body, expires = read_overlay(path)
+        except DispatchError as exc:
+            overlays.append({"path": str(path), "error": str(exc)})
+            continue
+        overlays.append({"thread": body.get("thread", path.stem), "path": str(path), "note": body.get("note"),
+                         "expires_at": iso_time(expires), "active": expires > now,
+                         **{k: body[k] for k in OVERLAY_ROUTING_KEYS if k in body}})
+    return {"overlay_dir": str(overlay_dir()), "current_thread": os.environ.get("BB_THREAD_ID"), "overlays": overlays}
+
+
+def overlay_clear_command(args):
+    thread = args.overlay_clear if args.overlay_clear != "-" else os.environ.get("BB_THREAD_ID")
+    if not thread:
+        raise DispatchError("cannot determine which overlay to clear; pass the thread ID.")
+    path = overlay_path(thread)
+    if not path.exists():
+        raise DispatchError(f"no overlay for thread {thread}; nothing changed.")
+    if args.dry_run:
+        return {"dry_run": True, "would_clear": str(path)}
+    path.unlink()
+    return {"cleared": str(path)}
+
+
 def dispatch(args, call=bb, now=None):
     try:
         config = mapping(yaml.safe_load(Path(args.config).expanduser().read_text()), "config")
@@ -1348,22 +1525,26 @@ def dispatch(args, call=bb, now=None):
         raise DispatchError(f"cannot read config {args.config}: {exc}") from exc
     if config.get("version") != 2:
         raise DispatchError("config must contain version: 2.")
+    overlay = load_overlay(int(time.time() if now is None else now))
     escalate_from = resolve_escalation(args, call)
     # Per-environment limits also decide whether to take the lock; the actual limit is computed after resolving the target environment.
     configured = bool(provider_limits(config.get("agents", {})))
     provider_model_scopes(config.get("agents", {}))
+    if overlay and not overlay["expired"]:
+        configured = bool(provider_limits(overlay["agents"])) or configured
+        provider_model_scopes(overlay["agents"])
     for override in mapping(config.get("environments", {}), "environments").values():
         configured = bool(provider_limits(mapping(override, "environment config").get("agents", {}))) or configured
         provider_model_scopes(mapping(override, "environment config").get("agents", {}))
     if not configured:
-        return dispatch_unlocked(args, call, now, config, None, escalate_from)
+        return dispatch_unlocked(args, call, now, config, None, escalate_from, overlay)
     if args.dry_run:
-        return dispatch_unlocked(args, call, now, config, ConcurrencySlots(call, read_only=True), escalate_from)
+        return dispatch_unlocked(args, call, now, config, ConcurrencySlots(call, read_only=True), escalate_from, overlay)
     with concurrency_lock():
-        return dispatch_unlocked(args, call, now, config, ConcurrencySlots(call), escalate_from)
+        return dispatch_unlocked(args, call, now, config, ConcurrencySlots(call), escalate_from, overlay)
 
 
-def dispatch_unlocked(args, call, now, config, slots, escalate_from):
+def dispatch_unlocked(args, call, now, config, slots, escalate_from, overlay=None):
     now = int(time.time() if now is None else now)
     # A task copied from a child's first message drops its report protocol first, so redispatch keeps the same
     # candidate order and title.
@@ -1409,6 +1590,11 @@ def dispatch_unlocked(args, call, now, config, slots, escalate_from):
     )
     defaults = {**mapping(config.get("defaults", {}), "defaults"), **mapping(override.get("defaults", {}), "environment defaults")}
     agents = {**mapping(config.get("agents", {}), "agents"), **mapping(override.get("agents", {}), "environment agents")}
+    # A user-requested temporary overlay wins over both the main config and environment blocks for the keys it sets.
+    overlay_active = bool(overlay) and not overlay["expired"]
+    if overlay_active:
+        defaults = {**defaults, **overlay["defaults"]}
+        agents = {**agents, **overlay["agents"]}
     limits = provider_limits(agents)
     scopes = provider_model_scopes(agents)
 
@@ -1557,6 +1743,16 @@ def dispatch_unlocked(args, call, now, config, slots, escalate_from):
                 parent_notifications=notifications if parent.get("id") else None)
     if floor_warnings:
         plan["warnings"] = floor_warnings
+    if overlay:
+        plan["overlay"] = {k: overlay[k] for k in ("path", "note", "expires_at", "overrides", "expired")}
+        if overlay_active:
+            plan.setdefault("warnings", []).append(
+                f"temporary routing overlay active until {overlay['expires_at']} ({', '.join(overlay['overrides'])}); "
+                f"main config unchanged. Clear it with --overlay-clear.")
+        else:
+            plan.setdefault("warnings", []).append(
+                f"temporary routing overlay expired at {overlay['expires_at']}; routing by the main config. "
+                f"Remove it with --overlay-clear or renew it only if the user asks.")
     if escalate_from:
         plan["escalated_from"] = escalate_from
     if unknown:
@@ -1597,7 +1793,7 @@ def dispatch_unlocked(args, call, now, config, slots, escalate_from):
             if entry is not None:
                 append_ledger_entry(fresh, entry, now=now)
                 # The review log outlives the live window and must link dispatch chains and grading reasons, so it carries the same minimal facts.
-                extra = {k: entry[k] for k in ("purpose", "parent_thread", "reasoning", "task_chars", "unknown", "escalated_from")
+                extra = {k: entry[k] for k in ("purpose", "parent_thread", "reasoning", "task_chars", "unknown", "escalated_from", "overlay")
                          if entry.get(k) is not None}
                 if entry.get("requested_difficulty") != entry["difficulty"]:
                     extra["requested_difficulty"] = entry.get("requested_difficulty")
@@ -1655,6 +1851,8 @@ def dispatch_unlocked(args, call, now, config, slots, escalate_from):
             entry["unknown"] = unknown[:UNKNOWN_MAX_CHARS]
         if escalate_from:
             entry["escalated_from"] = escalate_from
+        if overlay_active:
+            entry["overlay"] = True
     merged = persist(entry=entry)
     if entry is not None and merged is not None:
         summary = summarize_ledger(merged, now=now)
@@ -1696,6 +1894,13 @@ def parser():
     modes.add_argument("--followups", action="store_true", help="read-only list of messages the parent or user added after the first delivery of threads dispatched in the last --days days, for rework review")
     p.add_argument("--days", type=int, default=3, help="days to look back with --followups (default 3)")
     modes.add_argument("--record-outcome", "--record-decision", dest="record_outcome", metavar="THREAD_ID", help="correct a run outcome by stable thread ID (overwrites, never appends)")
+    modes.add_argument("--overlay-set", metavar="FILE", help="only when the user asks for a temporary route: install a defaults/agents overlay (YAML file, or - for stdin) "
+                       "for the current BB thread (or --overlay-thread) on top of the main config, which stays untouched; replaces that thread's previous overlay")
+    modes.add_argument("--overlay-show", action="store_true", help="read-only list of temporary routing overlays and whether each is active")
+    modes.add_argument("--overlay-clear", metavar="THREAD_ID", nargs="?", const="-", help="remove the overlay of the given thread, default the current BB thread")
+    p.add_argument("--overlay-thread", metavar="THREAD_ID", help="thread whose dispatches --overlay-set applies to; defaults to the current BB thread")
+    p.add_argument("--hours", type=float, default=OVERLAY_DEFAULT_HOURS, help=f"lifetime of --overlay-set in hours (default {OVERLAY_DEFAULT_HOURS})")
+    p.add_argument("--note", help="with --overlay-set: the user's request in a short phrase, kept in the overlay for later review")
     p.add_argument("--outcome", choices=list(OUTCOME_KEYS), help="outcome for --record-outcome; completed is recorded automatically from thread status, failed by --on-failure after retries are exhausted, and can also be set manually for abandoned tasks; every failed* value counts as a consecutive failure")
     return p
 
@@ -1705,6 +1910,15 @@ def main():
     try:
         if args.concurrency_status or args.release_reservation:
             print(json.dumps(concurrency_command(args), ensure_ascii=False, indent=2))
+            return 0
+        if args.overlay_set is not None:
+            print(json.dumps(overlay_set_command(args), ensure_ascii=False, indent=2))
+            return 0
+        if args.overlay_show:
+            print(json.dumps(overlay_show_command(), ensure_ascii=False, indent=2))
+            return 0
+        if args.overlay_clear is not None:
+            print(json.dumps(overlay_clear_command(args), ensure_ascii=False, indent=2))
             return 0
         if args.history_summary:
             lpath, now = ledger_path_from(args), int(time.time())
