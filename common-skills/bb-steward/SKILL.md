@@ -332,8 +332,8 @@ notifications only to queue, so ordinary clarifications do not use such tools.
 3. Handle each "decision I introduced" individually: put it in the workbook, accept without recording, or send it
    back for rework — one of the three.
 
-Three pacing constraints, learned from a first production build that went through more than ten overnight rounds of
-"write list — review — CI — approval — receipt":
+Four pacing constraints, the first three learned from a first production build that went through more than ten
+overnight rounds of "write list — review — CI — approval — receipt":
 - **List gaps before starting**: for provisioning, migration or first-build stages, have the child thread deliver a
   gap list first (item by item against the existing environment: configuration, credentials, accounts, permissions,
   network, migration, monitoring, each with owner and landing batch), then push forward in batches by the list.
@@ -346,6 +346,15 @@ Three pacing constraints, learned from a first production build that went throug
 - **Dispatch long tasks quietly**: child threads that run in batches or wait for CI or review are dispatched with
   `--parent-notifications stuck`, so progress doesn't wake the steward every turn; stalls are caught by closing
   reconciliation and the watchdog.
+- **One line per release**: a task is the unit of work, sized for one child thread; an MR is the unit of delivery,
+  one per release point (the changes that go live together). Work toward a release point lands on one line: dependent
+  tasks commit to it in sequence, and only independent tasks worth running in parallel take their own worktree and
+  merge straight back. Smoke test, review and merge happen once per line, and a line merges as soon as its tasks
+  are done. Split lines only where the release point or the approver differs, or to keep production configuration
+  apart from code. Merging decides when code reaches the main branch, not when the next task starts: downstream
+  work begins once the upstream interface is settled, stacked on the unmerged line. Development waiting on a merge
+  is an anomaly: find a way to stack, or report why there is none. One steward that planned an MR per task stalled
+  within hours on a single approval, with every MR owing its own CI, smoke test and review round.
 
 ## Closing reconciliation
 
