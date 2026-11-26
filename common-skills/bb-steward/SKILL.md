@@ -346,15 +346,17 @@ overnight rounds of "write list — review — CI — approval — receipt":
 - **Dispatch long tasks quietly**: child threads that run in batches or wait for CI or review are dispatched with
   `--parent-notifications stuck`, so progress doesn't wake the steward every turn; stalls are caught by closing
   reconciliation and the watchdog.
-- **One line per release**: a task is the unit of work, sized for one child thread; an MR is the unit of delivery,
-  one per release point (the changes that go live together). Work toward a release point lands on one line: dependent
-  tasks commit to it in sequence, and only independent tasks worth running in parallel take their own worktree and
-  merge straight back. Smoke test, review and merge happen once per line, and a line merges as soon as its tasks
-  are done. Split lines only where the release point or the approver differs, or to keep production configuration
-  apart from code. Merging decides when code reaches the main branch, not when the next task starts: downstream
-  work begins once the upstream interface is settled, stacked on the unmerged line. Development waiting on a merge
-  is an anomaly: find a way to stack, or report why there is none. One steward that planned an MR per task stalled
-  within hours on a single approval, with every MR owing its own CI, smoke test and review round.
+- **One line per deliverable**: a task is the unit of work, sized for one child thread; an MR is the unit of
+  delivery. One line (one branch, one MR) carries what the user would name as one thing; split it further only
+  where parts go live at different times or need different approvers, or to keep production configuration apart
+  from code. Dependent tasks commit to the line in sequence; only independent tasks worth running in parallel take
+  their own worktree and merge straight back. Smoke test, review and merge happen once per line, and a line merges
+  as soon as its tasks are done; then remove its worktree and branch. Merging decides when code reaches the main
+  branch, not when the next task starts: downstream work begins once the upstream interface is settled, stacked on
+  the unmerged line, and development waiting on a merge is an anomaly to resolve or report. When someone outside
+  must approve the change, size it the way they ask. Every extra MR costs a CI round, a worktree on disk and one
+  more state to carry across compactions: a project landing about a hundred MRs a day ended with thousands of
+  leftover branches nobody could reconcile.
 
 ## Closing reconciliation
 
@@ -376,6 +378,9 @@ run:
 ```bash
 python3 scripts/steward_workbook.py --mode reconcile --live --file <workbook path>
 ```
+
+Reconcile MRs against the forge's own list of open MRs for the goal, not from memory or the workbook: every MR
+opened ends merged or closed.
 
 ## Watchdog
 
