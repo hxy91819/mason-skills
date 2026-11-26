@@ -1,6 +1,6 @@
-# Dispatch task template
+# Code-change task checklist
 
-Fill the body of `bb-dispatch --task` from this. The template has one purpose: the child agent receives a contract, not a verbal briefing. Fill every section; write "None" when there is nothing.
+A checklist for `--task` when the child thread changes and delivers code. Keep the sections that carry information for this task and drop the rest; the sections are not mandatory. What matters is that the child gets a contract, not a verbal briefing: goal, boundaries, inputs, and acceptance. Other task shapes (simulating a user, consulting an advisor, research, review) write a free-form prompt instead; see SKILL.md "Judgment and invocation".
 
 ```markdown
 <One-sentence goal: what to do, to what extent, and what not to do>
@@ -46,4 +46,4 @@ Usage rules:
 - When the goal or boundary comes from the user's request, attach the user's original words; when restating rules or constraints, state the reason and scope, so the child thread can judge cases the rules do not cover.
 - When multiple child threads change the same repository, state in "Before starting" which files the parent thread changes, and that child threads pull latest before changing files.
 - Grading follows SKILL.md "Judgment and invocation"; the task brief still states goal, boundaries, authoritative entry points, and acceptance gaps; whether the parent thread investigates first is decided by cost.
-- Item 3 of the reply format is the input for the parent thread's decision summary; send it back for completion if missing.
+- When the task lets the child make implementation choices, ask for "Decisions I introduced" in the reply; it is the input for the parent thread's decision summary, so send it back for completion if missing.

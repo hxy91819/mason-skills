@@ -1149,7 +1149,11 @@ def restore_redispatch(args, call, source_id, thread):
     ):
         raise DispatchError(f"the log of thread {source_id!r} has no recoverable first-turn dispatch task text.")
 
-    args.task = "".join(part["text"] for part in parts)
+    original = "".join(part["text"] for part in parts)
+    # A thread dispatched with --no-report-protocol has no reporting section; keep it that way.
+    if thread.get("parentThreadId") and strip_report_protocol(original) == original:
+        args.no_report_protocol = True
+    args.task = original
     args.difficulty = difficulty
     if entry.get("purpose") in PURPOSES:
         args.purpose = entry["purpose"]
@@ -1757,7 +1761,8 @@ def dispatch_unlocked(args, call, now, config, slots, escalate_from, overlay=Non
     if notifications not in PARENT_NOTIFICATION_MODES:
         raise DispatchError(f"parent_notifications must be one of {'/'.join(PARENT_NOTIFICATION_MODES)}, got {notifications!r}")
     protocol = REPORT_PROTOCOL if notifications == "auto" else QUIET_REPORT_PROTOCOL
-    task = args.task + REPORT_PROTOCOL_ANCHOR + protocol if parent.get("id") else args.task
+    report = parent.get("id") and not getattr(args, "no_report_protocol", False)
+    task = args.task + REPORT_PROTOCOL_ANCHOR + protocol if report else args.task
     command = ["thread", "spawn", "--project", project, "--environment", environment,
                "--provider", provider, "--model", model,
                "--permission-mode", permission, "--prompt", task]
@@ -1925,6 +1930,8 @@ def parser():
                    help="which child turn results wake the parent: auto every turn; stuck only on failure, when stuck or awaiting "
                         "approval, with everything else told explicitly by the child; off never wakes it automatically. "
                         "Defaults to the top-level parent_notifications config, else auto")
+    p.add_argument("--no-report-protocol", action="store_true",
+                   help="do not append the reporting section for the linked parent, e.g. when simulating a user so the child sees only the role prompt; parent notifications still apply")
     p.add_argument("--dry-run", action="store_true", help="validate read-only and print the launch arguments without creating a thread; with --on-failure only report the action, scheduling no retry and writing no ledger")
     modes = p.add_mutually_exclusive_group()
     modes.add_argument("--redispatch", metavar="THREAD_ID", help="redispatch a cooled failed thread with its original difficulty and first-turn task text; records --escalate-from automatically")

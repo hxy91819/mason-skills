@@ -1589,6 +1589,30 @@ environments:
             with self.subTest(argv=vars(args)), self.assertRaises(m.DispatchError):
                 m.dispatch(args, self.fake, now=1100)
 
+    def test_no_report_protocol_keeps_parent_link_and_survives_redispatch(self):
+        task = 'You are the user\'s assistant. Greet them and wait.'
+        result = m.dispatch(self.args('--no-report-protocol'), self.fake, now=1000)
+        spawn = next(call for call in self.calls if call[:2] == ('thread', 'spawn'))
+        self.assertEqual(spawn[spawn.index('--parent-thread') + 1], 'parent')
+        self.assertEqual(spawn[spawn.index('--prompt') + 1], self.args().task)
+        tid = result['result']['thread']['id']
+
+        def with_parent(*args):
+            reply = self.fake(*args)
+            if args[:2] == ('thread', 'show'):
+                reply['thread']['parentThreadId'] = 'parent'
+            return reply
+        again = m.dispatch(self.redispatch_args(tid, '--dry-run'), with_parent, now=1100)
+        self.assertEqual(again['argv'][again['argv'].index('--prompt') + 1], self.args().task)
+        # Without the flag the protocol is appended, and redispatch keeps it.
+        linked = m.dispatch(self.worker_task(task), self.fake, now=1000)['result']['thread']['id']
+        again = m.dispatch(self.redispatch_args(linked, '--dry-run'), with_parent, now=1100)
+        self.assertEqual(again['argv'][again['argv'].index('--prompt') + 1], task + m.REPORT_PROTOCOL_ANCHOR + m.REPORT_PROTOCOL)
+
+    def worker_task(self, task):
+        return m.parser().parse_args(['--config', str(self.config), '--ledger', str(self.ledger),
+                                      '--difficulty', 'simple', '--task', task])
+
     def test_advisor_without_configured_route_reports_missing_config(self):
         with self.assertRaisesRegex(m.DispatchError, 'defaults.advisor'):
             m.dispatch(self.advise('--dry-run'), self.fake)
