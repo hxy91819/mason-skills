@@ -7,10 +7,9 @@ defaults.<route> is an ordered fallback chain or a load-balance candidate set. C
 only before spawn (provider availability, permissions, model catalog and circuit-breaker cooldown) and
 the first one that passes is dispatched; any failure after spawn is issued aborts and cools that
 candidate, and the caller reruns after confirming no thread was created.
-Cooldowns never read error text. When a child thread errors, --on-failure retries it in the original
-session with backoff, so transient errors are absorbed there; only exhausted retries count as failures.
-Structured quota signals skip the original-session retries and go straight to a longer quota cooldown
-for that provider and model.
+When a child thread errors, --on-failure retries transient errors in the original session with backoff.
+Structured quota signals and rate-limit errors with a parseable reset skip those retries and cool the
+provider and model.
 Every dispatch first marks ledger threads that BB reports as finished as completed; one success resets
 the cooldown. When a parent thread is linked, a fixed reporting section is appended to the task so the
 child holds its reports until the turn ends.
@@ -26,6 +25,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
@@ -94,7 +94,7 @@ SESSION_RETRY_BASE_SECONDS = 60
 BB_RETRY_GAVE_UP = ("attempts-exhausted",)
 # provider-retry classifies these declines as quota and will not wait for recovery in the original session.
 QUOTA_DECLINE_REASONS = ("no-rate-limit-state", "not-resettable", "beyond-maximum-wait")
-# Only these JSON field values count; error sentences are never scanned for the same words.
+# These JSON codes require HTTP 429; text reset signals are handled separately.
 QUOTA_CODE_FIELDS = ("code", "status", "type")
 QUOTA_CODES = frozenset({"resource_exhausted", "model_cooldown", "insufficient_quota", "quota_exceeded", "quota"})
 # Recent window shared by outcome detection, cooldown computation and ledger entry retention.
@@ -380,6 +380,13 @@ def outcome_time(entry):
     return int(entry.get("outcome_ts") or entry.get("ts") or 0)
 
 
+def quota_reset_time(entry):
+    reset_at = entry.get("quota_reset_ts")
+    if entry.get("outcome") in FAILED_OUTCOMES and entry.get("quota") is True and type(reset_at) is int:
+        return reset_at
+    return 0
+
+
 def append_ledger_entry(ledger, entry, max_live=MAX_LIVE_ENTRIES, now=None):
     entries = ledger.setdefault("entries", [])
     rollups = ledger.setdefault("rollups", {})
@@ -392,12 +399,21 @@ def append_ledger_entry(ledger, entry, max_live=MAX_LIVE_ENTRIES, now=None):
     excess = len(entries) - max_live
     if excess <= 0:
         return
-    # Entries inside the recent window still feed outcome detection and cooldowns, so they stay even over the cap;
-    # only older entries are rolled up.
-    horizon = int(time.time() if now is None else now) - RECENT_WINDOW_SECONDS
+    # Keep entries that still feed recent outcomes or an active reset, even over the cap.
+    now = int(time.time() if now is None else now)
+    horizon = now - RECENT_WINDOW_SECONDS
+    successes = latest_success_at(ledger)
     kept = []
     for item in entries:
-        if excess > 0 and (not isinstance(item, dict) or outcome_time(item) < horizon):
+        old = not isinstance(item, dict) or outcome_time(item) < horizon
+        if old and isinstance(item, dict) and quota_reset_time(item) > now:
+            key = health_key(item.get("provider"), item.get("model"))
+            if successes.get(key, 0) <= outcome_time(item):
+                kept.append(item)
+                continue
+            # Retire this reset before the success that cleared it can roll out of the ledger.
+            item.pop("quota_reset_ts")
+        if excess > 0 and old:
             if isinstance(item, dict):
                 rollup_entry(rollups, item)
             excess -= 1
@@ -477,6 +493,7 @@ def health_cooldowns(ledger, now):
     no quota mark and counts as an ordinary failure.
     """
     horizon = now - RECENT_WINDOW_SECONDS
+    successes = latest_success_at(ledger)
     events = {}
     for entry in ledger.get("entries") or []:
         if not isinstance(entry, dict) or not entry.get("provider") or not entry.get("model"):
@@ -485,32 +502,40 @@ def health_cooldowns(ledger, now):
         if outcome != "completed" and outcome not in FAILED_OUTCOMES:
             continue
         at = outcome_time(entry)
-        if at < horizon:
-            continue
         key = health_key(entry["provider"], entry["model"])
-        events.setdefault(key, []).append((at, str(entry.get("id") or ""), outcome, entry.get("quota") is True))
+        reset_at = quota_reset_time(entry)
+        if at < horizon and (reset_at <= now or successes.get(key, 0) > at):
+            continue
+        events.setdefault(key, []).append((at, str(entry.get("id") or ""), outcome,
+                                          entry.get("quota") is True, reset_at))
     state = {}
     for key, items in events.items():
-        level = until = last_success = quota_until = 0
+        level = until = last_success = quota_until = reset_until = 0
         thread_id = None
-        for at, thread, outcome, is_quota in sorted(items):
+        for at, thread, outcome, is_quota, reset_at in sorted(items):
             if outcome == "completed":
-                level = until = quota_until = 0
+                level = until = quota_until = reset_until = 0
                 last_success = at
                 continue
             if at >= until:
                 level += 1
-            step_until = at + backoff_seconds(level, quota=is_quota)
+            if is_quota and reset_at:
+                step_until = reset_at
+                reset_until = max(reset_until, reset_at)
+            else:
+                step_until = at + backoff_seconds(level, quota=is_quota)
             until = max(until, step_until)
             if is_quota:
                 quota_until = max(quota_until, step_until)
             thread_id = thread
         quota = quota_until == until and quota_until > 0
-        reason = f"quota cooldown, {level} consecutive failure(s)" if quota else f"{level} consecutive failure(s)"
+        if until > 0 and until == reset_until:
+            reason = QUOTA_WINDOW_REASON
+        else:
+            reason = f"quota cooldown, {level} consecutive failure(s)" if quota else f"{level} consecutive failure(s)"
         state[key] = {"until": until, "level": level, "reason": reason, "quota": quota,
-                      "thread_id": thread_id, "last_success": last_success}
+                      "thread_id": thread_id, "last_success": last_success, "reset_at": reset_until}
     # Explicit cooldowns are cleared by any success in the ledger, not just outcomes within 48 hours.
-    successes = latest_success_at(ledger)
     for key, cd in (ledger.get("cooldowns") or {}).items():
         # Legacy cooldowns keyed by route|alias have no provider field; they no longer apply and are pruned once expired.
         if not isinstance(cd, dict) or "provider" not in cd:
@@ -528,6 +553,8 @@ def health_cooldowns(ledger, now):
             provider, model = key.split("|", 1)
             cooled[key] = {"provider": provider, "model": model, "reason": value["reason"], "quota": bool(value.get("quota")),
                            "level": value["level"], "until": value["until"], "thread_id": value["thread_id"]}
+            if value.get("reset_at", 0) > now:
+                cooled[key]["reset_at"] = value["reset_at"]
     return cooled
 
 
@@ -701,6 +728,43 @@ def quota_classified(diagnostic, events):
     return any(event.get("type") == "provider/error" and provider_error_is_quota(event) for event in current_failure_events(events))
 
 
+def quota_error_reset(event):
+    """Read explicit reset text from a provider error, using the error time as its UTC date and duration anchor."""
+    if event.get("type") != "provider/error":
+        return None
+    data = event.get("data") if isinstance(event.get("data"), dict) else event
+    detail = data.get("detail")
+    created_at = event.get("createdAt")
+    if not isinstance(detail, str) or not isinstance(created_at, (int, float)) or created_at <= 0:
+        return None
+    payload = json_object(detail) or {}
+    message = detail.partition("{")[0]
+    if not message.strip() and isinstance(payload.get("message"), str):
+        message = payload["message"]
+    if not (re.search(r"\brate[ -]limit(?:ed|s)?\b", message, re.IGNORECASE)
+            or payload.get("cognition.ai/errorKind") == "unavailable"
+            or payload.get("errorKind") == "unavailable"
+            or data.get("errorKind") == "unavailable"):
+        return None
+
+    clock = re.search(r"\breset(?:s)?\s+(?:in\s+\d+\s+(?:seconds?|minutes?|hours?)\s*\(\s*)?"
+                      r"at\s+([01]?\d|2[0-3]):([0-5]\d)\s+UTC\b", message, re.IGNORECASE)
+    at = int(created_at) // 1000
+    if clock:
+        hour, minute = map(int, clock.groups())
+        midnight = at - at % 86400
+        reset = midnight + hour * 3600 + minute * 60
+        # A displayed minute can already have started when the provider reports it.
+        return reset if reset + 60 > at else reset + 86400
+
+    duration = re.search(r"\breset(?:s)?\s+in\s+([0-9]{1,9})\s+(second|minute|hour)s?\b",
+                         message, re.IGNORECASE)
+    if duration:
+        amount, unit = duration.groups()
+        return at + int(amount) * {"second": 1, "minute": 60, "hour": 3600}[unit.lower()]
+    return None
+
+
 def quota_window_reset(diagnostic, events, now):
     """Reset time (seconds) of the subscription quota window. model_cooldown's reset_seconds is not this window."""
     resets = []
@@ -729,9 +793,8 @@ def on_failure_command(args, call=bb, now=None):
     """Called by the parent after a child errors: retry in the original session with backoff first, and only
     record a failure and cool that provider and model once retries are exhausted.
 
-    Quota is recognized only from provider-retry decline reasons and structured error codes on HTTP 429;
-    otherwise original-session retries continue. Error sentences are never scanned. Queued messages on an
-    errored thread are sent only when it is retried, so the queue count is not treated as an existing retry.
+    Recognized quota failures skip original-session retries. Queued messages on an errored thread are
+    sent only when it is retried, so the queue count is not treated as an existing retry.
     """
     target_id = string(args.on_failure, "--on-failure")
     now = int(time.time() if now is None else now)
@@ -800,7 +863,9 @@ def on_failure_command(args, call=bb, now=None):
     if not isinstance(logged, list):
         logged = None
     decision = diagnostic.get("decision") if isinstance(diagnostic, dict) else None
-    quota = quota_classified(diagnostic, logged)
+    error_reset = max((reset for event in current_failure_events(logged)
+                       if (reset := quota_error_reset(event)) is not None), default=None)
+    quota = error_reset is not None or quota_classified(diagnostic, logged)
     reset = quota_window_reset(diagnostic, logged, now) if quota else None
     if quota:
         code, reason = "quota", "quota exhausted"
@@ -831,17 +896,25 @@ def on_failure_command(args, call=bb, now=None):
             update_ledger(lpath, mark_retry, strict=True)
             return result
     if args.dry_run:
-        return {"dry_run": True, "action": "cooled", "reason": reason}
+        result = {"dry_run": True, "action": "cooled", "reason": reason}
+        if error_reset is not None:
+            result["reset_at"] = max(error_reset, reset or 0)
+        return result
 
     def mark_failed(data):
         matched = find(data)
+        if matched.get("outcome") in FAILED_OUTCOMES:
+            return []
         matched["outcome"], matched["outcome_ts"], matched["updated_ts"] = "failed", now, now
         matched["retries"] = attempt - 1
         if code == "quota":
             matched["quota"] = True
-            computed = health_cooldowns(data, now).get(health_key(matched.get("provider"), matched.get("model"))) or {}
-            if reset and reset > int(computed.get("until") or 0):
-                set_quota_window(data, matched.get("provider"), matched.get("model"), now, reset)
+            if error_reset is not None:
+                matched["quota_reset_ts"] = max(error_reset, reset or 0)
+            elif reset:
+                computed = health_cooldowns(data, now).get(health_key(matched.get("provider"), matched.get("model"))) or {}
+                if reset > int(computed.get("until") or 0):
+                    set_quota_window(data, matched.get("provider"), matched.get("model"), now, reset)
         return [*events, cooled_event(data, matched, code, now, attempt - 1)]
     return cooled(reason, update_ledger(lpath, mark_failed, strict=True))
 
@@ -1115,15 +1188,15 @@ def resolve_escalation(args, call):
     flag = "--redispatch" if redispatch is not None else "--escalate-from"
     source_id = redispatch if redispatch is not None else getattr(args, "escalate_from", None)
     if source_id is None:
-        return None
+        return None, None
     source_id = string(source_id, flag)
     shown = mapping(call("thread", "show", source_id), f"{flag} thread")
     thread = shown.get("thread") if isinstance(shown.get("thread"), dict) else shown
     if thread.get("id") and thread["id"] != source_id:
         raise DispatchError(f"{flag} thread {source_id!r} failed verification.")
     if redispatch is not None:
-        restore_redispatch(args, call, source_id, thread)
-    return source_id
+        return source_id, restore_redispatch(args, call, source_id, thread)
+    return source_id, None
 
 
 def restore_redispatch(args, call, source_id, thread):
@@ -1167,6 +1240,7 @@ def restore_redispatch(args, call, source_id, thread):
     if args.environment is None:
         args.environment = string(thread.get("environmentId"), "original thread environment ID")
     args.parent_notifications = args.parent_notifications or thread.get("parentNotifications")
+    return entry.get("agent")
 
 
 # Independent of --ledger/--config: dispatch processes of the same OS user share the lock and pending reservations.
@@ -1428,6 +1502,23 @@ def load_overlay(now):
     return {**info, "expired": False, "defaults": body.get("defaults", {}), "agents": body.get("agents", {})}
 
 
+def overlay_mode_warnings(main_defaults, overlay_defaults):
+    def mode(value):
+        return value.get("mode") if isinstance(value, dict) else "fallback"
+
+    warnings = []
+    for route in main_defaults.keys() & overlay_defaults.keys():
+        original, replacement = mode(main_defaults[route]), mode(overlay_defaults[route])
+        if original != replacement:
+            warnings.append(f"temporary routing overlay changes defaults.{route} mode from {original} to {replacement}.")
+    return sorted(warnings)
+
+
+def emit_warnings(warnings):
+    for warning in warnings:
+        print(f"warning: {warning}", file=sys.stderr)
+
+
 def overlay_set_command(args, now=None):
     now = int(time.time() if now is None else now)
     thread = args.overlay_thread or os.environ.get("BB_THREAD_ID")
@@ -1482,13 +1573,16 @@ def overlay_set_command(args, now=None):
                     errors.append(str(exc))
             else:
                 raise DispatchError(f"with this overlay, defaults.{route} has no resolvable candidate in {scope}: {'; '.join(errors)}")
+    warnings = overlay_mode_warnings(mapping(config.get("defaults", {}), "defaults"), overlay_defaults)
+    selection = {"selection": {"warnings": warnings}} if warnings else {}
+    emit_warnings(warnings)
     expires = now + int(args.hours * 3600)
     record = {"thread": thread, "note": args.note, "created_at": iso_time(now), "expires_at": iso_time(expires), **body}
     if args.note is None:
         del record["note"]
     path = overlay_path(thread)
     if args.dry_run:
-        return {"dry_run": True, "path": str(path), "overlay": record}
+        return {"dry_run": True, "path": str(path), "overlay": record, **selection}
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
     tmp.write_text(yaml.safe_dump(record, allow_unicode=True, sort_keys=False))
@@ -1503,7 +1597,7 @@ def overlay_set_command(args, now=None):
                 pruned.append(other.stem)
         except (DispatchError, OSError):
             continue
-    return {"set": True, "path": str(path), "overlay": record, "pruned_expired": pruned}
+    return {"set": True, "path": str(path), "overlay": record, "pruned_expired": pruned, **selection}
 
 
 def overlay_show_command(now=None):
@@ -1559,25 +1653,34 @@ def dispatch(args, call=bb, now=None):
     if config.get("version") != 2:
         raise DispatchError("config must contain version: 2.")
     overlay = load_overlay(int(time.time() if now is None else now))
-    escalate_from = resolve_escalation(args, call)
-    # Per-environment limits also decide whether to take the lock; the actual limit is computed after resolving the target environment.
-    configured = bool(provider_limits(config.get("agents", {})))
-    provider_model_scopes(config.get("agents", {}))
-    if overlay and not overlay["expired"]:
-        configured = bool(provider_limits(overlay["agents"])) or configured
-        provider_model_scopes(overlay["agents"])
-    for override in mapping(config.get("environments", {}), "environments").values():
-        configured = bool(provider_limits(mapping(override, "environment config").get("agents", {}))) or configured
-        provider_model_scopes(mapping(override, "environment config").get("agents", {}))
-    if not configured:
-        return dispatch_unlocked(args, call, now, config, None, escalate_from, overlay)
-    if args.dry_run:
-        return dispatch_unlocked(args, call, now, config, ConcurrencySlots(call, read_only=True), escalate_from, overlay)
-    with concurrency_lock():
-        return dispatch_unlocked(args, call, now, config, ConcurrencySlots(call), escalate_from, overlay)
+    overlay_warnings = (
+        overlay_mode_warnings(mapping(config.get("defaults", {}), "defaults"), overlay["defaults"])
+        if overlay and not overlay["expired"] else []
+    )
+    try:
+        escalate_from, original_candidate = resolve_escalation(args, call)
+        # Per-environment limits also decide whether to take the lock before resolving the target environment.
+        agent_configs = [config.get("agents", {})]
+        if overlay and not overlay["expired"]:
+            agent_configs.append(overlay["agents"])
+        agent_configs.extend(mapping(override, "environment config").get("agents", {})
+                             for override in mapping(config.get("environments", {}), "environments").values())
+        configured = False
+        for agents in agent_configs:
+            configured = bool(provider_limits(agents)) or configured
+            provider_model_scopes(agents)
+        with concurrency_lock() if configured and not args.dry_run else contextlib.nullcontext():
+            slots = ConcurrencySlots(call, read_only=args.dry_run) if configured else None
+            result = dispatch_unlocked(args, call, now, config, slots, escalate_from, original_candidate, overlay)
+    except DispatchError:
+        emit_warnings(overlay_warnings)
+        raise
+    if overlay_warnings:
+        result["selection"].setdefault("warnings", []).extend(overlay_warnings)
+    return result
 
 
-def dispatch_unlocked(args, call, now, config, slots, escalate_from, overlay=None):
+def dispatch_unlocked(args, call, now, config, slots, escalate_from, original_candidate, overlay):
     now = int(time.time() if now is None else now)
     # A task copied from a child's first message drops its report protocol first, so redispatch keeps the same
     # candidate order and title.
@@ -1645,6 +1748,11 @@ def dispatch_unlocked(args, call, now, config, slots, escalate_from, overlay=Non
         if advisor not in full_chain:
             raise DispatchError(f"--advisor {advisor!r} is not among defaults.{ADVISOR_ROUTE} candidates {full_chain}.")
         chain, candidate_weights, routing_mode = [advisor], {advisor: candidate_weights.get(advisor, 1)}, "named"
+    elif original_candidate in chain and len(full_chain) > 1:
+        chain.remove(original_candidate)
+        del candidate_weights[original_candidate]
+        if not chain:
+            raise DispatchError(f"--fallback-from {original_candidate!r} leaves no candidate after excluding the original dispatch candidate.")
 
     def route_target(alias):
         """(provider, model) the alias resolves to on this route; None on bad config, left for the validation loop to report."""
@@ -1657,28 +1765,28 @@ def dispatch_unlocked(args, call, now, config, slots, escalate_from, overlay=Non
     lpath = ledger_path_from(args)
     ledger = load_ledger(lpath, strict=False)
     reconciled = reconcile_outcomes(ledger, call, now)
+    health = health_cooldowns(ledger, now)
+
+    def cooldown_for(alias):
+        target = route_target(alias)
+        return health.get(health_key(*target)) if target is not None else None
+
     explicit = []
     if args.fallback_from is not None and not args.dry_run:
         for skipped_alias in full_chain[:full_chain.index(args.fallback_from)]:
             target = route_target(skipped_alias)
-            if target is not None:
+            if target is not None and not (health.get(health_key(*target)) or {}).get("reset_at"):
                 explicit.append((*target, "fallback-from"))
-    for target_provider, target_model, reason in explicit:
-        set_explicit_cooldown(ledger, target_provider, target_model, reason, now)
-    health = health_cooldowns(ledger, now)
-
-    def cooldown_for(alias):
-        # When the caller names this alias to continue from, cooldown does not skip it.
-        if args.fallback_from == alias:
-            return None
-        target = route_target(alias)
-        return health.get(health_key(*target)) if target is not None else None
+        for target_provider, target_model, reason in explicit:
+            set_explicit_cooldown(ledger, target_provider, target_model, reason, now)
+        if explicit:
+            health = health_cooldowns(ledger, now)
 
     providers = call("provider", "list", "--environment", validation_environment)
     # Same-tier fallback: each candidate resolves its own routes for this route key; the first to pass validation is
-    # dispatched. Cooling candidates are skipped first; if all are cooling, try them anyway so a single-candidate chain
-    # never deadlocks.
-    all_cooled = all(cooldown_for(alias) for alias in chain)
+    # dispatched. A confirmed reset holds through both cooldown overrides for ordinary failures.
+    cooldowns = {alias: cooldown_for(alias) for alias in chain}
+    all_cooled = all(cd and (alias != args.fallback_from or cd.get("reset_at")) for alias, cd in cooldowns.items())
     attempts = []
     diverted = []
     quota_diverted = []
@@ -1686,8 +1794,8 @@ def dispatch_unlocked(args, call, now, config, slots, escalate_from, overlay=Non
     choice = None
     for index, alias in enumerate(chain):
         try:
-            cd = None if all_cooled else cooldown_for(alias)
-            if cd:
+            cd = cooldowns[alias]
+            if cd and (cd.get("reset_at") or (not all_cooled and alias != args.fallback_from)):
                 diverted.append(alias)
                 if cd.get("quota"):
                     quota_diverted.append(alias)
@@ -1934,10 +2042,11 @@ def parser():
                    help="do not append the reporting section for the linked parent, e.g. when simulating a user so the child sees only the role prompt; parent notifications still apply")
     p.add_argument("--dry-run", action="store_true", help="validate read-only and print the launch arguments without creating a thread; with --on-failure only report the action, scheduling no retry and writing no ledger")
     modes = p.add_mutually_exclusive_group()
-    modes.add_argument("--redispatch", metavar="THREAD_ID", help="redispatch a cooled failed thread with its original difficulty and first-turn task text; records --escalate-from automatically")
+    modes.add_argument("--redispatch", metavar="THREAD_ID", help="redispatch a cooled failed thread with its original difficulty and first-turn task text; excludes the original candidate when alternatives exist; accepts --fallback-from")
     modes.add_argument("--concurrency-status", action="store_true", help="read-only view of current provider usage and pending concurrency reservations; independent of the statistics ledger")
     modes.add_argument("--release-reservation", metavar="RESERVATION_ID", help="remove the given reservation after confirming the creation result; active threads still count by live BB status")
-    modes.add_argument("--on-failure", metavar="THREAD_ID", help="call after a child thread errors: retry in the original session after 1, 2 and 4 minutes, and only when exhausted record failure and cool that provider and model")
+    modes.add_argument("--on-failure", metavar="THREAD_ID", help="handle a child thread error: cool recognized quota failures immediately; "
+                       "retry transient failures in the original session after 1, 2 and 4 minutes before cooling the provider and model")
     modes.add_argument("--history-summary", "--stats", dest="history_summary", action="store_true", help="read-only aggregate statistics from the run ledger, active cooldowns, deterministic review hooks, and a 7-day retry and cooldown summary from the review log")
     modes.add_argument("--followups", action="store_true", help="read-only list of messages the parent or user added after the first delivery of threads dispatched in the last --days days, for rework review")
     p.add_argument("--days", type=int, default=3, help="days to look back with --followups (default 3)")
@@ -1993,9 +2102,7 @@ def main():
             string(args.task, "task")
         result = dispatch(args)
         print(json.dumps(result, ensure_ascii=False, indent=2))
-        # Callers often take only the thread ID from stdout, so review reminders also go to stderr where filtering keeps them visible.
-        for warning in (result.get("selection") or {}).get("warnings") or []:
-            print(f"warning: {warning}", file=sys.stderr)
+        emit_warnings((result.get("selection") or {}).get("warnings") or [])
     except DispatchError as exc:
         print(str(exc), file=sys.stderr)
         return 2

@@ -925,7 +925,7 @@ environments:
         return [event for event in map(json.loads, lines) if event['event'] == kind]
 
     def provider_error(self, tid, detail, at=1090, http=429):
-        """A provider/error in the thread log. detail uses JSON from a real incident, not an error sentence."""
+        """Add a provider/error event with optional HTTP status."""
         self.provider_errors.setdefault(tid, []).append({
             'type': 'provider/error', 'createdAt': at * 1000,
             'data': {
@@ -1002,6 +1002,35 @@ environments:
         self.assertIn(('thread', 'log', tid, '--all'), self.calls)
         self.assertEqual(self.ledger_entry(result['result']['thread']['id'])['escalated_from'], tid)
         self.assertNotIn('keep the full task', self.ledger.read_text())
+
+    def test_redispatch_excludes_original_and_honors_fallback_from(self):
+        self.chain_config(['primary', 'specialist', 'third'])
+        config = m.yaml.safe_load(self.config.read_text())
+        config['agents']['third'] = {
+            'provider': 'remote-provider', 'routes': {'simple': {'model': 'remote-model'}},
+        }
+        self.config.write_text(m.yaml.safe_dump(config))
+        original = m.dispatch(self.args(), self.fake, now=1000)
+        tid = original['result']['thread']['id']
+        self.requests[tid] = [{'type': 'client/turn/requested', 'data': {'source': 'spawn', 'input': [
+            {'type': 'text', 'text': 'original task'},
+        ]}}]
+        prefix = ['--config', str(self.config), '--ledger', str(self.ledger), '--redispatch', tid]
+        cases = [((), 'specialist', ['specialist', 'third']),
+                 (('--fallback-from', 'primary'), 'specialist', ['specialist', 'third']),
+                 (('--fallback-from', 'third'), 'third', ['third'])]
+        for flags, expected, chain in cases:
+            with self.subTest(flags=flags):
+                args = m.parser().parse_args([*prefix, *flags, '--dry-run'])
+                selection = m.dispatch(args, self.fake, now=1100)['selection']
+                self.assertEqual((selection['agent'], selection['candidates']), (expected, chain))
+        self.chain_config(['specialist', 'primary'])
+        args = m.parser().parse_args([*prefix, '--fallback-from', 'primary', '--dry-run'])
+        with self.assertRaisesRegex(m.DispatchError, 'leaves no candidate'):
+            m.dispatch(args, self.fake, now=1100)
+        self.chain_config(['primary'])
+        args = m.parser().parse_args([*prefix, '--dry-run'])
+        self.assertEqual(m.dispatch(args, self.fake, now=1100)['selection']['agent'], 'primary')
 
     def test_redispatch_keeps_review_purpose_exempt_from_project_floor(self):
         self.project_floor('medium')
@@ -1399,6 +1428,83 @@ environments:
         review = m.summarize_events(self.ledger, now=1200)
         self.assertEqual(review['quota_cooldown_skips'], 1)
 
+    def test_devin_quota_error_uses_reported_utc_reset(self):
+        # The displayed countdown is approximate. BB logged this error at 07:34:43 UTC.
+        error_at = 1795592083
+        reset_at = 1795592940  # 07:49:00 UTC
+        config = m.yaml.safe_load(self.config.read_text())
+        config['agents']['devin'] = {
+            'provider': 'acp-devin', 'routes': {'simple': {'model': 'devin-model'}},
+        }
+        config['defaults']['simple'] = ['devin', 'specialist']
+        self.config.write_text(m.yaml.safe_dump(config))
+        self.providers.append({'id': 'acp-devin', 'available': True,
+                               'capabilities': {'permissionModes': ['accept-edits']}})
+
+        def bb_with_devin(*args):
+            if args[:3] == ('provider', 'models', 'acp-devin'):
+                return [{'id': 'devin-model'}]
+            return self.fake(*args)
+
+        tid = m.dispatch(self.args(), bb_with_devin, now=error_at - 10)['result']['thread']['id']
+        self.provider_error(tid, 'Reached free model rate limit. Upgrade to Max for higher limits, or switch to a '
+                            'different model. Your limit will reset in 13 minutes (at 07:49 UTC).: '
+                            '{"cognition.ai/errorKind":"unavailable","cognition.ai/retryable":true}',
+                            at=error_at, http=None)
+        self.turn_ended(tid, error_at + 1)
+        self.requests[tid] = [{'type': 'client/turn/requested', 'data': {'source': 'spawn', 'input': [
+            {'type': 'text', 'text': 'original task'},
+        ]}}]
+        before = self.ledger.read_bytes()
+        dry_run = self.on_failure(tid, '--dry-run', now=error_at + 120)
+        self.assertEqual((dry_run['action'], dry_run['reset_at']), ('cooled', reset_at))
+        self.assertEqual(self.ledger.read_bytes(), before)
+        cooled = self.on_failure(tid, now=error_at + 120)
+        cd = cooled['cooldown']
+        self.assertEqual((cd['provider'], cd['model'], cd['quota'], cd['until']),
+                         ('acp-devin', 'devin-model', True, reset_at))
+        self.assertFalse(any(c[:2] == ('thread', 'retry') for c in self.calls))
+        prefix = ['--config', str(self.config), '--ledger', str(self.ledger), '--redispatch', tid]
+        args = m.parser().parse_args([*prefix, '--fallback-from', 'devin', '--dry-run'])
+        self.assertEqual(m.dispatch(args, bb_with_devin, now=reset_at - 1)['selection']['agent'], 'specialist')
+        args = m.parser().parse_args([*prefix, '--fallback-from', 'specialist'])
+        self.assertEqual(m.dispatch(args, bb_with_devin, now=reset_at - 1)['selection']['agent'], 'specialist')
+        self.chain_config(['devin'])
+        with self.assertRaisesRegex(m.DispatchError, 'quota window'):
+            m.dispatch(self.args('--fallback-from', 'devin', '--dry-run'), bb_with_devin, now=reset_at - 1)
+        self.assertEqual(m.dispatch(self.args('--dry-run'), bb_with_devin, now=reset_at)['selection']['agent'], 'devin')
+
+    def test_unavailable_error_needs_parseable_reset_and_uses_error_time(self):
+        cases = [
+            ('Service is temporarily unavailable. It resets in 3 minutes.', 'cooled'),
+            ('Service is temporarily unavailable. It will reset soon.', 'retry-scheduled'),
+            ('Service is temporarily unavailable.', 'retry-scheduled'),
+        ]
+        for message, action in cases:
+            with self.subTest(message=message):
+                tid = m.dispatch(self.args(), self.fake, now=1000)['result']['thread']['id']
+                self.provider_error(tid, message + ' {"errorKind":"unavailable"}', at=1100, http=None)
+                self.turn_ended(tid, 1101)
+                result = self.on_failure(tid, '--dry-run', now=1130)
+                self.assertEqual(result['action'], action)
+                if action == 'cooled':
+                    self.assertEqual(result['reset_at'], 1280)
+
+    def test_explicit_quota_reset_outlives_ledger_recent_window(self):
+        tid = m.dispatch(self.args(), self.fake, now=1000)['result']['thread']['id']
+        self.provider_error(tid, '{"errorKind":"unavailable","message":"Service unavailable. It resets in 72 hours."}',
+                            at=1100, http=None)
+        self.turn_ended(tid, 1101)
+        self.assertEqual(self.on_failure(tid, now=1102)['cooldown']['until'], 1100 + 72 * 3600)
+        after_horizon = 1102 + 49 * 3600
+        ledger = m.load_ledger(self.ledger, strict=True)
+        m.append_ledger_entry(ledger, {'id': 'unrelated', 'ts': after_horizon}, max_live=1, now=after_horizon)
+        m.save_ledger(self.ledger, ledger, strict=True)
+        with self.assertRaisesRegex(m.DispatchError, 'quota window'):
+            m.dispatch(self.args('--dry-run'), self.fake, now=after_horizon)
+        self.assertEqual(m.dispatch(self.args('--dry-run'), self.fake, now=1100 + 72 * 3600)['selection']['agent'],
+                         'primary')
+
     def test_model_cooldown_json_is_quota_and_ignores_short_reset_seconds(self):
         """Incident: model_cooldown's reset_seconds is only tens of seconds; cooling by it redispatches to the same model right away."""
         self.chain_config(['primary', 'specialist'])
@@ -1576,8 +1682,12 @@ environments:
             m.dispatch(self.redispatch_args(named, '--dry-run'), self.fake, now=1100)
         blind = m.dispatch(self.advise(), self.fake, now=1000)['result']['thread']['id']
         self.assertNotIn('advisor', self.ledger_entry(blind))
+        self.assertEqual(self.ledger_entry(blind)['agent'], 'muse')
+        self.providers.append({'id': 'specialist', 'available': True,
+                               'capabilities': {'permissionModes': ['accept-edits']}})
         again = m.dispatch(self.redispatch_args(blind, '--dry-run'), self.fake, now=1100)['selection']
-        self.assertEqual((again['purpose'], sorted(again['candidates'])), ('advise', ['muse', 'sage']))
+        self.assertEqual((again['purpose'], again['agent'], again['candidates']), ('advise', 'sage', ['sage']))
+        self.assertNotEqual(again['routing_mode'], 'named')
 
     def test_redispatch_rejects_misused_advisor_flags(self):
         self.advisor_config()
@@ -1667,6 +1777,35 @@ agents:
             other = m.dispatch(self.args('--dry-run'), self.fake, now=1100)
         self.assertEqual(other['selection']['agent'], 'primary')
         self.assertNotIn('overlay', other['selection'])
+
+    def test_overlay_mode_change_is_reported_by_set_and_each_dispatch(self):
+        self.weighted_load_balance_config()
+        cases = [
+            ('[primary, specialist]', 'fallback'),
+            ('{mode: load-balance, candidates: [primary, specialist]}', 'load-balance'),
+            ('{mode: weighted-load-balance, candidates: {primary: 1, specialist: 2}}', None),
+        ]
+        for route, changed_to in cases:
+            with self.subTest(route=route), self.overlay_env():
+                warning = (f'temporary routing overlay changes defaults.simple mode from '
+                           f'weighted-load-balance to {changed_to}.')
+                with mock.patch('sys.stderr', new_callable=io.StringIO) as err:
+                    installed = self.set_overlay(f'defaults: {{simple: {route}}}\n')
+                if changed_to:
+                    self.assertEqual(installed['selection']['warnings'], [warning])
+                    self.assertIn(warning, err.getvalue())
+                else:
+                    self.assertNotIn('selection', installed)
+                    self.assertEqual(err.getvalue(), '')
+                argv = ['bb-dispatch', '--config', str(self.config), '--ledger', str(self.ledger),
+                        '--difficulty', 'medium', '--task', 'another tier', '--dry-run']
+                dispatch = m.dispatch
+                with mock.patch.object(m, 'dispatch', side_effect=lambda args: dispatch(args, self.fake, now=1100)), \
+                        mock.patch('sys.argv', argv), mock.patch('sys.stdout', new_callable=io.StringIO) as out, \
+                        mock.patch('sys.stderr', new_callable=io.StringIO) as err:
+                    self.assertEqual(m.main(), 0)
+                self.assertEqual(warning in json.loads(out.getvalue())['selection']['warnings'], bool(changed_to))
+                self.assertEqual(err.getvalue().count(warning), int(bool(changed_to)))
 
     def test_overlay_beats_environment_block(self):
         args = self.args('--environment', 'env_other', '--dry-run')
