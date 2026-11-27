@@ -18,13 +18,13 @@ import os
 import re
 import subprocess
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageStat
 import edge_tts
 import imageio_ffmpeg
 
 FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 VOICE = os.environ.get("DEMO_TTS_VOICE", "zh-TW-HsiaoChenNeural")
-VOICE_RATE = os.environ.get("DEMO_TTS_RATE", "+12%")
+VOICE_RATE = os.environ.get("DEMO_TTS_RATE", "+5%")
 ASS_FONT = os.environ.get("DEMO_FONT_NAME", "Noto Sans CJK TC")
 W, H, FPS = 1280, 720, 30
 
@@ -218,11 +218,12 @@ def make_desktop_badge_png(out_png: Path, badge: str):
 
 def render_title_card_clip(png_path: Path, out_mp4: Path, dur: float = 1.8):
     run_ffmpeg([
-        "-loop", "1", "-t", f"{dur:.3f}", "-i", str(png_path),
+        "-loop", "1", "-framerate", str(FPS), "-t", f"{dur:.3f}", "-i", str(png_path),
         "-f", "lavfi", "-t", f"{dur:.3f}", "-i", "anullsrc=r=44100:cl=stereo",
         "-vf", f"fps={FPS},format=yuv420p,fade=t=in:st=0:d=0.3,fade=t=out:st={max(0.1, dur-0.3):.3f}:d=0.3",
+        "-r", str(FPS), "-video_track_timescale", "15360",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "128k", "-shortest",
+        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2", "-shortest",
         str(out_mp4),
     ], f"title card {png_path.name}")
 
@@ -270,9 +271,10 @@ def render_scene_clip(
     ], f"{sid} concat segs")
 
     actual_vid_dur = media_duration(raw_scene_mp4)
-    # Anti-freeze pacing: gently stretch video (up to 1.38x) when narration is slightly longer
-    desired_vid_dur = max(actual_vid_dur, audio_dur - 0.6)
-    stretch = min(1.38, desired_vid_dur / max(0.5, actual_vid_dur))
+    # Match page pacing to narration: if narration is longer than action video, slow down page motion
+    # smoothly (up to 1.65x duration) so cursor & UI glide alongside speech instead of freezing at the end.
+    desired_vid_dur = max(actual_vid_dur, audio_dur - 0.5)
+    stretch = min(1.65, desired_vid_dur / max(0.5, actual_vid_dur))
     stretched_vid_dur = actual_vid_dur * stretch
     target_dur = max(stretched_vid_dur + 0.35, audio_dur + 0.55)
     pad_sec = max(0.0, target_dur - stretched_vid_dur)
@@ -290,18 +292,19 @@ def render_scene_clip(
         fc = (
             f"[1:v]{pts_filter}scale=310:670:force_original_aspect_ratio=decrease,"
             f"tpad=stop_mode=clone:stop_duration={pad_sec:.3f},fps={FPS}[mob];"
-            f"[0:v][mob]overlay=188:25:shortest=0,trim=duration={target_dur:.3f},setpts=PTS-STARTPTS,"
+            f"[0:v][mob]overlay=188:25:shortest=0,fps={FPS},trim=duration={target_dur:.3f},setpts=PTS-STARTPTS,"
             f"ass='{ass_escaped}',fade=t=in:st=0:d=0.2,fade=t=out:st={max(0.1, target_dur-0.25):.3f}:d=0.25,"
             f"format=yuv420p[vout];"
             f"[2:a]adelay=200|200,apad=whole_dur={target_dur:.3f}[aout]"
         )
         run_ffmpeg([
-            "-loop", "1", "-t", f"{target_dur:.3f}", "-i", str(backdrop_png),
+            "-loop", "1", "-framerate", str(FPS), "-t", f"{target_dur:.3f}", "-i", str(backdrop_png),
             "-i", str(raw_scene_mp4),
             "-i", str(audio_mp3),
             "-filter_complex", fc,
             "-map", "[vout]", "-map", "[aout]",
             "-t", f"{target_dur:.3f}",
+            "-r", str(FPS), "-video_track_timescale", "15360",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
             str(out_mp4),
@@ -313,18 +316,19 @@ def render_scene_clip(
             f"[0:v]{pts_filter}scale={W}:{H}:force_original_aspect_ratio=decrease,"
             f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:color=#0f172a,"
             f"tpad=stop_mode=clone:stop_duration={pad_sec:.3f},fps={FPS}[desk];"
-            f"[desk][1:v]overlay=0:0,trim=duration={target_dur:.3f},setpts=PTS-STARTPTS,"
+            f"[desk][1:v]overlay=0:0,fps={FPS},trim=duration={target_dur:.3f},setpts=PTS-STARTPTS,"
             f"ass='{ass_escaped}',fade=t=in:st=0:d=0.2,fade=t=out:st={max(0.1, target_dur-0.25):.3f}:d=0.25,"
             f"format=yuv420p[vout];"
             f"[2:a]adelay=200|200,apad=whole_dur={target_dur:.3f}[aout]"
         )
         run_ffmpeg([
             "-i", str(raw_scene_mp4),
-            "-loop", "1", "-t", f"{target_dur:.3f}", "-i", str(badge_png),
+            "-loop", "1", "-framerate", str(FPS), "-t", f"{target_dur:.3f}", "-i", str(badge_png),
             "-i", str(audio_mp3),
             "-filter_complex", fc,
             "-map", "[vout]", "-map", "[aout]",
             "-t", f"{target_dur:.3f}",
+            "-r", str(FPS), "-video_track_timescale", "15360",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
             str(out_mp4),
@@ -348,6 +352,35 @@ def extract_verify_frames(output_mp4: Path, verify_dir: Path, total_dur: float):
         ts = max(0.1, min(total_dur - 0.2, total_dur * frac))
         out_png = verify_dir / f"verify_{idx:02d}_{int(ts)}s.png"
         run_ffmpeg(["-ss", f"{ts:.2f}", "-i", str(output_mp4), "-frames:v", "1", str(out_png)], f"verify frame {idx}")
+
+    # Automated freeze detector: scan 1fps frames of the FINAL MP4 for any static run > 3s
+    scan_dir = verify_dir / "_scan"
+    scan_dir.mkdir(exist_ok=True)
+    run_ffmpeg(["-i", str(output_mp4), "-vf", "fps=1,scale=160:90", str(scan_dir / "s_%04d.png")], "freeze scan")
+    scan_files = sorted(scan_dir.glob("s_*.png"))
+    prev = None
+    run_len = 0
+    freezes = []
+    for idx, f in enumerate(scan_files):
+        im = Image.open(f).convert("RGB")
+        if prev is not None:
+            diff = sum(ImageStat.Stat(ImageChops.difference(im, prev)).mean) / 3.0
+            if diff < 0.25:
+                run_len += 1
+            else:
+                if run_len >= 4:
+                    freezes.append((idx - run_len, idx, run_len))
+                run_len = 0
+        prev = im
+        f.unlink()
+    try:
+        scan_dir.rmdir()
+    except OSError:
+        pass
+    if freezes:
+        print("  [WARN] Detected static freeze(s) >= 4s in final MP4:", freezes)
+    else:
+        print("  [OK] Freeze scan passed: no static freezes >= 4s in final MP4.")
     print(f"Extracted {len(fractions)} verification frames to {verify_dir}")
 
 
@@ -418,8 +451,10 @@ async def main():
     output_mp4.parent.mkdir(parents=True, exist_ok=True)
     run_ffmpeg([
         "-f", "concat", "-safe", "0", "-i", str(concat_all),
+        "-vf", f"fps={FPS},format=yuv420p",
+        "-r", str(FPS), "-video_track_timescale", "15360",
         "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
+        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2", "-movflags", "+faststart",
         str(output_mp4),
     ], "final concat")
 

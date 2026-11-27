@@ -55,18 +55,20 @@ triggers:
 
 ## 3. 旁白编写与音画防定格对齐
 
-- **旁白长度匹配动作**：按约 5 字/秒（`DEMO_TTS_RATE="+12%"`）控制每段旁白字数，使 `audio_dur` 接近该镜头剪裁后的 `raw` 动作时长。
+- **旁白长度匹配动作**：按约 4.5 字/秒（`DEMO_TTS_RATE="+5%"` 自然语速，避免念得太赶）控制每段旁白字数，使 `audio_dur` 接近该镜头剪裁后的 `raw` 动作时长。
 - **合成命令**：
   ```bash
-  <work>/venv/bin/python <skill_root>/scripts/compose-video.py <work>/timeline.json <output.mp4>
+  <work>/venv/bin/python <skill_root>/scripts/compose-video.py <work>/timeline.json <output.mp4> --verify-dir <work>/verify
   ```
-  常用环境变量：`DEMO_TTS_VOICE`（默认 `zh-TW-HsiaoChenNeural`，大陆普通话可用 `zh-CN-XiaoxiaoNeural` / `zh-CN-YunyangNeural`）、`DEMO_TTS_RATE`（默认 `+12%`）、`DEMO_FONT_NAME`（默认 `Noto Sans CJK TC`，简体环境可设为 `Noto Sans CJK SC`）。
-- **检查防定格指标**：合成器会打印每段的 `raw`、`stretch`、`audio`、`freeze_pad` 与 `final`。它会自动对略短于旁白的画面做微幅放慢（最高 `1.38x` 时长）以保持游标持续运动；若仍有镜头 `freeze_pad > 2.0s`，精简该段旁白或补充结果页展示动作后重跑合成，不靠长时间定格硬凑。
+  常用环境变量：`DEMO_TTS_VOICE`（默认 `zh-TW-HsiaoChenNeural`，大陆普通话可用 `zh-CN-XiaoxiaoNeural` / `zh-CN-YunyangNeural`）、`DEMO_TTS_RATE`（默认 `+5%`）、`DEMO_FONT_NAME`（默认 `Noto Sans CJK TC`，简体环境可设为 `Noto Sans CJK SC`）。
+- **防卡顿与防定格机制（`compose-video.py` 已内置）**：
+  - 所有 `-loop 1` 底图/片头卡必须显式指定 `-framerate 30`，所有分段统一 `-r 30 -video_track_timescale 15360`，否则 `ffmpeg -f concat` 拼接 25fps 与 30fps 片段会导致时间基错乱、后段画面静帧卡死。
+  - 当旁白长于操作时，自动微幅放慢页面操作速度（最高 `1.65x` 时长）以配合语速；若仍有镜头 `freeze_pad > 2.0s`，精简该段旁白或补充结果页展示动作后重跑合成。
 
 ## 4. 交付前视觉验收
 
-生成 MP4 后必须抽帧检查，确认无黑屏、字幕遮挡、乱码或排版错位：
-```bash
-<work>/venv/bin/python <skill_root>/scripts/compose-video.py <work>/timeline.json <output.mp4> --verify-dir <work>/verify
-```
-用图片读取工具抽查片头卡、桌面端操作、手机端外框排版、上传后缩略图及终态画面，并核对终端输出的视音轨流信息，全部通过后再交付成片路径与测试数据清理说明。
+使用 `--verify-dir` 时，脚本会自动做两项检查：
+1. **最终成片逐秒静帧扫描**：检测是否存在 `>= 4s` 的画面静帧卡顿并告警；
+2. 抽取 5 张代表帧并打印视音轨流信息（确认恒定 `30 fps`）。
+
+用图片读取工具抽查片头卡、桌面端操作、手机端外框排版、上传后缩略图及终态画面，确认无黑屏、卡顿、字幕遮挡或乱码后再交付成片路径与测试数据清理说明。
