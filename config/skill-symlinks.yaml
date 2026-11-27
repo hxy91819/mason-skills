@@ -92,6 +92,8 @@ skills:
   note: 开源贡献与发布卫生规范
 - name: open-source-fork-maintenance
   note: 维护非 maintainer 的公开 fork：main 聚合集成与上游反馈闭环
+- name: playwright-demo-video
+  note: Playwright 验收与演示视频录制流水线（虚拟光标、可视化上传、TTS 字幕与防定格自动剪辑）
 - name: ppt-visual-review
   note: PPT 式 HTML 布局验收：箭头、留白、同类一致性、字体颜色与中文排版细节，审查-修复循环
 - name: preflight

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Playwright Demo Video"
+  short_description: "Playwright 验收/演示视频录制：虚拟光标、去等待、配音字幕合成"
+  default_prompt: "Use $playwright-demo-video to record a narrated, subtitled Playwright walkthrough video of this workflow."
+
+policy:
+  allow_implicit_invocation: false
